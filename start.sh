@@ -11,8 +11,9 @@ if [ ! -d "node_modules" ]; then
   corepack pnpm install
 fi
 
-export DEFAULT_REASONING_EFFORT="medium"
-export DEFAULT_RESPONSE_SPEED="balanced"
+export DEFAULT_REASONING_EFFORT="${DEFAULT_REASONING_EFFORT:-medium}"
+export DEFAULT_RESPONSE_SPEED="${DEFAULT_RESPONSE_SPEED:-balanced}"
+export MOCK_BACKEND_MODELS_JSON="${MOCK_BACKEND_MODELS_JSON:-[{\"id\":\"backend-test-model\",\"displayName\":\"Backend Test Model\"}]}"
 
 if [ -n "${API_KEYS:-}" ]; then
   echo "API_KEYS detected from existing environment; /v1/* will require one of those keys."

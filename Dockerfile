@@ -20,6 +20,7 @@ ENV NODE_ENV=production
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/apps ./apps
 COPY --from=build /app/packages ./packages
+COPY --from=build /app/config ./config
 COPY package.json pnpm-workspace.yaml ./
 EXPOSE 3000
 CMD ["pnpm", "--filter", "@chatgpt-to-claude/api", "start"]

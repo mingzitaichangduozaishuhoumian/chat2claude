@@ -15,17 +15,18 @@ import { ModelRegistry } from './services/model-registry.js';
 export function createApp(env: AppEnv = loadEnv()): Hono {
   const app = new Hono();
   const logger = createLogger(env.logLevel);
-  const backend = new MockChatGptBackend({ responsePrefix: env.mockResponsePrefix });
+  const backend = new MockChatGptBackend({ responsePrefix: env.mockResponsePrefix, env: { MOCK_BACKEND_MODELS_JSON: env.mockBackendModelsJson } });
   const accountPool = new AccountPool();
   const requestLog = new RequestLog();
   const runtimeApiKeys = new RuntimeApiKeys();
   const modelRegistry = new ModelRegistry();
+  const modelRegistryReady = modelRegistry.refreshFromBackend(backend);
   app.onError((error, c) => { logger.error('Unhandled API error', { error: error.message }); return c.json({ type: 'error', error: { type: 'internal_server_error', message: 'Internal server error' } }, 500); });
   app.route('/', healthRoute);
   app.use('/v1/*', apiKeyAuth(env.apiKeys, runtimeApiKeys));
-  app.route('/', createModelsRoute({ modelRegistry }));
-  app.route('/', createMessagesRoute({ backend, requestLog, modelRegistry, accountPool, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
+  app.route('/', createModelsRoute({ modelRegistry, ready: modelRegistryReady }));
+  app.route('/', createMessagesRoute({ backend, requestLog, modelRegistry, accountPool, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createMetricsRoute(requestLog));
-  app.route('/', createAdminRoute({ accountPool, modelRegistry, runtimeApiKeys, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed }));
+  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed }));
   return app;
 }

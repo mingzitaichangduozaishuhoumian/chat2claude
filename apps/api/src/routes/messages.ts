@@ -3,21 +3,20 @@ import type { ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError, parseClaudeMessagesRequest } from '@chatgpt-to-claude/claude-protocol';
 import { mapChatGptResponseToClaude, mapChatGptStreamToClaudeSse, mapClaudeRequestToChatGpt, readableStreamFromAsyncIterable, type ReasoningSpeedDefaults } from '@chatgpt-to-claude/protocol-mapper';
 import type { RequestLog } from '../services/request-log.js';
-import type { ModelRegistry } from '../services/model-registry.js';
+import { ModelRegistryError, type ModelRegistry } from '../services/model-registry.js';
 import type { AccountPool } from '../services/account-pool.js';
-export interface MessagesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; defaults?: ReasoningSpeedDefaults; }
+export interface MessagesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; }
 export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
   const app = new Hono();
   app.post('/v1/messages', async (c) => {
     try {
+      if (deps.ready) await deps.ready;
       const request = parseClaudeMessagesRequest(await c.req.json());
-      const model = deps.modelRegistry.get(request.model);
-      if (!model) throw new ClaudeApiError(`Unknown model: ${request.model}`, 404, 'not_found_error');
-      if (!model.enabled) throw new ClaudeApiError(`Model is disabled: ${request.model}`, 400, 'invalid_request_error');
+      const resolution = deps.modelRegistry.resolve(request.model);
       const backendRequest = mapClaudeRequestToChatGpt(request, {
         ...deps.defaults,
-        modelDefaults: { ...deps.defaults?.modelDefaults, [request.model]: { reasoningEffort: model.defaults.reasoning_effort, speedPreference: model.defaults.speed } },
-      }, { backendModel: model.backendModel });
+        modelDefaults: { ...deps.defaults?.modelDefaults, [request.model]: { reasoningEffort: resolution.model.defaults.reasoning_effort, speedPreference: resolution.model.defaults.speed } },
+      }, { backendModel: resolution.backendModel });
       deps.requestLog.record({ route: '/v1/messages', stream: Boolean(request.stream), model: request.model });
       const account = deps.accountPool.acquire();
       if (!account) throw new ClaudeApiError('No ChatGPT account available', 503, 'overloaded_error');
@@ -37,7 +36,7 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
         deps.accountPool.release(account.id, releaseError);
       }
     } catch (error) {
-      const apiError = error instanceof ClaudeApiError ? error : new ClaudeApiError(error instanceof Error ? error.message : 'Invalid request');
+      const apiError = error instanceof ClaudeApiError ? error : error instanceof ModelRegistryError ? new ClaudeApiError(error.message, error.status, error.status === 404 ? 'not_found_error' : 'invalid_request_error') : new ClaudeApiError(error instanceof Error ? error.message : 'Invalid request');
       return c.json(apiError.toResponseBody(), apiError.status as 400);
     }
   });

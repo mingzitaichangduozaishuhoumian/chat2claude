@@ -1,14 +1,18 @@
+import { randomBytes } from 'node:crypto';
 import { Hono } from 'hono';
+import type { ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ReasoningEffort, SpeedPreference } from '@chatgpt-to-claude/protocol-mapper';
 import type { AccountPool } from '../services/account-pool.js';
 import type { ModelRegistry } from '../services/model-registry.js';
 import type { RuntimeApiKeys } from '../services/runtime-api-keys.js';
 
-const DEV_API_KEY = 'sk-test';
+const DEV_API_KEY_PREFIX = 'sk-dev-';
 
 export interface AdminRouteOptions {
   accountPool: AccountPool;
   modelRegistry: ModelRegistry;
+  backend: ChatGptBackendClient;
+  ready?: Promise<unknown>;
   runtimeApiKeys: RuntimeApiKeys;
   envApiKeys: string[];
   defaultReasoningEffort: ReasoningEffort;
@@ -21,11 +25,18 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
   app.get('/admin/accounts', (c) => c.json({ accounts: options.accountPool.list() }));
   app.get('/admin/api/setup/status', (c) => c.json(status(options)));
   app.post('/admin/api/api-keys/dev-enable', (c) => {
-    options.runtimeApiKeys.add(DEV_API_KEY);
+    if (process.env.NODE_ENV === 'production') {
+      return c.json({
+        type: 'error',
+        error: { type: 'permission_error', message: 'Development API key initialization is disabled in production.' },
+      }, 403);
+    }
+    const key = generateDevApiKey();
+    options.runtimeApiKeys.add(key);
     return c.json({
       ok: true,
-      message: 'Development API key enabled in memory. Use x-api-key: sk-test for /v1/* until the process restarts.',
-      key: DEV_API_KEY,
+      message: 'Development API key enabled in memory. Use the returned key for /v1/* until the process restarts.',
+      key,
       status: status(options),
     });
   });
@@ -48,12 +59,20 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     return account ? c.json({ ok: true, account }) : c.json({ error: 'Account not found' }, 404);
   });
 
-  app.get('/admin/api/models', (c) => c.json({ models: options.modelRegistry.list() }));
-  app.patch('/admin/api/models/:id', async (c) => {
-    const model = options.modelRegistry.update(c.req.param('id'), await readJson(c.req));
-    return model ? c.json({ model }) : c.json({ error: 'Model not found' }, 404);
+  app.get('/admin/api/models', async (c) => {
+    if (options.ready) await options.ready;
+    return c.json(options.modelRegistry.adminView());
   });
-  app.post('/admin/api/models/reset', (c) => c.json({ models: options.modelRegistry.reset() }));
+  app.patch('/admin/api/models/:id', async (c) => {
+    if (options.ready) await options.ready;
+    const model = options.modelRegistry.update(c.req.param('id'), await readJson(c.req));
+    return model ? c.json({ model, view: options.modelRegistry.adminView() }) : c.json({ error: 'Model alias not found' }, 404);
+  });
+  app.post('/admin/api/models/reset', async (c) => {
+    if (options.ready) await options.ready;
+    return c.json({ models: options.modelRegistry.reset(), view: options.modelRegistry.adminView() });
+  });
+  app.post('/admin/api/models/refresh', async (c) => c.json(await options.modelRegistry.refreshFromBackend(options.backend)));
   return app;
 }
 
@@ -80,15 +99,19 @@ function status(options: AdminRouteOptions) {
     defaultEndpoint: 'POST /v1/messages',
     nextStep: envApiKeysConfigured || runtimeApiKeysConfigured
       ? 'Call /v1/messages with x-api-key or Authorization: Bearer token. ChatGPT authorization is still a placeholder.'
-      : 'Open /admin and click Enable development API key, then call /v1/messages with x-api-key: sk-test.',
+      : 'Open /admin and click Enable development API key, then call /v1/messages with the returned x-api-key.',
   };
+}
+
+function generateDevApiKey(): string {
+  return `${DEV_API_KEY_PREFIX}${randomBytes(24).toString('base64url')}`;
 }
 
 function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
   const keyState = setupStatus.apiKeysConfigured ? 'Configured' : 'Not configured';
   const curlExample = `curl http://localhost:3000/v1/messages \\
   -H 'content-type: application/json' \\
-  -H 'x-api-key: sk-test' \\
+  -H 'x-api-key: <your-api-key>' \\
   -d '{"model":"sonnet","max_tokens":128,"reasoning_effort":"medium","response_speed":"balanced","messages":[{"role":"user","content":"你好"}]}'`;
   return `<!doctype html>
 <html lang="zh-CN">
@@ -145,8 +168,8 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
 
     <section class="card">
       <h2>模型映射</h2>
-      <p class="muted">修改后立即影响 mock /v1/messages 缺省 reasoning_effort/response_speed。</p>
-      <div class="row"><button id="reset-models" class="secondary">重置模型映射</button></div>
+      <p class="muted">后端模型来自 discovery；这里的 alias overlay 只管理映射、启用状态与缺省 reasoning_effort/response_speed。</p>
+      <div class="row"><button id="reset-models" class="secondary">重置 alias overlay</button><button id="refresh-models" class="secondary">刷新 backend discovery</button></div>
       <div id="models"></div>
     </section>
 
@@ -167,8 +190,8 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
 
     document.getElementById('dev-enable').addEventListener('click', async () => {
       const body = await postJson('/admin/api/api-keys/dev-enable');
-      document.getElementById('key-state').textContent = body.status.apiKeysConfigured ? 'Configured' : 'Not configured';
-      document.getElementById('result').textContent = JSON.stringify(body, null, 2);
+      if (body.status) document.getElementById('key-state').textContent = body.status.apiKeysConfigured ? 'Configured' : 'Not configured';
+      document.getElementById('result').textContent = body.key ? 'Development API key: ' + body.key + '\n\nUse it as x-api-key for /v1/* until the process restarts.\n\n' + JSON.stringify(body, null, 2) : JSON.stringify(body, null, 2);
     });
 
     document.getElementById('add-account').addEventListener('click', async () => {
@@ -180,6 +203,10 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
 
     document.getElementById('reset-models').addEventListener('click', async () => {
       await postJson('/admin/api/models/reset');
+      await loadModels();
+    });
+    document.getElementById('refresh-models').addEventListener('click', async () => {
+      await postJson('/admin/api/models/refresh');
       await loadModels();
     });
 
@@ -196,8 +223,9 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
 
     async function loadModels() {
       const body = await getJson('/admin/api/models');
-      document.getElementById('models').innerHTML = '<table><thead><tr><th>Alias</th><th>Claude Model</th><th>Backend Model</th><th>Enabled</th><th>Defaults</th><th>Action</th></tr></thead><tbody>' + body.models.map((model) =>
-        '<tr><td><code>' + esc(model.id) + '</code></td><td><input data-field="claudeModel" data-id="' + esc(model.id) + '" value="' + esc(model.claudeModel) + '" /></td><td><input data-field="backendModel" data-id="' + esc(model.id) + '" value="' + esc(model.backendModel) + '" /></td><td><input type="checkbox" data-field="enabled" data-id="' + esc(model.id) + '" ' + (model.enabled ? 'checked' : '') + ' /></td><td>' + selectHtml(model.id, 'reasoning_effort', effortOptions, model.defaults.reasoning_effort) + ' ' + selectHtml(model.id, 'speed', speedOptions, model.defaults.speed) + '</td><td><button data-save-model="' + esc(model.id) + '">保存</button></td></tr>'
+      const aliases = body.aliases || body.models || [];
+      document.getElementById('models').innerHTML = '<p class="muted">Backend discovery: ' + (body.discovered || []).map((model) => '<code>' + esc(model.id) + '</code>').join(' ') + '</p><table><thead><tr><th>Alias</th><th>Backend Model</th><th>Status</th><th>Enabled</th><th>Defaults</th><th>Action</th></tr></thead><tbody>' + aliases.map((model) =>
+        '<tr><td><code>' + esc(model.id) + '</code></td><td><input data-field="backendModel" data-id="' + esc(model.id) + '" value="' + esc(model.backendModel || '') + '" /></td><td>' + esc(model.status || '-') + '</td><td><input type="checkbox" data-field="enabled" data-id="' + esc(model.id) + '" ' + (model.enabled ? 'checked' : '') + ' /></td><td>' + selectHtml(model.id, 'reasoning_effort', effortOptions, model.defaults.reasoning_effort) + ' ' + selectHtml(model.id, 'speed', speedOptions, model.defaults.speed) + '</td><td><button data-save-model="' + esc(model.id) + '">保存</button></td></tr>'
       ).join('') + '</tbody></table>';
       document.querySelectorAll('[data-save-model]').forEach((button) => button.addEventListener('click', async () => saveModel(button.dataset.saveModel)));
     }
@@ -205,7 +233,6 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     async function saveModel(id) {
       const byField = (field) => document.querySelector('[data-id="' + CSS.escape(id) + '"][data-field="' + field + '"]');
       await patchJson('/admin/api/models/' + encodeURIComponent(id), {
-        claudeModel: byField('claudeModel').value,
         backendModel: byField('backendModel').value,
         enabled: byField('enabled').checked,
         defaults: { reasoning_effort: byField('reasoning_effort').value, speed: byField('speed').value },

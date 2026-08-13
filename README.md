@@ -42,7 +42,7 @@ http://localhost:3000/admin
 http://localhost:3000/healthz
 ```
 
-一键启动脚本会自动启用 corepack；如果还没有 `node_modules`，会先安装依赖。启动脚本不会默认设置 `API_KEYS`，未授权时 `/v1/*` 会返回 401；请在 `/admin` 页面开发授权后再调用 API。当前项目仍使用 mock backend，不接真实 ChatGPT，ChatGPT 授权区域只是后续真实账号池入口占位。
+一键启动脚本会自动启用 corepack；如果还没有 `node_modules`，会先安装依赖。启动脚本不会默认设置 `API_KEYS`，未授权时 `/v1/*` 会返回 401；请在 `/admin` 页面开发授权后再调用 API。当前项目仍使用 mock backend，不接真实 ChatGPT，ChatGPT 授权区域只是后续真实账号池入口占位。mock 阶段启动脚本会为 discovery 配置占位后端模型 `backend-test-model`；也可以用 `MOCK_BACKEND_MODELS_JSON` 覆盖。
 
 也可以手动运行：
 
@@ -59,14 +59,15 @@ corepack pnpm start
 - `GET /healthz`：健康检查
 - `GET /admin`：原生 JS runtime 管理后台骨架，显示授权状态、账号池、模型映射、curl 示例与 ChatGPT 授权占位
 - `GET /admin/api/setup/status`：查看 API key、默认 effort/speed、mock backend 状态
-- `POST /admin/api/api-keys/dev-enable`：开发阶段在运行时启用临时 key `sk-test`（进程内有效，重启后失效）
+- `POST /admin/api/api-keys/dev-enable`：开发阶段生成随机临时 key 并返回给前端（进程内有效，重启后失效）；`NODE_ENV=production` 时返回 403，不允许启用开发 key
 - `GET /admin/api/accounts` / `POST /admin/api/accounts`：列出或添加运行时 mock 账号
 - `PATCH /admin/api/accounts/:id`：更新账号 `label/status/enabled/maxConcurrency/currentConcurrency/lastError/capabilities`
 - `POST /admin/api/accounts/:id/health-check`：执行 mock 健康检查，刷新 `lastUsedAt`、清空 `lastError`
-- `GET /admin/api/models`：列出 runtime 模型注册表
-- `PATCH /admin/api/models/:id`：更新模型映射、启用状态与默认 `reasoning_effort` / `speed`
-- `POST /admin/api/models/reset`：重置模型注册表为默认 `haiku` / `sonnet` / `opus`
-- `GET /v1/models`：返回已启用的 mock Claude alias 模型列表
+- `GET /admin/api/models`：列出 alias overlay、backend discovery 与合并后的 runtime 模型视图
+- `PATCH /admin/api/models/:id`：更新 alias 的 backendModel 映射、启用状态与默认 `reasoning_effort` / `speed`
+- `POST /admin/api/models/reset`：重置 alias overlay 为当前配置源默认值（`config/models.json` 或 `MODEL_REGISTRY_JSON`）
+- `POST /admin/api/models/refresh`：重新从 backend discovery 获取可用后端模型
+- `GET /v1/models`：返回已启用且可解析的 alias 与 discovery passthrough 模型列表
 - `POST /v1/messages`：Claude-like Messages API
   - `stream: false`：返回完整 message
   - `stream: true`：返回基础 Claude SSE 事件流
@@ -76,7 +77,7 @@ corepack pnpm start
 - `x-api-key: <key>`；或
 - `Authorization: Bearer <key>`
 
-未设置 `API_KEYS` 且尚未通过 `/admin` 开发授权时，`/v1/*` 会返回 401 并提示去 `/admin` 初始化。
+未设置 `API_KEYS` 且尚未通过 `/admin` 开发授权时，`/v1/*` 会返回 401 并提示去 `/admin` 初始化。开发授权不会使用固定 key；请复制 `/admin` 页面或 `dev-enable` 响应 JSON 返回的 `key`。
 
 ## 示例
 
@@ -85,18 +86,25 @@ curl http://localhost:3000/healthz
 curl http://localhost:3000/admin/api/setup/status
 
 curl -X POST http://localhost:3000/admin/api/api-keys/dev-enable
+# 返回 JSON 中的 key 字段，例如：{"key":"sk-dev-..."}
 
 curl http://localhost:3000/v1/models \
-  -H 'x-api-key: sk-test'
+  -H 'x-api-key: <your-api-key>'
 
 curl http://localhost:3000/v1/messages \
   -H 'content-type: application/json' \
-  -H 'x-api-key: sk-test' \
+  -H 'x-api-key: <your-api-key>' \
   -d '{"model":"sonnet","max_tokens":128,"reasoning_effort":"medium","response_speed":"balanced","messages":[{"role":"user","content":"你好"}]}'
+
+# passthrough：直接请求 backend discovery 返回的模型 ID
+curl http://localhost:3000/v1/messages \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: <your-api-key>' \
+  -d '{"model":"<backend-model-id-from-discovery>","max_tokens":128,"messages":[{"role":"user","content":"你好"}]}'
 
 curl -X PATCH http://localhost:3000/admin/api/models/sonnet \
   -H 'content-type: application/json' \
-  -d '{"defaults":{"reasoning_effort":"max","speed":"quality"}}'
+  -d '{"backendModel":"<backend-model-id-from-discovery>","defaults":{"reasoning_effort":"max","speed":"quality"}}'
 
 curl -X POST http://localhost:3000/admin/api/accounts \
   -H 'content-type: application/json' \
@@ -105,17 +113,22 @@ curl -X POST http://localhost:3000/admin/api/accounts \
 
 ## Runtime 管理骨架
 
-### 模型注册表
+### 模型 discovery 与 alias overlay
 
-默认提供 3 个 Claude alias：
+后端模型不是源码或 `config/models.json` 里的静态模型表。启动时 API 会创建 backend client，并通过 `backend.listModels()` 获取可用模型；mock 阶段可通过 `MOCK_BACKEND_MODELS_JSON` 配置 discovery：
 
-| Alias | claudeModel | backendModel | 默认 effort/speed |
-| --- | --- | --- | --- |
-| `haiku` | `claude-3-5-haiku-latest` | `gpt-4o-mini` | `low` / `fast` |
-| `sonnet` | `claude-3-5-sonnet-latest` | `gpt-4o` | `medium` / `balanced` |
-| `opus` | `claude-3-opus-latest` | `gpt-4.1` | `high` / `quality` |
+```bash
+export MOCK_BACKEND_MODELS_JSON='[{"id":"backend-test-model","displayName":"Backend Test Model"}]'
+```
 
-`/v1/messages` 会按 `request.model` 读取对应模型 defaults；请求显式传入 `output_config.effort`、`reasoning_effort`、`speed` 或 `response_speed` 时仍优先使用请求值。
+alias overlay 启动时从外部配置源读取：
+
+1. 如果设置了 `MODEL_REGISTRY_JSON`，优先解析该环境变量中的 JSON；
+2. 否则读取根目录 `config/models.json`。
+
+`config/models.json` 只管理 alias 映射，不是真实后端模型表。配置格式为 `{ "aliases": [...] }`，每个 alias 至少包含 `id`；可选字段包括 `display_name`、`backendModel`、`enabled`、`defaults.reasoning_effort`、`defaults.speed` 与 `capabilities`。`backendModel` 可以为空，表示该 alias 暂未绑定。管理后台的 reset 会恢复 alias overlay，`/admin/api/models/refresh` 会重新拉取 backend discovery。
+
+`/v1/messages` 解析规则：enabled alias 绑定到 discovery 中存在的 `backendModel` 时转发到该后端模型；直接请求 discovery 中的模型 ID 时 passthrough；未绑定 alias、过期绑定和未知模型都会返回清晰错误。请求显式传入 `output_config.effort`、`reasoning_effort`、`speed` 或 `response_speed` 时仍优先使用请求值。
 
 ### 账号池
 

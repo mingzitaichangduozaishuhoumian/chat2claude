@@ -13,8 +13,9 @@ if not exist "node_modules" (
   if errorlevel 1 exit /b %errorlevel%
 )
 
-set "DEFAULT_REASONING_EFFORT=medium"
-set "DEFAULT_RESPONSE_SPEED=balanced"
+if not defined DEFAULT_REASONING_EFFORT set "DEFAULT_REASONING_EFFORT=medium"
+if not defined DEFAULT_RESPONSE_SPEED set "DEFAULT_RESPONSE_SPEED=balanced"
+if not defined MOCK_BACKEND_MODELS_JSON set "MOCK_BACKEND_MODELS_JSON=[{""id"":""backend-test-model"",""displayName"":""Backend Test Model""}]"
 
 if defined API_KEYS echo API_KEYS detected from existing environment; /v1/* will require one of those keys.
 if not defined API_KEYS echo API_KEYS is not set. Open admin after startup to enable development access.
