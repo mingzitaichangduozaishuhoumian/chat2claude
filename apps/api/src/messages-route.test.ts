@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import type { ChatGptBackendClient, ChatGptCompletionRequest, ChatGptCompletionResponse } from '@chatgpt-to-claude/chatgpt-backend';
 import { createApp } from './app.js';
+import { createMessagesRoute } from './routes/messages.js';
+import { AccountPool } from './services/account-pool.js';
+import { ModelRegistry } from './services/model-registry.js';
+import { RequestLog } from './services/request-log.js';
 const env = { port: 3000, host: '127.0.0.1', apiKeys: ['test-key'], logLevel: 'error' as const, mockResponsePrefix: 'Echo:', defaultReasoningEffort: 'medium' as const, defaultResponseSpeed: 'balanced' as const };
 const jsonHeaders = { 'content-type': 'application/json', 'x-api-key': 'test-key' };
 describe('/v1/messages', () => {
   it('returns a Claude-like non-stream message with resolved effort and speed', async () => {
     const app = createApp(env);
-    const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'claude-3-5-sonnet-latest', max_tokens: 64, output_config: { effort: 'high' }, speed: 'fast', messages: [{ role: 'user', content: 'hello' }] }) });
+    const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, output_config: { effort: 'high' }, speed: 'fast', messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(200);
     const body = await res.json() as { type: string; role: string; content: Array<{ text: string }>; stop_reason: string };
     expect(body.type).toBe('message');
@@ -33,7 +38,7 @@ describe('/v1/messages', () => {
   });
   it('returns Claude SSE stream events', async () => {
     const app = createApp(env);
-    const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'claude-3-5-sonnet-latest', max_tokens: 64, stream: true, reasoning_effort: 'low', response_speed: 'quality', messages: [{ role: 'user', content: 'hello' }] }) });
+    const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, stream: true, reasoning_effort: 'low', response_speed: 'quality', messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/event-stream');
     const text = await res.text();
@@ -44,12 +49,82 @@ describe('/v1/messages', () => {
     expect(text).toContain('hello');
     expect(text).toContain('event: message_stop');
   });
+
+  it('returns a Claude error for an unknown model', async () => {
+    const app = createApp(env);
+    const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'unknown-model', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(404);
+    const body = await res.json() as { type: string; error: { type: string; message: string } };
+    expect(body.type).toBe('error');
+    expect(body.error.type).toBe('not_found_error');
+    expect(body.error.message).toContain('Unknown model: unknown-model');
+  });
+
+  it('returns a Claude error for a disabled model', async () => {
+    const app = createApp(env);
+    const patchRes = await app.request('/admin/api/models/sonnet', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+    expect(patchRes.status).toBe(200);
+
+    const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(400);
+    const body = await res.json() as { type: string; error: { type: string; message: string } };
+    expect(body.type).toBe('error');
+    expect(body.error.type).toBe('invalid_request_error');
+    expect(body.error.message).toContain('Model is disabled: sonnet');
+  });
+
+  it('passes backendModel to the backend request', async () => {
+    const backend = new InspectingBackend();
+    const modelRegistry = new ModelRegistry();
+    const updated = modelRegistry.update('sonnet', { backendModel: 'gpt-test' });
+    expect(updated?.backendModel).toBe('gpt-test');
+    const app = createMessagesRoute({ backend, requestLog: new RequestLog(), modelRegistry, accountPool: new AccountPool() });
+
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(200);
+    expect(backend.lastRequest?.model).toBe('gpt-test');
+  });
+
+  it('releases account concurrency after a non-streaming request', async () => {
+    const accountPool = new AccountPool();
+    const app = createMessagesRoute({ backend: new InspectingBackend(), requestLog: new RequestLog(), modelRegistry: new ModelRegistry(), accountPool });
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(200);
+    expect(accountPool.list()[0].currentConcurrency).toBe(0);
+    expect(accountPool.list()[0].status).toBe('available');
+  });
+
+  it('releases account concurrency after a streaming request is consumed', async () => {
+    const accountPool = new AccountPool();
+    const app = createMessagesRoute({ backend: new InspectingBackend(), requestLog: new RequestLog(), modelRegistry: new ModelRegistry(), accountPool });
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(200);
+    expect(accountPool.list()[0].currentConcurrency).toBe(1);
+    await res.text();
+    expect(accountPool.list()[0].currentConcurrency).toBe(0);
+    expect(accountPool.list()[0].status).toBe('available');
+  });
 });
+
+class InspectingBackend implements ChatGptBackendClient {
+  lastRequest: ChatGptCompletionRequest | undefined;
+
+  async complete(request: ChatGptCompletionRequest): Promise<ChatGptCompletionResponse> {
+    this.lastRequest = request;
+    return { text: `backend:${request.model}`, finishReason: 'stop' };
+  }
+
+  async *stream(request: ChatGptCompletionRequest) {
+    this.lastRequest = request;
+    yield { type: 'text_delta' as const, text: `backend:${request.model}` };
+    yield { type: 'done' as const };
+  }
+}
 
 describe('API key auth', () => {
   it('rejects /v1/messages before admin initialization when no API key exists', async () => {
     const app = createApp({ ...env, apiKeys: [] });
-    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-3-5-sonnet-latest', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(401);
     const body = await res.json() as { error: { message: string } };
     expect(body.error.message).toContain('/admin');
@@ -57,7 +132,7 @@ describe('API key auth', () => {
 
   it('accepts bearer API keys from API_KEYS', async () => {
     const app = createApp({ ...env, apiKeys: ['secret'] });
-    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: JSON.stringify({ model: 'claude-3-5-sonnet-latest', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(200);
   });
 
@@ -70,7 +145,7 @@ describe('API key auth', () => {
     expect(enableBody.status.apiKeysConfigured).toBe(true);
     expect(enableBody.status.runtimeApiKeysConfigured).toBe(true);
 
-    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'sk-test' }, body: JSON.stringify({ model: 'claude-3-5-sonnet-latest', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'sk-test' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(200);
   });
 });

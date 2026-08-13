@@ -1,4 +1,4 @@
-export type AccountStatus = 'available' | 'unhealthy' | 'disabled';
+export type AccountStatus = 'available' | 'unhealthy' | 'disabled' | 'error';
 
 export interface Account {
   id: string;
@@ -79,6 +79,19 @@ export class AccountPool {
     account.lastUsedAt = new Date().toISOString();
     return cloneAccount(account);
   }
+
+  release(id: string, error?: unknown): Account | undefined {
+    const account = this.accounts.find((item) => item.id === id);
+    if (!account) return undefined;
+    account.currentConcurrency = Math.max(0, account.currentConcurrency - 1);
+    if (error !== undefined) {
+      account.lastError = error instanceof Error ? error.message : String(error);
+      account.status = 'error';
+    } else if (account.enabled) {
+      account.status = 'available';
+    }
+    return cloneAccount(account);
+  }
 }
 
 function createAccount(input: AccountCreateInput): Account {
@@ -126,5 +139,5 @@ function normalizeStringArray(value: unknown, fallback: string[]): string[] {
 }
 
 function normalizeStatus(value: unknown, fallback: AccountStatus): AccountStatus {
-  return value === 'available' || value === 'unhealthy' || value === 'disabled' ? value : fallback;
+  return value === 'available' || value === 'unhealthy' || value === 'disabled' || value === 'error' ? value : fallback;
 }

@@ -24,7 +24,7 @@ export function createApp(env: AppEnv = loadEnv()): Hono {
   app.route('/', healthRoute);
   app.use('/v1/*', apiKeyAuth(env.apiKeys, runtimeApiKeys));
   app.route('/', createModelsRoute({ modelRegistry }));
-  app.route('/', createMessagesRoute({ backend, requestLog, modelRegistry, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
+  app.route('/', createMessagesRoute({ backend, requestLog, modelRegistry, accountPool, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createMetricsRoute(requestLog));
   app.route('/', createAdminRoute({ accountPool, modelRegistry, runtimeApiKeys, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed }));
   return app;
