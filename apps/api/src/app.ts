@@ -1,0 +1,31 @@
+import { Hono } from 'hono';
+import { MockChatGptBackend } from '@chatgpt-to-claude/chatgpt-backend';
+import { createLogger } from '@chatgpt-to-claude/shared';
+import { loadEnv, type AppEnv } from './config/env.js';
+import { apiKeyAuth } from './middleware/auth.js';
+import { healthRoute } from './routes/health.js';
+import { createModelsRoute } from './routes/models.js';
+import { createMessagesRoute } from './routes/messages.js';
+import { createMetricsRoute } from './routes/metrics.js';
+import { createAdminRoute } from './routes/admin.js';
+import { AccountPool } from './services/account-pool.js';
+import { RequestLog } from './services/request-log.js';
+import { RuntimeApiKeys } from './services/runtime-api-keys.js';
+import { ModelRegistry } from './services/model-registry.js';
+export function createApp(env: AppEnv = loadEnv()): Hono {
+  const app = new Hono();
+  const logger = createLogger(env.logLevel);
+  const backend = new MockChatGptBackend({ responsePrefix: env.mockResponsePrefix });
+  const accountPool = new AccountPool();
+  const requestLog = new RequestLog();
+  const runtimeApiKeys = new RuntimeApiKeys();
+  const modelRegistry = new ModelRegistry();
+  app.onError((error, c) => { logger.error('Unhandled API error', { error: error.message }); return c.json({ type: 'error', error: { type: 'internal_server_error', message: 'Internal server error' } }, 500); });
+  app.route('/', healthRoute);
+  app.use('/v1/*', apiKeyAuth(env.apiKeys, runtimeApiKeys));
+  app.route('/', createModelsRoute({ modelRegistry }));
+  app.route('/', createMessagesRoute({ backend, requestLog, modelRegistry, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
+  app.route('/', createMetricsRoute(requestLog));
+  app.route('/', createAdminRoute({ accountPool, modelRegistry, runtimeApiKeys, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed }));
+  return app;
+}
