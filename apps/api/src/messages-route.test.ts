@@ -226,6 +226,30 @@ describe('API key auth', () => {
 });
 
 describe('/admin', () => {
+  it('redirects the root path to the admin console', async () => {
+    const app = createApp(env);
+    const res = await app.request('/');
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/admin');
+  });
+
+  it('returns an empty favicon response instead of a 404', async () => {
+    const app = createApp(env);
+    const res = await app.request('/favicon.ico');
+    expect(res.status).toBe(204);
+  });
+
+  it('returns the server-rendered admin HTML page', async () => {
+    const app = createApp(env);
+    const res = await app.request('/admin');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/html');
+    const html = await res.text();
+    expect(html).toContain('ChatGPT to Claude 运维控制台');
+    expect(html).toContain('__ORIGIN__');
+    expect(html).not.toContain('localhost:3000/v1/messages');
+  });
+
   it('returns setup status for mock backend and defaults', async () => {
     const app = createApp({ ...env, apiKeys: [] });
     const res = await app.request('/admin/api/setup/status');

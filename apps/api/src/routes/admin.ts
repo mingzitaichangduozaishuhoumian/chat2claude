@@ -108,8 +108,9 @@ function generateDevApiKey(): string {
 }
 
 function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
-  const keyState = setupStatus.apiKeysConfigured ? 'Configured' : 'Not configured';
-  const curlExample = `curl http://localhost:3000/v1/messages \\
+  const keyState = setupStatus.apiKeysConfigured ? '已配置' : '待初始化';
+  const keyTone = setupStatus.apiKeysConfigured ? 'ok' : 'warn';
+  const curlTemplate = `curl __ORIGIN__/v1/messages \\
   -H 'content-type: application/json' \\
   -H 'x-api-key: <your-api-key>' \\
   -d '{"model":"sonnet","max_tokens":128,"reasoning_effort":"medium","response_speed":"balanced","messages":[{"role":"user","content":"你好"}]}'`;
@@ -118,105 +119,493 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>chatgpt-to-claude Admin</title>
+  <title>ChatGPT to Claude 运维控制台</title>
   <style>
-    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f6f8fb; }
-    main { max-width: 1040px; margin: 40px auto; padding: 0 20px 48px; }
-    .card { background: #fff; border: 1px solid #dfe6f0; border-radius: 14px; padding: 22px; margin: 18px 0; box-shadow: 0 10px 30px rgba(23,32,51,0.06); }
-    h1 { margin: 0 0 8px; font-size: 30px; }
-    h2 { margin: 0 0 14px; font-size: 20px; }
-    code, pre { background: #eef3f8; border-radius: 8px; padding: 2px 6px; }
-    pre { padding: 14px; overflow: auto; white-space: pre-wrap; }
-    table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    th, td { border-bottom: 1px solid #e6edf5; padding: 10px 8px; text-align: left; vertical-align: top; }
-    input, select { border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 10px; }
-    .status { display: inline-block; padding: 4px 10px; border-radius: 999px; background: ${setupStatus.apiKeysConfigured ? '#e7f7ee' : '#fff4dd'}; color: ${setupStatus.apiKeysConfigured ? '#17633a' : '#8a5700'}; font-weight: 700; }
-    button { border: 0; border-radius: 10px; padding: 9px 12px; background: #1f6feb; color: #fff; font-weight: 700; cursor: pointer; }
-    button.secondary { background: #64748b; }
-    button.placeholder { background: #94a3b8; cursor: not-allowed; }
-    .muted { color: #5c6b82; }
+    :root {
+      --ink: #07100f;
+      --panel: rgba(12, 24, 24, 0.88);
+      --panel-strong: rgba(17, 34, 34, 0.96);
+      --line: rgba(126, 154, 146, 0.24);
+      --line-strong: rgba(236, 185, 82, 0.42);
+      --text: #e6eee9;
+      --muted: #8fa29b;
+      --gold: #e6b451;
+      --gold-soft: rgba(230, 180, 81, 0.16);
+      --cyan: #42d6c6;
+      --cyan-soft: rgba(66, 214, 198, 0.14);
+      --danger: #ff7d64;
+      --shadow: 0 24px 90px rgba(0, 0, 0, 0.42);
+      color-scheme: dark;
+    }
+
+    * { box-sizing: border-box; }
+    html { min-height: 100%; background: var(--ink); }
+    body {
+      margin: 0;
+      min-height: 100%;
+      color: var(--text);
+      font-family: "Alibaba PuHuiTi", "HarmonyOS Sans SC", "Source Han Sans SC", "Microsoft YaHei UI", sans-serif;
+      background:
+        radial-gradient(circle at 20% -10%, rgba(230, 180, 81, 0.2), transparent 34rem),
+        radial-gradient(circle at 78% 12%, rgba(66, 214, 198, 0.16), transparent 30rem),
+        linear-gradient(135deg, rgba(255,255,255,0.035) 0 1px, transparent 1px 22px),
+        linear-gradient(90deg, #050908, #0a1413 45%, #080d0c);
+      overflow-x: hidden;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(rgba(255,255,255,0.026) 1px, transparent 1px) 0 0 / 100% 4px,
+        radial-gradient(circle at center, transparent 0, rgba(0,0,0,0.24) 72%);
+      mix-blend-mode: screen;
+      opacity: 0.55;
+    }
+
+    main {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 32px 0 56px;
+      position: relative;
+    }
+    .shell {
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: linear-gradient(180deg, rgba(13,25,24,0.9), rgba(8,14,14,0.94));
+      box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,0.05);
+      overflow: hidden;
+    }
+    .hero {
+      position: relative;
+      padding: 34px clamp(22px, 4vw, 42px) 28px;
+      border-bottom: 1px solid var(--line);
+      background:
+        linear-gradient(120deg, rgba(230,180,81,0.13), transparent 40%),
+        linear-gradient(270deg, rgba(66,214,198,0.11), transparent 36%);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: 34px;
+      top: 26px;
+      width: 170px;
+      height: 78px;
+      border: 1px solid rgba(66,214,198,0.32);
+      border-radius: 999px;
+      background: repeating-linear-gradient(90deg, rgba(66,214,198,0.18) 0 2px, transparent 2px 14px);
+      opacity: 0.38;
+      transform: rotate(-7deg);
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin: 0 0 16px;
+      color: var(--gold);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+    }
+    .eyebrow::before {
+      content: "";
+      width: 34px;
+      height: 2px;
+      background: linear-gradient(90deg, var(--gold), transparent);
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      margin-bottom: 12px;
+      font-size: clamp(32px, 6vw, 64px);
+      line-height: 0.98;
+      letter-spacing: -0.06em;
+      max-width: 780px;
+      font-weight: 900;
+    }
+    .hero p {
+      max-width: 760px;
+      margin-bottom: 0;
+      color: #aec0ba;
+      line-height: 1.8;
+      font-size: 15px;
+    }
+    .command-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1px;
+      background: var(--line);
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .metric {
+      min-height: 118px;
+      padding: 20px 22px;
+      background: rgba(8, 18, 17, 0.88);
+      position: relative;
+      overflow: hidden;
+    }
+    .metric::after {
+      content: "";
+      position: absolute;
+      right: -28px;
+      bottom: -36px;
+      width: 92px;
+      height: 92px;
+      border-radius: 50%;
+      background: var(--cyan-soft);
+      filter: blur(2px);
+    }
+    .metric b { display: block; margin-bottom: 10px; color: var(--muted); font-size: 12px; letter-spacing: 0.14em; }
+    .metric strong { display: block; font-size: 26px; letter-spacing: -0.03em; }
+    .metric span { display: block; margin-top: 8px; color: var(--muted); font-size: 13px; }
+
+    .content {
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.92fr);
+      gap: 18px;
+      padding: 18px;
+    }
+    .card {
+      position: relative;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.038), transparent),
+        var(--panel);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 54px rgba(0,0,0,0.18);
+      padding: 22px;
+      overflow: hidden;
+    }
+    .card.full { grid-column: 1 / -1; }
+    .card.accent::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 3px;
+      background: linear-gradient(180deg, var(--gold), var(--cyan));
+    }
+    .card h2 {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+      font-size: 18px;
+      letter-spacing: -0.02em;
+    }
+    .card h2::before {
+      content: "";
+      width: 11px;
+      height: 11px;
+      border: 1px solid var(--gold);
+      background: var(--gold-soft);
+      transform: rotate(45deg);
+      box-shadow: 0 0 20px rgba(230,180,81,0.42);
+    }
+    .muted { color: var(--muted); }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 800;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.045);
+    }
+    .status::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--danger);
+      box-shadow: 0 0 18px currentColor;
+    }
+    .status.ok { color: var(--cyan); border-color: rgba(66,214,198,0.38); background: var(--cyan-soft); }
+    .status.ok::before { background: var(--cyan); }
+    .status.warn { color: var(--gold); border-color: rgba(230,180,81,0.38); background: var(--gold-soft); }
+    .status.warn::before { background: var(--gold); }
     .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .stack { display: grid; gap: 18px; }
+    .steps {
+      display: grid;
+      gap: 12px;
+      padding: 0;
+      margin: 0;
+      list-style: none;
+      counter-reset: step;
+    }
+    .steps li {
+      counter-increment: step;
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 13px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255,255,255,0.035);
+    }
+    .steps li::before {
+      content: counter(step, decimal-leading-zero);
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 11px;
+      color: var(--gold);
+      background: var(--gold-soft);
+      font-size: 12px;
+      font-weight: 900;
+    }
+    .steps strong { display: block; margin-bottom: 5px; }
+
+    input, select {
+      min-height: 40px;
+      border: 1px solid rgba(143,162,155,0.34);
+      border-radius: 12px;
+      padding: 9px 11px;
+      color: var(--text);
+      background: rgba(2, 8, 8, 0.58);
+      outline: none;
+      transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+    }
+    input:focus, select:focus {
+      border-color: var(--cyan);
+      box-shadow: 0 0 0 3px rgba(66,214,198,0.12);
+      background: rgba(2, 10, 10, 0.86);
+    }
+    input::placeholder { color: #64766f; }
+    button {
+      min-height: 40px;
+      border: 1px solid rgba(230,180,81,0.44);
+      border-radius: 12px;
+      padding: 9px 14px;
+      color: #130f07;
+      background: linear-gradient(180deg, #f0c66b, #c8912f);
+      box-shadow: 0 10px 28px rgba(230,180,81,0.14), inset 0 1px 0 rgba(255,255,255,0.36);
+      font-weight: 900;
+      cursor: pointer;
+      transition: transform .18s ease, filter .18s ease, box-shadow .18s ease;
+    }
+    button:hover { transform: translateY(-1px); filter: brightness(1.06); box-shadow: 0 14px 34px rgba(230,180,81,0.2); }
+    button.secondary {
+      color: var(--text);
+      border-color: rgba(66,214,198,0.36);
+      background: linear-gradient(180deg, rgba(66,214,198,0.2), rgba(66,214,198,0.08));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+    }
+    button.placeholder {
+      color: #6f7d78;
+      border-color: rgba(143,162,155,0.18);
+      background: rgba(255,255,255,0.04);
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+    button.placeholder:hover { transform: none; filter: none; }
+
+    .table-wrap {
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      overflow: auto;
+      background: rgba(0,0,0,0.18);
+    }
+    table { width: 100%; border-collapse: collapse; min-width: 760px; font-size: 13px; }
+    th, td { padding: 12px 12px; border-bottom: 1px solid rgba(143,162,155,0.16); text-align: left; vertical-align: middle; }
+    th {
+      color: #bfd0ca;
+      background: rgba(255,255,255,0.045);
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    tr:last-child td { border-bottom: 0; }
+    tr:hover td { background: rgba(66,214,198,0.035); }
+    code, pre {
+      font-family: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", monospace;
+      border-radius: 9px;
+      color: #cdeee9;
+      background: rgba(66,214,198,0.1);
+    }
+    code { padding: 2px 6px; }
+    pre {
+      margin: 0;
+      padding: 16px;
+      overflow: auto;
+      white-space: pre-wrap;
+      line-height: 1.6;
+      border: 1px solid rgba(66,214,198,0.16);
+    }
+    .result-panel pre {
+      min-height: 168px;
+      background:
+        linear-gradient(180deg, rgba(66,214,198,0.12), rgba(230,180,81,0.06)),
+        rgba(2,8,8,0.76);
+    }
+    .empty {
+      margin-top: 16px;
+      border: 1px dashed rgba(230,180,81,0.36);
+      border-radius: 18px;
+      padding: 22px;
+      color: #c6b48c;
+      background: rgba(230,180,81,0.07);
+    }
+    .discovery-line {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 12px 0 0;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      border: 1px solid rgba(66,214,198,0.24);
+      border-radius: 999px;
+      padding: 4px 9px;
+      color: #bfe9e4;
+      background: rgba(66,214,198,0.08);
+      font-size: 12px;
+    }
+
+    @media (max-width: 900px) {
+      .command-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .content { grid-template-columns: 1fr; }
+      .hero::after { display: none; }
+    }
+    @media (max-width: 560px) {
+      main { width: min(100% - 18px, 1180px); padding-top: 9px; }
+      .shell { border-radius: 20px; }
+      .command-strip { grid-template-columns: 1fr; }
+      .content { padding: 10px; }
+      .card { padding: 16px; border-radius: 18px; }
+      input { width: 100%; }
+      button { width: 100%; }
+    }
   </style>
 </head>
 <body>
   <main>
-    <h1>chatgpt-to-claude Admin</h1>
-    <p class="muted">当前是 mock 阶段：提供 runtime 管理后台骨架，不接真实 ChatGPT。</p>
+    <div class="shell">
+      <header class="hero">
+        <p class="eyebrow">Operations Console</p>
+        <h1>ChatGPT to Claude 运维控制台</h1>
+        <p>面向本地联调与 mock 阶段的单文件管理后台。这里集中处理开发 Key、账号池、模型别名与请求示例，保持轻量、可读、可直接部署。</p>
+      </header>
 
-    <section class="card">
-      <h2>授权状态</h2>
-      <p>API key 配置状态：<span id="key-state" class="status">${escapeHtml(keyState)}</span></p>
-      <ul>
-        <li>默认 endpoint：<code>${escapeHtml(setupStatus.defaultEndpoint)}</code></li>
-        <li>全局 fallback reasoning effort：<code>${escapeHtml(setupStatus.defaultReasoningEffort)}</code></li>
-        <li>全局 fallback response speed：<code>${escapeHtml(setupStatus.defaultResponseSpeed)}</code></li>
-        <li>Mock backend：<code>enabled</code>，ChatGPT connected：<code>false</code></li>
-      </ul>
-      <button id="dev-enable">Enable development API key</button>
-      <pre id="result">${escapeHtml(setupStatus.nextStep)}</pre>
-    </section>
+      <section class="command-strip" aria-label="运行状态概览">
+        <div class="metric"><b>授权链路</b><strong id="key-state-metric">${escapeHtml(keyState)}</strong><span>ENV 与运行时 Key 合并判定</span></div>
+        <div class="metric"><b>默认端点</b><strong>${escapeHtml(setupStatus.defaultEndpoint)}</strong><span>Claude 兼容消息入口</span></div>
+        <div class="metric"><b>推理强度</b><strong>${escapeHtml(setupStatus.defaultReasoningEffort)}</strong><span>全局 fallback reasoning_effort</span></div>
+        <div class="metric"><b>响应速度</b><strong>${escapeHtml(setupStatus.defaultResponseSpeed)}</strong><span>全局 fallback response_speed</span></div>
+      </section>
 
-    <section class="card">
-      <h2>账号池</h2>
-      <div class="row">
-        <input id="account-label" placeholder="Mock account label" value="Mock ChatGPT Account" />
-        <input id="account-concurrency" type="number" min="1" value="1" />
-        <button id="add-account">添加 mock 账号</button>
+      <div class="content">
+        <section class="card accent">
+          <h2>授权状态</h2>
+          <p>API Key 配置状态：<span id="key-state" class="status ${keyTone}">${escapeHtml(keyState)}</span></p>
+          <p class="muted">Mock backend 已启用，真实 ChatGPT 授权仍为占位。开发 Key 存于当前进程内存，重启后失效。</p>
+          <div class="row">
+            <button id="dev-enable">启用开发 Key</button>
+            <button class="placeholder" disabled>连接 ChatGPT 占位</button>
+          </div>
+        </section>
+
+        <aside class="card">
+          <h2>步骤引导</h2>
+          <ol class="steps">
+            <li><div><strong>初始化访问凭据</strong><span class="muted">点击启用开发 Key，或在环境变量中配置 API_KEYS。</span></div></li>
+            <li><div><strong>准备 mock 账号池</strong><span class="muted">添加账号后可执行健康检查，验证并发状态回收。</span></div></li>
+            <li><div><strong>校准模型映射</strong><span class="muted">刷新 discovery，再保存 alias 到 backend model 的绑定。</span></div></li>
+            <li><div><strong>发起兼容请求</strong><span class="muted">复制下方 curl 示例，origin 会按当前页面自动生成。</span></div></li>
+          </ol>
+        </aside>
+
+        <section class="card full">
+          <h2>账号池</h2>
+          <div class="row">
+            <input id="account-label" placeholder="账号标识" value="Mock ChatGPT Account" />
+            <input id="account-concurrency" type="number" min="1" value="1" aria-label="最大并发" />
+            <button id="add-account">添加 mock 账号</button>
+          </div>
+          <div id="accounts"><div class="empty">正在读取账号池状态。</div></div>
+        </section>
+
+        <section class="card full">
+          <h2>模型映射</h2>
+          <p class="muted">后端模型来自 discovery；alias overlay 负责映射、启用状态与缺省 reasoning_effort / response_speed。</p>
+          <div class="row"><button id="reset-models" class="secondary">重置 alias overlay</button><button id="refresh-models" class="secondary">刷新 backend discovery</button></div>
+          <div id="models"><div class="empty">正在加载模型映射。</div></div>
+        </section>
+
+        <section class="card result-panel">
+          <h2>结果面板</h2>
+          <pre id="result">${escapeHtml(setupStatus.nextStep)}</pre>
+        </section>
+
+        <section class="card">
+          <h2>curl 示例</h2>
+          <p class="muted">示例地址由浏览器根据当前页面 origin 生成；PORT=3100 时会显示 3100，不再写死 localhost:3000。</p>
+          <pre id="curl-example" data-template="${escapeHtml(curlTemplate)}">${escapeHtml(curlTemplate)}</pre>
+        </section>
       </div>
-      <div id="accounts"></div>
-    </section>
-
-    <section class="card">
-      <h2>模型映射</h2>
-      <p class="muted">后端模型来自 discovery；这里的 alias overlay 只管理映射、启用状态与缺省 reasoning_effort/response_speed。</p>
-      <div class="row"><button id="reset-models" class="secondary">重置 alias overlay</button><button id="refresh-models" class="secondary">刷新 backend discovery</button></div>
-      <div id="models"></div>
-    </section>
-
-    <section class="card">
-      <h2>curl 示例</h2>
-      <pre>${escapeHtml(curlExample)}</pre>
-    </section>
-
-    <section class="card">
-      <h2>ChatGPT 授权占位</h2>
-      <p class="muted">后续真实账号登录、cookie/session 授权与健康检查会接到这里；当前按钮不会连接真实 ChatGPT。</p>
-      <button class="placeholder" disabled>Connect ChatGPT (placeholder)</button>
-    </section>
+    </div>
   </main>
   <script>
     const effortOptions = ['off', 'minimal', 'low', 'medium', 'high', 'max'];
     const speedOptions = ['fastest', 'fast', 'balanced', 'quality'];
 
+    const curlExample = document.getElementById('curl-example');
+    curlExample.textContent = curlExample.dataset.template.replace('__ORIGIN__', window.location.origin);
+
     document.getElementById('dev-enable').addEventListener('click', async () => {
       const body = await postJson('/admin/api/api-keys/dev-enable');
-      if (body.status) document.getElementById('key-state').textContent = body.status.apiKeysConfigured ? 'Configured' : 'Not configured';
-      document.getElementById('result').textContent = body.key ? 'Development API key: ' + body.key + '\n\nUse it as x-api-key for /v1/* until the process restarts.\n\n' + JSON.stringify(body, null, 2) : JSON.stringify(body, null, 2);
+      if (body.status) {
+        const configured = body.status.apiKeysConfigured;
+        const label = configured ? '已配置' : '待初始化';
+        const keyState = document.getElementById('key-state');
+        keyState.textContent = label;
+        keyState.className = 'status ' + (configured ? 'ok' : 'warn');
+        document.getElementById('key-state-metric').textContent = label;
+      }
+      document.getElementById('result').textContent = body.key ? '开发 Key 已生成：' + body.key + '\n\n请在 /v1/* 请求中使用 x-api-key。该 Key 仅在当前进程内有效。\n\n' + JSON.stringify(body, null, 2) : JSON.stringify(body, null, 2);
     });
 
     document.getElementById('add-account').addEventListener('click', async () => {
       const label = document.getElementById('account-label').value;
       const maxConcurrency = Number(document.getElementById('account-concurrency').value || 1);
-      await postJson('/admin/api/accounts', { label, maxConcurrency, capabilities: ['mock', 'messages'] });
+      const body = await postJson('/admin/api/accounts', { label, maxConcurrency, capabilities: ['mock', 'messages'] });
+      document.getElementById('result').textContent = JSON.stringify(body, null, 2);
       await loadAccounts();
     });
 
     document.getElementById('reset-models').addEventListener('click', async () => {
-      await postJson('/admin/api/models/reset');
+      const body = await postJson('/admin/api/models/reset');
+      document.getElementById('result').textContent = JSON.stringify(body, null, 2);
       await loadModels();
     });
     document.getElementById('refresh-models').addEventListener('click', async () => {
-      await postJson('/admin/api/models/refresh');
+      const body = await postJson('/admin/api/models/refresh');
+      document.getElementById('result').textContent = JSON.stringify(body, null, 2);
       await loadModels();
     });
 
     async function loadAccounts() {
       const body = await getJson('/admin/api/accounts');
-      document.getElementById('accounts').innerHTML = '<table><thead><tr><th>ID</th><th>Label</th><th>Status</th><th>Concurrency</th><th>Last Used</th><th>Capabilities</th><th>Action</th></tr></thead><tbody>' + body.accounts.map((account) =>
-        '<tr><td><code>' + esc(account.id) + '</code></td><td>' + esc(account.label) + '</td><td>' + esc(account.status) + (account.enabled ? '' : ' / disabled') + '</td><td>' + account.currentConcurrency + '/' + account.maxConcurrency + '</td><td>' + esc(account.lastUsedAt || '-') + '</td><td>' + esc(account.capabilities.join(', ')) + '</td><td><button data-health="' + esc(account.id) + '">health-check</button></td></tr>'
-      ).join('') + '</tbody></table>';
+      const accounts = body.accounts || [];
+      if (!accounts.length) {
+        document.getElementById('accounts').innerHTML = '<div class="empty">账号池为空。添加一个 mock 账号后，可在这里查看状态、并发与健康检查结果。</div>';
+        return;
+      }
+      document.getElementById('accounts').innerHTML = '<div class="table-wrap"><table><thead><tr><th>ID</th><th>标识</th><th>状态</th><th>并发</th><th>最近使用</th><th>能力</th><th>操作</th></tr></thead><tbody>' + accounts.map((account) =>
+        '<tr><td><code>' + esc(account.id) + '</code></td><td>' + esc(account.label) + '</td><td><span class="pill">' + esc(account.status) + (account.enabled ? '' : ' / disabled') + '</span></td><td>' + account.currentConcurrency + '/' + account.maxConcurrency + '</td><td>' + esc(account.lastUsedAt || '-') + '</td><td>' + esc((account.capabilities || []).join(', ')) + '</td><td><button class="secondary" data-health="' + esc(account.id) + '">健康检查</button></td></tr>'
+      ).join('') + '</tbody></table></div>';
       document.querySelectorAll('[data-health]').forEach((button) => button.addEventListener('click', async () => {
-        await postJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.health) + '/health-check');
+        const body = await postJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.health) + '/health-check');
+        document.getElementById('result').textContent = JSON.stringify(body, null, 2);
         await loadAccounts();
       }));
     }
@@ -224,19 +613,28 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     async function loadModels() {
       const body = await getJson('/admin/api/models');
       const aliases = body.aliases || body.models || [];
-      document.getElementById('models').innerHTML = '<p class="muted">Backend discovery: ' + (body.discovered || []).map((model) => '<code>' + esc(model.id) + '</code>').join(' ') + '</p><table><thead><tr><th>Alias</th><th>Backend Model</th><th>Status</th><th>Enabled</th><th>Defaults</th><th>Action</th></tr></thead><tbody>' + aliases.map((model) =>
-        '<tr><td><code>' + esc(model.id) + '</code></td><td><input data-field="backendModel" data-id="' + esc(model.id) + '" value="' + esc(model.backendModel || '') + '" /></td><td>' + esc(model.status || '-') + '</td><td><input type="checkbox" data-field="enabled" data-id="' + esc(model.id) + '" ' + (model.enabled ? 'checked' : '') + ' /></td><td>' + selectHtml(model.id, 'reasoning_effort', effortOptions, model.defaults.reasoning_effort) + ' ' + selectHtml(model.id, 'speed', speedOptions, model.defaults.speed) + '</td><td><button data-save-model="' + esc(model.id) + '">保存</button></td></tr>'
-      ).join('') + '</tbody></table>';
+      const discovered = body.discovered || [];
+      const discoveryHtml = discovered.length
+        ? '<div class="discovery-line">' + discovered.map((model) => '<span class="pill">' + esc(model.id) + '</span>').join('') + '</div>'
+        : '<div class="empty">Backend discovery 暂无模型。</div>';
+      if (!aliases.length) {
+        document.getElementById('models').innerHTML = discoveryHtml + '<div class="empty">暂无 alias overlay。请刷新 backend discovery 或检查 MODEL_REGISTRY_JSON。</div>';
+        return;
+      }
+      document.getElementById('models').innerHTML = '<p class="muted">Backend discovery</p>' + discoveryHtml + '<div class="table-wrap"><table><thead><tr><th>Alias</th><th>Backend Model</th><th>状态</th><th>启用</th><th>默认参数</th><th>操作</th></tr></thead><tbody>' + aliases.map((model) =>
+        '<tr><td><code>' + esc(model.id) + '</code></td><td><input data-field="backendModel" data-id="' + esc(model.id) + '" value="' + esc(model.backendModel || '') + '" /></td><td><span class="pill">' + esc(model.status || '-') + '</span></td><td><input type="checkbox" data-field="enabled" data-id="' + esc(model.id) + '" ' + (model.enabled ? 'checked' : '') + ' /></td><td>' + selectHtml(model.id, 'reasoning_effort', effortOptions, model.defaults.reasoning_effort) + ' ' + selectHtml(model.id, 'speed', speedOptions, model.defaults.speed) + '</td><td><button data-save-model="' + esc(model.id) + '">保存</button></td></tr>'
+      ).join('') + '</tbody></table></div>';
       document.querySelectorAll('[data-save-model]').forEach((button) => button.addEventListener('click', async () => saveModel(button.dataset.saveModel)));
     }
 
     async function saveModel(id) {
       const byField = (field) => document.querySelector('[data-id="' + CSS.escape(id) + '"][data-field="' + field + '"]');
-      await patchJson('/admin/api/models/' + encodeURIComponent(id), {
+      const body = await patchJson('/admin/api/models/' + encodeURIComponent(id), {
         backendModel: byField('backendModel').value,
         enabled: byField('enabled').checked,
         defaults: { reasoning_effort: byField('reasoning_effort').value, speed: byField('speed').value },
       });
+      document.getElementById('result').textContent = JSON.stringify(body, null, 2);
       await loadModels();
     }
 

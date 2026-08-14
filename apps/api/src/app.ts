@@ -22,6 +22,8 @@ export function createApp(env: AppEnv = loadEnv()): Hono {
   const modelRegistry = new ModelRegistry();
   const modelRegistryReady = modelRegistry.refreshFromBackend(backend);
   app.onError((error, c) => { logger.error('Unhandled API error', { error: error.message }); return c.json({ type: 'error', error: { type: 'internal_server_error', message: 'Internal server error' } }, 500); });
+  app.get('/', (c) => c.redirect('/admin'));
+  app.get('/favicon.ico', (c) => c.body(null, 204));
   app.route('/', healthRoute);
   app.use('/v1/*', apiKeyAuth(env.apiKeys, runtimeApiKeys));
   app.route('/', createModelsRoute({ modelRegistry, ready: modelRegistryReady }));

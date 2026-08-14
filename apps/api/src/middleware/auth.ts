@@ -6,7 +6,7 @@ export function apiKeyAuth(apiKeys: string[], runtimeApiKeys: RuntimeApiKeys): M
   return async (c, next) => {
     const apiKey = c.req.header('x-api-key') ?? bearerToken(c.req.header('authorization'));
     if (envKeys.size === 0 && runtimeApiKeys.size === 0) {
-      return c.json({ type: 'error', error: { type: 'authentication_error', message: 'API key required. Open http://localhost:3000/admin to initialize development access.' } }, 401);
+      return c.json({ type: 'error', error: { type: 'authentication_error', message: 'API key required. Open /admin to initialize development access.' } }, 401);
     }
     if (!apiKey || (!envKeys.has(apiKey) && !runtimeApiKeys.has(apiKey))) {
       return c.json({ type: 'error', error: { type: 'authentication_error', message: 'Invalid or missing API key' } }, 401);
