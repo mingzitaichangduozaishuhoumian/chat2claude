@@ -2,7 +2,7 @@
 
 `chatgpt-to-claude` 是一个 TypeScript + Hono 的 Claude Messages API 兼容层，向上暴露 Claude-like `/v1/messages`、`/v1/models`，向下可接入 mock backend 或真实 ChatGPT session backend。
 
-普通用户路径已经改为“一键授权 ChatGPT”：打开 `/admin` 后点击“授权 ChatGPT”，服务会尝试打开独立 Chrome profile 登录页，并通过本机 127.0.0.1 Chrome DevTools Protocol 自动检测 session；成功后自动创建 `chatgpt-primary` 账号、执行 health-check、刷新模型、绑定 `sonnet` alias、生成 runtime API key，并在页面展示 endpoint/key/curl。手动 accessToken/cookie 导入仍保留在高级区域作为 fallback。
+普通用户路径已经改为“浏览器授权（Codex OAuth）”：打开 `/admin` 后生成 OpenAI Codex OAuth PKCE 授权链接，服务不会启动独立 Chrome/新 profile，也不再依赖已登录 `chatgpt.com` 页面抓 token。用户在当前浏览器/已登录账号环境中打开链接授权；成功后自动创建 `chatgpt-primary` 账号、执行 health-check、刷新模型、绑定 `sonnet` alias、生成 runtime API key，并在页面展示 endpoint/key/curl。手动 accessToken/cookie 导入仍保留在高级区域作为 fallback。
 
 ## 技术栈
 
@@ -34,7 +34,7 @@ start.bat
 http://localhost:3000/admin
 ```
 
-点击页面主按钮“授权 ChatGPT”，完成登录后复制页面显示的 endpoint、API key 和 curl 示例即可调用 `/v1/messages`。
+点击页面主按钮“生成 Codex OAuth 授权链接”，把链接复制或在当前浏览器中打开完成授权；随后复制页面显示的 endpoint、API key 和 curl 示例即可调用 `/v1/messages`。
 
 一键启动脚本会自动启用 corepack；如果还没有 `node_modules`，会先安装依赖。面向普通用户的 `start.bat` / `start.sh` 在未设置 `CHATGPT_BACKEND` 时默认使用 `session`，并提示打开 `/admin` 授权。代码层 `loadEnv()` 默认仍保持 `mock`，用于保护测试与本地开发。
 
@@ -50,21 +50,23 @@ corepack pnpm start
 
 ## 一键授权流程
 
-1. `POST /admin/api/auth/chatgpt/start` 创建授权 flow，尝试启动 Chrome 并打开 `https://chatgpt.com/`。如果未找到 Chrome 或 CDP 不可用，仍返回登录链接，并提示使用高级手动导入兜底。
-2. 前端轮询 `GET /admin/api/auth/chatgpt/:id`。服务会通过 CDP 在 ChatGPT 页面执行 `fetch('/api/auth/session', { credentials: 'include' })` 检测 `accessToken`，并读取 cookie header。
-3. 拿到 session 后自动 provisioning：
+1. `POST /admin/api/auth/chatgpt/start` 创建授权 flow，生成 OAuth `state`、PKCE `code_verifier` / `code_challenge`，返回 `https://auth.openai.com/oauth/authorize` 授权链接。服务不会打开浏览器，不会启动独立 Chrome/新 profile。
+2. 服务会尽量在 `127.0.0.1:1455` 启动本地 callback listener，接收 `GET /auth/callback?code=&state=...` 并返回中文完成页。如果 1455 端口占用或监听失败，start 仍返回授权链接；授权后浏览器若显示无法连接 `localhost:1455`，把地址栏完整 callback URL 粘贴回后台提交。
+3. `POST /admin/api/auth/chatgpt/callback` 支持 `{ "redirectUrl": "http://localhost:1455/auth/callback?..." }` / `{ "redirect_url": ... }` / `{ "code": "...", "state": "..." }`，只记录 OAuth code 和 state，不向前端暴露 token。
+4. 前端轮询 `GET /admin/api/auth/chatgpt/:id`。当 flow 已收到 code 且还没有 secret 时，服务调用 `https://auth.openai.com/oauth/token` 使用 `authorization_code` + PKCE `code_verifier` 换取 token，并把 `access_token` 作为兼容的 `chatgpt-session` secret 保存；`refresh_token` / `id_token` / `expiresAt` 仅保存在内部 secret，不返回给前端或日志。
+5. 拿到 OAuth access token 后自动 provisioning：
    - upsert 固定账号 `chatgpt-primary`，provider 为 `chatgpt-session`；
    - 调用 backend `healthCheck({ account })`；
    - `modelRegistry.refreshFromBackend(backend, { account })`；
    - 从 discovery 中按关键词优先级选择最佳模型绑定到 `sonnet` alias（`gpt-5`、`codex`、`thinking`、`gpt-4`、第一个）；
    - 生成进程内 runtime API key。
-4. 页面只展示脱敏账号信息、API key、base URL 和 curl，不返回 accessToken/cookie。
+6. 页面只展示脱敏账号信息、API key、base URL 和 curl，不返回 accessToken/cookie/id_token/refresh_token。
 
-取消授权：`POST /admin/api/auth/chatgpt/:id/cancel`。服务只会尽量关闭自己启动的 Chrome 进程，不会强杀用户已有浏览器。
+取消授权：`POST /admin/api/auth/chatgpt/:id/cancel`。服务只取消当前 OAuth flow；不会启动或关闭用户浏览器。
 
 ## 高级手动导入 fallback
 
-自动检测失败时，在 `/admin` 展开“高级：手动导入 accessToken / cookie”，填入 session 后会走同一套 provisioning。
+OAuth 授权不可用或你已有可用 session secret 时，在 `/admin` 展开“高级：手动导入 accessToken / cookie”，填入 session 后会走同一套 provisioning。主流程不要依赖 `chatgpt.com` 已登录页面抓 token；高级导入只是 fallback。
 
 对应 API：
 
@@ -82,8 +84,9 @@ curl -X POST http://localhost:3000/admin/api/auth/chatgpt/complete \
 - `GET /admin`：原生 JS 管理后台，一键授权、API 配置、账号池和模型映射
 - `GET /admin/api/setup/status`：查看 API key、默认 effort/speed、backend provider 状态
 - `GET /admin/api/auth/status`：查看整体授权 ready 状态
-- `POST /admin/api/auth/chatgpt/start`：开始 ChatGPT 一键授权
-- `GET /admin/api/auth/chatgpt/:id`：轮询授权；拿到 secret 后自动 provisioning（只执行一次）
+- `POST /admin/api/auth/chatgpt/start`：开始 Codex OAuth PKCE 授权，返回授权链接但不打开浏览器
+- `POST /admin/api/auth/chatgpt/callback`：提交 OAuth callback URL 或 `code`/`state`
+- `GET /admin/api/auth/chatgpt/:id`：轮询授权；收到 code 后 exchange token，拿到 secret 后自动 provisioning（只执行一次）
 - `POST /admin/api/auth/chatgpt/:id/cancel`：取消授权 flow
 - `POST /admin/api/auth/chatgpt/complete`：高级手动导入 session，并走同一套 provisioning
 - `POST /admin/api/api-keys/dev-enable`：开发阶段生成随机临时 key；`NODE_ENV=production` 时禁用

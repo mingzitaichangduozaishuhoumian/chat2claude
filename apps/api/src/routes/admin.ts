@@ -49,6 +49,14 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
   });
 
   app.post('/admin/api/auth/chatgpt/start', async (c) => c.json(await authFlow.start(), 201));
+  app.post('/admin/api/auth/chatgpt/callback', async (c) => {
+    try {
+      const snapshot = await authFlow.completeCallback(await readJson(c.req));
+      return snapshot ? c.json(snapshot) : c.json({ error: 'Auth flow not found for callback state' }, 404);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Invalid OAuth callback' }, 400);
+    }
+  });
   app.get('/admin/api/auth/chatgpt/:id', async (c) => {
     const id = c.req.param('id');
     const snapshot = await authFlow.status(id);
@@ -166,7 +174,7 @@ function status(options: AdminRouteOptions) {
     defaultEndpoint: 'POST /v1/messages',
     nextStep: sessionAccounts.length > 0
       ? 'ChatGPT session 已导入。请复制 API 配置调用 /v1/messages。'
-      : '打开 /admin 点击“授权 ChatGPT”，完成登录后系统会自动初始化账号、模型和 API Key。',
+      : '打开 /admin 点击“浏览器授权（Codex OAuth）”，复制授权链接到当前浏览器完成授权后，系统会自动初始化账号、模型和 API Key。',
   };
 }
 
@@ -186,6 +194,12 @@ function normalizeManualSecret(value: Record<string, unknown>): ChatGptSessionSe
   return {
     type: 'chatgpt-session',
     accessToken: typeof raw.accessToken === 'string' ? raw.accessToken.trim() : undefined,
+    refreshToken: typeof raw.refreshToken === 'string' && raw.refreshToken.trim() ? raw.refreshToken.trim() : undefined,
+    idToken: typeof raw.idToken === 'string' && raw.idToken.trim() ? raw.idToken.trim() : undefined,
+    expiresAt: typeof raw.expiresAt === 'string' && raw.expiresAt.trim() ? raw.expiresAt.trim() : undefined,
+    email: typeof raw.email === 'string' && raw.email.trim() ? raw.email.trim() : undefined,
+    accountId: typeof raw.accountId === 'string' && raw.accountId.trim() ? raw.accountId.trim() : undefined,
+    planType: typeof raw.planType === 'string' && raw.planType.trim() ? raw.planType.trim() : undefined,
     cookie: typeof raw.cookie === 'string' && raw.cookie.trim() ? raw.cookie.trim() : undefined,
     deviceId: typeof raw.deviceId === 'string' && raw.deviceId.trim() ? raw.deviceId.trim() : undefined,
     userAgent: typeof raw.userAgent === 'string' && raw.userAgent.trim() ? raw.userAgent.trim() : undefined,
@@ -226,22 +240,26 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
 </head>
 <body>
   <main><div class="shell">
-    <header class="hero"><p class="muted">Operations Console</p><h1>ChatGPT to Claude 运维控制台</h1><p>普通使用只需要点击“授权 ChatGPT”。系统会打开登录页、自动检测 session、初始化账号、刷新模型、绑定 sonnet alias，并生成可复制的 Claude 兼容 API 配置。</p></header>
+    <header class="hero"><p class="muted">Operations Console</p><h1>ChatGPT to Claude 运维控制台</h1><p>普通使用走“浏览器授权（Codex OAuth）”：后台只生成授权链接和监听本地 callback，不启动独立 Chrome/新 profile，也不会从已登录 chatgpt.com 页面抓 session。你在当前浏览器/已登录账号环境中打开链接授权后，系统会初始化账号、刷新模型、绑定 sonnet alias，并生成可复制的 Claude 兼容 API 配置。</p></header>
     <div class="content">
       <section class="card">
-        <h2>授权 ChatGPT</h2>
+        <h2>浏览器授权（Codex OAuth）</h2>
         <p>API Key：<span id="key-state" class="status ${keyTone}">${escapeHtml(keyState)}</span></p>
-        <p class="muted">当前 backend：<code>${escapeHtml(setupStatus.backend.provider)}</code>。启动脚本默认使用 session backend；代码层默认 mock 仍保留用于测试。</p>
-        <div class="row"><button id="auth-chatgpt">授权 ChatGPT</button><button id="cancel-auth" class="secondary" disabled>取消</button></div>
+        <p class="muted">当前 backend：<code>${escapeHtml(setupStatus.backend.provider)}</code>。不会启动独立 Chrome/新 profile；点击下方按钮后只生成授权链接，你自行在当前浏览器打开。</p>
+        <div class="row"><button id="auth-chatgpt">生成 Codex OAuth 授权链接</button><button id="cancel-auth" class="secondary" disabled>取消</button></div>
         <p id="auth-message" class="muted">${escapeHtml(setupStatus.nextStep)}</p>
         <div id="auth-link-area" class="stack" hidden>
-          <a id="auth-link" class="pill" target="_blank" rel="noopener" hidden>打开 ChatGPT 授权链接</a>
+          <a id="auth-link" class="pill" hidden>在当前标签打开 Codex OAuth 授权链接</a>
           <button id="copy-auth-link" class="secondary" type="button" hidden>复制授权链接</button>
         </div>
+        <div class="stack">
+          <p class="muted">如果授权完成后浏览器显示无法连接 <code>localhost:1455</code>，请复制地址栏里的完整 callback URL 粘贴到这里提交。</p>
+          <div class="row"><input id="oauth-callback-url" placeholder="http://localhost:1455/auth/callback?code=...&state=..." /><button id="submit-oauth-callback" class="secondary" type="button">提交 callback URL</button></div>
+        </div>
       </section>
-      <aside class="card"><h2>3 步完成</h2><ol class="steps"><li><div><strong>授权账号</strong><span class="muted">点击授权并在 ChatGPT 页面完成登录。</span></div></li><li><div><strong>自动初始化</strong><span class="muted">服务自动创建 chatgpt-primary、health-check、刷新模型并绑定 sonnet。</span></div></li><li><div><strong>复制 API 配置</strong><span class="muted">ready 后复制 endpoint、key 和 curl 示例。</span></div></li></ol></aside>
+      <aside class="card"><h2>3 步完成</h2><ol class="steps"><li><div><strong>浏览器授权</strong><span class="muted">生成 Codex OAuth 链接，在当前浏览器/已登录账号环境中打开授权。</span></div></li><li><div><strong>自动初始化</strong><span class="muted">服务自动创建 chatgpt-primary、health-check、刷新模型并绑定 sonnet。</span></div></li><li><div><strong>复制 API 配置</strong><span class="muted">ready 后复制 endpoint、key 和 curl 示例。</span></div></li></ol></aside>
       <section class="card full" id="api-config" hidden><h2>API 配置</h2><div class="stack"><p>Endpoint：<code id="endpoint"></code></p><p>API Key：<code id="api-key"></code></p><pre id="ready-curl"></pre></div></section>
-      <section class="card full"><details id="advanced-import"><summary>高级：手动导入 accessToken / cookie</summary><p class="muted">自动检测失败时使用。表单会走同一套 provisioning，不会返回 token/cookie。</p><div class="row"><input id="session-access-token" placeholder="accessToken" /><input id="session-cookie" placeholder="cookie（可选）" /><input id="session-device-id" placeholder="deviceId（可选）" /><input id="session-user-agent" placeholder="userAgent（可选）" /><button id="manual-complete" class="secondary">导入并初始化</button></div></details></section>
+      <section class="card full"><details id="advanced-import"><summary>高级：手动导入 accessToken / cookie</summary><p class="muted">OAuth 不可用或已有 session secret 时使用。表单会走同一套 provisioning，不会返回 token/cookie。</p><div class="row"><input id="session-access-token" placeholder="accessToken" /><input id="session-cookie" placeholder="cookie（可选）" /><input id="session-device-id" placeholder="deviceId（可选）" /><input id="session-user-agent" placeholder="userAgent（可选）" /><button id="manual-complete" class="secondary">导入并初始化</button></div></details></section>
       <section class="card full"><h2>账号池（高级管理）</h2><div class="row"><input id="account-label" placeholder="账号标识" value="Mock ChatGPT Account" /><input id="account-concurrency" type="number" min="1" value="1" aria-label="最大并发" /><button id="add-account" class="secondary">添加 mock 账号</button></div><div id="accounts"><div class="empty">正在读取账号池状态。</div></div></section>
       <section class="card full"><h2>模型映射（高级管理）</h2><p class="muted">后端模型来自 discovery；alias overlay 负责映射、启用状态与缺省 reasoning_effort / response_speed。</p><div class="row"><button id="reset-models" class="secondary">重置 alias overlay</button><button id="refresh-models" class="secondary">刷新 backend discovery</button></div><div id="models"><div class="empty">正在加载模型映射。</div></div></section>
       <section class="card"><h2>结果面板</h2><pre id="result">${escapeHtml(setupStatus.nextStep)}</pre></section>
@@ -277,7 +295,16 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       const link = document.getElementById('auth-link').href;
       if (!link) return;
       await navigator.clipboard.writeText(link);
-      document.getElementById('auth-message').textContent = '授权链接已复制。';
+      document.getElementById('auth-message').textContent = '授权链接已复制，请在当前浏览器中打开。';
+    });
+    document.getElementById('submit-oauth-callback').addEventListener('click', async () => {
+      const redirectUrl = document.getElementById('oauth-callback-url').value.trim();
+      if (!redirectUrl) { document.getElementById('auth-message').textContent = '请粘贴完整 callback URL。'; return; }
+      const body = await postJson('/admin/api/auth/chatgpt/callback', { redirectUrl });
+      document.getElementById('result').textContent = JSON.stringify(body, null, 2);
+      if (body.id) currentFlowId = body.id;
+      document.getElementById('auth-message').textContent = body.message || 'callback 已提交，正在轮询换取 token。';
+      schedulePoll(300);
     });
     document.getElementById('manual-complete').addEventListener('click', async () => {
       const body = await postJson('/admin/api/auth/chatgpt/complete', {
@@ -294,9 +321,8 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     function schedulePoll(delay) { clearPoll(); pollTimer = setTimeout(pollAuth, delay); }
     function clearPoll() { if (pollTimer) clearTimeout(pollTimer); pollTimer = null; }
     function authStartMessage(body) {
-      if (body.openedByService === true) return '已打开独立登录窗口；如未看到可点击下面链接。';
-      if (body.authorizeUrl) return '请点击下面授权链接打开 ChatGPT 登录页。';
-      return body.message || '请完成 ChatGPT 登录。';
+      if (body.authorizeUrl) return body.message || '授权链接已生成；后台不会自动打开窗口，请在当前浏览器中打开链接完成 Codex OAuth。';
+      return body.message || '请完成 Codex OAuth 授权。';
     }
     function showAuthLink(authorizeUrl) {
       const area = document.getElementById('auth-link-area');

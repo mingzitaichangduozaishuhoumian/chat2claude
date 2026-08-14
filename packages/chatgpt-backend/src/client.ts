@@ -11,6 +11,12 @@ export interface ChatGptDiscoveredModel { id: string; displayName?: string; capa
 export interface ChatGptSessionSecret {
   type: 'chatgpt-session';
   accessToken?: string;
+  refreshToken?: string;
+  idToken?: string;
+  expiresAt?: string;
+  email?: string;
+  accountId?: string;
+  planType?: string;
   cookie?: string;
   deviceId?: string;
   userAgent?: string;

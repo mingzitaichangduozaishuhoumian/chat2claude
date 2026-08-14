@@ -10,7 +10,7 @@ import { AccountPool } from './services/account-pool.js';
 import { ModelRegistry } from './services/model-registry.js';
 import { RequestLog } from './services/request-log.js';
 import { RuntimeApiKeys } from './services/runtime-api-keys.js';
-import { ChatGptAuthFlowService, type ChatGptAuthDriver } from './services/chatgpt-auth-flow.js';
+import { ChatGptAuthFlowService } from './services/chatgpt-auth-flow.js';
 
 const discoveredModels = [{ id: 'backend-test-model', displayName: 'Backend Test Model' }];
 const env = {
@@ -254,7 +254,7 @@ function createSessionAdminApp(backend: ChatGptBackendClient): Hono {
   return app;
 }
 
-function createProvisioningTestApp(options: { driver: FakeAuthDriver; protectModels?: boolean }): Hono {
+function createProvisioningTestApp(options: { authFlow?: ChatGptAuthFlowService; protectModels?: boolean } = {}): Hono {
   const app = new Hono();
   const accountPool = new AccountPool();
   const modelRegistry = new ModelRegistry();
@@ -272,19 +272,26 @@ function createProvisioningTestApp(options: { driver: FakeAuthDriver; protectMod
     defaultReasoningEffort: 'medium',
     defaultResponseSpeed: 'balanced',
     backendProvider: 'session',
-    authFlow: new ChatGptAuthFlowService({ driverFactory: () => options.driver }),
+    authFlow: options.authFlow ?? new ChatGptAuthFlowService({ enableCallbackListener: false }),
   }));
   return app;
 }
 
-class FakeAuthDriver implements ChatGptAuthDriver {
-  private reads = 0;
-  constructor(private readonly secret: ChatGptSessionSecret | undefined, private readonly pendingReads = 0, private readonly openedByService = true) {}
-  async start() { return { authorizeUrl: 'https://chatgpt.com/', message: 'fake login opened', openedByService: this.openedByService }; }
-  async readSecret() {
-    this.reads += 1;
-    return this.reads <= this.pendingReads ? undefined : this.secret;
-  }
+function createOAuthTestFlow(tokenResponse: Record<string, unknown> = { access_token: 'token-ready', refresh_token: 'refresh-ready', id_token: 'id-ready', expires_in: 3600 }): ChatGptAuthFlowService {
+  return new ChatGptAuthFlowService({
+    enableCallbackListener: false,
+    fetch: async (url, init) => {
+      expect(String(url)).toBe('https://auth.openai.com/oauth/token');
+      expect(init?.method).toBe('POST');
+      expect(new Headers(init?.headers).get('content-type')).toBe('application/x-www-form-urlencoded');
+      const body = init?.body as URLSearchParams;
+      expect(body.get('grant_type')).toBe('authorization_code');
+      expect(body.get('client_id')).toBe('app_EMoamEEZ73f0CkXaXp7hrann');
+      expect(body.get('redirect_uri')).toBe('http://localhost:1455/auth/callback');
+      expect(body.get('code_verifier')).toBeTruthy();
+      return Response.json(tokenResponse);
+    },
+  });
 }
 
 describe('API key auth', () => {
@@ -359,9 +366,12 @@ describe('/admin', () => {
     expect(res.headers.get('content-type')).toContain('text/html');
     const html = await res.text();
     expect(html).toContain('ChatGPT to Claude 运维控制台');
-    expect(html).toContain('授权 ChatGPT');
+    expect(html).toContain('浏览器授权（Codex OAuth）');
+    expect(html).toContain('不会启动独立 Chrome/新 profile');
     expect(html).toContain('id="auth-link"');
     expect(html).toContain('id="copy-auth-link"');
+    expect(html).toContain('id="oauth-callback-url"');
+    expect(html).toContain('id="submit-oauth-callback"');
     expect(html).toContain('<details id="advanced-import">');
     expect(html).toContain('高级：手动导入 accessToken / cookie');
     expect(html).toContain('__ORIGIN__');
@@ -443,37 +453,52 @@ describe('/admin/api/accounts', () => {
 });
 
 describe('ChatGPT one-click auth admin flow', () => {
-  it('starts auth and returns authorizeUrl/id', async () => {
-    const app = createProvisioningTestApp({ driver: new FakeAuthDriver(undefined) });
+  it('starts Codex OAuth and returns auth.openai.com authorizeUrl without opening Chrome', async () => {
+    const app = createProvisioningTestApp();
     const res = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST' });
     expect(res.status).toBe(201);
     const body = await res.json() as { id: string; authorizeUrl: string; state: string; openedByService: boolean };
+    const url = new URL(body.authorizeUrl);
     expect(body.id).toMatch(/^flow-/);
-    expect(body.authorizeUrl).toBe('https://chatgpt.com/');
-    expect(body.openedByService).toBe(true);
-    expect(body.state).toBe('link_ready');
-  });
-
-  it('returns openedByService=false when the driver did not open Chrome', async () => {
-    const app = createProvisioningTestApp({ driver: new FakeAuthDriver(undefined, 0, false) });
-    const res = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST' });
-    expect(res.status).toBe(201);
-    const body = await res.json() as { authorizeUrl: string; openedByService: boolean; state: string };
-    expect(body.authorizeUrl).toBe('https://chatgpt.com/');
+    expect(url.origin + url.pathname).toBe('https://auth.openai.com/oauth/authorize');
+    expect(url.searchParams.get('client_id')).toBe('app_EMoamEEZ73f0CkXaXp7hrann');
+    expect(url.searchParams.get('response_type')).toBe('code');
+    expect(url.searchParams.get('redirect_uri')).toBe('http://localhost:1455/auth/callback');
+    expect(url.searchParams.get('scope')).toBe('openid email profile offline_access');
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(url.searchParams.get('prompt')).toBe('login');
+    expect(url.searchParams.get('id_token_add_organizations')).toBe('true');
+    expect(url.searchParams.get('codex_cli_simplified_flow')).toBe('true');
+    expect(url.searchParams.get('state')).toBeTruthy();
+    expect(url.searchParams.get('code_challenge')).toBeTruthy();
     expect(body.openedByService).toBe(false);
     expect(body.state).toBe('link_ready');
+    expect(JSON.stringify(body)).not.toContain('token-ready');
   });
 
-  it('polls pending, then provisions ready session once and returns apiKey/account/models/aliases', async () => {
-    const driver = new FakeAuthDriver({ type: 'chatgpt-session', accessToken: 'token-ready', cookie: 'session=cookie' }, 1);
-    const app = createProvisioningTestApp({ driver });
+  it('polls pending, accepts callback URL, exchanges token, provisions once and returns apiKey/account/models/aliases', async () => {
+    const app = createProvisioningTestApp({ authFlow: createOAuthTestFlow() });
     const startRes = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST' });
-    const startBody = await startRes.json() as { id: string };
+    const startBody = await startRes.json() as { id: string; authorizeUrl: string };
+    const oauthState = new URL(startBody.authorizeUrl).searchParams.get('state');
+    expect(oauthState).toBeTruthy();
 
     const pendingRes = await app.request(`/admin/api/auth/chatgpt/${startBody.id}`);
     const pendingBody = await pendingRes.json() as { state: string; provisionResult?: unknown };
     expect(pendingBody.state).toBe('waiting');
     expect(pendingBody.provisionResult).toBeUndefined();
+
+    const callbackRes = await app.request('/admin/api/auth/chatgpt/callback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ redirectUrl: `http://localhost:1455/auth/callback?code=code-ready&state=${oauthState}` }),
+    });
+    expect(callbackRes.status).toBe(200);
+    const callbackBody = await callbackRes.json() as { id: string; state: string };
+    expect(callbackBody.id).toBe(startBody.id);
+    expect(callbackBody.state).toBe('waiting');
+    expect(JSON.stringify(callbackBody)).not.toContain('token-ready');
+    expect(JSON.stringify(callbackBody)).not.toContain('refresh-ready');
 
     const readyRes = await app.request(`/admin/api/auth/chatgpt/${startBody.id}`);
     expect(readyRes.status).toBe(200);
@@ -485,6 +510,8 @@ describe('ChatGPT one-click auth admin flow', () => {
     expect(readyBody.provisionResult.account).not.toHaveProperty('secret');
     expect(readyBody.provisionResult.modelsDiscovered).toEqual(['plain-model', 'gpt-5-thinking']);
     expect(readyBody.provisionResult.boundAliases).toEqual({ sonnet: 'gpt-5-thinking' });
+    expect(JSON.stringify(readyBody)).not.toContain('token-ready');
+    expect(JSON.stringify(readyBody)).not.toContain('refresh-ready');
 
     const thirdRes = await app.request(`/admin/api/auth/chatgpt/${startBody.id}`);
     const thirdBody = await thirdRes.json() as { provisionResult: { apiKey: string } };
@@ -492,10 +519,11 @@ describe('ChatGPT one-click auth admin flow', () => {
   });
 
   it('allows the returned apiKey to access /v1/models', async () => {
-    const driver = new FakeAuthDriver({ type: 'chatgpt-session', accessToken: 'token-ready' });
-    const app = createProvisioningTestApp({ driver, protectModels: true });
+    const app = createProvisioningTestApp({ authFlow: createOAuthTestFlow({ access_token: 'token-ready' }), protectModels: true });
     const startRes = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST' });
-    const { id } = await startRes.json() as { id: string };
+    const { id, authorizeUrl } = await startRes.json() as { id: string; authorizeUrl: string };
+    const oauthState = new URL(authorizeUrl).searchParams.get('state');
+    await app.request('/admin/api/auth/chatgpt/callback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: 'code-ready', state: oauthState }) });
     const pollRes = await app.request(`/admin/api/auth/chatgpt/${id}`);
     const pollBody = await pollRes.json() as { provisionResult: { apiKey: string } };
 
@@ -506,7 +534,7 @@ describe('ChatGPT one-click auth admin flow', () => {
   });
 
   it('manual complete creates/updates chatgpt-primary without leaking secret', async () => {
-    const app = createProvisioningTestApp({ driver: new FakeAuthDriver(undefined) });
+    const app = createProvisioningTestApp();
     const firstRes = await app.request('/admin/api/auth/chatgpt/complete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accessToken: 'manual-token-1', cookie: 'a=b' }) });
     expect(firstRes.status).toBe(200);
     const firstBody = await firstRes.json() as { account: Record<string, unknown>; apiKey: string };
