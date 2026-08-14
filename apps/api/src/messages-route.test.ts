@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
+import { SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 import { createApp } from './app.js';
 import { createAdminRoute } from './routes/admin.js';
 import { createMessagesRoute } from './routes/messages.js';
 import { createModelsRoute } from './routes/models.js';
+import { apiKeyAuth } from './middleware/auth.js';
 import { AccountPool } from './services/account-pool.js';
 import { ModelRegistry } from './services/model-registry.js';
 import { RequestLog } from './services/request-log.js';
 import { RuntimeApiKeys } from './services/runtime-api-keys.js';
+import { ChatGptAuthFlowService, type ChatGptAuthDriver } from './services/chatgpt-auth-flow.js';
 
 const discoveredModels = [{ id: 'backend-test-model', displayName: 'Backend Test Model' }];
 const env = {
@@ -252,6 +254,39 @@ function createSessionAdminApp(backend: ChatGptBackendClient): Hono {
   return app;
 }
 
+function createProvisioningTestApp(options: { driver: FakeAuthDriver; protectModels?: boolean }): Hono {
+  const app = new Hono();
+  const accountPool = new AccountPool();
+  const modelRegistry = new ModelRegistry();
+  const runtimeApiKeys = new RuntimeApiKeys();
+  const backend = new InspectingBackend([{ id: 'plain-model' }, { id: 'gpt-5-thinking' }]);
+  if (options.protectModels) app.use('/v1/*', apiKeyAuth([], runtimeApiKeys));
+  app.route('/', createModelsRoute({ modelRegistry }));
+  app.route('/', createMessagesRoute({ backend, requestLog: new RequestLog(), modelRegistry, accountPool, backendProvider: 'session' }));
+  app.route('/', createAdminRoute({
+    accountPool,
+    modelRegistry,
+    backend,
+    runtimeApiKeys,
+    envApiKeys: [],
+    defaultReasoningEffort: 'medium',
+    defaultResponseSpeed: 'balanced',
+    backendProvider: 'session',
+    authFlow: new ChatGptAuthFlowService({ driverFactory: () => options.driver }),
+  }));
+  return app;
+}
+
+class FakeAuthDriver implements ChatGptAuthDriver {
+  private reads = 0;
+  constructor(private readonly secret: ChatGptSessionSecret | undefined, private readonly pendingReads = 0, private readonly openedByService = true) {}
+  async start() { return { authorizeUrl: 'https://chatgpt.com/', message: 'fake login opened', openedByService: this.openedByService }; }
+  async readSecret() {
+    this.reads += 1;
+    return this.reads <= this.pendingReads ? undefined : this.secret;
+  }
+}
+
 describe('API key auth', () => {
   it('rejects /v1/messages before admin initialization when no API key exists', async () => {
     const app = createApp({ ...env, apiKeys: [] });
@@ -324,6 +359,11 @@ describe('/admin', () => {
     expect(res.headers.get('content-type')).toContain('text/html');
     const html = await res.text();
     expect(html).toContain('ChatGPT to Claude 运维控制台');
+    expect(html).toContain('授权 ChatGPT');
+    expect(html).toContain('id="auth-link"');
+    expect(html).toContain('id="copy-auth-link"');
+    expect(html).toContain('<details id="advanced-import">');
+    expect(html).toContain('高级：手动导入 accessToken / cookie');
     expect(html).toContain('__ORIGIN__');
     expect(html).not.toContain('localhost:3000/v1/messages');
   });
@@ -399,6 +439,86 @@ describe('/admin/api/accounts', () => {
     expect(healthBody.account.status).toBe('disabled');
     expect(healthBody.account.lastError).toBeNull();
     expect(healthBody.account.lastUsedAt).toEqual(expect.any(String));
+  });
+});
+
+describe('ChatGPT one-click auth admin flow', () => {
+  it('starts auth and returns authorizeUrl/id', async () => {
+    const app = createProvisioningTestApp({ driver: new FakeAuthDriver(undefined) });
+    const res = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST' });
+    expect(res.status).toBe(201);
+    const body = await res.json() as { id: string; authorizeUrl: string; state: string; openedByService: boolean };
+    expect(body.id).toMatch(/^flow-/);
+    expect(body.authorizeUrl).toBe('https://chatgpt.com/');
+    expect(body.openedByService).toBe(true);
+    expect(body.state).toBe('link_ready');
+  });
+
+  it('returns openedByService=false when the driver did not open Chrome', async () => {
+    const app = createProvisioningTestApp({ driver: new FakeAuthDriver(undefined, 0, false) });
+    const res = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST' });
+    expect(res.status).toBe(201);
+    const body = await res.json() as { authorizeUrl: string; openedByService: boolean; state: string };
+    expect(body.authorizeUrl).toBe('https://chatgpt.com/');
+    expect(body.openedByService).toBe(false);
+    expect(body.state).toBe('link_ready');
+  });
+
+  it('polls pending, then provisions ready session once and returns apiKey/account/models/aliases', async () => {
+    const driver = new FakeAuthDriver({ type: 'chatgpt-session', accessToken: 'token-ready', cookie: 'session=cookie' }, 1);
+    const app = createProvisioningTestApp({ driver });
+    const startRes = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST' });
+    const startBody = await startRes.json() as { id: string };
+
+    const pendingRes = await app.request(`/admin/api/auth/chatgpt/${startBody.id}`);
+    const pendingBody = await pendingRes.json() as { state: string; provisionResult?: unknown };
+    expect(pendingBody.state).toBe('waiting');
+    expect(pendingBody.provisionResult).toBeUndefined();
+
+    const readyRes = await app.request(`/admin/api/auth/chatgpt/${startBody.id}`);
+    expect(readyRes.status).toBe(200);
+    const readyBody = await readyRes.json() as { state: string; provisioned: boolean; provisionResult: { apiKey: string; account: Record<string, unknown>; modelsDiscovered: string[]; boundAliases: Record<string, string> } };
+    expect(readyBody.state).toBe('ready');
+    expect(readyBody.provisioned).toBe(true);
+    expect(readyBody.provisionResult.apiKey).toMatch(/^sk-runtime-/);
+    expect(readyBody.provisionResult.account).toMatchObject({ id: 'chatgpt-primary', provider: 'chatgpt-session', hasSecret: true });
+    expect(readyBody.provisionResult.account).not.toHaveProperty('secret');
+    expect(readyBody.provisionResult.modelsDiscovered).toEqual(['plain-model', 'gpt-5-thinking']);
+    expect(readyBody.provisionResult.boundAliases).toEqual({ sonnet: 'gpt-5-thinking' });
+
+    const thirdRes = await app.request(`/admin/api/auth/chatgpt/${startBody.id}`);
+    const thirdBody = await thirdRes.json() as { provisionResult: { apiKey: string } };
+    expect(thirdBody.provisionResult.apiKey).toBe(readyBody.provisionResult.apiKey);
+  });
+
+  it('allows the returned apiKey to access /v1/models', async () => {
+    const driver = new FakeAuthDriver({ type: 'chatgpt-session', accessToken: 'token-ready' });
+    const app = createProvisioningTestApp({ driver, protectModels: true });
+    const startRes = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST' });
+    const { id } = await startRes.json() as { id: string };
+    const pollRes = await app.request(`/admin/api/auth/chatgpt/${id}`);
+    const pollBody = await pollRes.json() as { provisionResult: { apiKey: string } };
+
+    const modelsRes = await app.request('/v1/models', { headers: { 'x-api-key': pollBody.provisionResult.apiKey } });
+    expect(modelsRes.status).toBe(200);
+    const models = await modelsRes.json() as { data: Array<{ id: string; backendModel: string }> };
+    expect(models.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'sonnet', backendModel: 'gpt-5-thinking' })]));
+  });
+
+  it('manual complete creates/updates chatgpt-primary without leaking secret', async () => {
+    const app = createProvisioningTestApp({ driver: new FakeAuthDriver(undefined) });
+    const firstRes = await app.request('/admin/api/auth/chatgpt/complete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accessToken: 'manual-token-1', cookie: 'a=b' }) });
+    expect(firstRes.status).toBe(200);
+    const firstBody = await firstRes.json() as { account: Record<string, unknown>; apiKey: string };
+    expect(firstBody.account).toMatchObject({ id: 'chatgpt-primary', provider: 'chatgpt-session', hasSecret: true });
+    expect(firstBody.account).not.toHaveProperty('secret');
+
+    const secondRes = await app.request('/admin/api/auth/chatgpt/complete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ secret: { accessToken: 'manual-token-2' } }) });
+    expect(secondRes.status).toBe(200);
+    const accountsRes = await app.request('/admin/api/accounts');
+    const accountsBody = await accountsRes.json() as { accounts: Array<Record<string, unknown>> };
+    expect(accountsBody.accounts.filter((account) => account.id === 'chatgpt-primary')).toHaveLength(1);
+    expect(JSON.stringify(accountsBody)).not.toContain('manual-token');
   });
 });
 

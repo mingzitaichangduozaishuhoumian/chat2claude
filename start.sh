@@ -14,13 +14,15 @@ fi
 export DEFAULT_REASONING_EFFORT="${DEFAULT_REASONING_EFFORT:-medium}"
 export DEFAULT_RESPONSE_SPEED="${DEFAULT_RESPONSE_SPEED:-balanced}"
 export PORT="${PORT:-3000}"
+export CHATGPT_BACKEND="${CHATGPT_BACKEND:-session}"
 
 if [ -n "${API_KEYS:-}" ]; then
   echo "API_KEYS detected from existing environment; /v1/* will require one of those keys."
 else
-  echo "API_KEYS is not set. Open admin after startup to enable development access."
+  echo "API_KEYS is not set. Open admin and click \"授权 ChatGPT\" to generate a runtime key."
 fi
+echo "CHATGPT_BACKEND=${CHATGPT_BACKEND}"
 echo "Starting API service at http://localhost:${PORT}"
-echo "Admin setup: http://localhost:${PORT}/admin"
+echo "Admin setup: http://localhost:${PORT}/admin  <-- click \"授权 ChatGPT\""
 echo "Health check: http://localhost:${PORT}/healthz"
 exec corepack pnpm start

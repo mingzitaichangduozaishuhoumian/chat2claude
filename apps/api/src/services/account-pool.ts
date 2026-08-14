@@ -61,6 +61,12 @@ export class AccountPool {
     return toAccountView(account);
   }
 
+  upsert(input: AccountCreateInput & { id: string }): AccountView {
+    const existing = this.accounts.find((item) => item.id === input.id);
+    if (!existing) return this.add(input);
+    return this.update(input.id, input) ?? this.add(input);
+  }
+
   update(id: string, patch: AccountPatchInput): AccountView | undefined {
     const index = this.accounts.findIndex((account) => account.id === id);
     if (index === -1) return undefined;

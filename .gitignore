@@ -8,3 +8,4 @@ coverage/
 *.log
 .pnpm-store/
 .omc/
+apps/api/data/
