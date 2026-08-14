@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { Hono } from 'hono';
 import type { ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ReasoningEffort, SpeedPreference } from '@chatgpt-to-claude/protocol-mapper';
+import type { ChatGptBackendProvider } from '../config/env.js';
 import type { AccountPool } from '../services/account-pool.js';
 import type { ModelRegistry } from '../services/model-registry.js';
 import type { RuntimeApiKeys } from '../services/runtime-api-keys.js';
@@ -17,6 +18,7 @@ export interface AdminRouteOptions {
   envApiKeys: string[];
   defaultReasoningEffort: ReasoningEffort;
   defaultResponseSpeed: SpeedPreference;
+  backendProvider: ChatGptBackendProvider;
 }
 
 export function createAdminRoute(options: AdminRouteOptions): Hono {
@@ -54,9 +56,25 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     const account = options.accountPool.update(c.req.param('id'), await readJson(c.req));
     return account ? c.json({ account }) : c.json({ error: 'Account not found' }, 404);
   });
-  app.post('/admin/api/accounts/:id/health-check', (c) => {
-    const account = options.accountPool.healthCheck(c.req.param('id'));
-    return account ? c.json({ ok: true, account }) : c.json({ error: 'Account not found' }, 404);
+  app.post('/admin/api/accounts/:id/health-check', async (c) => {
+    const id = c.req.param('id');
+    const internalAccount = options.accountPool.get(id);
+    if (!internalAccount) return c.json({ error: 'Account not found' }, 404);
+    if (!options.backend.healthCheck) {
+      const account = options.accountPool.healthCheck(id);
+      return account ? c.json({ ok: true, account }) : c.json({ error: 'Account not found' }, 404);
+    }
+    try {
+      const result = await options.backend.healthCheck({ account: internalAccount });
+      const account = result.ok ? options.accountPool.markHealthy(id) : options.accountPool.markError(id, result.message ?? 'Health check failed');
+      const view = result.ok && internalAccount.provider === 'chatgpt-session'
+        ? await options.modelRegistry.refreshFromBackend(options.backend, { account: internalAccount })
+        : undefined;
+      return c.json({ ok: result.ok, message: result.message, account, view });
+    } catch (error) {
+      const account = options.accountPool.markError(id, error);
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error), account }, 502);
+    }
   });
 
   app.get('/admin/api/models', async (c) => {
@@ -72,8 +90,18 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     if (options.ready) await options.ready;
     return c.json({ models: options.modelRegistry.reset(), view: options.modelRegistry.adminView() });
   });
-  app.post('/admin/api/models/refresh', async (c) => c.json(await options.modelRegistry.refreshFromBackend(options.backend)));
+  app.post('/admin/api/models/refresh', async (c) => {
+    if (options.ready) await options.ready;
+    const context = options.backendProvider === 'session' ? sessionRefreshContext(options.accountPool) : undefined;
+    if (options.backendProvider === 'session' && !context) return c.json({ error: 'No available chatgpt-session account. Import and health-check a ChatGPT session account before refreshing models.' }, 409);
+    return c.json(await options.modelRegistry.refreshFromBackend(options.backend, context));
+  });
   return app;
+}
+
+function sessionRefreshContext(accountPool: AccountPool) {
+  const account = accountPool.firstAvailable({ provider: 'chatgpt-session' });
+  return account ? { account } : undefined;
 }
 
 async function readJson(req: { json: () => Promise<unknown> }): Promise<Record<string, unknown>> {
@@ -95,10 +123,10 @@ function status(options: AdminRouteOptions) {
     runtimeApiKeysCount: options.runtimeApiKeys.size,
     defaultReasoningEffort: options.defaultReasoningEffort,
     defaultResponseSpeed: options.defaultResponseSpeed,
-    mockBackend: { enabled: true, provider: 'mock', chatGptConnected: false },
+    backend: { enabled: true, provider: options.backendProvider, chatGptConnected: options.backendProvider === 'session' },
     defaultEndpoint: 'POST /v1/messages',
     nextStep: envApiKeysConfigured || runtimeApiKeysConfigured
-      ? 'Call /v1/messages with x-api-key or Authorization: Bearer token. ChatGPT authorization is still a placeholder.'
+      ? 'Call /v1/messages with x-api-key or Authorization: Bearer token. Session backend requires importing a ChatGPT session account first.'
       : 'Open /admin and click Enable development API key, then call /v1/messages with the returned x-api-key.',
   };
 }
@@ -507,10 +535,9 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
         <section class="card accent">
           <h2>授权状态</h2>
           <p>API Key 配置状态：<span id="key-state" class="status ${keyTone}">${escapeHtml(keyState)}</span></p>
-          <p class="muted">Mock backend 已启用，真实 ChatGPT 授权仍为占位。开发 Key 存于当前进程内存，重启后失效。</p>
+          <p class="muted">当前 backend：<code>${escapeHtml(setupStatus.backend.provider)}</code>。开发 Key 存于当前进程内存，重启后失效；session backend 需要先导入 ChatGPT session 账号。</p>
           <div class="row">
             <button id="dev-enable">启用开发 Key</button>
-            <button class="placeholder" disabled>连接 ChatGPT 占位</button>
           </div>
         </section>
 
@@ -530,6 +557,14 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
             <input id="account-label" placeholder="账号标识" value="Mock ChatGPT Account" />
             <input id="account-concurrency" type="number" min="1" value="1" aria-label="最大并发" />
             <button id="add-account">添加 mock 账号</button>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <input id="session-label" placeholder="ChatGPT session 标识" value="ChatGPT Session Account" />
+            <input id="session-access-token" placeholder="accessToken" />
+            <input id="session-cookie" placeholder="cookie（可选）" />
+            <input id="session-device-id" placeholder="deviceId（可选）" />
+            <input id="session-user-agent" placeholder="userAgent（可选）" />
+            <button id="add-session-account" class="secondary">导入 ChatGPT session</button>
           </div>
           <div id="accounts"><div class="empty">正在读取账号池状态。</div></div>
         </section>
@@ -577,7 +612,18 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     document.getElementById('add-account').addEventListener('click', async () => {
       const label = document.getElementById('account-label').value;
       const maxConcurrency = Number(document.getElementById('account-concurrency').value || 1);
-      const body = await postJson('/admin/api/accounts', { label, maxConcurrency, capabilities: ['mock', 'messages'] });
+      const body = await postJson('/admin/api/accounts', { provider: 'mock', label, maxConcurrency, capabilities: ['mock', 'messages'] });
+      document.getElementById('result').textContent = JSON.stringify(body, null, 2);
+      await loadAccounts();
+    });
+
+    document.getElementById('add-session-account').addEventListener('click', async () => {
+      const label = document.getElementById('session-label').value;
+      const accessToken = document.getElementById('session-access-token').value;
+      const cookie = document.getElementById('session-cookie').value;
+      const deviceId = document.getElementById('session-device-id').value;
+      const userAgent = document.getElementById('session-user-agent').value;
+      const body = await postJson('/admin/api/accounts', { provider: 'chatgpt-session', label, capabilities: ['chatgpt-session', 'messages'], secret: { type: 'chatgpt-session', accessToken, cookie, deviceId, userAgent } });
       document.getElementById('result').textContent = JSON.stringify(body, null, 2);
       await loadAccounts();
     });
@@ -600,8 +646,8 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
         document.getElementById('accounts').innerHTML = '<div class="empty">账号池为空。添加一个 mock 账号后，可在这里查看状态、并发与健康检查结果。</div>';
         return;
       }
-      document.getElementById('accounts').innerHTML = '<div class="table-wrap"><table><thead><tr><th>ID</th><th>标识</th><th>状态</th><th>并发</th><th>最近使用</th><th>能力</th><th>操作</th></tr></thead><tbody>' + accounts.map((account) =>
-        '<tr><td><code>' + esc(account.id) + '</code></td><td>' + esc(account.label) + '</td><td><span class="pill">' + esc(account.status) + (account.enabled ? '' : ' / disabled') + '</span></td><td>' + account.currentConcurrency + '/' + account.maxConcurrency + '</td><td>' + esc(account.lastUsedAt || '-') + '</td><td>' + esc((account.capabilities || []).join(', ')) + '</td><td><button class="secondary" data-health="' + esc(account.id) + '">健康检查</button></td></tr>'
+      document.getElementById('accounts').innerHTML = '<div class="table-wrap"><table><thead><tr><th>ID</th><th>标识</th><th>Provider</th><th>状态</th><th>并发</th><th>Secret</th><th>最近使用</th><th>能力</th><th>操作</th></tr></thead><tbody>' + accounts.map((account) =>
+        '<tr><td><code>' + esc(account.id) + '</code></td><td>' + esc(account.label) + '</td><td>' + esc(account.provider || 'mock') + '</td><td><span class="pill">' + esc(account.status) + (account.enabled ? '' : ' / disabled') + '</span></td><td>' + account.currentConcurrency + '/' + account.maxConcurrency + '</td><td>' + (account.hasSecret ? '已导入' : '-') + '</td><td>' + esc(account.lastUsedAt || '-') + '</td><td>' + esc((account.capabilities || []).join(', ')) + '</td><td><button class="secondary" data-health="' + esc(account.id) + '">健康检查</button></td></tr>'
       ).join('') + '</tbody></table></div>';
       document.querySelectorAll('[data-health]').forEach((button) => button.addEventListener('click', async () => {
         const body = await postJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.health) + '/health-check');

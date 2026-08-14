@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ChatGptBackendClient, ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptBackendClient, ChatGptBackendRequestContext, ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
 import {
   normalizeReasoningEffort,
   normalizeSpeedPreference,
@@ -79,8 +79,8 @@ export class ModelRegistry {
     this.discoveredModels = cloneDiscoveredModels(options.discoveredModels ?? []);
   }
 
-  async refreshFromBackend(backend: ChatGptBackendClient): Promise<AdminModelsView> {
-    this.discoveredModels = cloneDiscoveredModels(await backend.listModels());
+  async refreshFromBackend(backend: ChatGptBackendClient, context?: ChatGptBackendRequestContext): Promise<AdminModelsView> {
+    this.discoveredModels = cloneDiscoveredModels(await backend.listModels(context));
     return this.adminView();
   }
 

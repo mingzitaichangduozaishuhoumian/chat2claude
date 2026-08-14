@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { MockChatGptBackend } from '@chatgpt-to-claude/chatgpt-backend';
 import { createLogger } from '@chatgpt-to-claude/shared';
 import { loadEnv, type AppEnv } from './config/env.js';
 import { apiKeyAuth } from './middleware/auth.js';
@@ -12,10 +11,11 @@ import { AccountPool } from './services/account-pool.js';
 import { RequestLog } from './services/request-log.js';
 import { RuntimeApiKeys } from './services/runtime-api-keys.js';
 import { ModelRegistry } from './services/model-registry.js';
+import { createChatGptBackend } from './services/backend-factory.js';
 export function createApp(env: AppEnv = loadEnv()): Hono {
   const app = new Hono();
   const logger = createLogger(env.logLevel);
-  const backend = new MockChatGptBackend({ responsePrefix: env.mockResponsePrefix, env: { MOCK_BACKEND_MODELS_JSON: env.mockBackendModelsJson } });
+  const backend = createChatGptBackend(env);
   const accountPool = new AccountPool();
   const requestLog = new RequestLog();
   const runtimeApiKeys = new RuntimeApiKeys();
@@ -27,8 +27,8 @@ export function createApp(env: AppEnv = loadEnv()): Hono {
   app.route('/', healthRoute);
   app.use('/v1/*', apiKeyAuth(env.apiKeys, runtimeApiKeys));
   app.route('/', createModelsRoute({ modelRegistry, ready: modelRegistryReady }));
-  app.route('/', createMessagesRoute({ backend, requestLog, modelRegistry, accountPool, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
+  app.route('/', createMessagesRoute({ backend, requestLog, modelRegistry, accountPool, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createMetricsRoute(requestLog));
-  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed }));
+  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend }));
   return app;
 }

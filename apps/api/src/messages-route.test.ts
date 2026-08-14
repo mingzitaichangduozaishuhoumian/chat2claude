@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { ChatGptBackendClient, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
+import { Hono } from 'hono';
+import { SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
 import { createApp } from './app.js';
+import { createAdminRoute } from './routes/admin.js';
 import { createMessagesRoute } from './routes/messages.js';
+import { createModelsRoute } from './routes/models.js';
 import { AccountPool } from './services/account-pool.js';
 import { ModelRegistry } from './services/model-registry.js';
 import { RequestLog } from './services/request-log.js';
+import { RuntimeApiKeys } from './services/runtime-api-keys.js';
 
 const discoveredModels = [{ id: 'backend-test-model', displayName: 'Backend Test Model' }];
 const env = {
@@ -14,6 +18,9 @@ const env = {
   logLevel: 'error' as const,
   mockResponsePrefix: 'Echo:',
   mockBackendModelsJson: JSON.stringify(discoveredModels),
+  chatGptBackend: 'mock' as const,
+  chatGptBaseUrl: 'https://chatgpt.com',
+  chatGptRequestTimeoutMs: 60000,
   defaultReasoningEffort: 'medium' as const,
   defaultResponseSpeed: 'balanced' as const,
 };
@@ -121,6 +128,27 @@ describe('/v1/messages', () => {
     expect(body.content[0].text).toBe('Echo:[effort=medium,speed=balanced] hello');
   });
 
+  it('passes account context to backend complete', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const app = createMessagesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(200);
+    expect(backend.lastContext?.account?.id).toBe('mock-account');
+    expect(backend.lastContext?.account?.provider).toBe('mock');
+  });
+
+  it('passes account context to backend stream', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const app = createMessagesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(backend.lastContext?.account?.id).toBe('mock-account');
+    expect(backend.lastContext?.account?.provider).toBe('mock');
+  });
+
   it('passes resolved backendModel to the backend request', async () => {
     const backend = new InspectingBackend([{ id: 'backend-injected-model' }]);
     const modelRegistry = new ModelRegistry({ discoveredModels: [{ id: 'backend-injected-model' }] });
@@ -152,26 +180,76 @@ describe('/v1/messages', () => {
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
     expect(accountPool.list()[0].status).toBe('available');
   });
+
+  it('uses a chatgpt-session account instead of the default mock account in session mode', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const accountPool = new AccountPool();
+    accountPool.add({ id: 'session-1', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token-1' }, capabilities: ['chatgpt-session', 'messages'] });
+    const app = createMessagesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry(), accountPool, backendProvider: 'session' });
+
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(200);
+    expect(backend.listModelsContext?.account?.id).toBe('session-1');
+    expect(backend.lastContext?.account?.id).toBe('session-1');
+    expect(backend.lastContext?.account?.provider).toBe('chatgpt-session');
+  });
+
+  it('returns a clear session account error before model resolution when no session account exists', async () => {
+    const app = createMessagesRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry(), accountPool: new AccountPool(), backendProvider: 'session' });
+
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(503);
+    const body = await res.json() as { error: { type: string; message: string } };
+    expect(body.error.type).toBe('overloaded_error');
+    expect(body.error.message).toContain('No available chatgpt-session account');
+  });
 });
 
 class InspectingBackend implements ChatGptBackendClient {
   lastRequest: ChatGptCompletionRequest | undefined;
+  lastContext: ChatGptBackendRequestContext | undefined;
+  listModelsContext: ChatGptBackendRequestContext | undefined;
   constructor(private readonly models: ChatGptDiscoveredModel[] = []) {}
 
-  async listModels(): Promise<ChatGptDiscoveredModel[]> {
+  async listModels(context?: ChatGptBackendRequestContext): Promise<ChatGptDiscoveredModel[]> {
+    this.listModelsContext = context;
     return this.models;
   }
 
-  async complete(request: ChatGptCompletionRequest): Promise<ChatGptCompletionResponse> {
+  async healthCheck(_context?: ChatGptBackendRequestContext): Promise<{ ok: boolean }> {
+    return { ok: true };
+  }
+
+  async complete(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse> {
     this.lastRequest = request;
+    this.lastContext = context;
     return { text: `backend:${request.model}`, finishReason: 'stop' };
   }
 
-  async *stream(request: ChatGptCompletionRequest) {
+  async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext) {
     this.lastRequest = request;
+    this.lastContext = context;
     yield { type: 'text_delta' as const, text: `backend:${request.model}` };
     yield { type: 'done' as const };
   }
+}
+
+function createSessionAdminApp(backend: ChatGptBackendClient): Hono {
+  const app = new Hono();
+  const accountPool = new AccountPool();
+  const modelRegistry = new ModelRegistry();
+  app.route('/', createModelsRoute({ modelRegistry }));
+  app.route('/', createAdminRoute({
+    accountPool,
+    modelRegistry,
+    backend,
+    runtimeApiKeys: new RuntimeApiKeys(),
+    envApiKeys: [],
+    defaultReasoningEffort: 'medium',
+    defaultResponseSpeed: 'balanced',
+    backendProvider: 'session',
+  }));
+  return app;
 }
 
 describe('API key auth', () => {
@@ -254,11 +332,11 @@ describe('/admin', () => {
     const app = createApp({ ...env, apiKeys: [] });
     const res = await app.request('/admin/api/setup/status');
     expect(res.status).toBe(200);
-    const body = await res.json() as { apiKeysConfigured: boolean; defaultReasoningEffort: string; defaultResponseSpeed: string; mockBackend: { enabled: boolean; provider: string; chatGptConnected: boolean }; nextStep: string };
+    const body = await res.json() as { apiKeysConfigured: boolean; defaultReasoningEffort: string; defaultResponseSpeed: string; backend: { enabled: boolean; provider: string; chatGptConnected: boolean }; nextStep: string };
     expect(body.apiKeysConfigured).toBe(false);
     expect(body.defaultReasoningEffort).toBe('medium');
     expect(body.defaultResponseSpeed).toBe('balanced');
-    expect(body.mockBackend).toEqual({ enabled: true, provider: 'mock', chatGptConnected: false });
+    expect(body.backend).toEqual({ enabled: true, provider: 'mock', chatGptConnected: false });
     expect(body.nextStep).toContain('/admin');
   });
 });
@@ -281,6 +359,22 @@ describe('/v1/models', () => {
 });
 
 describe('/admin/api/accounts', () => {
+  it('adds a chatgpt-session account and redacts secret from admin views', async () => {
+    const app = createApp(env);
+    const addRes = await app.request('/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'session-1', provider: 'chatgpt-session', label: 'Session 1', secret: { type: 'chatgpt-session', accessToken: 'token-1', cookie: 'cookie-1', deviceId: 'device-1', userAgent: 'ua-1' }, capabilities: ['chatgpt-session', 'messages'] }) });
+    expect(addRes.status).toBe(201);
+    const addBody = await addRes.json() as { account: Record<string, unknown> };
+    expect(addBody.account).toMatchObject({ id: 'session-1', provider: 'chatgpt-session', hasSecret: true });
+    expect(addBody.account).not.toHaveProperty('secret');
+
+    const listRes = await app.request('/admin/api/accounts');
+    expect(listRes.status).toBe(200);
+    const listBody = await listRes.json() as { accounts: Array<Record<string, unknown>> };
+    const session = listBody.accounts.find((account) => account.id === 'session-1');
+    expect(session).toMatchObject({ provider: 'chatgpt-session', hasSecret: true });
+    expect(session).not.toHaveProperty('secret');
+  });
+
   it('adds, lists, patches, and health-checks runtime accounts', async () => {
     const app = createApp(env);
     const addRes = await app.request('/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'mock-2', label: 'Mock 2', maxConcurrency: 3, capabilities: ['mock', 'messages'] }) });
@@ -305,6 +399,54 @@ describe('/admin/api/accounts', () => {
     expect(healthBody.account.status).toBe('disabled');
     expect(healthBody.account.lastError).toBeNull();
     expect(healthBody.account.lastUsedAt).toEqual(expect.any(String));
+  });
+});
+
+describe('SessionChatGptBackend', () => {
+  it('listModels fetches codex models with account context and parses model ids', async () => {
+    const calls: Array<{ url: string; authorization: string | null }> = [];
+    const backend = new SessionChatGptBackend({
+      baseUrl: 'https://chatgpt.test/',
+      timeoutMs: 1000,
+      fetch: async (url, init) => {
+        const headers = new Headers(init?.headers);
+        calls.push({ url: String(url), authorization: headers.get('authorization') });
+        return Response.json({ models: [{ id: 'gpt-5-thinking', display_name: 'GPT 5 Thinking' }, { slug: 'codex-mini', title: 'Codex Mini' }] });
+      },
+    });
+
+    const models = await backend.listModels({ account: { id: 'session-1', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token-1' } } });
+    expect(calls).toEqual([{ url: 'https://chatgpt.test/backend-api/codex/models', authorization: 'Bearer token-1' }]);
+    expect(models.map((model) => model.id)).toEqual(['gpt-5-thinking', 'codex-mini']);
+    expect(models[0].displayName).toBe('GPT 5 Thinking');
+  });
+});
+
+describe('session admin model discovery', () => {
+  it('refreshes models with the first available session account and exposes them through /v1/models', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-session-model' }]);
+    const app = createSessionAdminApp(backend);
+    const addRes = await app.request('/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'session-1', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token-1' }, capabilities: ['chatgpt-session', 'messages'] }) });
+    expect(addRes.status).toBe(201);
+    const healthRes = await app.request('/admin/api/accounts/session-1/health-check', { method: 'POST' });
+    expect(healthRes.status).toBe(200);
+    expect(backend.listModelsContext?.account?.id).toBe('session-1');
+
+    const patchRes = await app.request('/admin/api/models/sonnet', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backendModel: 'backend-session-model' }) });
+    expect(patchRes.status).toBe(200);
+    const publicModelsRes = await app.request('/v1/models');
+    expect(publicModelsRes.status).toBe(200);
+    const publicModels = await publicModelsRes.json() as { data: Array<{ id: string; backendModel: string; status: string }> };
+    expect(publicModels.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'sonnet', backendModel: 'backend-session-model', status: 'bound' })]));
+    expect(publicModels.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'backend-session-model', backendModel: 'backend-session-model' })]));
+  });
+
+  it('returns a clear error when session model refresh has no session account', async () => {
+    const app = createSessionAdminApp(new InspectingBackend([{ id: 'backend-session-model' }]));
+    const refreshRes = await app.request('/admin/api/models/refresh', { method: 'POST' });
+    expect(refreshRes.status).toBe(409);
+    const body = await refreshRes.json() as { error: string };
+    expect(body.error).toContain('No available chatgpt-session account');
   });
 });
 
