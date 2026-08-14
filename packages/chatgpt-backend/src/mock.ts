@@ -1,6 +1,7 @@
 import type { ChatGptBackendClient, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
 export interface MockChatGptBackendOptions { responsePrefix?: string; models?: ChatGptDiscoveredModel[]; env?: Partial<Pick<NodeJS.ProcessEnv, 'MOCK_BACKEND_MODELS_JSON'>>; }
+const DEFAULT_MOCK_DISCOVERED_MODELS: ChatGptDiscoveredModel[] = [{ id: 'backend-test-model', displayName: 'Backend Test Model' }];
 export class MockChatGptBackend implements ChatGptBackendClient {
   private readonly responsePrefix: string;
   private readonly models: ChatGptDiscoveredModel[];
@@ -29,7 +30,8 @@ function chunkText(text: string, size: number): string[] {
 }
 
 function parseModelsFromEnv(env: Partial<Pick<NodeJS.ProcessEnv, 'MOCK_BACKEND_MODELS_JSON'>>): ChatGptDiscoveredModel[] {
-  if (!env.MOCK_BACKEND_MODELS_JSON?.trim()) return [];
+  if (env.MOCK_BACKEND_MODELS_JSON === undefined) return DEFAULT_MOCK_DISCOVERED_MODELS;
+  if (!env.MOCK_BACKEND_MODELS_JSON.trim()) return [];
   let parsed: unknown;
   try {
     parsed = JSON.parse(env.MOCK_BACKEND_MODELS_JSON) as unknown;

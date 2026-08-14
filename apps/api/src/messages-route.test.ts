@@ -20,6 +20,14 @@ const env = {
 const jsonHeaders = { 'content-type': 'application/json', 'x-api-key': 'test-key' };
 
 describe('/v1/messages', () => {
+  it('uses the default mock backend model when model JSON is unset', async () => {
+    const app = createApp({ ...env, mockBackendModelsJson: undefined });
+    const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { content: Array<{ text: string }> };
+    expect(body.content[0].text).toBe('Echo:[effort=medium,speed=balanced] hello');
+  });
+
   it('returns a Claude-like non-stream message with resolved effort and speed', async () => {
     const app = createApp(env);
     const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, output_config: { effort: 'high' }, speed: 'fast', messages: [{ role: 'user', content: 'hello' }] }) });
