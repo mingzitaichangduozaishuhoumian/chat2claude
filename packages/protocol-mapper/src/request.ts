@@ -13,6 +13,12 @@ export function mapClaudeRequestToChatGpt(request: ClaudeMessagesRequest, defaul
   }));
   const resolved = resolveReasoningSpeed(request, defaults);
   const stopSequences = normalizeStopSequences(request.stop_sequences);
+  const claudeRequest = preserveClaudeRequestFields(request, canonical.diagnostics);
+  const backendOptions = {
+    ...options.backendOptions,
+    mappingDiagnostics: canonical.diagnostics,
+    ...(claudeRequest ? { claudeRequest } : {}),
+  };
   return {
     messages,
     inputItems: mapCanonicalInputItems(canonical.messages, canonical.diagnostics),
@@ -25,8 +31,26 @@ export function mapClaudeRequestToChatGpt(request: ClaudeMessagesRequest, defaul
     stopSequences,
     tools: mapClaudeTools(request.tools),
     toolChoice: mapClaudeToolChoice(request.tool_choice),
-    backendOptions: { ...options.backendOptions, mappingDiagnostics: canonical.diagnostics },
+    backendOptions,
   };
+}
+
+const CLAUDE_REQUEST_FIELDS = ['metadata', 'service_tier', 'container', 'context_management', 'mcp_servers'] as const;
+type PreservedClaudeRequestField = typeof CLAUDE_REQUEST_FIELDS[number];
+
+function preserveClaudeRequestFields(request: ClaudeMessagesRequest, diagnostics: CanonicalMappingDiagnostic[]): Partial<Record<PreservedClaudeRequestField, unknown>> | undefined {
+  const preserved: Partial<Record<PreservedClaudeRequestField, unknown>> = {};
+  for (const field of CLAUDE_REQUEST_FIELDS) {
+    if (request[field] === undefined) continue;
+    preserved[field] = request[field];
+    diagnostics.push({
+      severity: 'info',
+      code: 'claude_request_field_preserved',
+      path: field,
+      message: `Claude request field ${field} has been preserved in backendOptions.claudeRequest, but the current ChatGPT backend does not guarantee native execution.`,
+    });
+  }
+  return Object.keys(preserved).length ? preserved : undefined;
 }
 
 export function mapClaudeTools(tools: ClaudeTool[] | undefined): ChatGptTool[] | undefined {

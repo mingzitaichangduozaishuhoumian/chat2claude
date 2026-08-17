@@ -112,6 +112,47 @@ describe('canonical request mapping', () => {
     expect(mapped.toolChoice).toEqual({ type: 'tool', name: 'get_weather' });
   });
 
+  it('preserves selected Claude top-level request fields in backend options with diagnostics', () => {
+    const metadata = { user_id: 'user_123' };
+    const container = { id: 'container_123' };
+    const contextManagement = { edits: 'clear' };
+    const mcpServers = [{ type: 'url', url: 'https://mcp.example.test' }];
+    const mapped = mapClaudeRequestToChatGpt({
+      ...base('body text'),
+      metadata,
+      service_tier: 'auto',
+      container,
+      context_management: contextManagement,
+      mcp_servers: mcpServers,
+    });
+
+    expect(mapped.backendOptions?.claudeRequest).toEqual({
+      metadata,
+      service_tier: 'auto',
+      container,
+      context_management: contextManagement,
+      mcp_servers: mcpServers,
+    });
+    expect(mapped.backendOptions?.mappingDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'claude_request_field_preserved', path: 'metadata' }),
+      expect.objectContaining({ code: 'claude_request_field_preserved', path: 'service_tier' }),
+      expect.objectContaining({ code: 'claude_request_field_preserved', path: 'container' }),
+      expect.objectContaining({ code: 'claude_request_field_preserved', path: 'context_management' }),
+      expect.objectContaining({ code: 'claude_request_field_preserved', path: 'mcp_servers' }),
+    ]));
+    expect(mapped.messages).toEqual([{ role: 'user', content: 'body text' }]);
+    expect(mapped.messages[0].content).not.toContain('user_123');
+    expect(mapped.messages[0].content).not.toContain('service_tier');
+    expect(mapped.messages[0].content).not.toContain('container_123');
+    expect(mapped.messages[0].content).not.toContain('mcp.example.test');
+  });
+
+  it('does not create an empty claudeRequest backend option for ordinary Claude requests', () => {
+    const mapped = mapClaudeRequestToChatGpt(base('hello'));
+
+    expect(mapped.backendOptions).not.toHaveProperty('claudeRequest');
+  });
+
   it('maps Claude generation controls to backend request fields', () => {
     const mapped = mapClaudeRequestToChatGpt({
       ...base('tune generation'),
