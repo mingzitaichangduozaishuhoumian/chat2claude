@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SessionChatGptBackend, type ChatGptCompletionRequest } from './index.js';
+import { ChatGptBackendError, SessionChatGptBackend, type ChatGptCompletionRequest } from './index.js';
 
 const request: ChatGptCompletionRequest = {
   model: 'gpt-test',
@@ -177,6 +177,20 @@ describe('SessionChatGptBackend', () => {
     expect(calls[0].url).toBe('https://chatgpt.test/backend-api/codex/models');
     expect(calls[0].init.method).toBe('GET');
     expect((calls[0].init.headers as Headers).get('authorization')).toBe('Bearer token-1');
+  });
+
+  it('classifies model discovery 401 responses as unauthorized backend errors', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response('expired', { status: 401 }) });
+
+    await expect(backend.listModels(context)).rejects.toMatchObject({ code: 'unauthorized', status: 401 });
+    await expect(backend.listModels(context)).rejects.toBeInstanceOf(ChatGptBackendError);
+  });
+
+  it('classifies responses 429 responses as rate limited backend errors', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response('too many', { status: 429 }) });
+
+    await expect(backend.complete(request, context)).rejects.toMatchObject({ code: 'rate_limited', status: 429 });
+    await expect(backend.complete(request, context)).rejects.toBeInstanceOf(ChatGptBackendError);
   });
 });
 

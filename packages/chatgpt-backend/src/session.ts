@@ -1,5 +1,6 @@
 import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
+import { ChatGptBackendError, type ChatGptBackendErrorCode } from './errors.js';
 
 export interface SessionChatGptBackendOptions {
   baseUrl: string;
@@ -27,7 +28,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       method: 'GET',
       headers: this.headers(secret, false),
     });
-    if (!response.ok) throw new Error(`ChatGPT models discovery failed: HTTP ${response.status}`);
+    if (!response.ok) throw httpBackendError('ChatGPT models discovery failed', response.status);
     return parseDiscoveredModels(await response.json());
   }
 
@@ -63,7 +64,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       headers: this.headers(secret, true),
       body: JSON.stringify(buildResponsesBody(request)),
     });
-    if (!response.ok) throw new Error(`ChatGPT responses request failed: HTTP ${response.status}`);
+    if (!response.ok) throw httpBackendError('ChatGPT responses request failed', response.status);
 
     let latestUsage: ChatGptUsage | undefined;
     for await (const data of iterateSseData(response)) {
@@ -99,10 +100,27 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       return await this.fetchImpl(url, { ...init, signal: controller.signal });
+    } catch (error) {
+      if (isAbortError(error)) throw new ChatGptBackendError('ChatGPT session backend request timed out.', 'timeout', { status: 504, cause: error });
+      throw new ChatGptBackendError('ChatGPT session backend network request failed.', 'network_error', { cause: error });
     } finally {
       clearTimeout(timeout);
     }
   }
+}
+
+function httpBackendError(prefix: string, status: number): ChatGptBackendError {
+  return new ChatGptBackendError(`${prefix}: HTTP ${status}`, backendErrorCodeForStatus(status), { status });
+}
+
+function backendErrorCodeForStatus(status: number): ChatGptBackendErrorCode {
+  if (status === 401 || status === 403) return 'unauthorized';
+  if (status === 429) return 'rate_limited';
+  return 'upstream_error';
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError' || error instanceof Error && error.name === 'AbortError';
 }
 
 function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {

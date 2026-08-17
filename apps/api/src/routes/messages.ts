@@ -5,6 +5,7 @@ import { mapChatGptResponseToClaude, mapChatGptStreamToClaudeSse, mapClaudeReque
 import type { RequestLog } from '../services/request-log.js';
 import { ModelRegistryError, type ModelRegistry } from '../services/model-registry.js';
 import type { AccountPool, AccountProvider } from '../services/account-pool.js';
+import { mapChatGptBackendError } from './backend-errors.js';
 
 export interface MessagesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; }
 
@@ -46,7 +47,7 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
         if (!releaseDeferredToStream) deps.accountPool.release(account.id, releaseError);
       }
     } catch (error) {
-      const apiError = error instanceof ClaudeApiError ? error : error instanceof ModelRegistryError ? new ClaudeApiError(error.message, error.status, error.status === 404 ? 'not_found_error' : 'invalid_request_error') : new ClaudeApiError(error instanceof Error ? error.message : 'Invalid request');
+      const apiError = error instanceof ClaudeApiError ? error : mapChatGptBackendError(error) ?? (error instanceof ModelRegistryError ? new ClaudeApiError(error.message, error.status, error.status === 404 ? 'not_found_error' : 'invalid_request_error') : new ClaudeApiError(error instanceof Error ? error.message : 'Invalid request'));
       return c.json(apiError.toResponseBody(), apiError.status as 400);
     }
   });

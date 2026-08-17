@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 import { createApp } from './app.js';
 import { createAdminRoute } from './routes/admin.js';
 import { createMessagesRoute } from './routes/messages.js';
@@ -163,6 +163,17 @@ describe('/v1/chat/completions', () => {
     expect(res.status).toBe(404);
     const body = await res.json() as { error: { message: string } };
     expect(body.error.message).toContain('Model alias sonnet is bound to missing backend model: missing-backend-model');
+  });
+
+  it('maps backend unauthorized errors to an OpenAI authentication error', async () => {
+    const backend = new ThrowingCompleteBackend([{ id: 'backend-test-model' }], new ChatGptBackendError('ChatGPT session expired: HTTP 401', 'unauthorized', { status: 401 }));
+    const app = createOpenAiChatRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(401);
+    const body = await res.json() as { error: { type: string; message: string } };
+    expect(body.error.type).toBe('authentication_error');
+    expect(body.error.message).toContain('HTTP 401');
   });
 
   it('releases account concurrency after an OpenAI non-streaming chat request', async () => {
@@ -338,6 +349,17 @@ describe('/v1/responses', () => {
     expect(body.error.type).toBe('not_found_error');
     expect(body.error.message).toContain('Unknown model: unknown-model');
   });
+
+  it('maps backend rate limit errors to an OpenAI rate_limit_error', async () => {
+    const backend = new ThrowingCompleteBackend([{ id: 'backend-test-model' }], new ChatGptBackendError('ChatGPT responses request failed: HTTP 429', 'rate_limited', { status: 429 }));
+    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+
+    const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', input: 'hello' }) });
+    expect(res.status).toBe(429);
+    const body = await res.json() as { error: { type: string; message: string } };
+    expect(body.error.type).toBe('rate_limit_error');
+    expect(body.error.message).toContain('HTTP 429');
+  });
 });
 
 describe('/v1/messages', () => {
@@ -433,6 +455,18 @@ describe('/v1/messages', () => {
     expect(body.type).toBe('error');
     expect(body.error.type).toBe('not_found_error');
     expect(body.error.message).toContain('Unknown model: unknown-model');
+  });
+
+  it('maps backend rate limit errors to a Claude rate_limit_error', async () => {
+    const backend = new ThrowingCompleteBackend([{ id: 'backend-test-model' }], new ChatGptBackendError('ChatGPT responses request failed: HTTP 429', 'rate_limited', { status: 429 }));
+    const app = createMessagesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(429);
+    const body = await res.json() as { type: string; error: { type: string; message: string } };
+    expect(body.type).toBe('error');
+    expect(body.error.type).toBe('rate_limit_error');
+    expect(body.error.message).toContain('HTTP 429');
   });
 
   it('returns a Claude error for a disabled alias', async () => {
@@ -587,6 +621,18 @@ class InspectingBackend implements ChatGptBackendClient {
     this.lastContext = context;
     yield { type: 'text_delta' as const, text: `backend:${request.model}` };
     yield { type: 'done' as const };
+  }
+}
+
+class ThrowingCompleteBackend extends InspectingBackend {
+  constructor(models: ChatGptDiscoveredModel[], private readonly error: Error) {
+    super(models);
+  }
+
+  override async complete(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse> {
+    this.lastRequest = request;
+    this.lastContext = context;
+    throw this.error;
   }
 }
 
