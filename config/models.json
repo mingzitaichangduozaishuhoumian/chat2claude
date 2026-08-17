@@ -4,7 +4,7 @@
       "id": "haiku",
       "type": "model",
       "display_name": "Haiku alias",
-      "backendModel": "backend-test-model",
+      "backendModel": null,
       "enabled": true,
       "capabilities": {
         "reasoning_effort": ["off", "minimal", "low", "medium", "high", "max"],
@@ -17,7 +17,7 @@
       "id": "sonnet",
       "type": "model",
       "display_name": "Sonnet alias",
-      "backendModel": "backend-test-model",
+      "backendModel": null,
       "enabled": true,
       "capabilities": {
         "reasoning_effort": ["off", "minimal", "low", "medium", "high", "max"],

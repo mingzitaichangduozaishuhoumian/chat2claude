@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { ChatGptBackendError, SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 import { createApp } from './app.js';
@@ -17,6 +17,42 @@ import { SetupProvisioner } from './services/setup-provisioner.js';
 import { ResponsesStore } from './services/responses-store.js';
 
 const discoveredModels = [{ id: 'backend-test-model', displayName: 'Backend Test Model' }];
+const testModelRegistryJson = JSON.stringify({
+  aliases: [
+    {
+      id: 'haiku',
+      display_name: 'Haiku alias',
+      backendModel: 'backend-test-model',
+      enabled: true,
+      defaults: { reasoning_effort: 'low', speed: 'fast' },
+    },
+    {
+      id: 'sonnet',
+      display_name: 'Sonnet alias',
+      backendModel: 'backend-test-model',
+      enabled: true,
+      defaults: { reasoning_effort: 'medium', speed: 'balanced' },
+    },
+    {
+      id: 'opus',
+      display_name: 'Opus alias',
+      backendModel: null,
+      enabled: true,
+      defaults: { reasoning_effort: 'high', speed: 'quality' },
+    },
+  ],
+});
+const originalModelRegistryJson = process.env.MODEL_REGISTRY_JSON;
+
+beforeEach(() => {
+  process.env.MODEL_REGISTRY_JSON = testModelRegistryJson;
+});
+
+afterEach(() => {
+  if (originalModelRegistryJson === undefined) delete process.env.MODEL_REGISTRY_JSON;
+  else process.env.MODEL_REGISTRY_JSON = originalModelRegistryJson;
+});
+
 const env = {
   port: 3000,
   host: '127.0.0.1',

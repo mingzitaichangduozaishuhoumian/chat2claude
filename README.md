@@ -38,6 +38,8 @@ http://localhost:3000/admin
 
 一键启动脚本会自动启用 corepack；如果还没有 `node_modules`，会先安装依赖。面向普通用户的 `start.bat` / `start.sh` 在未设置 `CHATGPT_BACKEND` 时默认使用 `session`，并提示打开 `/admin` 授权。代码层 `loadEnv()` 默认仍保持 `mock`，用于保护测试与本地开发。
 
+生产默认 `config/models.json` 只定义 `haiku` / `sonnet` / `opus` alias 的能力与默认 effort/speed，不预绑定任何测试 backend model；`/v1/models` 只返回已经解析成功的 alias 与 backend discovery passthrough 模型。完成 OAuth/手动 session provisioning 后，服务会刷新 discovery，并把 `sonnet` 自动绑定到发现到的最佳后端模型。测试如需固定 `sonnet -> backend-test-model`，通过测试 fixture/env 显式注入 alias overlay。
+
 也可以手动运行：
 
 ```bash
