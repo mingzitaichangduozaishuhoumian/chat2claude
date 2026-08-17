@@ -75,12 +75,27 @@ function mapResponsesBackendOptions(request: OpenAiResponsesRequest, backendOpti
     const text = isPlainObject(responsesBody.text) ? { ...(responsesBody.text as Record<string, unknown>) } : {};
     if (text.format === undefined) responsesBody.text = { ...text, format: normalizeOpenAiResponseFormat(request.response_format) };
   }
+  const rawTools = mapResponsesRawHostedTools(request.tools);
+  if (rawTools?.length) responsesBody.tools = Array.isArray(responsesBody.tools) ? [...responsesBody.tools, ...rawTools] : rawTools;
+  const rawToolChoice = mapResponsesRawHostedToolChoice(request.tool_choice);
+  if (rawToolChoice) responsesBody.tool_choice = rawToolChoice;
   if (!Object.keys(responsesBody).length) return backendOptions;
   return { ...backendOptions, responsesBody };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function mapResponsesRawHostedTools(tools: OpenAiResponsesTool[] | undefined): OpenAiResponsesTool[] | undefined {
+  if (!tools) return undefined;
+  const rawTools = tools.filter((tool) => tool.type !== undefined && tool.type !== 'function').map((tool) => ({ ...tool }));
+  return rawTools.length ? rawTools : undefined;
+}
+
+function mapResponsesRawHostedToolChoice(toolChoice: OpenAiResponsesToolChoice | undefined): Record<string, unknown> | undefined {
+  if (!toolChoice || typeof toolChoice !== 'object' || toolChoice.type === 'function') return undefined;
+  return { ...toolChoice };
 }
 
 function normalizeOpenAiResponseFormat(responseFormat: Record<string, unknown>): Record<string, unknown> {
@@ -236,6 +251,7 @@ function mapResponsesTools(tools: OpenAiResponsesTool[] | undefined): ChatGptToo
   if (!tools) return undefined;
   const mapped: ChatGptTool[] = [];
   for (const tool of tools) {
+    if (tool.type !== undefined && tool.type !== 'function') continue;
     const fn = tool.function && typeof tool.function === 'object' && !Array.isArray(tool.function) ? tool.function as Record<string, unknown> : tool;
     const name = typeof fn.name === 'string' ? fn.name : undefined;
     if (!name) continue;

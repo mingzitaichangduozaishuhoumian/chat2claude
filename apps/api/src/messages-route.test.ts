@@ -673,24 +673,28 @@ describe('/v1/responses', () => {
     expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0 });
   });
 
-  it('allows OpenAI responses built-in tool types', async () => {
-    const app = createApp(env);
+  it('allows and preserves OpenAI responses built-in tool types', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
     const res = await app.request('/v1/responses', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({
       model: 'sonnet',
       input: 'search',
       tools: [{ type: 'web_search_preview' }],
     }) });
     expect(res.status).toBe(200);
+    expect(backend.lastRequest?.backendOptions?.responsesBody).toEqual({ tools: [{ type: 'web_search_preview' }] });
   });
 
-  it('allows OpenAI responses built-in tool_choice types', async () => {
-    const app = createApp(env);
+  it('allows and preserves OpenAI responses built-in tool_choice types', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
     const res = await app.request('/v1/responses', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({
       model: 'sonnet',
       input: 'search',
       tool_choice: { type: 'web_search_preview' },
     }) });
     expect(res.status).toBe(200);
+    expect(backend.lastRequest?.backendOptions?.responsesBody).toEqual({ tool_choice: { type: 'web_search_preview' } });
   });
 
   it('preserves OpenAI Responses structured output fields in backend options without forwarding store', async () => {

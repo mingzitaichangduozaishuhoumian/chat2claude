@@ -224,6 +224,41 @@ describe('SessionChatGptBackend', () => {
     expect(calls[0].body.tool_choice).toBe('required');
   });
 
+  it('merges backend responsesBody hosted tools with mapped function tools', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return sseResponse([{ type: 'response.completed' }]);
+    } });
+
+    await backend.complete({
+      ...request,
+      tools: [{ name: 'get_weather', description: 'weather', inputSchema: { type: 'object' }, strict: true }],
+      backendOptions: { responsesBody: { tools: [{ type: 'web_search_preview', search_context_size: 'low' }] } },
+    }, context);
+
+    expect(calls[0].body.tools).toEqual([
+      { type: 'function', name: 'get_weather', description: 'weather', parameters: { type: 'object' }, strict: true },
+      { type: 'web_search_preview', search_context_size: 'low' },
+    ]);
+  });
+
+  it('applies raw hosted tool_choice only when internal toolChoice is absent', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return sseResponse([{ type: 'response.completed' }]);
+    } });
+
+    await backend.complete({ ...request, backendOptions: { responsesBody: { tool_choice: { type: 'web_search_preview' } } } }, context);
+    await backend.complete({ ...request, toolChoice: { type: 'any' }, backendOptions: { responsesBody: { tool_choice: { type: 'web_search_preview' } } } }, context);
+    await backend.complete({ ...request, toolChoice: { type: 'tool', name: 'get_weather' }, backendOptions: { responsesBody: { tool_choice: { type: 'web_search_preview' } } } }, context);
+
+    expect(calls[0].body.tool_choice).toEqual({ type: 'web_search_preview' });
+    expect(calls[1].body.tool_choice).toBe('required');
+    expect(calls[2].body.tool_choice).toEqual({ type: 'function', name: 'get_weather' });
+  });
+
   it('passes tools/tool_choice to the Codex responses body and parses tool calls', async () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {

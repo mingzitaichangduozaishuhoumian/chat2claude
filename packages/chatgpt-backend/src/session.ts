@@ -137,7 +137,9 @@ function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {
   if (typeof request.temperature === 'number') body.temperature = request.temperature;
   if (typeof request.topP === 'number') body.top_p = request.topP;
   if (request.stopSequences?.length) body.stop = request.stopSequences.length === 1 ? request.stopSequences[0] : request.stopSequences;
-  if (request.tools?.length) body.tools = request.tools.map((tool) => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: tool.strict }));
+  const mappedTools = request.tools?.length ? request.tools.map((tool) => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: tool.strict })) : [];
+  const rawTools = Array.isArray(body.tools) ? body.tools : [];
+  if (mappedTools.length || rawTools.length) body.tools = [...mappedTools, ...rawTools];
   if (request.toolChoice) body.tool_choice = request.toolChoice.type === 'tool' ? { type: 'function', name: request.toolChoice.name } : request.toolChoice.type === 'any' ? 'required' : request.toolChoice.type;
   return body;
 }
@@ -150,6 +152,12 @@ function applyResponsesBodyOptions(body: JsonObject, value: unknown): void {
   if (typeof raw.parallel_tool_calls === 'boolean') body.parallel_tool_calls = raw.parallel_tool_calls;
   if (typeof raw.truncation === 'string') body.truncation = raw.truncation;
   if (raw.text && typeof raw.text === 'object' && !Array.isArray(raw.text)) body.text = raw.text;
+  if (Array.isArray(raw.tools)) body.tools = raw.tools.map((tool) => isPlainObject(tool) ? { ...tool } : tool);
+  if (body.tool_choice === undefined && isPlainObject(raw.tool_choice)) body.tool_choice = { ...raw.tool_choice };
+}
+
+function isPlainObject(value: unknown): value is JsonObject {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function toResponsesInputItem(item: ChatGptInputItem): JsonObject {

@@ -46,7 +46,7 @@ This project is not yet a full Claude/OpenAI semantic bridge. The current implem
 | `POST /v1/responses` non-stream text | Supported alpha | Maps common Responses input shapes and returns OpenAI-like response objects. |
 | `POST /v1/responses` stream text | Supported alpha | Emits common Responses SSE events for text and tool-call deltas. |
 | Response input items/content parts | Partially supported | Message, function call/output, text, and image input shapes are mapped where possible with explicit fallbacks. |
-| Response tools/tool_choice | Partially supported | Function tools and common choices are mapped to backend fields. |
+| Response tools/tool_choice | Partially supported | Function tools and common choices are mapped to backend fields. Responses hosted/built-in tools such as `web_search_preview`, `file_search`, and `code_interpreter` are passed through to the session backend best-effort; real support depends on ChatGPT/Codex upstream. |
 | `previous_response_id`, `store`, `metadata`, `parallel_tool_calls`, `truncation`, `text` | Partial alpha | Accepted for compatibility. `store:true` only enables local short-lived `ResponsesStore` persistence for `previous_response_id` continuation and is not forwarded to ChatGPT/Codex upstream; `previous_response_id`, `metadata`, `parallel_tool_calls`, `truncation`, and `text` remain allowlisted for session backend Responses-body pass-through. |
 | `response_format` structured output | Partial alpha | Used as a fallback to `text.format` when `text` is absent; strict output semantics depend on upstream backend support. |
 

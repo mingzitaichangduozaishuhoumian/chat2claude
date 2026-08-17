@@ -291,6 +291,32 @@ describe('OpenAI request generation controls mapping', () => {
     expect(mapped.stopSequences).toEqual(['END']);
   });
 
+  it('passes Responses hosted tools and hosted tool_choice through backend responsesBody', () => {
+    const webSearch = { type: 'web_search_preview', search_context_size: 'low' };
+    const mapped = mapOpenAiResponsesRequestToChatGpt({
+      model: 'gpt-test',
+      input: 'hello',
+      tools: [{ type: 'function', name: 'get_weather', parameters: { type: 'object' } }, webSearch],
+      tool_choice: { type: 'web_search_preview' },
+    });
+
+    expect(mapped.tools).toEqual([{ name: 'get_weather', description: undefined, inputSchema: { type: 'object' }, strict: undefined, raw: expect.any(Object) }]);
+    expect(mapped.toolChoice).toBeUndefined();
+    expect(mapped.backendOptions?.responsesBody).toEqual({ tools: [webSearch], tool_choice: { type: 'web_search_preview' } });
+    expect((mapped.backendOptions?.responsesBody as { tools: unknown[] }).tools[0]).not.toBe(webSearch);
+  });
+
+  it('keeps Responses function tool_choice internal and out of raw responsesBody', () => {
+    const mapped = mapOpenAiResponsesRequestToChatGpt({
+      model: 'gpt-test',
+      input: 'hello',
+      tool_choice: { type: 'function', name: 'get_weather' },
+    });
+
+    expect(mapped.toolChoice).toEqual({ type: 'tool', name: 'get_weather' });
+    expect(mapped.backendOptions?.responsesBody).toBeUndefined();
+  });
+
   it('maps Responses compatibility fields to backend responsesBody without forwarding store', () => {
     const text = { format: { type: 'json_schema', name: 'answer', schema: { type: 'object' } } };
     const mapped = mapOpenAiResponsesRequestToChatGpt({

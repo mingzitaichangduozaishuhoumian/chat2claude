@@ -100,7 +100,7 @@ curl -X POST http://localhost:3000/admin/api/auth/chatgpt/complete \
 - `GET /v1/models`：返回已启用且可解析的 alias 与 discovery passthrough 模型列表
 - `POST /v1/messages`：Claude-like Messages API，支持非流式与 SSE 流式
 
-OpenAI Responses 的 `store:true` 仅用于本地短期续接 `previous_response_id`，不会请求 ChatGPT/Codex 上游持久保存。
+OpenAI Responses 的 `store:true` 仅用于本地短期续接 `previous_response_id`，不会请求 ChatGPT/Codex 上游持久保存。Responses built-in/hosted tools（如 `web_search_preview` / `file_search` / `code_interpreter`）会 best-effort 透传给 session backend；真实支持取决于 ChatGPT/Codex 上游。
 
 `/v1/*` 请求需要携带已配置或运行时启用的 API key。已配置 `API_KEYS` 后，admin API 请求也需要携带同一个 key：
 
