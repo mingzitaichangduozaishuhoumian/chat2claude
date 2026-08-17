@@ -61,6 +61,7 @@ function parseOpenAiChatCompletionRequest(value: unknown): OpenAiChatCompletionR
   if (!Array.isArray(body.messages)) throw new ClaudeApiError('messages must be an array');
   const maxTokens = body.max_completion_tokens ?? body.max_tokens;
   if (maxTokens !== undefined && (!Number.isInteger(maxTokens) || maxTokens < 1)) throw new ClaudeApiError('max_tokens/max_completion_tokens must be a positive integer');
+  if (body.response_format !== undefined && (!body.response_format || typeof body.response_format !== 'object' || Array.isArray(body.response_format))) throw new ClaudeApiError('response_format must be an object');
   return body as OpenAiChatCompletionRequest;
 }
 

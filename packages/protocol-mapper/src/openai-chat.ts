@@ -20,6 +20,7 @@ export interface OpenAiChatCompletionRequest {
   tools?: OpenAiChatTool[];
   tool_choice?: OpenAiChatToolChoice;
   stream_options?: { include_usage?: boolean };
+  response_format?: Record<string, unknown>;
 }
 
 export interface OpenAiChatMessage {
@@ -60,6 +61,7 @@ export function mapOpenAiChatRequestToChatGpt(request: OpenAiChatCompletionReque
   }));
   const modelDefaults = defaults.modelDefaults?.[request.model];
   const stopSequences = normalizeOpenAiStop(request.stop);
+  const backendOptions = mapOpenAiChatBackendOptions(request, options.backendOptions);
   return {
     messages,
     inputItems: mapOpenAiChatInputItems(request.messages),
@@ -72,8 +74,20 @@ export function mapOpenAiChatRequestToChatGpt(request: OpenAiChatCompletionReque
     stopSequences,
     tools: mapOpenAiTools(request.tools),
     toolChoice: mapOpenAiToolChoice(request.tool_choice),
-    backendOptions: options.backendOptions,
+    backendOptions,
   };
+}
+
+function mapOpenAiChatBackendOptions(request: OpenAiChatCompletionRequest, backendOptions: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (request.response_format === undefined) return backendOptions;
+  const responsesBody: Record<string, unknown> = isPlainObject(backendOptions?.responsesBody) ? { ...(backendOptions.responsesBody as Record<string, unknown>) } : {};
+  const text = isPlainObject(responsesBody.text) ? { ...(responsesBody.text as Record<string, unknown>) } : {};
+  responsesBody.text = { ...text, format: request.response_format };
+  return { ...backendOptions, responsesBody };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 export function mapOpenAiTools(tools: OpenAiChatTool[] | undefined): ChatGptTool[] | undefined {

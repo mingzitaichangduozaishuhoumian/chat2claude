@@ -19,6 +19,13 @@ export interface OpenAiResponsesRequest {
   response_speed?: string;
   tools?: OpenAiResponsesTool[];
   tool_choice?: OpenAiResponsesToolChoice;
+  previous_response_id?: string | null;
+  store?: boolean | null;
+  metadata?: Record<string, unknown> | null;
+  parallel_tool_calls?: boolean;
+  truncation?: string;
+  text?: Record<string, unknown>;
+  response_format?: Record<string, unknown>;
 }
 
 export type OpenAiResponsesInputItem = Record<string, unknown>;
@@ -41,6 +48,7 @@ export interface OpenAiResponsesBackendRequestOptions { backendModel?: string; b
 export function mapOpenAiResponsesRequestToChatGpt(request: OpenAiResponsesRequest, defaults: ReasoningSpeedDefaults = {}, options: OpenAiResponsesBackendRequestOptions = {}): ChatGptCompletionRequest {
   const modelDefaults = defaults.modelDefaults?.[request.model];
   const stopSequences = normalizeResponsesStop(request.stop);
+  const backendOptions = mapResponsesBackendOptions(request, options.backendOptions);
   return {
     messages: mapResponsesInput(request.input, request.instructions),
     inputItems: mapResponsesInputItems(request.input, request.instructions),
@@ -53,8 +61,26 @@ export function mapOpenAiResponsesRequestToChatGpt(request: OpenAiResponsesReque
     stopSequences,
     tools: mapResponsesTools(request.tools),
     toolChoice: mapResponsesToolChoice(request.tool_choice),
-    backendOptions: options.backendOptions,
+    backendOptions,
   };
+}
+
+function mapResponsesBackendOptions(request: OpenAiResponsesRequest, backendOptions: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  const responsesBody: Record<string, unknown> = isPlainObject(backendOptions?.responsesBody) ? { ...(backendOptions.responsesBody as Record<string, unknown>) } : {};
+  for (const key of ['previous_response_id', 'store', 'metadata', 'parallel_tool_calls', 'truncation'] as const) {
+    if (request[key] !== undefined) responsesBody[key] = request[key];
+  }
+  if (request.text !== undefined) responsesBody.text = request.text;
+  else if (request.response_format !== undefined) {
+    const text = isPlainObject(responsesBody.text) ? { ...(responsesBody.text as Record<string, unknown>) } : {};
+    responsesBody.text = { ...text, format: request.response_format };
+  }
+  if (!Object.keys(responsesBody).length) return backendOptions;
+  return { ...backendOptions, responsesBody };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequest, response: ChatGptCompletionResponse): OpenAiResponsesResponse {

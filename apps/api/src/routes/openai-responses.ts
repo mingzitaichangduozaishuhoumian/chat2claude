@@ -61,7 +61,18 @@ function parseOpenAiResponsesRequest(value: unknown): OpenAiResponsesRequest {
   if (typeof body.input !== 'string' && !Array.isArray(body.input)) throw new ClaudeApiError('input must be a string or array');
   const maxTokens = body.max_output_tokens ?? body.max_tokens;
   if (maxTokens !== undefined && (!Number.isInteger(maxTokens) || maxTokens < 1)) throw new ClaudeApiError('max_output_tokens/max_tokens must be a positive integer');
+  if (body.previous_response_id !== undefined && body.previous_response_id !== null && typeof body.previous_response_id !== 'string') throw new ClaudeApiError('previous_response_id must be a string or null');
+  if (body.store !== undefined && body.store !== null && typeof body.store !== 'boolean') throw new ClaudeApiError('store must be a boolean or null');
+  if (body.metadata !== undefined && body.metadata !== null && !isObject(body.metadata)) throw new ClaudeApiError('metadata must be an object or null');
+  if (body.parallel_tool_calls !== undefined && typeof body.parallel_tool_calls !== 'boolean') throw new ClaudeApiError('parallel_tool_calls must be a boolean');
+  if (body.truncation !== undefined && typeof body.truncation !== 'string') throw new ClaudeApiError('truncation must be a string');
+  if (body.text !== undefined && !isObject(body.text)) throw new ClaudeApiError('text must be an object');
+  if (body.response_format !== undefined && !isObject(body.response_format)) throw new ClaudeApiError('response_format must be an object');
   return body as OpenAiResponsesRequest;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function toOpenAiError(error: ClaudeApiError) {

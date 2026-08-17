@@ -126,6 +126,39 @@ describe('SessionChatGptBackend', () => {
     expect(calls[0].body).not.toHaveProperty('stop');
   });
 
+  it('allowlists backend responsesBody fields and lets store true override the default', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return sseResponse([{ type: 'response.completed' }]);
+    } });
+
+    await backend.complete({
+      ...request,
+      backendOptions: {
+        responsesBody: {
+          previous_response_id: 'resp_prev',
+          store: true,
+          metadata: { trace: 'abc' },
+          parallel_tool_calls: false,
+          truncation: 'auto',
+          text: { format: { type: 'json_object' } },
+          extra: 'drop me',
+        },
+      },
+    }, context);
+
+    expect(calls[0].body).toMatchObject({
+      previous_response_id: 'resp_prev',
+      store: true,
+      metadata: { trace: 'abc' },
+      parallel_tool_calls: false,
+      truncation: 'auto',
+      text: { format: { type: 'json_object' } },
+    });
+    expect(calls[0].body).not.toHaveProperty('extra');
+  });
+
   it('passes multiple stop sequences as an array to the Codex responses body', async () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {

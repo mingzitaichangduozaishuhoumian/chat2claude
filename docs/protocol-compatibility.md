@@ -11,7 +11,7 @@ This project is not yet a full Claude/OpenAI semantic bridge. The current implem
 ## Claude Messages API
 
 | Feature | Current status | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `POST /v1/messages` non-stream text | Supported | String and text block input map to backend text. |
 | `POST /v1/messages` stream text | Supported | Emits Claude SSE text block events. |
 | `GET /v1/models` | Supported | Uses backend discovery plus alias overlay. |
@@ -31,23 +31,29 @@ This project is not yet a full Claude/OpenAI semantic bridge. The current implem
 ## OpenAI Chat Completions API
 
 | Feature | Current status | Notes |
-|---|---|---|
-| `POST /v1/chat/completions` | Unsupported | Planned after Canonical IR stabilizes. |
-| OpenAI `messages[]` | Unsupported | Needs OpenAI -> Canonical adapter. |
-| OpenAI `tool_calls` | Unsupported | Will map to Canonical `tool_use` / Claude `tool_use`. |
-| OpenAI streaming chunks | Unsupported | Will map through Canonical stream events. |
+| --- | --- | --- |
+| `POST /v1/chat/completions` non-stream text | Supported alpha | Maps OpenAI chat messages to the backend request and returns OpenAI-like chat completions. |
+| `POST /v1/chat/completions` stream text | Supported alpha | Emits OpenAI SSE chat completion chunks. |
+| OpenAI `messages[]` text/content parts | Partially supported | Text maps directly; image content parts are preserved as structured backend input when possible and downgraded in text fallback. |
+| OpenAI `tool_calls` / `tool` messages | Partially supported | Mapped to structured backend function call/input items; backend execution support remains backend-specific. |
+| `tools` / `tool_choice` | Partially supported | Function tool definitions and common choices are mapped to backend fields. |
+| `response_format` structured output | Partial alpha | Accepted and mapped to backend `responsesBody.text.format` for session backend pass-through; no guarantee of strict schema enforcement. |
 
 ## OpenAI Responses API
 
 | Feature | Current status | Notes |
-|---|---|---|
-| `POST /v1/responses` | Unsupported | Planned later; current ChatGPT/Codex backend internally uses a responses-like endpoint but outward OpenAI Responses compatibility is not implemented. |
-| Response items/reasoning/tools | Unsupported | Needs separate adapter and capability matrix. |
+| --- | --- | --- |
+| `POST /v1/responses` non-stream text | Supported alpha | Maps common Responses input shapes and returns OpenAI-like response objects. |
+| `POST /v1/responses` stream text | Supported alpha | Emits common Responses SSE events for text and tool-call deltas. |
+| Response input items/content parts | Partially supported | Message, function call/output, text, and image input shapes are mapped where possible with explicit fallbacks. |
+| Response tools/tool_choice | Partially supported | Function tools and common choices are mapped to backend fields. |
+| `previous_response_id`, `store`, `metadata`, `parallel_tool_calls`, `truncation`, `text` | Partial alpha | Accepted and allowlisted for session backend Responses-body pass-through. |
+| `response_format` structured output | Partial alpha | Used as a fallback to `text.format` when `text` is absent; strict output semantics depend on upstream backend support. |
 
 ## ChatGPT/Codex backend
 
 | Capability | Current status | Notes |
-|---|---|---|
+| --- | --- | --- |
 | Dynamic model discovery | Supported | `listModels(context?)` discovers backend models. |
 | Codex OAuth account authorization | Supported alpha | OAuth PKCE flow provisions a runtime account/API key. |
 | Text completion | Supported alpha | Session backend streams and aggregates text deltas. |

@@ -249,4 +249,61 @@ describe('OpenAI request generation controls mapping', () => {
 
     expect(mapped.stopSequences).toEqual(['END']);
   });
+
+  it('maps Responses compatibility fields to backend responsesBody', () => {
+    const text = { format: { type: 'json_schema', name: 'answer', schema: { type: 'object' } } };
+    const mapped = mapOpenAiResponsesRequestToChatGpt({
+      model: 'gpt-test',
+      input: 'hello',
+      previous_response_id: 'resp_prev',
+      store: true,
+      metadata: { trace: 'abc' },
+      parallel_tool_calls: false,
+      truncation: 'auto',
+      text,
+      response_format: { type: 'json_object' },
+    }, {}, { backendOptions: { keep: true, responsesBody: { existing: 'ok' } } });
+
+    expect(mapped.backendOptions).toEqual({
+      keep: true,
+      responsesBody: {
+        existing: 'ok',
+        previous_response_id: 'resp_prev',
+        store: true,
+        metadata: { trace: 'abc' },
+        parallel_tool_calls: false,
+        truncation: 'auto',
+        text,
+      },
+    });
+  });
+
+  it('maps Responses response_format as text.format when text is absent', () => {
+    const responseFormat = { type: 'json_schema', json_schema: { name: 'answer', schema: { type: 'object' } } };
+    const mapped = mapOpenAiResponsesRequestToChatGpt({ model: 'gpt-test', input: 'hello', response_format: responseFormat });
+
+    expect(mapped.backendOptions?.responsesBody).toEqual({ text: { format: responseFormat } });
+  });
+
+  it('merges Responses response_format with existing backend text options', () => {
+    const responseFormat = { type: 'json_object' };
+    const mapped = mapOpenAiResponsesRequestToChatGpt(
+      { model: 'gpt-test', input: 'hello', response_format: responseFormat },
+      {},
+      { backendOptions: { responsesBody: { text: { verbosity: 'low' } } } }
+    );
+
+    expect(mapped.backendOptions?.responsesBody).toEqual({ text: { verbosity: 'low', format: responseFormat } });
+  });
+
+  it('maps Chat response_format to backend responsesBody text.format', () => {
+    const responseFormat = { type: 'json_object' };
+    const mapped = mapOpenAiChatRequestToChatGpt({
+      model: 'gpt-test',
+      messages: [{ role: 'user', content: 'hello' }],
+      response_format: responseFormat,
+    }, {}, { backendOptions: { keep: true } });
+
+    expect(mapped.backendOptions).toEqual({ keep: true, responsesBody: { text: { format: responseFormat } } });
+  });
 });

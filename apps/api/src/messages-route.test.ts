@@ -112,6 +112,19 @@ describe('/v1/chat/completions', () => {
     ]);
   });
 
+  it('preserves OpenAI chat response_format in backend options', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const app = createOpenAiChatRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+    const responseFormat = { type: 'json_object' };
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      messages: [{ role: 'user', content: 'hello' }],
+      response_format: responseFormat,
+    }) });
+    expect(res.status).toBe(200);
+    expect(backend.lastRequest?.backendOptions).toEqual({ responsesBody: { text: { format: responseFormat } } });
+  });
+
   it('maps assistant tool_calls and tool messages into backend context text', async () => {
     const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
     const app = createOpenAiChatRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
@@ -303,6 +316,31 @@ describe('/v1/responses', () => {
     }) });
     expect(res.status).toBe(200);
     expect(backend.lastRequest?.toolChoice).toBeUndefined();
+  });
+
+  it('preserves OpenAI Responses structured output fields in backend options', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+    const text = { format: { type: 'json_schema', name: 'answer', schema: { type: 'object' } } };
+    const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      input: 'hello',
+      previous_response_id: 'resp_prev',
+      store: true,
+      metadata: { trace: 'abc' },
+      parallel_tool_calls: false,
+      truncation: 'auto',
+      text,
+    }) });
+    expect(res.status).toBe(200);
+    expect(backend.lastRequest?.backendOptions).toEqual({ responsesBody: {
+      previous_response_id: 'resp_prev',
+      store: true,
+      metadata: { trace: 'abc' },
+      parallel_tool_calls: false,
+      truncation: 'auto',
+      text,
+    } });
   });
 
   it('streams a forced tool call in responses SSE', async () => {

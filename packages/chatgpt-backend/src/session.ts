@@ -132,6 +132,7 @@ function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {
     instructions: '',
     max_output_tokens: request.maxTokens,
   };
+  applyResponsesBodyOptions(body, request.backendOptions?.responsesBody);
   if (request.reasoningEffort && request.reasoningEffort !== 'off') body.reasoning = { effort: request.reasoningEffort };
   if (typeof request.temperature === 'number') body.temperature = request.temperature;
   if (typeof request.topP === 'number') body.top_p = request.topP;
@@ -139,6 +140,17 @@ function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {
   if (request.tools?.length) body.tools = request.tools.map((tool) => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: tool.strict }));
   if (request.toolChoice) body.tool_choice = request.toolChoice.type === 'tool' ? { type: 'function', name: request.toolChoice.name } : request.toolChoice.type;
   return body;
+}
+
+function applyResponsesBodyOptions(body: JsonObject, value: unknown): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const raw = value as JsonObject;
+  if (typeof raw.previous_response_id === 'string' || raw.previous_response_id === null) body.previous_response_id = raw.previous_response_id;
+  if (typeof raw.store === 'boolean') body.store = raw.store;
+  if (raw.metadata === null || raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)) body.metadata = raw.metadata;
+  if (typeof raw.parallel_tool_calls === 'boolean') body.parallel_tool_calls = raw.parallel_tool_calls;
+  if (typeof raw.truncation === 'string') body.truncation = raw.truncation;
+  if (raw.text && typeof raw.text === 'object' && !Array.isArray(raw.text)) body.text = raw.text;
 }
 
 function toResponsesInputItem(item: ChatGptInputItem): JsonObject {
