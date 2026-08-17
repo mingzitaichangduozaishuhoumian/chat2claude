@@ -1088,6 +1088,44 @@ describe('/v1/messages/count_tokens', () => {
     expect(withBody.input_tokens).toBeGreaterThan(withoutBody.input_tokens);
   });
 
+  it('includes request configuration fields in estimated input_tokens', async () => {
+    const app = createApp(env);
+    const base = await app.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] }),
+    });
+    const enriched = await app.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({
+        model: 'sonnet',
+        messages: [{ role: 'user', content: 'hello' }],
+        tool_choice: { type: 'tool', name: 'lookup_weather' },
+        thinking: { type: 'enabled', budget_tokens: 1024 },
+        output_config: { effort: 'high' },
+        reasoning_effort: 'high',
+        speed: 'quality',
+        response_speed: 'balanced',
+        stop_sequences: ['</answer>'],
+        temperature: 0.2,
+        top_p: 0.9,
+        metadata: { trace_id: 'trace-count-tokens' },
+        service_tier: 'auto',
+        container: { type: 'ephemeral' },
+        context_management: { strategy: 'retain' },
+        mcp_servers: [{ name: 'docs', url: 'https://example.test/mcp' }],
+      }),
+    });
+
+    expect(base.status).toBe(200);
+    expect(enriched.status).toBe(200);
+    const baseBody = await base.json() as { input_tokens: number };
+    const enrichedBody = await enriched.json() as { input_tokens: number };
+    expect(Object.keys(enrichedBody)).toEqual(['input_tokens']);
+    expect(enrichedBody.input_tokens).toBeGreaterThan(baseBody.input_tokens);
+  });
+
   it('returns Claude-like validation errors for invalid count token requests', async () => {
     const app = createApp(env);
     const res = await app.request('/v1/messages/count_tokens', {
