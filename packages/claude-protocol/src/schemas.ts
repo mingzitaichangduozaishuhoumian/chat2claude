@@ -16,6 +16,12 @@ function parseClaudeRequestBase(value: unknown, options: { requireMaxTokens: boo
   if (typeof body.model !== 'string' || !body.model) throw new Error('model is required');
   if (options.requireMaxTokens && (typeof body.max_tokens !== 'number' || body.max_tokens <= 0)) throw new Error('max_tokens must be a positive number');
   if (body.max_tokens !== undefined && (typeof body.max_tokens !== 'number' || body.max_tokens <= 0)) throw new Error('max_tokens must be a positive number');
+  if (body.stream !== undefined && typeof body.stream !== 'boolean') throw new Error('stream must be a boolean');
+  if (body.temperature !== undefined && typeof body.temperature !== 'number') throw new Error('temperature must be a number');
+  if (body.top_p !== undefined && typeof body.top_p !== 'number') throw new Error('top_p must be a number');
+  if (body.stop_sequences !== undefined && (!Array.isArray(body.stop_sequences) || body.stop_sequences.some((item) => typeof item !== 'string'))) throw new Error('stop_sequences must be a string array');
+  if (body.metadata !== undefined && !isPlainObject(body.metadata)) throw new Error('metadata must be an object');
+  if (body.service_tier !== undefined && typeof body.service_tier !== 'string') throw new Error('service_tier must be a string');
   if (!Array.isArray(body.messages)) throw new Error('messages must be an array');
   if (body.system !== undefined) validateSystem(body.system);
   if (body.thinking !== undefined && (!body.thinking || typeof body.thinking !== 'object' || Array.isArray(body.thinking))) throw new Error('thinking must be an object');
@@ -32,6 +38,10 @@ function parseClaudeRequestBase(value: unknown, options: { requireMaxTokens: boo
     validateContent(item.content, 'message.content');
   }
   return body;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function validateSystem(system: unknown): void {

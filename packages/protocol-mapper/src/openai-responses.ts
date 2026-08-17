@@ -12,7 +12,7 @@ export interface OpenAiResponsesRequest {
   max_tokens?: number;
   temperature?: number;
   top_p?: number;
-  stop?: string | string[];
+  stop?: string | string[] | null;
   reasoning?: { effort?: string };
   reasoning_effort?: string;
   speed?: string;

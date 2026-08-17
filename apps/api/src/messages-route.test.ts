@@ -115,6 +115,17 @@ describe('/v1/chat/completions', () => {
     expect(res.status).toBe(401);
   });
 
+  it('rejects invalid OpenAI chat optional parameter types', async () => {
+    const app = createApp(env);
+    const badTemperature = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', temperature: 'hot', messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(badTemperature.status).toBe(400);
+    expect((await badTemperature.json() as { error: { type: string } }).error.type).toBe('invalid_request_error');
+
+    const badIncludeUsage = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', stream_options: { include_usage: 'yes' }, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(badIncludeUsage.status).toBe(400);
+    expect((await badIncludeUsage.json() as { error: { type: string } }).error.type).toBe('invalid_request_error');
+  });
+
   it('returns an OpenAI non-streaming chat completion with text content', async () => {
     const app = createApp(env);
     const res = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, reasoning_effort: 'low', response_speed: 'fast', messages: [{ role: 'user', content: 'hello' }] }) });
@@ -126,6 +137,12 @@ describe('/v1/chat/completions', () => {
     expect(body.choices[0].message.content).toBe('Echo:[effort=low,speed=fast] hello');
     expect(body.choices[0].finish_reason).toBe('stop');
     expect(body.usage.total_tokens).toBe(body.usage.prompt_tokens + body.usage.completion_tokens);
+  });
+
+  it('treats OpenAI chat stop:null as unset', async () => {
+    const app = createApp(env);
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', stop: null, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(200);
   });
 
   it('streams OpenAI chat completion chunks with text deltas', async () => {
@@ -159,6 +176,19 @@ describe('/v1/chat/completions', () => {
     expect(body.choices[0].message.tool_calls).toEqual([{ id: 'call_mock_get_weather', type: 'function', function: { name: 'get_weather', arguments: '{}' } }]);
   });
 
+  it('rejects malformed OpenAI chat function tool_choice before acquiring an account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiChatRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      messages: [{ role: 'user', content: 'call weather' }],
+      tool_choice: { type: 'function' },
+    }) });
+    expect(res.status).toBe(400);
+    expect(accountPool.list()[0].status).toBe('available');
+    expect(accountPool.list()[0].currentConcurrency).toBe(0);
+  });
+
   it('streams OpenAI tool call deltas when a function tool is forced', async () => {
     const app = createApp(env);
     const res = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({
@@ -187,6 +217,24 @@ describe('/v1/chat/completions', () => {
     expect(backend.lastRequest?.messages[0].content).toBe('look [unsupported:image_url]');
     expect(backend.lastRequest?.inputItems).toEqual([
       { type: 'message', role: 'user', content: [{ type: 'text', text: 'look ' }, { type: 'image', imageUrl: 'https://example.test/image.png' }] },
+    ]);
+  });
+
+  it('maps OpenAI chat developer messages as system instructions', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const app = createOpenAiChatRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      messages: [{ role: 'developer', content: 'be concise' }, { role: 'user', content: 'hello' }],
+    }) });
+    expect(res.status).toBe(200);
+    expect(backend.lastRequest?.messages).toEqual([
+      { role: 'system', content: 'be concise' },
+      { role: 'user', content: 'hello' },
+    ]);
+    expect(backend.lastRequest?.inputItems).toEqual([
+      { type: 'message', role: 'system', content: 'be concise' },
+      { type: 'message', role: 'user', content: 'hello' },
     ]);
   });
 
@@ -319,6 +367,17 @@ describe('/v1/responses', () => {
     expect(res.status).toBe(401);
   });
 
+  it('rejects invalid OpenAI responses optional parameter types', async () => {
+    const app = createApp(env);
+    const badStop = await app.request('/v1/responses', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', input: 'hello', stop: ['ok', 1] }) });
+    expect(badStop.status).toBe(400);
+    expect((await badStop.json() as { error: { type: string } }).error.type).toBe('invalid_request_error');
+
+    const badReasoningEffort = await app.request('/v1/responses', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', input: 'hello', reasoning: { effort: 1 } }) });
+    expect(badReasoningEffort.status).toBe(400);
+    expect((await badReasoningEffort.json() as { error: { type: string } }).error.type).toBe('invalid_request_error');
+  });
+
   it('returns a non-streaming responses text response', async () => {
     const app = createApp(env);
     const res = await app.request('/v1/responses', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_output_tokens: 64, reasoning: { effort: 'low' }, response_speed: 'fast', input: 'hello' }) });
@@ -330,6 +389,12 @@ describe('/v1/responses', () => {
     expect(body.output).toEqual([{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Echo:[effort=low,speed=fast] hello' }] }]);
     expect(body.output_text).toBe('Echo:[effort=low,speed=fast] hello');
     expect(body.usage.total_tokens).toBe(body.usage.input_tokens + body.usage.output_tokens);
+  });
+
+  it('treats OpenAI responses stop:null as unset', async () => {
+    const app = createApp(env);
+    const res = await app.request('/v1/responses', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', input: 'hello', stop: null }) });
+    expect(res.status).toBe(200);
   });
 
   it('streams responses text deltas', async () => {
@@ -573,6 +638,17 @@ describe('/v1/messages', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { content: Array<{ text: string }> };
     expect(body.content[0].text).toBe('Echo:[effort=medium,speed=balanced] hello');
+  });
+
+  it('rejects invalid Claude optional parameter types', async () => {
+    const app = createApp(env);
+    const badStopSequences = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, stop_sequences: ['ok', 1], messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(badStopSequences.status).toBe(400);
+    expect((await badStopSequences.json() as { error: { type: string } }).error.type).toBe('invalid_request_error');
+
+    const badMetadata = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, metadata: 'trace', messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(badMetadata.status).toBe(400);
+    expect((await badMetadata.json() as { error: { type: string } }).error.type).toBe('invalid_request_error');
   });
 
   it('returns a Claude-like non-stream message with resolved effort and speed', async () => {

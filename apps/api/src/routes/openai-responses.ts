@@ -77,12 +77,25 @@ function prependAssistantMessage(input: OpenAiResponsesRequest['input'], outputT
 }
 
 function parseOpenAiResponsesRequest(value: unknown): OpenAiResponsesRequest {
-  if (!value || typeof value !== 'object') throw new ClaudeApiError('Request body must be a JSON object');
-  const body = value as Partial<OpenAiResponsesRequest>;
+  if (!isObject(value)) throw new ClaudeApiError('Request body must be a JSON object');
+  const body = value;
   if (typeof body.model !== 'string' || !body.model) throw new ClaudeApiError('model is required');
   if (typeof body.input !== 'string' && !Array.isArray(body.input)) throw new ClaudeApiError('input must be a string or array');
   const maxTokens = body.max_output_tokens ?? body.max_tokens;
-  if (maxTokens !== undefined && (!Number.isInteger(maxTokens) || maxTokens < 1)) throw new ClaudeApiError('max_output_tokens/max_tokens must be a positive integer');
+  if (maxTokens !== undefined && (typeof maxTokens !== 'number' || !Number.isInteger(maxTokens) || maxTokens < 1)) throw new ClaudeApiError('max_output_tokens/max_tokens must be a positive integer');
+  if (body.stream !== undefined && typeof body.stream !== 'boolean') throw new ClaudeApiError('stream must be a boolean');
+  if (body.temperature !== undefined && typeof body.temperature !== 'number') throw new ClaudeApiError('temperature must be a number');
+  if (body.top_p !== undefined && typeof body.top_p !== 'number') throw new ClaudeApiError('top_p must be a number');
+  validateStop(body.stop);
+  if (body.reasoning !== undefined) {
+    if (!isObject(body.reasoning)) throw new ClaudeApiError('reasoning must be an object');
+    if (body.reasoning.effort !== undefined && typeof body.reasoning.effort !== 'string') throw new ClaudeApiError('reasoning.effort must be a string');
+  }
+  if (body.reasoning_effort !== undefined && typeof body.reasoning_effort !== 'string') throw new ClaudeApiError('reasoning_effort must be a string');
+  if (body.speed !== undefined && typeof body.speed !== 'string') throw new ClaudeApiError('speed must be a string');
+  if (body.response_speed !== undefined && typeof body.response_speed !== 'string') throw new ClaudeApiError('response_speed must be a string');
+  if (body.tools !== undefined && !Array.isArray(body.tools)) throw new ClaudeApiError('tools must be an array');
+  if (body.tool_choice !== undefined && typeof body.tool_choice !== 'string' && !isObject(body.tool_choice)) throw new ClaudeApiError('tool_choice must be a string or object');
   if (body.previous_response_id !== undefined && body.previous_response_id !== null && typeof body.previous_response_id !== 'string') throw new ClaudeApiError('previous_response_id must be a string or null');
   if (body.store !== undefined && body.store !== null && typeof body.store !== 'boolean') throw new ClaudeApiError('store must be a boolean or null');
   if (body.metadata !== undefined && body.metadata !== null && !isObject(body.metadata)) throw new ClaudeApiError('metadata must be an object or null');
@@ -90,7 +103,12 @@ function parseOpenAiResponsesRequest(value: unknown): OpenAiResponsesRequest {
   if (body.truncation !== undefined && typeof body.truncation !== 'string') throw new ClaudeApiError('truncation must be a string');
   if (body.text !== undefined && !isObject(body.text)) throw new ClaudeApiError('text must be an object');
   if (body.response_format !== undefined && !isObject(body.response_format)) throw new ClaudeApiError('response_format must be an object');
-  return body as OpenAiResponsesRequest;
+  return body as unknown as OpenAiResponsesRequest;
+}
+
+function validateStop(stop: unknown): void {
+  if (stop === undefined || stop === null || typeof stop === 'string') return;
+  if (!Array.isArray(stop) || stop.some((item) => typeof item !== 'string')) throw new ClaudeApiError('stop must be a string, string array, or null');
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

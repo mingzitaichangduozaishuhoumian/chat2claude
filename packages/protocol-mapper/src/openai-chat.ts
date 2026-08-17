@@ -3,7 +3,7 @@ import { createMessageId } from '@chatgpt-to-claude/shared';
 import { estimateTokens } from './response.js';
 import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningSpeedDefaults } from './reasoning.js';
 
-export type OpenAiChatRole = 'system' | 'user' | 'assistant' | 'tool';
+export type OpenAiChatRole = 'system' | 'developer' | 'user' | 'assistant' | 'tool';
 
 export interface OpenAiChatCompletionRequest {
   model: string;
@@ -13,7 +13,7 @@ export interface OpenAiChatCompletionRequest {
   max_completion_tokens?: number;
   temperature?: number;
   top_p?: number;
-  stop?: string | string[];
+  stop?: string | string[] | null;
   reasoning_effort?: string;
   speed?: string;
   response_speed?: string;
@@ -32,7 +32,7 @@ export interface OpenAiChatMessage {
 
 export interface OpenAiChatContentPart { type?: string; text?: string; [key: string]: unknown; }
 export interface OpenAiChatTool { type: 'function'; function: { name: string; description?: string; parameters?: Record<string, unknown>; strict?: boolean }; }
-export type OpenAiChatToolChoice = 'auto' | 'none' | 'required' | { type: 'function'; function: { name: string } };
+export type OpenAiChatToolChoice = 'auto' | 'none' | 'required' | { type: 'function'; name?: string; function?: { name?: string } };
 export interface OpenAiChatToolCall { id?: string; type?: 'function'; function?: { name?: string; arguments?: string }; }
 
 export interface OpenAiChatCompletionResponse {
@@ -56,7 +56,7 @@ export interface OpenAiBackendRequestOptions { backendModel?: string; backendOpt
 
 export function mapOpenAiChatRequestToChatGpt(request: OpenAiChatCompletionRequest, defaults: ReasoningSpeedDefaults = {}, options: OpenAiBackendRequestOptions = {}): ChatGptCompletionRequest {
   const messages: ChatGptMessage[] = request.messages.map((message) => ({
-    role: message.role === 'tool' ? 'user' : message.role,
+    role: normalizeOpenAiChatRole(message.role),
     content: stringifyOpenAiMessage(message),
   }));
   const modelDefaults = defaults.modelDefaults?.[request.model];
@@ -105,7 +105,10 @@ export function mapOpenAiToolChoice(toolChoice: OpenAiChatToolChoice | undefined
   if (toolChoice === 'auto') return { type: 'auto' };
   if (toolChoice === 'none') return { type: 'none' };
   if (toolChoice === 'required') return { type: 'any' };
-  if (toolChoice.type === 'function') return { type: 'tool', name: toolChoice.function.name };
+  if (toolChoice.type === 'function') {
+    const name = toolChoice.function?.name ?? toolChoice.name;
+    return name ? { type: 'tool', name } : undefined;
+  }
   return undefined;
 }
 
@@ -182,7 +185,7 @@ function mapOpenAiChatInputItems(messages: OpenAiChatMessage[]): ChatGptInputIte
     if (message.role === 'tool' && message.tool_call_id) {
       inputItems.push({ type: 'function_call_output', callId: message.tool_call_id, output: stringifyOpenAiContent(message.content) });
     } else {
-      if (content) inputItems.push({ type: 'message', role: message.role === 'tool' ? 'user' : message.role, content });
+      if (content) inputItems.push({ type: 'message', role: normalizeOpenAiChatRole(message.role), content });
       for (const toolCall of message.tool_calls ?? []) {
         const name = toolCall.function?.name ?? 'unknown';
         const callId = toolCall.id ?? 'unknown';
@@ -191,6 +194,12 @@ function mapOpenAiChatInputItems(messages: OpenAiChatMessage[]): ChatGptInputIte
     }
   }
   return inputItems;
+}
+
+function normalizeOpenAiChatRole(role: OpenAiChatRole): ChatGptMessage['role'] {
+  if (role === 'developer') return 'system';
+  if (role === 'tool') return 'user';
+  return role;
 }
 
 function mapOpenAiContentParts(content: OpenAiChatMessage['content']): string | ChatGptInputContentPart[] | undefined {
