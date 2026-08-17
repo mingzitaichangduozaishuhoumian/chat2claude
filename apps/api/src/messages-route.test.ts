@@ -303,6 +303,12 @@ describe('API key auth', () => {
     expect(body.error.message).toContain('/admin');
   });
 
+  it('protects /v1/messages/count_tokens with the same API key middleware', async () => {
+    const app = createApp({ ...env, apiKeys: ['secret'] });
+    const res = await app.request('/v1/messages/count_tokens', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(401);
+  });
+
   it('accepts bearer API keys from API_KEYS', async () => {
     const app = createApp({ ...env, apiKeys: ['secret'] });
     const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
@@ -388,6 +394,50 @@ describe('/admin', () => {
     expect(body.defaultResponseSpeed).toBe('balanced');
     expect(body.backend).toEqual({ enabled: true, provider: 'mock', chatGptConnected: false });
     expect(body.nextStep).toContain('/admin');
+  });
+});
+
+describe('/v1/messages/count_tokens', () => {
+  it('returns estimated input_tokens for text and structured blocks', async () => {
+    const app = createApp(env);
+    const res = await app.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({
+        model: 'sonnet',
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: 'weather result: ' },
+          { type: 'tool_result', tool_use_id: 'toolu_1', content: '72F' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aaa' } },
+        ] }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { input_tokens: number };
+    expect(Object.keys(body)).toEqual(['input_tokens']);
+    expect(body.input_tokens).toBeGreaterThan(0);
+  });
+
+  it('returns Claude-like validation errors for invalid count token requests', async () => {
+    const app = createApp(env);
+    const res = await app.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as { type: string; error: { type: string; message: string } };
+    expect(body.type).toBe('error');
+    expect(body.error.type).toBe('invalid_request_error');
+    expect(body.error.message).toContain('model is required');
+  });
+
+  it('rejects invalid optional max_tokens and tools on count token requests', async () => {
+    const app = createApp(env);
+    const badMaxTokens = await app.request('/v1/messages/count_tokens', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 0, messages: [] }) });
+    expect(badMaxTokens.status).toBe(400);
+    const badTools = await app.request('/v1/messages/count_tokens', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', tools: {}, messages: [] }) });
+    expect(badTools.status).toBe(400);
   });
 });
 
