@@ -57,6 +57,17 @@ describe('SessionChatGptBackend', () => {
     expect(response).toEqual({ text: 'ok', finishReason: 'stop', usage: { inputTokens: 9, outputTokens: 4, totalTokens: 13, raw: usage } });
   });
 
+  it('keeps raw usage scoped to the usage object', async () => {
+    const usage = { input_tokens: 9, output_tokens: 4, total_tokens: 13 };
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
+      { type: 'response.completed', secret: 'nope', response: { usage, secret: 'nope' } },
+    ]) });
+
+    const response = await backend.complete(request, context);
+    expect(response.usage?.raw).toEqual(usage);
+    expect(response.usage?.raw).not.toHaveProperty('secret');
+  });
+
   it('streams compatible text delta shapes', async () => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
       { delta: { content: 'a' } },

@@ -1,4 +1,4 @@
-import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptFinishReason, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptFinishReason, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
 import { createMessageId } from '@chatgpt-to-claude/shared';
 import { estimateTokens } from './response.js';
 import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningSpeedDefaults } from './reasoning.js';
@@ -17,6 +17,7 @@ export interface OpenAiChatCompletionRequest {
   response_speed?: string;
   tools?: OpenAiChatTool[];
   tool_choice?: OpenAiChatToolChoice;
+  stream_options?: { include_usage?: boolean };
 }
 
 export interface OpenAiChatMessage {
@@ -112,6 +113,7 @@ export async function* mapChatGptStreamToOpenAiChatSse(request: OpenAiChatComple
   const created = currentUnixSeconds();
   let finishReason: string | undefined;
   let sawToolCall = false;
+  let usage: ChatGptUsage | undefined;
   yield openAiSse({ id, object: 'chat.completion.chunk', created, model: request.model, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });
   for await (const event of events) {
     if (event.type === 'text_delta') {
@@ -122,9 +124,13 @@ export async function* mapChatGptStreamToOpenAiChatSse(request: OpenAiChatComple
       finishReason = 'tool_calls';
     } else if (event.type === 'done') {
       finishReason = sawToolCall ? 'tool_calls' : mapOpenAiFinishReason(event.finishReason);
+      usage = event.usage ?? usage;
     }
   }
   yield openAiSse({ id, object: 'chat.completion.chunk', created, model: request.model, choices: [{ index: 0, delta: {}, finish_reason: finishReason ?? 'stop' }] });
+  if (request.stream_options?.include_usage === true && usage) {
+    yield openAiSse({ id, object: 'chat.completion.chunk', created, model: request.model, choices: [], usage: mapOpenAiChatUsage(usage) });
+  }
   yield 'data: [DONE]\n\n';
 }
 
@@ -177,6 +183,12 @@ export function mapOpenAiFinishReason(reason: ChatGptFinishReason | null | undef
     default:
       return 'stop';
   }
+}
+
+function mapOpenAiChatUsage(usage: ChatGptUsage): OpenAiChatCompletionResponse['usage'] {
+  const promptTokens = usage.inputTokens ?? 0;
+  const completionTokens = usage.outputTokens ?? 0;
+  return { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: usage.totalTokens ?? promptTokens + completionTokens };
 }
 
 function openAiSse(data: unknown): string { return `data: ${JSON.stringify(data)}\n\n`; }

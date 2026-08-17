@@ -33,4 +33,14 @@ describe('mapChatGptResponseToClaude tool calls', () => {
     const response = mapChatGptResponseToOpenAiResponses({ model: 'gpt-test', input: 'hello' }, { text: 'hello', finishReason: 'stop', usage: { inputTokens: 101, outputTokens: 202, totalTokens: 303 } });
     expect(response.usage).toEqual({ input_tokens: 101, output_tokens: 202, total_tokens: 303 });
   });
+
+  it('falls back to prompt plus completion tokens for partial OpenAI chat usage', () => {
+    const response = mapChatGptResponseToOpenAiChat({ model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] }, { text: 'hello', finishReason: 'stop', usage: { inputTokens: 101, outputTokens: 202 } });
+    expect(response.usage).toEqual({ prompt_tokens: 101, completion_tokens: 202, total_tokens: 303 });
+  });
+
+  it('falls back to input plus output tokens for partial OpenAI responses usage', () => {
+    const response = mapChatGptResponseToOpenAiResponses({ model: 'gpt-test', input: 'hello' }, { text: 'hello', finishReason: 'stop', usage: { inputTokens: 101, outputTokens: 202 } });
+    expect(response.usage).toEqual({ input_tokens: 101, output_tokens: 202, total_tokens: 303 });
+  });
 });

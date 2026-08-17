@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ClaudeMessagesRequest } from '@chatgpt-to-claude/claude-protocol';
+import { mapChatGptStreamToOpenAiChatSse } from './openai-chat.js';
 import { mapChatGptStreamToOpenAiResponsesSse } from './openai-responses.js';
 import { mapChatGptStreamToClaudeSse } from './streaming.js';
 
@@ -39,10 +40,33 @@ describe('mapChatGptStreamToClaudeSse', () => {
     }()));
     expect(text).toContain('"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}');
   });
+
+  it('does not emit an OpenAI chat usage chunk by default', async () => {
+    const chunks = parseOpenAiData(await collect(mapChatGptStreamToOpenAiChatSse({ model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] }, async function* () {
+      yield { type: 'text_delta' as const, text: 'hello' };
+      yield { type: 'done' as const, finishReason: 'stop', usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } };
+    }())));
+    expect(chunks.some((chunk) => Array.isArray(chunk.choices) && chunk.choices.length === 0 && chunk.usage)).toBe(false);
+  });
+
+  it('emits an OpenAI chat usage chunk when include_usage is true', async () => {
+    const chunks = parseOpenAiData(await collect(mapChatGptStreamToOpenAiChatSse({ model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }], stream_options: { include_usage: true } }, async function* () {
+      yield { type: 'text_delta' as const, text: 'hello' };
+      yield { type: 'done' as const, finishReason: 'stop', usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } };
+    }())));
+    const usageChunk = chunks.find((chunk) => Array.isArray(chunk.choices) && chunk.choices.length === 0);
+    expect(usageChunk).toMatchObject({ object: 'chat.completion.chunk', choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
+  });
 });
 
 async function collect(iterable: AsyncIterable<string>): Promise<string> {
   let text = '';
   for await (const chunk of iterable) text += chunk;
   return text;
+}
+
+function parseOpenAiData(text: string): Array<Record<string, unknown>> {
+  return text.split('\n')
+    .filter((line) => line.startsWith('data: ') && line !== 'data: [DONE]')
+    .map((line) => JSON.parse(line.slice('data: '.length)) as Record<string, unknown>);
 }
