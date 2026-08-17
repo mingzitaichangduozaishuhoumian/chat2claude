@@ -206,16 +206,18 @@ describe('/v1/chat/completions', () => {
     expect(accountPool.list()[0].status).toBe('available');
   });
 
-  it('releases account concurrency and records error when an OpenAI streaming chat backend throws', async () => {
+  it('emits OpenAI chat SSE error and records account error when streaming backend throws', async () => {
     const accountPool = new AccountPool();
-    const app = createOpenAiChatRoute({ backend: new ThrowingStreamBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const app = createOpenAiChatRoute({ backend: new ThrowingStreamBackend([{ id: 'backend-test-model' }], new ChatGptBackendError('ChatGPT stream rate limited: HTTP 429', 'rate_limited', { status: 429 })), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
     const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', stream: true, messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(200);
     expect(accountPool.list()[0].currentConcurrency).toBe(1);
-    await expect(res.text()).rejects.toThrow('backend stream boom');
+    const text = await res.text();
+    expect(text).toContain('"error":{"message":"ChatGPT stream rate limited: HTTP 429","type":"rate_limit_error","code":null}');
+    expect(text).toContain('data: [DONE]');
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
     expect(accountPool.list()[0].status).toBe('error');
-    expect(accountPool.list()[0].lastError).toBe('backend stream boom');
+    expect(accountPool.list()[0].lastError).toBe('ChatGPT stream rate limited: HTTP 429');
   });
 
   it('releases account concurrency after an OpenAI streaming chat request is consumed', async () => {
@@ -382,13 +384,17 @@ describe('/v1/responses', () => {
     expect(accountPool.list()[0].status).toBe('available');
   });
 
-  it('releases account concurrency and records error when a streaming responses backend throws', async () => {
+  it('emits responses failed SSE and records account error when streaming backend throws', async () => {
     const accountPool = new AccountPool();
     const app = createOpenAiResponsesRoute({ backend: new ThrowingStreamBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
     const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', stream: true, input: 'hello' }) });
     expect(res.status).toBe(200);
     expect(accountPool.list()[0].currentConcurrency).toBe(1);
-    await expect(res.text()).rejects.toThrow('backend stream boom');
+    const text = await res.text();
+    expect(text).toContain('event: response.failed');
+    expect(text).toContain('"type":"response.failed"');
+    expect(text).toContain('"error":{"message":"backend stream boom","type":"invalid_request_error","code":null}');
+    expect(text).toContain('data: [DONE]');
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
     expect(accountPool.list()[0].status).toBe('error');
     expect(accountPool.list()[0].lastError).toBe('backend stream boom');
@@ -636,6 +642,20 @@ describe('/v1/messages', () => {
     expect(accountPool.list()[0].status).toBe('available');
   });
 
+  it('emits Claude SSE error and records account error when streaming backend throws', async () => {
+    const accountPool = new AccountPool();
+    const app = createMessagesRoute({ backend: new ThrowingStreamBackend([{ id: 'backend-test-model' }], new ChatGptBackendError('ChatGPT stream rate limited: HTTP 429', 'rate_limited', { status: 429 })), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(200);
+    expect(accountPool.list()[0].currentConcurrency).toBe(1);
+    const text = await res.text();
+    expect(text).toContain('event: error');
+    expect(text).toContain('"type":"error","error":{"type":"rate_limit_error","message":"ChatGPT stream rate limited: HTTP 429"}');
+    expect(accountPool.list()[0].currentConcurrency).toBe(0);
+    expect(accountPool.list()[0].status).toBe('error');
+    expect(accountPool.list()[0].lastError).toBe('ChatGPT stream rate limited: HTTP 429');
+  });
+
   it('uses a chatgpt-session account instead of the default mock account in session mode', async () => {
     const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
     const accountPool = new AccountPool();
@@ -702,9 +722,13 @@ class ThrowingCompleteBackend extends InspectingBackend {
 }
 
 class ThrowingStreamBackend extends InspectingBackend {
+  constructor(models: ChatGptDiscoveredModel[], private readonly error: Error = new Error('backend stream boom')) {
+    super(models);
+  }
+
   override async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext) {
     yield* super.stream(request, context);
-    throw new Error('backend stream boom');
+    throw this.error;
   }
 }
 

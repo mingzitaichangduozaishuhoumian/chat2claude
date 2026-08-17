@@ -16,3 +16,8 @@ export function mapChatGptBackendError(error: unknown): ClaudeApiError | undefin
       return new ClaudeApiError(error.message, 502, 'api_error');
   }
 }
+
+export function mapErrorPayload(error: unknown): { type: string; message: string } {
+  const apiError = error instanceof ClaudeApiError ? error : mapChatGptBackendError(error) ?? new ClaudeApiError(error instanceof Error ? error.message : 'Invalid request');
+  return { type: apiError.type, message: apiError.message };
+}
