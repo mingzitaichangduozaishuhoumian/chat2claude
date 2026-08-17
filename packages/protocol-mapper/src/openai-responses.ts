@@ -6,6 +6,7 @@ import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningSpeed
 export interface OpenAiResponsesRequest {
   model: string;
   input: string | OpenAiResponsesInputItem[];
+  instructions?: string;
   stream?: boolean;
   max_output_tokens?: number;
   max_tokens?: number;
@@ -37,7 +38,7 @@ export interface OpenAiResponsesBackendRequestOptions { backendModel?: string; b
 export function mapOpenAiResponsesRequestToChatGpt(request: OpenAiResponsesRequest, defaults: ReasoningSpeedDefaults = {}, options: OpenAiResponsesBackendRequestOptions = {}): ChatGptCompletionRequest {
   const modelDefaults = defaults.modelDefaults?.[request.model];
   return {
-    messages: mapResponsesInput(request.input),
+    messages: mapResponsesInput(request.input, request.instructions),
     maxTokens: request.max_output_tokens ?? request.max_tokens ?? 1024,
     model: options.backendModel ?? request.model,
     reasoningEffort: normalizeReasoningEffort(request.reasoning?.effort ?? request.reasoning_effort ?? modelDefaults?.reasoningEffort ?? defaults.globalReasoningEffort),
@@ -51,7 +52,7 @@ export function mapOpenAiResponsesRequestToChatGpt(request: OpenAiResponsesReque
 export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequest, response: ChatGptCompletionResponse): OpenAiResponsesResponse {
   const outputText = response.text ?? '';
   const output: Array<Record<string, unknown>> = [];
-  if (outputText || !response.toolCalls?.length) output.push({ type: 'output_text', text: outputText });
+  if (outputText || !response.toolCalls?.length) output.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: outputText }] });
   for (const toolCall of response.toolCalls ?? []) output.push({ type: 'function_call', call_id: toolCall.id, name: toolCall.name, arguments: JSON.stringify(toolCall.input ?? {}) });
   const inputTokens = estimateTokens(JSON.stringify(request.input));
   const outputTokens = estimateTokens(outputText + JSON.stringify(response.toolCalls ?? []));
@@ -71,23 +72,33 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
   const id = createResponsesId();
   const createdAt = currentUnixSeconds();
   const base = { response_id: id, created_at: createdAt, model: request.model };
+  const output: Array<Record<string, unknown>> = [];
+  let outputText = '';
+  yield responsesSse('response.created', { ...base, type: 'response.created', response: createMinimalResponse(id, createdAt, request.model, [], '') });
   for await (const event of events) {
-    if (event.type === 'text_delta') yield responsesSse('response.output_text.delta', { ...base, type: 'response.output_text.delta', delta: event.text });
-    else if (event.type === 'tool_call') {
-      yield responsesSse('response.output_item.added', { ...base, type: 'response.output_item.added', item: { type: 'function_call', call_id: event.toolCall.id, name: event.toolCall.name, arguments: '' } });
-      yield responsesSse('response.function_call_arguments.delta', { ...base, type: 'response.function_call_arguments.delta', call_id: event.toolCall.id, delta: JSON.stringify(event.toolCall.input ?? {}) });
+    if (event.type === 'text_delta') {
+      outputText += event.text;
+      yield responsesSse('response.output_text.delta', { ...base, type: 'response.output_text.delta', delta: event.text });
+    } else if (event.type === 'tool_call') {
+      const item = { type: 'function_call', call_id: event.toolCall.id, name: event.toolCall.name, arguments: JSON.stringify(event.toolCall.input ?? {}) };
+      output.push(item);
+      yield responsesSse('response.output_item.added', { ...base, type: 'response.output_item.added', item: { ...item, arguments: '' } });
+      yield responsesSse('response.function_call_arguments.delta', { ...base, type: 'response.function_call_arguments.delta', call_id: event.toolCall.id, delta: item.arguments });
     }
   }
-  yield responsesSse('response.completed', { ...base, type: 'response.completed', response: { id, object: 'response', status: 'completed', model: request.model } });
+  if (outputText || !output.length) output.unshift({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: outputText }] });
+  yield responsesSse('response.completed', { ...base, type: 'response.completed', response: createMinimalResponse(id, createdAt, request.model, output, outputText) });
   yield 'data: [DONE]\n\n';
 }
 
-function mapResponsesInput(input: OpenAiResponsesRequest['input']): ChatGptMessage[] {
-  if (typeof input === 'string') return [{ role: 'user', content: input }];
-  return input.map((item) => {
-    const role = normalizeRole(item.role);
-    return { role, content: stringifyResponsesInputItem(item) };
-  });
+function mapResponsesInput(input: OpenAiResponsesRequest['input'], instructions?: string): ChatGptMessage[] {
+  const messages = typeof input === 'string'
+    ? [{ role: 'user' as const, content: input }]
+    : input.map((item) => {
+      const role = normalizeRole(item.role);
+      return { role, content: stringifyResponsesInputItem(item) };
+    });
+  return typeof instructions === 'string' && instructions ? [{ role: 'system', content: instructions }, ...messages] : messages;
 }
 
 function stringifyResponsesInputItem(item: OpenAiResponsesInputItem): string {
@@ -104,7 +115,8 @@ function stringifyResponsesContentPart(part: unknown): string {
   if (!part || typeof part !== 'object') return stringifyUnknown(part);
   const raw = part as Record<string, unknown>;
   if (typeof raw.text === 'string') return raw.text;
-  if (raw.type === 'input_text' || raw.type === 'output_text') return String(raw.text ?? '');
+  if (raw.type === 'input_text' || raw.type === 'output_text' || raw.type === 'text') return String(raw.text ?? '');
+  if (raw.type === 'input_image' || raw.type === 'image' || raw.type === 'image_url' || raw.type === 'url') return `[unsupported:${String(raw.type)}] ${stringifyUnknown(raw)}`;
   return `[unsupported:${String(raw.type ?? 'content_part')}] ${stringifyUnknown(raw)}`;
 }
 
@@ -131,7 +143,10 @@ function mapResponsesToolChoice(toolChoice: OpenAiResponsesToolChoice | undefine
   if (toolChoice === 'auto') return { type: 'auto' };
   if (toolChoice === 'none') return { type: 'none' };
   if (toolChoice === 'required') return { type: 'any' };
-  if (toolChoice.type === 'function') return { type: 'tool', name: toolChoice.function?.name ?? toolChoice.name ?? '' };
+  if (toolChoice.type === 'function') {
+    const name = toolChoice.function?.name ?? toolChoice.name;
+    return name ? { type: 'tool', name } : undefined;
+  }
   return undefined;
 }
 
@@ -143,6 +158,10 @@ function stringifyUnknown(value: unknown): string {
   if (value === undefined || value === null) return '';
   if (typeof value === 'string') return value;
   try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+function createMinimalResponse(id: string, createdAt: number, model: string, output: Array<Record<string, unknown>>, outputText: string): OpenAiResponsesResponse {
+  return { id, object: 'response', created_at: createdAt, model, status: 'completed', output, output_text: outputText, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } };
 }
 
 function responsesSse(event: string, data: unknown): string { return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`; }

@@ -98,6 +98,34 @@ describe('/v1/chat/completions', () => {
     expect(text).toContain('data: [DONE]');
   });
 
+  it('preserves unsupported OpenAI chat content array parts as placeholders', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const app = createOpenAiChatRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'look ' }, { type: 'image_url', image_url: { url: 'https://example.test/image.png' } }] }],
+    }) });
+    expect(res.status).toBe(200);
+    expect(backend.lastRequest?.messages[0].content).toBe('look [unsupported:image_url]');
+  });
+
+  it('maps assistant tool_calls and tool messages into backend context text', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const app = createOpenAiChatRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      messages: [
+        { role: 'assistant', content: 'checking', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Paris"}' } }] },
+        { role: 'tool', tool_call_id: 'call_1', content: 'sunny' },
+      ],
+    }) });
+    expect(res.status).toBe(200);
+    expect(backend.lastRequest?.messages).toEqual([
+      { role: 'assistant', content: 'checking\n[tool_call:call_1:get_weather] {"city":"Paris"}' },
+      { role: 'user', content: '[tool_result:call_1] sunny' },
+    ]);
+  });
+
   it('returns an OpenAI error for an unknown model', async () => {
     const app = createApp(env);
     const res = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'unknown-model', messages: [{ role: 'user', content: 'hello' }] }) });
@@ -146,6 +174,18 @@ describe('/v1/chat/completions', () => {
     expect(accountPool.list()[0].status).toBe('available');
   });
 
+  it('releases account concurrency and records error when an OpenAI streaming chat backend throws', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiChatRoute({ backend: new ThrowingStreamBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', stream: true, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(200);
+    expect(accountPool.list()[0].currentConcurrency).toBe(1);
+    await expect(res.text()).rejects.toThrow('backend stream boom');
+    expect(accountPool.list()[0].currentConcurrency).toBe(0);
+    expect(accountPool.list()[0].status).toBe('error');
+    expect(accountPool.list()[0].lastError).toBe('backend stream boom');
+  });
+
   it('releases account concurrency after an OpenAI streaming chat request is consumed', async () => {
     const accountPool = new AccountPool();
     const app = createOpenAiChatRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
@@ -169,11 +209,11 @@ describe('/v1/responses', () => {
     const app = createApp(env);
     const res = await app.request('/v1/responses', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_output_tokens: 64, reasoning: { effort: 'low' }, response_speed: 'fast', input: 'hello' }) });
     expect(res.status).toBe(200);
-    const body = await res.json() as { object: string; model: string; status: string; output: Array<{ type: string; text?: string }>; output_text: string; usage: { input_tokens: number; output_tokens: number; total_tokens: number } };
+    const body = await res.json() as { object: string; model: string; status: string; output: Array<Record<string, unknown>>; output_text: string; usage: { input_tokens: number; output_tokens: number; total_tokens: number } };
     expect(body.object).toBe('response');
     expect(body.model).toBe('sonnet');
     expect(body.status).toBe('completed');
-    expect(body.output).toEqual([{ type: 'output_text', text: 'Echo:[effort=low,speed=fast] hello' }]);
+    expect(body.output).toEqual([{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Echo:[effort=low,speed=fast] hello' }] }]);
     expect(body.output_text).toBe('Echo:[effort=low,speed=fast] hello');
     expect(body.usage.total_tokens).toBe(body.usage.input_tokens + body.usage.output_tokens);
   });
@@ -202,6 +242,41 @@ describe('/v1/responses', () => {
     const body = await res.json() as { output: Array<Record<string, unknown>>; output_text: string };
     expect(body.output_text).toBe('');
     expect(body.output).toEqual([{ type: 'function_call', call_id: 'call_mock_get_weather', name: 'get_weather', arguments: '{}' }]);
+  });
+
+  it('prepends responses instructions and maps common input item/content shapes', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+    const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      instructions: 'be concise',
+      input: [
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello ' }, { type: 'text', text: 'there ' }, { type: 'image_url', image_url: { url: 'https://example.test/a.png' } }] },
+        { role: 'assistant', content: [{ type: 'output_text', text: 'hi' }] },
+        { type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: { q: 'x' } },
+        { type: 'function_call_output', call_id: 'call_1', output: 'done' },
+      ],
+    }) });
+    expect(res.status).toBe(200);
+    expect(backend.lastRequest?.messages).toEqual([
+      { role: 'system', content: 'be concise' },
+      { role: 'user', content: 'hello there [unsupported:image_url] {"type":"image_url","image_url":{"url":"https://example.test/a.png"}}' },
+      { role: 'assistant', content: 'hi' },
+      { role: 'user', content: '[function_call:call_1:lookup] {"q":"x"}' },
+      { role: 'user', content: '[function_call_output:call_1] done' },
+    ]);
+  });
+
+  it('ignores responses forced function tool_choice when name is missing', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+    const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      input: 'hello',
+      tool_choice: { type: 'function', function: {} },
+    }) });
+    expect(res.status).toBe(200);
+    expect(backend.lastRequest?.toolChoice).toBeUndefined();
   });
 
   it('streams a forced tool call in responses SSE', async () => {
@@ -241,6 +316,18 @@ describe('/v1/responses', () => {
     await res.text();
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
     expect(accountPool.list()[0].status).toBe('available');
+  });
+
+  it('releases account concurrency and records error when a streaming responses backend throws', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiResponsesRoute({ backend: new ThrowingStreamBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', stream: true, input: 'hello' }) });
+    expect(res.status).toBe(200);
+    expect(accountPool.list()[0].currentConcurrency).toBe(1);
+    await expect(res.text()).rejects.toThrow('backend stream boom');
+    expect(accountPool.list()[0].currentConcurrency).toBe(0);
+    expect(accountPool.list()[0].status).toBe('error');
+    expect(accountPool.list()[0].lastError).toBe('backend stream boom');
   });
 
   it('returns an OpenAI error for an unknown responses model', async () => {
@@ -490,6 +577,13 @@ class InspectingBackend implements ChatGptBackendClient {
     this.lastContext = context;
     yield { type: 'text_delta' as const, text: `backend:${request.model}` };
     yield { type: 'done' as const };
+  }
+}
+
+class ThrowingStreamBackend extends InspectingBackend {
+  override async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext) {
+    yield* super.stream(request, context);
+    throw new Error('backend stream boom');
   }
 }
 
