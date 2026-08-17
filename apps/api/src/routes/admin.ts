@@ -246,6 +246,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
         <h2>浏览器授权（Codex OAuth）</h2>
         <p>API Key：<span id="key-state" class="status ${keyTone}">${escapeHtml(keyState)}</span></p>
         <div class="row"><input id="admin-api-key" type="password" placeholder="Admin API Key" autocomplete="off" /><button id="save-admin-api-key" class="secondary" type="button">保存 Admin API Key</button></div>
+        <label class="muted"><input id="remember-admin-api-key" type="checkbox" /> 记住到本机（长期保存到 localStorage；默认仅当前会话）</label>
         <p class="muted">当前 backend：<code>${escapeHtml(setupStatus.backend.provider)}</code>。不会启动独立 Chrome/新 profile；点击下方按钮后只生成授权链接，你自行在当前浏览器打开。</p>
         <div class="row"><button id="auth-chatgpt">生成 Codex OAuth 授权链接</button><button id="cancel-auth" class="secondary" disabled>取消</button></div>
         <p id="auth-message" class="muted">${escapeHtml(setupStatus.nextStep)}</p>
@@ -275,10 +276,12 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     const curlExample = document.getElementById('curl-example');
     curlExample.textContent = curlExample.dataset.template.replace('__ORIGIN__', window.location.origin);
     const adminKeyInput = document.getElementById('admin-api-key');
+    const rememberAdminKeyInput = document.getElementById('remember-admin-api-key');
     adminKeyInput.value = getStoredAdminApiKey();
+    rememberAdminKeyInput.checked = Boolean(localStorage.getItem('adminApiKey'));
     document.getElementById('save-admin-api-key').addEventListener('click', () => {
-      saveAdminApiKey(adminKeyInput.value.trim(), true);
-      document.getElementById('result').textContent = adminKeyInput.value.trim() ? 'Admin API Key 已保存到本浏览器。' : 'Admin API Key 已清除。';
+      saveAdminApiKey(adminKeyInput.value.trim(), rememberAdminKeyInput.checked);
+      document.getElementById('result').textContent = adminKeyInput.value.trim() ? (rememberAdminKeyInput.checked ? 'Admin API Key 已长期保存到本机。' : 'Admin API Key 已保存到当前会话。') : 'Admin API Key 已清除。';
     });
 
     document.getElementById('auth-chatgpt').addEventListener('click', async () => {
@@ -355,11 +358,11 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       schedulePoll(1800);
     }
     function showReady(result) {
-      if (result.apiKey) saveAdminApiKey(result.apiKey, true);
+      if (result.apiKey) saveAdminApiKey(result.apiKey, false);
       const endpoint = window.location.origin + '/v1/messages';
       document.getElementById('api-config').hidden = false;
       document.getElementById('endpoint').textContent = endpoint;
-      document.getElementById('api-key').textContent = result.apiKey ? 'API Key 已保存到本浏览器' : '<your-api-key>';
+      document.getElementById('api-key').textContent = result.apiKey ? 'API Key 已保存到当前会话' : '<your-api-key>';
       const curl = curlExample.dataset.template.replace('__ORIGIN__', window.location.origin);
       document.getElementById('ready-curl').textContent = curl;
       curlExample.textContent = curl;
@@ -407,7 +410,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       if (response.status !== 401) return response.json();
       const entered = window.prompt('请输入 Admin API Key');
       if (entered && entered.trim()) {
-        saveAdminApiKey(entered.trim(), true);
+        saveAdminApiKey(entered.trim(), rememberAdminKeyInput.checked);
         const retry = await fetchWithAdminKey(url, init);
         return retry.json();
       }
@@ -422,10 +425,11 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       options.headers = headers;
       return fetch(url, options);
     }
-    function getStoredAdminApiKey() { return localStorage.getItem('adminApiKey') || sessionStorage.getItem('adminApiKey') || ''; }
+    function getStoredAdminApiKey() { return sessionStorage.getItem('adminApiKey') || localStorage.getItem('adminApiKey') || ''; }
     function saveAdminApiKey(key, persistent) {
       if (key) {
-        (persistent ? localStorage : sessionStorage).setItem('adminApiKey', key);
+        if (persistent) { localStorage.setItem('adminApiKey', key); sessionStorage.setItem('adminApiKey', key); }
+        else { sessionStorage.setItem('adminApiKey', key); localStorage.removeItem('adminApiKey'); }
         adminKeyInput.value = key;
         return;
       }

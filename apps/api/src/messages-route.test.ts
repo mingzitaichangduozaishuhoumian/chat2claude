@@ -1448,10 +1448,16 @@ describe('/admin', () => {
     expect(html).toContain('<details id="advanced-import">');
     expect(html).toContain('高级：手动导入 accessToken / cookie');
     expect(html).toContain('__ORIGIN__');
-    expect(html).toContain("if (result.apiKey) saveAdminApiKey(result.apiKey, true);");
+    expect(html).toContain('id="remember-admin-api-key" type="checkbox"');
+    expect(html).toContain('记住到本机（长期保存到 localStorage；默认仅当前会话）');
+    expect(html).toContain("saveAdminApiKey(adminKeyInput.value.trim(), rememberAdminKeyInput.checked);");
+    expect(html).toContain("if (result.apiKey) saveAdminApiKey(result.apiKey, false);");
+    expect(html).toContain("saveAdminApiKey(entered.trim(), rememberAdminKeyInput.checked);");
+    expect(html).toContain("else { sessionStorage.setItem('adminApiKey', key); localStorage.removeItem('adminApiKey'); }");
     expect(html).toContain("headers.set('x-api-key', key);");
     expect(html).toContain("key === 'apiKey' ? '<saved-in-browser>'");
-    expect(html).toContain("document.getElementById('api-key').textContent = result.apiKey ? 'API Key 已保存到本浏览器' : '<your-api-key>';");
+    expect(html).toContain("document.getElementById('api-key').textContent = result.apiKey ? 'API Key 已保存到当前会话' : '<your-api-key>';");
+    expect(html).toContain("return sessionStorage.getItem('adminApiKey') || localStorage.getItem('adminApiKey') || '';");
     expect(html).not.toContain("document.getElementById('api-key').textContent = result.apiKey;");
     expect(html).not.toContain("JSON.stringify(body, null, 2);");
     expect(html).not.toContain("replace('<your-api-key>', result.apiKey)");

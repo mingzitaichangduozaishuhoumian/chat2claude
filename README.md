@@ -109,6 +109,8 @@ OpenAI Responses 的 `store:true` 仅用于本地短期续接 `previous_response
 
 未设置 `API_KEYS` 且尚未通过 `/admin` 授权生成 runtime key 时，`/v1/*` 会返回 401 并提示去 `/admin` 初始化。
 
+管理后台默认只把 Admin API key 保存到浏览器 `sessionStorage`，关闭当前标签/会话后失效；只有显式勾选“记住到本机”时才会长期保存到 `localStorage`。旧版本已经保存在 `localStorage` 的 key 仍会兼容读取。
+
 ## 调用示例
 
 ```bash
