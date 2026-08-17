@@ -2,10 +2,14 @@ import type { ChatGptStreamEvent } from './events.js';
 
 export type ChatGptReasoningEffort = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'max';
 export type ChatGptSpeedPreference = 'fastest' | 'fast' | 'balanced' | 'quality';
+export type ChatGptFinishReason = 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'refusal' | 'interrupted' | 'error' | string;
 
 export interface ChatGptMessage { role: 'user' | 'assistant' | 'system'; content: string; }
-export interface ChatGptCompletionRequest { messages: ChatGptMessage[]; maxTokens: number; model: string; reasoningEffort?: ChatGptReasoningEffort; speedPreference?: ChatGptSpeedPreference; backendOptions?: Record<string, unknown>; }
-export interface ChatGptCompletionResponse { text: string; finishReason: 'stop' | 'length'; }
+export interface ChatGptTool { name: string; description?: string; inputSchema: Record<string, unknown>; strict?: boolean; raw?: unknown; }
+export type ChatGptToolChoice = { type: 'auto' | 'any' | 'none' } | { type: 'tool'; name: string };
+export interface ChatGptToolCall { id: string; name: string; input: unknown; }
+export interface ChatGptCompletionRequest { messages: ChatGptMessage[]; maxTokens: number; model: string; reasoningEffort?: ChatGptReasoningEffort; speedPreference?: ChatGptSpeedPreference; tools?: ChatGptTool[]; toolChoice?: ChatGptToolChoice; backendOptions?: Record<string, unknown>; }
+export interface ChatGptCompletionResponse { text: string; finishReason: ChatGptFinishReason; toolCalls?: ChatGptToolCall[]; }
 export interface ChatGptDiscoveredModel { id: string; displayName?: string; capabilities?: Record<string, unknown>; raw?: unknown; }
 
 export interface ChatGptSessionSecret {

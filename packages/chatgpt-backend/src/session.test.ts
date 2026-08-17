@@ -43,7 +43,7 @@ describe('SessionChatGptBackend', () => {
     expect(headers.get('oai-device-id')).toBe('device-1');
     expect(headers.get('user-agent')).toBe('ua-1');
     expect(headers.get('accept')).toBe('text/event-stream');
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ model: 'gpt-test', stream: true, store: false, instructions: '' });
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ model: 'gpt-test', stream: true, store: false, instructions: '', max_output_tokens: 128 });
   });
 
   it('streams compatible text delta shapes', async () => {
@@ -60,8 +60,31 @@ describe('SessionChatGptBackend', () => {
       { type: 'text_delta', text: 'a' },
       { type: 'text_delta', text: 'b' },
       { type: 'text_delta', text: 'c' },
-      { type: 'done' },
+      { type: 'done', finishReason: 'stop' },
     ]);
+  });
+
+  it('passes tools/tool_choice to the Codex responses body and parses tool calls', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return sseResponse([
+        { tool_call: { id: 'call_1', name: 'get_weather', input: { city: 'Paris' } } },
+        { type: 'response.completed', finish_reason: 'tool_calls' },
+      ]);
+    } });
+
+    const toolRequest: ChatGptCompletionRequest = {
+      ...request,
+      tools: [{ name: 'get_weather', description: 'weather', inputSchema: { type: 'object', properties: { city: { type: 'string' } } }, strict: true }],
+      toolChoice: { type: 'tool', name: 'get_weather' },
+    };
+    const response = await backend.complete(toolRequest, context);
+    expect(calls[0].body).toMatchObject({
+      tools: [{ type: 'function', name: 'get_weather', description: 'weather', parameters: { type: 'object', properties: { city: { type: 'string' } } }, strict: true }],
+      tool_choice: { type: 'function', name: 'get_weather' },
+    });
+    expect(response).toEqual({ text: '', finishReason: 'tool_calls', toolCalls: [{ id: 'call_1', name: 'get_weather', input: { city: 'Paris' } }] });
   });
 
   it('throws a clear error when the session secret is missing', async () => {

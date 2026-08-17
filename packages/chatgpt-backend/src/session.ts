@@ -1,4 +1,4 @@
-import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptSessionSecret } from './client.js';
+import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptSessionSecret, ChatGptToolCall } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
 
 export interface SessionChatGptBackendOptions {
@@ -42,10 +42,14 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
 
   async complete(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse> {
     let text = '';
+    let finishReason: ChatGptFinishReason = 'stop';
+    const toolCalls: ChatGptToolCall[] = [];
     for await (const event of this.stream(request, context)) {
       if (event.type === 'text_delta') text += event.text;
+      if (event.type === 'tool_call') toolCalls.push(event.toolCall);
+      if (event.type === 'done' && event.finishReason) finishReason = event.finishReason;
     }
-    return { text, finishReason: 'stop' };
+    return toolCalls.length ? { text, finishReason, toolCalls } : { text, finishReason };
   }
 
   async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent> {
@@ -53,13 +57,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     const response = await this.fetchWithTimeout(`${this.baseUrl}/backend-api/codex/responses`, {
       method: 'POST',
       headers: this.headers(secret, true),
-      body: JSON.stringify({
-        model: request.model,
-        input: request.messages.map((message) => ({ role: message.role, content: message.content })),
-        stream: true,
-        store: false,
-        instructions: '',
-      }),
+      body: JSON.stringify(buildResponsesBody(request)),
     });
     if (!response.ok) throw new Error(`ChatGPT responses request failed: HTTP ${response.status}`);
 
@@ -69,9 +67,14 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       if (!parsed) continue;
       const delta = extractTextDelta(parsed);
       if (delta) yield { type: 'text_delta', text: delta };
-      if (isDoneEvent(parsed)) break;
+      const toolCall = extractToolCall(parsed);
+      if (toolCall) yield { type: 'tool_call', toolCall };
+      if (isDoneEvent(parsed)) {
+        yield { type: 'done', finishReason: extractFinishReason(parsed) };
+        return;
+      }
     }
-    yield { type: 'done' };
+    yield { type: 'done', finishReason: 'stop' };
   }
 
   private headers(secret: ChatGptSessionSecret, includeContentType: boolean): Headers {
@@ -94,6 +97,21 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       clearTimeout(timeout);
     }
   }
+}
+
+function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {
+  const body: JsonObject = {
+    model: request.model,
+    input: request.messages.map((message) => ({ role: message.role, content: message.content })),
+    stream: true,
+    store: false,
+    instructions: '',
+    max_output_tokens: request.maxTokens,
+  };
+  if (request.reasoningEffort && request.reasoningEffort !== 'off') body.reasoning = { effort: request.reasoningEffort };
+  if (request.tools?.length) body.tools = request.tools.map((tool) => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: tool.strict }));
+  if (request.toolChoice) body.tool_choice = request.toolChoice.type === 'tool' ? { type: 'function', name: request.toolChoice.name } : request.toolChoice.type;
+  return body;
 }
 
 function parseDiscoveredModels(value: unknown): ChatGptDiscoveredModel[] {
@@ -229,6 +247,37 @@ function normalizeTextCandidate(value: unknown): string | undefined {
     return normalizeTextCandidate(raw.text ?? raw.content ?? raw.value);
   }
   return undefined;
+}
+
+function extractToolCall(value: unknown): ChatGptToolCall | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const object = value as JsonObject;
+  const candidates = [object.tool_call, object.toolCall, object.function_call, readPath(object, ['delta', 'tool_calls', '0']), readPath(object, ['message', 'tool_calls', '0']), readPath(object, ['item'])];
+  for (const candidate of candidates) {
+    const toolCall = normalizeToolCall(candidate);
+    if (toolCall) return toolCall;
+  }
+  return undefined;
+}
+
+function normalizeToolCall(value: unknown): ChatGptToolCall | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as JsonObject;
+  const functionObject = raw.function && typeof raw.function === 'object' && !Array.isArray(raw.function) ? raw.function as JsonObject : undefined;
+  const id = readNonEmptyString(raw.id) ?? readNonEmptyString(raw.call_id) ?? readNonEmptyString(raw.tool_call_id);
+  const name = readNonEmptyString(raw.name) ?? readNonEmptyString(functionObject?.name);
+  if (!name) return undefined;
+  const rawInput = raw.input ?? raw.arguments ?? functionObject?.arguments ?? {};
+  return { id: id ?? `call_${name}`, name, input: parseToolInput(rawInput) };
+}
+
+function parseToolInput(value: unknown): unknown {
+  if (typeof value !== 'string') return value ?? {};
+  try { return JSON.parse(value) as unknown; } catch { return value; }
+}
+
+function extractFinishReason(value: JsonObject): ChatGptFinishReason | undefined {
+  return readNonEmptyString(value.finish_reason) ?? readNonEmptyString(value.finishReason) ?? readNonEmptyString(readPath(value, ['response', 'finish_reason'])) ?? (isDoneEvent(value) ? 'stop' : undefined);
 }
 
 function readPath(value: JsonObject, path: string[]): unknown {

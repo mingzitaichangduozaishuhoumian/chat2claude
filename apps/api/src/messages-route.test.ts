@@ -81,6 +81,38 @@ describe('/v1/messages', () => {
     expect(text).toContain('event: message_stop');
   });
 
+  it('returns a Claude tool_use response when a tool is forced', async () => {
+    const app = createApp(env);
+    const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({
+      model: 'sonnet',
+      max_tokens: 64,
+      messages: [{ role: 'user', content: 'call weather' }],
+      tools: [{ name: 'get_weather', description: 'weather', input_schema: { type: 'object', properties: { city: { type: 'string' } } } }],
+      tool_choice: { type: 'tool', name: 'get_weather' },
+    }) });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { stop_reason: string; content: Array<Record<string, unknown>> };
+    expect(body.stop_reason).toBe('tool_use');
+    expect(body.content).toEqual([{ type: 'tool_use', id: 'call_mock_get_weather', name: 'get_weather', input: {} }]);
+  });
+
+  it('streams Claude tool_use events when a tool is forced', async () => {
+    const app = createApp(env);
+    const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({
+      model: 'sonnet',
+      max_tokens: 64,
+      stream: true,
+      messages: [{ role: 'user', content: 'call weather' }],
+      tools: [{ name: 'get_weather', description: 'weather', input_schema: { type: 'object', properties: {} } }],
+      tool_choice: { type: 'tool', name: 'get_weather' },
+    }) });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain('"content_block":{"type":"tool_use","id":"call_mock_get_weather","name":"get_weather","input":{}}');
+    expect(text).toContain('"delta":{"type":"input_json_delta","partial_json":"{}"}');
+    expect(text).toContain('"stop_reason":"tool_use"');
+  });
+
   it('returns a Claude error for an unknown model', async () => {
     const app = createApp(env);
     const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'unknown-model', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });

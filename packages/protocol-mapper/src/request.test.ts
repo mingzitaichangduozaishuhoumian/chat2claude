@@ -35,4 +35,14 @@ describe('canonical request mapping', () => {
     expect(mapped.messages[0].content).toBe('[unsupported:future_block]');
     expect(mapped.backendOptions?.mappingDiagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'unsupported_content_block' })]));
   });
+
+  it('maps Claude tools and tool_choice to backend tool request fields', () => {
+    const mapped = mapClaudeRequestToChatGpt({
+      ...base('use a tool'),
+      tools: [{ name: 'get_weather', description: 'weather', input_schema: { type: 'object', properties: { city: { type: 'string' } } }, strict: true }],
+      tool_choice: { type: 'tool', name: 'get_weather' },
+    });
+    expect(mapped.tools).toEqual([{ name: 'get_weather', description: 'weather', inputSchema: { type: 'object', properties: { city: { type: 'string' } } }, strict: true, raw: expect.any(Object) }]);
+    expect(mapped.toolChoice).toEqual({ type: 'tool', name: 'get_weather' });
+  });
 });

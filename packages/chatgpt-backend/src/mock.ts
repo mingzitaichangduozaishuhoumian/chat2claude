@@ -1,4 +1,4 @@
-import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel } from './client.js';
+import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptToolCall } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
 export interface MockChatGptBackendOptions { responsePrefix?: string; models?: ChatGptDiscoveredModel[]; env?: Partial<Pick<NodeJS.ProcessEnv, 'MOCK_BACKEND_MODELS_JSON'>>; }
 const DEFAULT_MOCK_DISCOVERED_MODELS: ChatGptDiscoveredModel[] = [{ id: 'backend-test-model', displayName: 'Backend Test Model' }];
@@ -11,11 +11,26 @@ export class MockChatGptBackend implements ChatGptBackendClient {
   }
   async listModels(_context?: ChatGptBackendRequestContext): Promise<ChatGptDiscoveredModel[]> { return cloneDiscoveredModels(this.models); }
   async healthCheck(_context?: ChatGptBackendRequestContext): Promise<ChatGptBackendHealthCheckResult> { return { ok: true }; }
-  async complete(request: ChatGptCompletionRequest, _context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse> { return { text: this.buildText(request), finishReason: 'stop' }; }
+  async complete(request: ChatGptCompletionRequest, _context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse> {
+    const toolCalls = this.buildToolCalls(request);
+    return { text: toolCalls.length ? '' : this.buildText(request), finishReason: toolCalls.length ? 'tool_calls' : 'stop', toolCalls };
+  }
   async *stream(request: ChatGptCompletionRequest, _context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent> {
+    const toolCalls = this.buildToolCalls(request);
+    if (toolCalls.length) {
+      for (const toolCall of toolCalls) yield { type: 'tool_call', toolCall };
+      yield { type: 'done', finishReason: 'tool_calls' };
+      return;
+    }
     const text = this.buildText(request);
     for (const chunk of chunkText(text, 16)) yield { type: 'text_delta', text: chunk };
-    yield { type: 'done' };
+    yield { type: 'done', finishReason: 'stop' };
+  }
+  private buildToolCalls(request: ChatGptCompletionRequest): ChatGptToolCall[] {
+    const forcedName = request.toolChoice?.type === 'tool' ? request.toolChoice.name : undefined;
+    const tool = forcedName ? request.tools?.find((item) => item.name === forcedName) : request.toolChoice?.type === 'any' ? request.tools?.[0] : undefined;
+    if (!tool) return [];
+    return [{ id: `call_mock_${tool.name}`, name: tool.name, input: {} }];
   }
   private buildText(request: ChatGptCompletionRequest): string {
     const lastUser = [...request.messages].reverse().find((message) => message.role === 'user');
