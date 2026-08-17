@@ -30,6 +30,83 @@ const env = {
 };
 const jsonHeaders = { 'content-type': 'application/json', 'x-api-key': 'test-key' };
 
+describe('AccountPool', () => {
+  it('puts rate-limited accounts into cooldown and skips them until expiry', () => {
+    let now = new Date('2026-08-17T00:00:00.000Z');
+    const accountPool = new AccountPool({ now: () => now, rateLimitCooldownMs: 1_000 });
+    const account = accountPool.acquire();
+    expect(account?.id).toBe('mock-account');
+
+    const released = accountPool.release('mock-account', new ChatGptBackendError('HTTP 429', 'rate_limited', { status: 429 }));
+    expect(released).toMatchObject({ status: 'cooldown', lastError: 'HTTP 429', lastErrorCode: 'rate_limited' });
+    expect(released?.cooldownUntil).toBe('2026-08-17T00:00:01.000Z');
+    expect(accountPool.acquire()).toBeUndefined();
+
+    now = new Date('2026-08-17T00:00:01.000Z');
+    const view = accountPool.list()[0];
+    expect(view.status).toBe('available');
+    expect(view.cooldownUntil).toBeNull();
+    expect(view.lastError).toBeNull();
+    expect(view.lastErrorCode).toBeNull();
+    const reacquired = accountPool.acquire();
+    expect(reacquired?.id).toBe('mock-account');
+  });
+
+  it('keeps cooldown when a concurrent successful release follows a rate limit', () => {
+    let now = new Date('2026-08-17T00:00:00.000Z');
+    const accountPool = new AccountPool({ now: () => now, rateLimitCooldownMs: 1_000 });
+    accountPool.update('mock-account', { maxConcurrency: 2 });
+    expect(accountPool.acquire()?.id).toBe('mock-account');
+    expect(accountPool.acquire()?.id).toBe('mock-account');
+
+    accountPool.release('mock-account', new ChatGptBackendError('HTTP 429', 'rate_limited', { status: 429 }));
+    const released = accountPool.release('mock-account');
+    expect(released).toMatchObject({ status: 'cooldown', lastError: 'HTTP 429', lastErrorCode: 'rate_limited' });
+    expect(released?.cooldownUntil).toBe('2026-08-17T00:00:01.000Z');
+    expect(accountPool.acquire()).toBeUndefined();
+
+    now = new Date('2026-08-17T00:00:01.000Z');
+    const reacquired = accountPool.acquire();
+    expect(reacquired?.id).toBe('mock-account');
+  });
+
+  it('keeps unhealthy when a concurrent successful release follows unauthorized', () => {
+    const accountPool = new AccountPool();
+    accountPool.update('mock-account', { maxConcurrency: 2 });
+    expect(accountPool.acquire()?.id).toBe('mock-account');
+    expect(accountPool.acquire()?.id).toBe('mock-account');
+
+    accountPool.release('mock-account', new ChatGptBackendError('HTTP 401', 'unauthorized', { status: 401 }));
+    const released = accountPool.release('mock-account');
+    expect(released).toMatchObject({ status: 'unhealthy', lastError: 'HTTP 401', lastErrorCode: 'unauthorized' });
+    expect(released?.cooldownUntil).toBeNull();
+    expect(accountPool.acquire()).toBeUndefined();
+  });
+
+  it('puts unauthorized backend errors into unhealthy and skips them', () => {
+    const accountPool = new AccountPool();
+    accountPool.release('mock-account', new ChatGptBackendError('HTTP 401', 'unauthorized', { status: 401 }));
+
+    const view = accountPool.list()[0];
+    expect(view.status).toBe('unhealthy');
+    expect(view.lastErrorCode).toBe('unauthorized');
+    expect(view.cooldownUntil).toBeNull();
+    expect(accountPool.acquire()).toBeUndefined();
+  });
+
+  it('records ordinary backend error codes as error status', () => {
+    const accountPool = new AccountPool();
+    accountPool.release('mock-account', new ChatGptBackendError('upstream failed', 'upstream_error'));
+
+    const view = accountPool.list()[0];
+    expect(view.status).toBe('error');
+    expect(view.lastError).toBe('upstream failed');
+    expect(view.lastErrorCode).toBe('upstream_error');
+    expect(view.cooldownUntil).toBeNull();
+    expect(accountPool.acquire()).toBeUndefined();
+  });
+});
+
 describe('/v1/chat/completions', () => {
   it('is protected by the /v1 API key middleware', async () => {
     const app = createApp({ ...env, apiKeys: ['secret'] });
@@ -216,8 +293,10 @@ describe('/v1/chat/completions', () => {
     expect(text).toContain('"error":{"message":"ChatGPT stream rate limited: HTTP 429","type":"rate_limit_error","code":null}');
     expect(text).toContain('data: [DONE]');
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
-    expect(accountPool.list()[0].status).toBe('error');
+    expect(accountPool.list()[0].status).toBe('cooldown');
     expect(accountPool.list()[0].lastError).toBe('ChatGPT stream rate limited: HTTP 429');
+    expect(accountPool.list()[0].lastErrorCode).toBe('rate_limited');
+    expect(accountPool.list()[0].cooldownUntil).toEqual(expect.any(String));
   });
 
   it('releases account concurrency after an OpenAI streaming chat request is consumed', async () => {
@@ -411,15 +490,19 @@ describe('/v1/responses', () => {
     expect(body.error.message).toContain('Unknown model: unknown-model');
   });
 
-  it('maps backend rate limit errors to an OpenAI rate_limit_error', async () => {
+  it('maps backend rate limit errors to an OpenAI rate_limit_error and cools down the account', async () => {
     const backend = new ThrowingCompleteBackend([{ id: 'backend-test-model' }], new ChatGptBackendError('ChatGPT responses request failed: HTTP 429', 'rate_limited', { status: 429 }));
-    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+    const accountPool = new AccountPool();
+    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
 
     const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', input: 'hello' }) });
     expect(res.status).toBe(429);
     const body = await res.json() as { error: { type: string; message: string } };
     expect(body.error.type).toBe('rate_limit_error');
     expect(body.error.message).toContain('HTTP 429');
+    expect(accountPool.list()[0].status).toBe('cooldown');
+    expect(accountPool.list()[0].lastErrorCode).toBe('rate_limited');
+    expect(accountPool.list()[0].cooldownUntil).toEqual(expect.any(String));
   });
 });
 
@@ -654,8 +737,10 @@ describe('/v1/messages', () => {
     expect(text).toContain('event: error');
     expect(text).toContain('"type":"error","error":{"type":"rate_limit_error","message":"ChatGPT stream rate limited: HTTP 429"}');
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
-    expect(accountPool.list()[0].status).toBe('error');
+    expect(accountPool.list()[0].status).toBe('cooldown');
     expect(accountPool.list()[0].lastError).toBe('ChatGPT stream rate limited: HTTP 429');
+    expect(accountPool.list()[0].lastErrorCode).toBe('rate_limited');
+    expect(accountPool.list()[0].cooldownUntil).toEqual(expect.any(String));
   });
 
   it('uses a chatgpt-session account instead of the default mock account in session mode', async () => {
