@@ -32,7 +32,7 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
         deps.requestLog.record({ route: '/v1/responses', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {
-          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToOpenAiResponsesSse(request, deps.backend.stream(backendRequest, backendContext)), openAiResponsesStreamError);
+          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToOpenAiResponsesSse(request, deps.backend.stream(backendRequest, backendContext)), (error) => openAiResponsesStreamError(error, request.model));
           const stream = readableStreamFromAsyncIterable(events);
           releaseDeferredToStream = true;
           return new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' } });
@@ -95,8 +95,9 @@ async function* releaseAccountWhenDone(accountPool: AccountPool, accountId: stri
   }
 }
 
-async function* openAiResponsesStreamError(error: unknown): AsyncIterable<string> {
+async function* openAiResponsesStreamError(error: unknown, model: string): AsyncIterable<string> {
   const payload = mapErrorPayload(error);
-  yield `event: response.failed\ndata: ${JSON.stringify({ type: 'response.failed', error: { message: payload.message, type: payload.type, code: null } })}\n\n`;
+  const openAiError = { message: payload.message, type: payload.type, code: null };
+  yield `event: response.failed\ndata: ${JSON.stringify({ type: 'response.failed', response: { id: 'resp_failed', object: 'response', created_at: Math.floor(Date.now() / 1000), model, status: 'failed', error: openAiError }, error: openAiError })}\n\n`;
   yield 'data: [DONE]\n\n';
 }

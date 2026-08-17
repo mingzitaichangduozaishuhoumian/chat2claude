@@ -393,6 +393,8 @@ describe('/v1/responses', () => {
     const text = await res.text();
     expect(text).toContain('event: response.failed');
     expect(text).toContain('"type":"response.failed"');
+    expect(text).toContain('"response":{"id":"resp_failed","object":"response"');
+    expect(text).toContain('"status":"failed"');
     expect(text).toContain('"error":{"message":"backend stream boom","type":"invalid_request_error","code":null}');
     expect(text).toContain('data: [DONE]');
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
