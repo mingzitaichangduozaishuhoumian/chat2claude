@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { ClaudeMessagesRequest } from '@chatgpt-to-claude/claude-protocol';
 import { flattenCanonicalContentForTextBackend, mapClaudeRequestToChatGpt, normalizeClaudeMessagesToCanonical } from './request.js';
+import { mapOpenAiChatRequestToChatGpt } from './openai-chat.js';
+import { mapOpenAiResponsesRequestToChatGpt } from './openai-responses.js';
 
 const base = (content: ClaudeMessagesRequest['messages'][number]['content']): ClaudeMessagesRequest => ({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content }] });
 
@@ -84,5 +86,68 @@ describe('canonical request mapping', () => {
     });
     expect(mapped.tools).toEqual([{ name: 'get_weather', description: 'weather', inputSchema: { type: 'object', properties: { city: { type: 'string' } } }, strict: true, raw: expect.any(Object) }]);
     expect(mapped.toolChoice).toEqual({ type: 'tool', name: 'get_weather' });
+  });
+
+  it('maps Claude generation controls to backend request fields', () => {
+    const mapped = mapClaudeRequestToChatGpt({
+      ...base('tune generation'),
+      temperature: 0.25,
+      top_p: 0.75,
+      stop_sequences: ['END', 'STOP'],
+    });
+
+    expect(mapped.temperature).toBe(0.25);
+    expect(mapped.topP).toBe(0.75);
+    expect(mapped.stopSequences).toEqual(['END', 'STOP']);
+  });
+});
+
+describe('OpenAI request generation controls mapping', () => {
+  it('maps chat temperature, top_p, and string stop to backend request fields', () => {
+    const mapped = mapOpenAiChatRequestToChatGpt({
+      model: 'gpt-test',
+      messages: [{ role: 'user', content: 'hello' }],
+      temperature: 0.2,
+      top_p: 0.8,
+      stop: 'END',
+    });
+
+    expect(mapped.temperature).toBe(0.2);
+    expect(mapped.topP).toBe(0.8);
+    expect(mapped.stopSequences).toEqual(['END']);
+  });
+
+  it('maps chat stop arrays to backend stopSequences', () => {
+    const mapped = mapOpenAiChatRequestToChatGpt({
+      model: 'gpt-test',
+      messages: [{ role: 'user', content: 'hello' }],
+      stop: ['END', 'STOP'],
+    });
+
+    expect(mapped.stopSequences).toEqual(['END', 'STOP']);
+  });
+
+  it('maps Responses temperature, top_p, and stop arrays to backend request fields', () => {
+    const mapped = mapOpenAiResponsesRequestToChatGpt({
+      model: 'gpt-test',
+      input: 'hello',
+      temperature: 0.3,
+      top_p: 0.9,
+      stop: ['END', 'STOP'],
+    });
+
+    expect(mapped.temperature).toBe(0.3);
+    expect(mapped.topP).toBe(0.9);
+    expect(mapped.stopSequences).toEqual(['END', 'STOP']);
+  });
+
+  it('maps Responses string stop to a single backend stop sequence', () => {
+    const mapped = mapOpenAiResponsesRequestToChatGpt({
+      model: 'gpt-test',
+      input: 'hello',
+      stop: 'END',
+    });
+
+    expect(mapped.stopSequences).toEqual(['END']);
   });
 });

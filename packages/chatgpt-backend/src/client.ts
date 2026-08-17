@@ -9,7 +9,7 @@ export interface ChatGptTool { name: string; description?: string; inputSchema: 
 export type ChatGptToolChoice = { type: 'auto' | 'any' | 'none' } | { type: 'tool'; name: string };
 export interface ChatGptToolCall { id: string; name: string; input: unknown; }
 export interface ChatGptUsage { inputTokens?: number; outputTokens?: number; totalTokens?: number; raw?: unknown; }
-export interface ChatGptCompletionRequest { messages: ChatGptMessage[]; maxTokens: number; model: string; reasoningEffort?: ChatGptReasoningEffort; speedPreference?: ChatGptSpeedPreference; tools?: ChatGptTool[]; toolChoice?: ChatGptToolChoice; backendOptions?: Record<string, unknown>; }
+export interface ChatGptCompletionRequest { messages: ChatGptMessage[]; maxTokens: number; model: string; reasoningEffort?: ChatGptReasoningEffort; speedPreference?: ChatGptSpeedPreference; temperature?: number; topP?: number; stopSequences?: string[]; tools?: ChatGptTool[]; toolChoice?: ChatGptToolChoice; backendOptions?: Record<string, unknown>; }
 export interface ChatGptCompletionResponse { text: string; finishReason: ChatGptFinishReason; toolCalls?: ChatGptToolCall[]; usage?: ChatGptUsage; }
 export interface ChatGptDiscoveredModel { id: string; displayName?: string; capabilities?: Record<string, unknown>; raw?: unknown; }
 

@@ -115,6 +115,9 @@ function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {
     max_output_tokens: request.maxTokens,
   };
   if (request.reasoningEffort && request.reasoningEffort !== 'off') body.reasoning = { effort: request.reasoningEffort };
+  if (typeof request.temperature === 'number') body.temperature = request.temperature;
+  if (typeof request.topP === 'number') body.top_p = request.topP;
+  if (request.stopSequences?.length) body.stop = request.stopSequences.length === 1 ? request.stopSequences[0] : request.stopSequences;
   if (request.tools?.length) body.tools = request.tools.map((tool) => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: tool.strict }));
   if (request.toolChoice) body.tool_choice = request.toolChoice.type === 'tool' ? { type: 'function', name: request.toolChoice.name } : request.toolChoice.type;
   return body;

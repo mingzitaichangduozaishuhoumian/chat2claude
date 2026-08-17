@@ -12,12 +12,16 @@ export function mapClaudeRequestToChatGpt(request: ClaudeMessagesRequest, defaul
     content: flattenCanonicalContentForTextBackend(message.content, canonical.diagnostics),
   }));
   const resolved = resolveReasoningSpeed(request, defaults);
+  const stopSequences = normalizeStopSequences(request.stop_sequences);
   return {
     messages,
     maxTokens: request.max_tokens,
     model: options.backendModel ?? request.model,
     reasoningEffort: resolved.reasoningEffort,
     speedPreference: resolved.speedPreference,
+    temperature: typeof request.temperature === 'number' ? request.temperature : undefined,
+    topP: typeof request.top_p === 'number' ? request.top_p : undefined,
+    stopSequences,
     tools: mapClaudeTools(request.tools),
     toolChoice: mapClaudeToolChoice(request.tool_choice),
     backendOptions: { ...options.backendOptions, mappingDiagnostics: canonical.diagnostics },
@@ -38,6 +42,10 @@ export function mapClaudeToolChoice(toolChoice: ClaudeToolChoice | undefined): C
   if (!toolChoice) return undefined;
   if (toolChoice.type === 'tool') return { type: 'tool', name: toolChoice.name };
   return { type: toolChoice.type };
+}
+function normalizeStopSequences(stop: string[] | undefined): string[] | undefined {
+  const values = stop?.filter((item) => typeof item === 'string');
+  return values?.length ? values : undefined;
 }
 export function stringifyContent(content: string | ClaudeContentBlock[]): string {
   const diagnostics: CanonicalMappingDiagnostic[] = [];

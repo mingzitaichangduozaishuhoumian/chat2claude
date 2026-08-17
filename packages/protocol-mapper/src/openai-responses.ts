@@ -10,6 +10,9 @@ export interface OpenAiResponsesRequest {
   stream?: boolean;
   max_output_tokens?: number;
   max_tokens?: number;
+  temperature?: number;
+  top_p?: number;
+  stop?: string | string[];
   reasoning?: { effort?: string };
   reasoning_effort?: string;
   speed?: string;
@@ -37,12 +40,16 @@ export interface OpenAiResponsesBackendRequestOptions { backendModel?: string; b
 
 export function mapOpenAiResponsesRequestToChatGpt(request: OpenAiResponsesRequest, defaults: ReasoningSpeedDefaults = {}, options: OpenAiResponsesBackendRequestOptions = {}): ChatGptCompletionRequest {
   const modelDefaults = defaults.modelDefaults?.[request.model];
+  const stopSequences = normalizeResponsesStop(request.stop);
   return {
     messages: mapResponsesInput(request.input, request.instructions),
     maxTokens: request.max_output_tokens ?? request.max_tokens ?? 1024,
     model: options.backendModel ?? request.model,
     reasoningEffort: normalizeReasoningEffort(request.reasoning?.effort ?? request.reasoning_effort ?? modelDefaults?.reasoningEffort ?? defaults.globalReasoningEffort),
     speedPreference: normalizeSpeedPreference(request.speed ?? request.response_speed ?? modelDefaults?.speedPreference ?? defaults.globalSpeedPreference),
+    temperature: typeof request.temperature === 'number' ? request.temperature : undefined,
+    topP: typeof request.top_p === 'number' ? request.top_p : undefined,
+    stopSequences,
     tools: mapResponsesTools(request.tools),
     toolChoice: mapResponsesToolChoice(request.tool_choice),
     backendOptions: options.backendOptions,
@@ -156,6 +163,13 @@ function mapResponsesToolChoice(toolChoice: OpenAiResponsesToolChoice | undefine
 
 function normalizeRole(value: unknown): ChatGptMessage['role'] {
   return value === 'assistant' || value === 'system' ? value : 'user';
+}
+
+function normalizeResponsesStop(stop: OpenAiResponsesRequest['stop']): string[] | undefined {
+  if (typeof stop === 'string') return stop ? [stop] : undefined;
+  if (!Array.isArray(stop)) return undefined;
+  const values = stop.filter((item) => typeof item === 'string');
+  return values.length ? values : undefined;
 }
 
 function stringifyUnknown(value: unknown): string {

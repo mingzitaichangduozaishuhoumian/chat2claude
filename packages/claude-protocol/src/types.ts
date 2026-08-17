@@ -27,6 +27,7 @@ export interface ClaudeMessagesRequest {
   stream?: boolean;
   stop_sequences?: string[];
   temperature?: number;
+  top_p?: number;
   thinking?: ClaudeThinkingConfig;
   output_config?: ClaudeOutputConfig;
   reasoning_effort?: ClaudeReasoningEffort | string;
@@ -47,6 +48,7 @@ export interface ClaudeCountTokensRequest {
   system?: string | ClaudeTextBlock[];
   stop_sequences?: string[];
   temperature?: number;
+  top_p?: number;
   thinking?: ClaudeThinkingConfig;
   output_config?: ClaudeOutputConfig;
   reasoning_effort?: ClaudeReasoningEffort | string;

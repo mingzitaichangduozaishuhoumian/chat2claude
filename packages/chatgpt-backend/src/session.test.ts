@@ -102,6 +102,41 @@ describe('SessionChatGptBackend', () => {
     ]);
   });
 
+  it('passes generation controls to the Codex responses body', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return sseResponse([{ type: 'response.completed' }]);
+    } });
+
+    await backend.complete({ ...request, temperature: 0.25, topP: 0.75, stopSequences: ['END'] }, context);
+    expect(calls[0].body).toMatchObject({ temperature: 0.25, top_p: 0.75, stop: 'END' });
+  });
+
+  it('omits generation controls from the Codex responses body when unset', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return sseResponse([{ type: 'response.completed' }]);
+    } });
+
+    await backend.complete(request, context);
+    expect(calls[0].body).not.toHaveProperty('temperature');
+    expect(calls[0].body).not.toHaveProperty('top_p');
+    expect(calls[0].body).not.toHaveProperty('stop');
+  });
+
+  it('passes multiple stop sequences as an array to the Codex responses body', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return sseResponse([{ type: 'response.completed' }]);
+    } });
+
+    await backend.complete({ ...request, stopSequences: ['END', 'STOP'] }, context);
+    expect(calls[0].body.stop).toEqual(['END', 'STOP']);
+  });
+
   it('passes tools/tool_choice to the Codex responses body and parses tool calls', async () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {

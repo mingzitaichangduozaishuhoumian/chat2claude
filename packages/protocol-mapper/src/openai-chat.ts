@@ -12,6 +12,8 @@ export interface OpenAiChatCompletionRequest {
   max_tokens?: number;
   max_completion_tokens?: number;
   temperature?: number;
+  top_p?: number;
+  stop?: string | string[];
   reasoning_effort?: string;
   speed?: string;
   response_speed?: string;
@@ -57,12 +59,16 @@ export function mapOpenAiChatRequestToChatGpt(request: OpenAiChatCompletionReque
     content: stringifyOpenAiMessage(message),
   }));
   const modelDefaults = defaults.modelDefaults?.[request.model];
+  const stopSequences = normalizeOpenAiStop(request.stop);
   return {
     messages,
     maxTokens: request.max_completion_tokens ?? request.max_tokens ?? 1024,
     model: options.backendModel ?? request.model,
     reasoningEffort: normalizeReasoningEffort(request.reasoning_effort ?? modelDefaults?.reasoningEffort ?? defaults.globalReasoningEffort),
     speedPreference: normalizeSpeedPreference(request.speed ?? request.response_speed ?? modelDefaults?.speedPreference ?? defaults.globalSpeedPreference),
+    temperature: typeof request.temperature === 'number' ? request.temperature : undefined,
+    topP: typeof request.top_p === 'number' ? request.top_p : undefined,
+    stopSequences,
     tools: mapOpenAiTools(request.tools),
     toolChoice: mapOpenAiToolChoice(request.tool_choice),
     backendOptions: options.backendOptions,
@@ -160,6 +166,13 @@ function mapToolCalls(toolCalls: ChatGptCompletionResponse['toolCalls']): OpenAi
 
 function mapToolCallDelta(toolCall: NonNullable<ChatGptCompletionResponse['toolCalls']>[number], index: number) {
   return { index, id: toolCall.id, type: 'function' as const, function: { name: toolCall.name, arguments: JSON.stringify(toolCall.input ?? {}) } };
+}
+
+function normalizeOpenAiStop(stop: OpenAiChatCompletionRequest['stop']): string[] | undefined {
+  if (typeof stop === 'string') return stop ? [stop] : undefined;
+  if (!Array.isArray(stop)) return undefined;
+  const values = stop.filter((item) => typeof item === 'string');
+  return values.length ? values : undefined;
 }
 
 export function mapOpenAiFinishReason(reason: ChatGptFinishReason | null | undefined): string {
