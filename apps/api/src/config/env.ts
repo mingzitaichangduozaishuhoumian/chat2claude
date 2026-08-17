@@ -20,7 +20,7 @@ export interface AppEnv {
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
   return {
     port: readNumber(source.PORT, 3000),
-    host: source.HOST ?? '0.0.0.0',
+    host: source.HOST ?? '127.0.0.1',
     apiKeys: readCommaList(source.API_KEYS),
     logLevel: parseLogLevel(source.LOG_LEVEL),
     mockResponsePrefix: source.MOCK_RESPONSE_PREFIX ?? 'Echo:',

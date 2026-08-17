@@ -46,7 +46,7 @@ corepack pnpm check
 corepack pnpm start
 ```
 
-服务默认监听 `http://localhost:3000`，健康检查为 `http://localhost:3000/healthz`。
+服务默认只监听本机 `127.0.0.1`（`http://localhost:3000`），健康检查为 `http://localhost:3000/healthz`。如需局域网/公网访问，必须预先设置 `API_KEYS`，并显式设置 `HOST=0.0.0.0`。
 
 ## 一键授权流程
 
@@ -100,7 +100,7 @@ curl -X POST http://localhost:3000/admin/api/auth/chatgpt/complete \
 - `GET /v1/models`：返回已启用且可解析的 alias 与 discovery passthrough 模型列表
 - `POST /v1/messages`：Claude-like Messages API，支持非流式与 SSE 流式
 
-`/v1/*` 请求需要携带已配置或运行时启用的 API key：
+`/v1/*` 请求需要携带已配置或运行时启用的 API key。已配置 `API_KEYS` 后，admin API 请求也需要携带同一个 key：
 
 - `x-api-key: <key>`；或
 - `Authorization: Bearer <key>`
