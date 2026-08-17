@@ -692,6 +692,35 @@ describe('/v1/responses', () => {
     expect(backend.lastRequest?.backendOptions).toBeUndefined();
   });
 
+  it('prepends stored responses function_call before current function_call_output for previous_response_id', async () => {
+    const backend = new ToolCallBackend([{ id: 'backend-test-model' }]);
+    const responsesStore = new ResponsesStore();
+    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool(), responsesStore });
+
+    const firstRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      input: 'call weather',
+      store: true,
+      tools: [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object' } } }],
+    }) });
+    expect(firstRes.status).toBe(200);
+    const firstBody = await firstRes.json() as { id: string; output_text: string; output: Array<Record<string, unknown>> };
+    expect(firstBody.output_text).toBe('');
+    expect(firstBody.output).toEqual([{ type: 'function_call', call_id: 'call_prev_weather', name: 'get_weather', arguments: '{"city":"Paris"}' }]);
+
+    const secondRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      previous_response_id: firstBody.id,
+      input: [{ type: 'function_call_output', call_id: 'call_prev_weather', output: 'sunny' }],
+    }) });
+    expect(secondRes.status).toBe(200);
+    expect(backend.lastRequest?.inputItems).toEqual([
+      { type: 'function_call', callId: 'call_prev_weather', name: 'get_weather', arguments: '{"city":"Paris"}' },
+      { type: 'function_call_output', callId: 'call_prev_weather', output: 'sunny' },
+    ]);
+    expect(backend.lastRequest?.backendOptions).toBeUndefined();
+  });
+
   it('keeps stored responses isolated by authenticated owner', async () => {
     const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
     const runtimeApiKeys = new RuntimeApiKeys();
@@ -1166,6 +1195,14 @@ class InspectingBackend implements ChatGptBackendClient {
     this.lastContext = context;
     yield { type: 'text_delta' as const, text: `backend:${request.model}` };
     yield { type: 'done' as const };
+  }
+}
+
+class ToolCallBackend extends InspectingBackend {
+  override async complete(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse> {
+    this.lastRequest = request;
+    this.lastContext = context;
+    return { text: '', finishReason: 'tool_calls', toolCalls: [{ id: 'call_prev_weather', name: 'get_weather', input: { city: 'Paris' } }] };
   }
 }
 

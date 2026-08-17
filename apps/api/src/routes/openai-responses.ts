@@ -66,16 +66,42 @@ function withPreviousResponseContext(ownerId: string, request: OpenAiResponsesRe
   if (!previousResponseId) return request;
   const previous = responsesStore.get(ownerId, previousResponseId);
   if (!previous) throw new ClaudeApiError(`Previous response not found: ${previousResponseId}`, 404, 'not_found_error');
+  const replayItems = replayablePreviousOutputItems(previous.response.output);
   const outputText = previous.response.output_text;
-  const input = outputText ? prependAssistantMessage(request.input, outputText) : request.input;
+  const input = replayItems.length
+    ? prependInputItems(request.input, replayItems)
+    : outputText ? prependInputItems(request.input, [{ type: 'message', role: 'assistant', content: outputText }]) : request.input;
   return { ...request, input, previous_response_id: undefined };
 }
 
-function prependAssistantMessage(input: OpenAiResponsesRequest['input'], outputText: string): OpenAiResponsesInputItem[] {
-  const assistantMessage = { type: 'message', role: 'assistant', content: outputText };
+function replayablePreviousOutputItems(output: Array<Record<string, unknown>>): OpenAiResponsesInputItem[] {
+  const items: OpenAiResponsesInputItem[] = [];
+  for (const item of output) {
+    if (item.type === 'function_call') {
+      const callId = typeof item.call_id === 'string' ? item.call_id : undefined;
+      const name = typeof item.name === 'string' ? item.name : undefined;
+      if (callId && name) items.push({ type: 'function_call', call_id: callId, name, arguments: item.arguments ?? '' });
+      continue;
+    }
+    if (item.type === 'message') {
+      const content = replayableAssistantMessageContent(item.content);
+      if (content !== undefined) items.push({ type: 'message', role: 'assistant', content });
+    }
+  }
+  return items;
+}
+
+function replayableAssistantMessageContent(content: unknown): string | unknown[] | undefined {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return undefined;
+  const parts = content.filter((part) => typeof part === 'string' || isObject(part));
+  return parts.length ? parts : undefined;
+}
+
+function prependInputItems(input: OpenAiResponsesRequest['input'], items: OpenAiResponsesInputItem[]): OpenAiResponsesInputItem[] {
   return typeof input === 'string'
-    ? [assistantMessage, { type: 'message', role: 'user', content: input }]
-    : [assistantMessage, ...input];
+    ? [...items, { type: 'message', role: 'user', content: input }]
+    : [...items, ...input];
 }
 
 function parseOpenAiResponsesRequest(value: unknown): OpenAiResponsesRequest {
