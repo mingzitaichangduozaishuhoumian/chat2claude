@@ -1,4 +1,4 @@
-import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptSessionSecret, ChatGptToolCall } from './client.js';
+import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
 
 export interface SessionChatGptBackendOptions {
@@ -43,13 +43,17 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   async complete(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse> {
     let text = '';
     let finishReason: ChatGptFinishReason = 'stop';
+    let usage: ChatGptUsage | undefined;
     const toolCalls: ChatGptToolCall[] = [];
     for await (const event of this.stream(request, context)) {
       if (event.type === 'text_delta') text += event.text;
       if (event.type === 'tool_call') toolCalls.push(event.toolCall);
-      if (event.type === 'done' && event.finishReason) finishReason = event.finishReason;
+      if (event.type === 'done') {
+        if (event.finishReason) finishReason = event.finishReason;
+        if (event.usage) usage = event.usage;
+      }
     }
-    return toolCalls.length ? { text, finishReason, toolCalls } : { text, finishReason };
+    return { text, finishReason, ...(toolCalls.length ? { toolCalls } : {}), ...(usage ? { usage } : {}) };
   }
 
   async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent> {
@@ -61,20 +65,22 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     });
     if (!response.ok) throw new Error(`ChatGPT responses request failed: HTTP ${response.status}`);
 
+    let latestUsage: ChatGptUsage | undefined;
     for await (const data of iterateSseData(response)) {
       if (data === '[DONE]') break;
       const parsed = parseJson(data);
       if (!parsed) continue;
+      latestUsage = extractUsage(parsed) ?? latestUsage;
       const delta = extractTextDelta(parsed);
       if (delta) yield { type: 'text_delta', text: delta };
       const toolCall = extractToolCall(parsed);
       if (toolCall) yield { type: 'tool_call', toolCall };
       if (isDoneEvent(parsed)) {
-        yield { type: 'done', finishReason: extractFinishReason(parsed) };
+        yield { type: 'done', finishReason: extractFinishReason(parsed), ...(latestUsage ? { usage: latestUsage } : {}) };
         return;
       }
     }
-    yield { type: 'done', finishReason: 'stop' };
+    yield { type: 'done', finishReason: 'stop', ...(latestUsage ? { usage: latestUsage } : {}) };
   }
 
   private headers(secret: ChatGptSessionSecret, includeContentType: boolean): Headers {
@@ -278,6 +284,31 @@ function parseToolInput(value: unknown): unknown {
 
 function extractFinishReason(value: JsonObject): ChatGptFinishReason | undefined {
   return readNonEmptyString(value.finish_reason) ?? readNonEmptyString(value.finishReason) ?? readNonEmptyString(readPath(value, ['response', 'finish_reason'])) ?? (isDoneEvent(value) ? 'stop' : undefined);
+}
+
+function extractUsage(value: JsonObject): ChatGptUsage | undefined {
+  const candidates = [value.usage, readPath(value, ['response', 'usage']), readPath(value, ['body', 'usage']), value.token_usage, value.tokenUsage];
+  for (const candidate of candidates) {
+    const usage = normalizeUsage(candidate);
+    if (usage) return usage;
+  }
+  return undefined;
+}
+
+function normalizeUsage(value: unknown): ChatGptUsage | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as JsonObject;
+  const usage: ChatGptUsage = {
+    inputTokens: readTokenCount(raw.input_tokens) ?? readTokenCount(raw.prompt_tokens),
+    outputTokens: readTokenCount(raw.output_tokens) ?? readTokenCount(raw.completion_tokens),
+    totalTokens: readTokenCount(raw.total_tokens),
+    raw,
+  };
+  return usage.inputTokens !== undefined || usage.outputTokens !== undefined || usage.totalTokens !== undefined ? usage : undefined;
+}
+
+function readTokenCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 function readPath(value: JsonObject, path: string[]): unknown {

@@ -11,7 +11,7 @@ export function mapChatGptResponseToClaude(request: ClaudeMessagesRequest, respo
     content: mapResponseContent(response),
     stop_reason: mapStopReason(response.finishReason),
     stop_sequence: null,
-    usage: { input_tokens: estimateTokens(JSON.stringify(request.messages)), output_tokens: estimateTokens(response.text) },
+    usage: { input_tokens: response.usage?.inputTokens ?? estimateTokens(JSON.stringify(request.messages)), output_tokens: response.usage?.outputTokens ?? estimateTokens(response.text) },
   };
 }
 export function mapResponseContent(response: ChatGptCompletionResponse): ClaudeContentBlock[] {

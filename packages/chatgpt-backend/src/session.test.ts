@@ -46,6 +46,17 @@ describe('SessionChatGptBackend', () => {
     expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ model: 'gpt-test', stream: true, store: false, instructions: '', max_output_tokens: 128 });
   });
 
+  it('aggregates done usage for complete responses', async () => {
+    const usage = { input_tokens: 9, output_tokens: 4, total_tokens: 13 };
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
+      { type: 'response.output_text.delta', output_text_delta: 'ok' },
+      { type: 'response.completed', body: { usage } },
+    ]) });
+
+    const response = await backend.complete(request, context);
+    expect(response).toEqual({ text: 'ok', finishReason: 'stop', usage: { inputTokens: 9, outputTokens: 4, totalTokens: 13, raw: usage } });
+  });
+
   it('streams compatible text delta shapes', async () => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
       { delta: { content: 'a' } },
@@ -61,6 +72,21 @@ describe('SessionChatGptBackend', () => {
       { type: 'text_delta', text: 'b' },
       { type: 'text_delta', text: 'c' },
       { type: 'done', finishReason: 'stop' },
+    ]);
+  });
+
+  it('parses upstream usage from stream events and carries latest usage to done', async () => {
+    const usage = { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 };
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
+      { type: 'response.output_text.delta', delta: 'hello', token_usage: { input_tokens: 3 } },
+      { type: 'response.completed', response: { usage }, finish_reason: 'stop' },
+    ]) });
+
+    const events = [];
+    for await (const event of backend.stream(request, context)) events.push(event);
+    expect(events).toEqual([
+      { type: 'text_delta', text: 'hello' },
+      { type: 'done', finishReason: 'stop', usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18, raw: usage } },
     ]);
   });
 

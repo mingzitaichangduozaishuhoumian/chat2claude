@@ -12,6 +12,7 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
   let nextIndex = 0;
   let textBlockOpen = false;
   let finishReason: ChatGptFinishReason | undefined;
+  let outputTokens: number | undefined;
   yield encodeSseEvent({ event: 'message_start', data: { type: 'message_start', message: createClaudeStreamStart(request) } });
   for await (const event of events) {
     if (event.type === 'text_delta') {
@@ -36,6 +37,7 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
       finishReason = 'tool_calls';
     } else if (event.type === 'done') {
       finishReason = event.finishReason ?? finishReason;
+      outputTokens = event.usage?.outputTokens ?? outputTokens;
     }
   }
   if (textBlockOpen) yield encodeSseEvent({ event: 'content_block_stop', data: { type: 'content_block_stop', index: nextIndex } });
@@ -43,7 +45,7 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
     yield encodeSseEvent({ event: 'content_block_start', data: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } });
     yield encodeSseEvent({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
   }
-  yield encodeSseEvent({ event: 'message_delta', data: { type: 'message_delta', delta: { stop_reason: mapStopReason(finishReason), stop_sequence: null }, usage: { output_tokens: estimateTokens(output) } } });
+  yield encodeSseEvent({ event: 'message_delta', data: { type: 'message_delta', delta: { stop_reason: mapStopReason(finishReason), stop_sequence: null }, usage: { output_tokens: outputTokens ?? estimateTokens(output) } } });
   yield encodeSseEvent({ event: 'message_stop', data: { type: 'message_stop' } });
 }
 export function readableStreamFromAsyncIterable(iterable: AsyncIterable<string>): ReadableStream<Uint8Array> {

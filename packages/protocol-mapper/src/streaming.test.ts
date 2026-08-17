@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ClaudeMessagesRequest } from '@chatgpt-to-claude/claude-protocol';
+import { mapChatGptStreamToOpenAiResponsesSse } from './openai-responses.js';
 import { mapChatGptStreamToClaudeSse } from './streaming.js';
 
 const request: ClaudeMessagesRequest = { model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] };
@@ -21,6 +22,22 @@ describe('mapChatGptStreamToClaudeSse', () => {
       yield { type: 'done' as const, finishReason: 'length' };
     }()));
     expect(text).toContain('"stop_reason":"max_tokens"');
+  });
+
+  it('uses done usage for Claude message_delta usage', async () => {
+    const text = await collect(mapChatGptStreamToClaudeSse(request, async function* () {
+      yield { type: 'text_delta' as const, text: 'hello' };
+      yield { type: 'done' as const, finishReason: 'stop', usage: { outputTokens: 42 } };
+    }()));
+    expect(text).toContain('"usage":{"output_tokens":42}');
+  });
+
+  it('uses done usage for OpenAI responses completed usage', async () => {
+    const text = await collect(mapChatGptStreamToOpenAiResponsesSse({ model: 'gpt-test', input: 'hello' }, async function* () {
+      yield { type: 'text_delta' as const, text: 'hello' };
+      yield { type: 'done' as const, finishReason: 'stop', usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } };
+    }()));
+    expect(text).toContain('"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}');
   });
 });
 

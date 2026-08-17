@@ -90,8 +90,9 @@ export function mapOpenAiToolChoice(toolChoice: OpenAiChatToolChoice | undefined
 export function mapChatGptResponseToOpenAiChat(request: OpenAiChatCompletionRequest, response: ChatGptCompletionResponse): OpenAiChatCompletionResponse {
   const toolCalls = mapToolCalls(response.toolCalls);
   const completionText = response.text ?? '';
-  const promptTokens = estimateTokens(JSON.stringify(request.messages));
-  const completionTokens = estimateTokens(completionText + JSON.stringify(toolCalls ?? []));
+  const promptTokens = response.usage?.inputTokens ?? estimateTokens(JSON.stringify(request.messages));
+  const completionTokens = response.usage?.outputTokens ?? estimateTokens(completionText + JSON.stringify(toolCalls ?? []));
+  const totalTokens = response.usage?.totalTokens ?? promptTokens + completionTokens;
   return {
     id: createOpenAiId(),
     object: 'chat.completion',
@@ -102,7 +103,7 @@ export function mapChatGptResponseToOpenAiChat(request: OpenAiChatCompletionRequ
       message: { role: 'assistant', content: toolCalls?.length ? (completionText || null) : completionText, ...(toolCalls?.length ? { tool_calls: toolCalls } : {}) },
       finish_reason: toolCalls?.length ? 'tool_calls' : mapOpenAiFinishReason(response.finishReason),
     }],
-    usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
+    usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: totalTokens },
   };
 }
 

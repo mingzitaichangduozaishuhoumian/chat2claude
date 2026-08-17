@@ -1,4 +1,4 @@
-import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
 import { createMessageId } from '@chatgpt-to-claude/shared';
 import { estimateTokens } from './response.js';
 import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningSpeedDefaults } from './reasoning.js';
@@ -54,8 +54,9 @@ export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequ
   const output: Array<Record<string, unknown>> = [];
   if (outputText || !response.toolCalls?.length) output.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: outputText }] });
   for (const toolCall of response.toolCalls ?? []) output.push({ type: 'function_call', call_id: toolCall.id, name: toolCall.name, arguments: JSON.stringify(toolCall.input ?? {}) });
-  const inputTokens = estimateTokens(JSON.stringify(request.input));
-  const outputTokens = estimateTokens(outputText + JSON.stringify(response.toolCalls ?? []));
+  const inputTokens = response.usage?.inputTokens ?? estimateTokens(JSON.stringify(request.input));
+  const outputTokens = response.usage?.outputTokens ?? estimateTokens(outputText + JSON.stringify(response.toolCalls ?? []));
+  const totalTokens = response.usage?.totalTokens ?? inputTokens + outputTokens;
   return {
     id: createResponsesId(),
     object: 'response',
@@ -64,7 +65,7 @@ export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequ
     status: 'completed',
     output,
     output_text: outputText,
-    usage: { input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: inputTokens + outputTokens },
+    usage: { input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: totalTokens },
   };
 }
 
@@ -74,6 +75,7 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
   const base = { response_id: id, created_at: createdAt, model: request.model };
   const output: Array<Record<string, unknown>> = [];
   let outputText = '';
+  let usage: ChatGptUsage | undefined;
   yield responsesSse('response.created', { ...base, type: 'response.created', response: createMinimalResponse(id, createdAt, request.model, [], '') });
   for await (const event of events) {
     if (event.type === 'text_delta') {
@@ -84,10 +86,12 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
       output.push(item);
       yield responsesSse('response.output_item.added', { ...base, type: 'response.output_item.added', item: { ...item, arguments: '' } });
       yield responsesSse('response.function_call_arguments.delta', { ...base, type: 'response.function_call_arguments.delta', call_id: event.toolCall.id, delta: item.arguments });
+    } else if (event.type === 'done') {
+      usage = event.usage ?? usage;
     }
   }
   if (outputText || !output.length) output.unshift({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: outputText }] });
-  yield responsesSse('response.completed', { ...base, type: 'response.completed', response: createMinimalResponse(id, createdAt, request.model, output, outputText) });
+  yield responsesSse('response.completed', { ...base, type: 'response.completed', response: createMinimalResponse(id, createdAt, request.model, output, outputText, usage) });
   yield 'data: [DONE]\n\n';
 }
 
@@ -160,8 +164,10 @@ function stringifyUnknown(value: unknown): string {
   try { return JSON.stringify(value); } catch { return String(value); }
 }
 
-function createMinimalResponse(id: string, createdAt: number, model: string, output: Array<Record<string, unknown>>, outputText: string): OpenAiResponsesResponse {
-  return { id, object: 'response', created_at: createdAt, model, status: 'completed', output, output_text: outputText, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } };
+function createMinimalResponse(id: string, createdAt: number, model: string, output: Array<Record<string, unknown>>, outputText: string, usage?: ChatGptUsage): OpenAiResponsesResponse {
+  const inputTokens = usage?.inputTokens ?? 0;
+  const outputTokens = usage?.outputTokens ?? 0;
+  return { id, object: 'response', created_at: createdAt, model, status: 'completed', output, output_text: outputText, usage: { input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: usage?.totalTokens ?? inputTokens + outputTokens } };
 }
 
 function responsesSse(event: string, data: unknown): string { return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`; }
