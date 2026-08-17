@@ -1,4 +1,4 @@
-import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputItem, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
+import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputContentPart, ChatGptInputItem, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
 import { ChatGptBackendError, type ChatGptBackendErrorCode } from './errors.js';
 
@@ -142,9 +142,16 @@ function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {
 }
 
 function toResponsesInputItem(item: ChatGptInputItem): JsonObject {
-  if (item.type === 'message') return { type: 'message', role: item.role, content: item.content };
+  if (item.type === 'message') return { type: 'message', role: item.role, content: toResponsesContent(item.content) };
   if (item.type === 'function_call') return { type: 'function_call', call_id: item.callId, name: item.name, arguments: stringifyArguments(item.arguments) };
   return { type: 'function_call_output', call_id: item.callId, output: item.output };
+}
+
+function toResponsesContent(content: string | ChatGptInputContentPart[]): string | JsonObject[] {
+  if (typeof content === 'string') return content;
+  return content.map((part) => part.type === 'text'
+    ? { type: 'input_text', text: part.text }
+    : { type: 'input_image', image_url: part.imageUrl, ...(part.detail ? { detail: part.detail } : {}) });
 }
 
 function stringifyArguments(value: unknown): string {

@@ -163,6 +163,23 @@ describe('SessionChatGptBackend', () => {
     ]);
   });
 
+  it('maps structured message content parts to Responses input content parts', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return sseResponse([{ type: 'response.completed' }]);
+    } });
+
+    await backend.complete({
+      ...request,
+      inputItems: [{ type: 'message', role: 'user', content: [{ type: 'text', text: 'look ' }, { type: 'image', imageUrl: 'data:image/png;base64,aaa', detail: 'high' }] }],
+    }, context);
+
+    expect(calls[0].body.input).toEqual([
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'look ' }, { type: 'input_image', image_url: 'data:image/png;base64,aaa', detail: 'high' }] },
+    ]);
+  });
+
   it('passes tools/tool_choice to the Codex responses body and parses tool calls', async () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {

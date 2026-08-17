@@ -107,6 +107,9 @@ describe('/v1/chat/completions', () => {
     }) });
     expect(res.status).toBe(200);
     expect(backend.lastRequest?.messages[0].content).toBe('look [unsupported:image_url]');
+    expect(backend.lastRequest?.inputItems).toEqual([
+      { type: 'message', role: 'user', content: [{ type: 'text', text: 'look ' }, { type: 'image', imageUrl: 'https://example.test/image.png' }] },
+    ]);
   });
 
   it('maps assistant tool_calls and tool messages into backend context text', async () => {
@@ -276,14 +279,14 @@ describe('/v1/responses', () => {
     expect(res.status).toBe(200);
     expect(backend.lastRequest?.messages).toEqual([
       { role: 'system', content: 'be concise' },
-      { role: 'user', content: 'hello there [unsupported:image_url] {"type":"image_url","image_url":{"url":"https://example.test/a.png"}}' },
+      { role: 'user', content: 'hello there [unsupported:image_url]' },
       { role: 'assistant', content: 'hi' },
       { role: 'user', content: '[function_call:call_1:lookup] {"q":"x"}' },
       { role: 'user', content: '[function_call_output:call_1] done' },
     ]);
     expect(backend.lastRequest?.inputItems).toEqual([
       { type: 'message', role: 'system', content: 'be concise' },
-      { type: 'message', role: 'user', content: 'hello there [unsupported:image_url] {"type":"image_url","image_url":{"url":"https://example.test/a.png"}}' },
+      { type: 'message', role: 'user', content: [{ type: 'text', text: 'hello there ' }, { type: 'image', imageUrl: 'https://example.test/a.png' }] },
       { type: 'message', role: 'assistant', content: 'hi' },
       { type: 'function_call', callId: 'call_1', name: 'lookup', arguments: { q: 'x' } },
       { type: 'function_call_output', callId: 'call_1', output: 'done' },
@@ -551,6 +554,18 @@ describe('/v1/messages', () => {
     const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(200);
     expect(backend.lastRequest?.model).toBe('backend-injected-model');
+  });
+
+  it('maps Claude image blocks to structured backend inputItems while preserving text fallback', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const app = createMessagesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: [{ type: 'text', text: 'see ' }, { type: 'image', source: { type: 'url', url: 'https://example.test/a.png' } }] }] }) });
+    expect(res.status).toBe(200);
+    expect(backend.lastRequest?.messages[0]).toEqual({ role: 'user', content: 'see [unsupported:image]' });
+    expect(backend.lastRequest?.inputItems).toEqual([
+      { type: 'message', role: 'user', content: [{ type: 'text', text: 'see ' }, { type: 'image', imageUrl: 'https://example.test/a.png' }] },
+    ]);
   });
 
   it('prepends Claude system text before backend user messages', async () => {

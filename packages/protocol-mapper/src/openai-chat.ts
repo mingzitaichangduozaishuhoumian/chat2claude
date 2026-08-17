@@ -1,4 +1,4 @@
-import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptFinishReason, ChatGptInputItem, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptFinishReason, ChatGptImageDetail, ChatGptInputContentPart, ChatGptInputItem, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
 import { createMessageId } from '@chatgpt-to-claude/shared';
 import { estimateTokens } from './response.js';
 import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningSpeedDefaults } from './reasoning.js';
@@ -164,9 +164,9 @@ export function stringifyOpenAiContent(content: OpenAiChatMessage['content']): s
 function mapOpenAiChatInputItems(messages: OpenAiChatMessage[]): ChatGptInputItem[] {
   const inputItems: ChatGptInputItem[] = [];
   for (const message of messages) {
-    const content = stringifyOpenAiContent(message.content);
+    const content = mapOpenAiContentParts(message.content);
     if (message.role === 'tool' && message.tool_call_id) {
-      inputItems.push({ type: 'function_call_output', callId: message.tool_call_id, output: content });
+      inputItems.push({ type: 'function_call_output', callId: message.tool_call_id, output: stringifyOpenAiContent(message.content) });
     } else {
       if (content) inputItems.push({ type: 'message', role: message.role === 'tool' ? 'user' : message.role, content });
       for (const toolCall of message.tool_calls ?? []) {
@@ -177,6 +177,43 @@ function mapOpenAiChatInputItems(messages: OpenAiChatMessage[]): ChatGptInputIte
     }
   }
   return inputItems;
+}
+
+function mapOpenAiContentParts(content: OpenAiChatMessage['content']): string | ChatGptInputContentPart[] | undefined {
+  if (content === undefined || content === null) return undefined;
+  if (typeof content === 'string') return content || undefined;
+  const parts: ChatGptInputContentPart[] = [];
+  let hasImage = false;
+  for (const part of content) {
+    if (part.type === 'text') appendInputText(parts, String(part.text ?? ''));
+    else if (part.type === 'image_url') {
+      const image = openAiImagePart(part.image_url);
+      if (image) {
+        parts.push(image);
+        hasImage = true;
+      } else appendInputText(parts, `[unsupported:${String(part.type)}]`);
+    } else appendInputText(parts, `[unsupported:${String(part.type ?? 'content_part')}]`);
+  }
+  if (!parts.length) return undefined;
+  return hasImage ? parts : parts.map((part) => part.type === 'text' ? part.text : '').join('');
+}
+
+function openAiImagePart(value: unknown): ChatGptInputContentPart | undefined {
+  const raw = typeof value === 'string' ? { url: value } : value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  if (!raw || typeof raw.url !== 'string' || !raw.url) return undefined;
+  const detail = normalizeImageDetail(raw.detail);
+  return { type: 'image', imageUrl: raw.url, ...(detail ? { detail } : {}) };
+}
+
+function appendInputText(parts: ChatGptInputContentPart[], text: string): void {
+  if (!text) return;
+  const last = parts[parts.length - 1];
+  if (last?.type === 'text') last.text += text;
+  else parts.push({ type: 'text', text });
+}
+
+function normalizeImageDetail(value: unknown): ChatGptImageDetail | undefined {
+  return value === 'auto' || value === 'low' || value === 'high' ? value : undefined;
 }
 
 function parseOpenAiToolArguments(value: string): unknown {

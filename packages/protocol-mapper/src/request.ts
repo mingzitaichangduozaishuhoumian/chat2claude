@@ -1,4 +1,4 @@
-import type { ChatGptCompletionRequest, ChatGptInputItem, ChatGptMessage, ChatGptTool, ChatGptToolChoice } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptCompletionRequest, ChatGptImageDetail, ChatGptInputContentPart, ChatGptInputItem, ChatGptMessage, ChatGptTool, ChatGptToolChoice } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ClaudeContentBlock, ClaudeMessagesRequest, ClaudeTool, ClaudeToolChoice } from '@chatgpt-to-claude/claude-protocol';
 import { normalizeClaudeMessagesToCanonical, flattenCanonicalContentForTextBackend, type CanonicalContentBlock, type CanonicalMappingDiagnostic } from './canonical.js';
 import { resolveReasoningSpeed, type ReasoningSpeedDefaults } from './reasoning.js';
@@ -49,26 +49,58 @@ function mapCanonicalInputItems(messages: Array<{ role: ChatGptMessage['role'] |
   const inputItems: ChatGptInputItem[] = [];
   for (const message of messages) {
     const role = message.role === 'tool' ? 'user' : message.role;
-    let text = '';
-    const flushText = () => {
-      if (text) inputItems.push({ type: 'message', role, content: text });
-      text = '';
+    let parts: ChatGptInputContentPart[] = [];
+    let hasStructuredPart = false;
+    const appendText = (text: string) => {
+      if (!text) return;
+      const last = parts[parts.length - 1];
+      if (last?.type === 'text') last.text += text;
+      else parts.push({ type: 'text', text });
+    };
+    const flushParts = () => {
+      if (!parts.length) return;
+      inputItems.push({ type: 'message', role, content: hasStructuredPart ? parts : parts.map((part) => part.type === 'text' ? part.text : '').join('') });
+      parts = [];
+      hasStructuredPart = false;
     };
     for (const block of message.content) {
       if (block.kind === 'tool_use' && role === 'assistant') {
-        flushText();
+        flushParts();
         inputItems.push({ type: 'function_call', callId: block.id, name: block.name, arguments: block.input });
       } else if (block.kind === 'tool_result') {
-        flushText();
+        flushParts();
         const output = typeof block.content === 'string' ? block.content : flattenCanonicalContentForTextBackend(block.content, diagnostics);
         inputItems.push({ type: 'function_call_output', callId: block.toolUseId, output, ...(block.isError === undefined ? {} : { isError: block.isError }) });
+      } else if (block.kind === 'text') {
+        appendText(block.text);
+      } else if (block.kind === 'image') {
+        const image = imagePartFromClaudeSource(block.source);
+        if (image) {
+          parts.push(image);
+          hasStructuredPart = true;
+        } else {
+          appendText(flattenCanonicalContentForTextBackend([block], diagnostics));
+        }
       } else {
-        text += flattenCanonicalContentForTextBackend([block], diagnostics);
+        appendText(flattenCanonicalContentForTextBackend([block], diagnostics));
       }
     }
-    flushText();
+    flushParts();
   }
   return inputItems;
+}
+
+function imagePartFromClaudeSource(source: unknown): ChatGptInputContentPart | undefined {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return undefined;
+  const raw = source as Record<string, unknown>;
+  const detail = normalizeImageDetail(raw.detail);
+  if (raw.type === 'url' && typeof raw.url === 'string' && raw.url) return { type: 'image', imageUrl: raw.url, ...(detail ? { detail } : {}) };
+  if (raw.type === 'base64' && typeof raw.media_type === 'string' && typeof raw.data === 'string' && raw.media_type && raw.data) return { type: 'image', imageUrl: `data:${raw.media_type};base64,${raw.data}`, ...(detail ? { detail } : {}) };
+  return undefined;
+}
+
+function normalizeImageDetail(value: unknown): ChatGptImageDetail | undefined {
+  return value === 'auto' || value === 'low' || value === 'high' ? value : undefined;
 }
 
 function normalizeStopSequences(stop: string[] | undefined): string[] | undefined {

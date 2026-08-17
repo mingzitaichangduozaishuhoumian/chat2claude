@@ -5,8 +5,12 @@ export type ChatGptSpeedPreference = 'fastest' | 'fast' | 'balanced' | 'quality'
 export type ChatGptFinishReason = 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'refusal' | 'interrupted' | 'error' | string;
 
 export interface ChatGptMessage { role: 'user' | 'assistant' | 'system'; content: string; }
+export type ChatGptImageDetail = 'auto' | 'low' | 'high';
+export type ChatGptInputContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; imageUrl: string; detail?: ChatGptImageDetail };
 export type ChatGptInputItem =
-  | { type: 'message'; role: 'user' | 'assistant' | 'system'; content: string }
+  | { type: 'message'; role: 'user' | 'assistant' | 'system'; content: string | ChatGptInputContentPart[] }
   | { type: 'function_call'; callId: string; name: string; arguments: unknown }
   | { type: 'function_call_output'; callId: string; output: string; isError?: boolean };
 export interface ChatGptTool { name: string; description?: string; inputSchema: Record<string, unknown>; strict?: boolean; raw?: unknown; }

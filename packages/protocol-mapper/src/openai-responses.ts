@@ -1,4 +1,4 @@
-import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptInputItem, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptImageDetail, ChatGptInputContentPart, ChatGptInputItem, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
 import { createMessageId } from '@chatgpt-to-claude/shared';
 import { estimateTokens } from './response.js';
 import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningSpeedDefaults } from './reasoning.js';
@@ -135,7 +135,8 @@ function mapResponsesInputItems(input: OpenAiResponsesRequest['input'], instruct
     } else if (item.type === 'function_call_output') {
       inputItems.push({ type: 'function_call_output', callId: String(item.call_id ?? 'unknown'), output: stringifyUnknown(item.output) });
     } else {
-      inputItems.push({ type: 'message', role: normalizeRole(item.role), content: stringifyResponsesInputItem(item) });
+      const content = mapResponsesMessageContent(item);
+      if (content !== undefined) inputItems.push({ type: 'message', role: normalizeRole(item.role), content });
     }
   }
   return inputItems;
@@ -147,8 +148,51 @@ function stringifyResponsesContentPart(part: unknown): string {
   const raw = part as Record<string, unknown>;
   if (typeof raw.text === 'string') return raw.text;
   if (raw.type === 'input_text' || raw.type === 'output_text' || raw.type === 'text') return String(raw.text ?? '');
-  if (raw.type === 'input_image' || raw.type === 'image' || raw.type === 'image_url' || raw.type === 'url') return `[unsupported:${String(raw.type)}] ${stringifyUnknown(raw)}`;
+  if (raw.type === 'input_image' || raw.type === 'image' || raw.type === 'image_url' || raw.type === 'url') return `[unsupported:${String(raw.type)}]`;
   return `[unsupported:${String(raw.type ?? 'content_part')}] ${stringifyUnknown(raw)}`;
+}
+
+function mapResponsesMessageContent(item: OpenAiResponsesInputItem): string | ChatGptInputContentPart[] | undefined {
+  if (typeof item.content === 'string') return item.content || undefined;
+  if (!Array.isArray(item.content)) return stringifyResponsesInputItem(item);
+  const parts: ChatGptInputContentPart[] = [];
+  let hasImage = false;
+  for (const part of item.content) {
+    const image = responsesImagePart(part);
+    if (image) {
+      parts.push(image);
+      hasImage = true;
+      continue;
+    }
+    appendInputText(parts, stringifyResponsesContentPart(part));
+  }
+  if (!parts.length) return undefined;
+  return hasImage ? parts : parts.map((part) => part.type === 'text' ? part.text : '').join('');
+}
+
+function responsesImagePart(part: unknown): ChatGptInputContentPart | undefined {
+  if (!part || typeof part !== 'object' || Array.isArray(part)) return undefined;
+  const raw = part as Record<string, unknown>;
+  if (raw.type !== 'input_image' && raw.type !== 'image_url') return undefined;
+  const imageUrl = typeof raw.image_url === 'string'
+    ? raw.image_url
+    : raw.image_url && typeof raw.image_url === 'object' && !Array.isArray(raw.image_url) && typeof (raw.image_url as Record<string, unknown>).url === 'string'
+      ? String((raw.image_url as Record<string, unknown>).url)
+      : undefined;
+  if (!imageUrl) return undefined;
+  const detail = normalizeImageDetail(raw.detail);
+  return { type: 'image', imageUrl, ...(detail ? { detail } : {}) };
+}
+
+function appendInputText(parts: ChatGptInputContentPart[], text: string): void {
+  if (!text) return;
+  const last = parts[parts.length - 1];
+  if (last?.type === 'text') last.text += text;
+  else parts.push({ type: 'text', text });
+}
+
+function normalizeImageDetail(value: unknown): ChatGptImageDetail | undefined {
+  return value === 'auto' || value === 'low' || value === 'high' ? value : undefined;
 }
 
 function mapResponsesTools(tools: OpenAiResponsesTool[] | undefined): ChatGptTool[] | undefined {

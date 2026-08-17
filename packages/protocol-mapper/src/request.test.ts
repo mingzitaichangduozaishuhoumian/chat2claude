@@ -66,6 +66,15 @@ describe('canonical request mapping', () => {
     expect(canonical.diagnostics.map((item) => item.code)).toContain('image_text_backend_placeholder');
   });
 
+  it('maps Claude base64 image blocks to structured inputItems while keeping text fallback', () => {
+    const mapped = mapClaudeRequestToChatGpt(base([{ type: 'text', text: 'see ' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aaa' } }, { type: 'text', text: ' done' }]));
+
+    expect(mapped.messages[0].content).toBe('see [unsupported:image] done');
+    expect(mapped.inputItems).toEqual([
+      { type: 'message', role: 'user', content: [{ type: 'text', text: 'see ' }, { type: 'image', imageUrl: 'data:image/png;base64,aaa' }, { type: 'text', text: ' done' }] },
+    ]);
+  });
+
   it('maps Claude tool_use and tool_result blocks to structured inputItems while keeping text fallback', () => {
     const mapped = mapClaudeRequestToChatGpt({
       model: 'sonnet',
@@ -157,6 +166,18 @@ describe('OpenAI request generation controls mapping', () => {
   });
 
 
+  it('maps OpenAI chat text and image_url content parts to structured inputItems', () => {
+    const mapped = mapOpenAiChatRequestToChatGpt({
+      model: 'gpt-test',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'look ' }, { type: 'image_url', image_url: { url: 'https://example.test/a.png', detail: 'high' } }] }],
+    });
+
+    expect(mapped.messages).toEqual([{ role: 'user', content: 'look [unsupported:image_url]' }]);
+    expect(mapped.inputItems).toEqual([
+      { type: 'message', role: 'user', content: [{ type: 'text', text: 'look ' }, { type: 'image', imageUrl: 'https://example.test/a.png', detail: 'high' }] },
+    ]);
+  });
+
   it('maps OpenAI chat assistant tool_calls and tool messages to structured inputItems', () => {
     const mapped = mapOpenAiChatRequestToChatGpt({
       model: 'gpt-test',
@@ -202,6 +223,20 @@ describe('OpenAI request generation controls mapping', () => {
       { type: 'message', role: 'user', content: 'hello' },
       { type: 'function_call', callId: 'call_1', name: 'lookup', arguments: { q: 'x' } },
       { type: 'function_call_output', callId: 'call_1', output: 'done' },
+    ]);
+  });
+
+  it('maps OpenAI Responses input_image content parts to structured inputItems', () => {
+    const mapped = mapOpenAiResponsesRequestToChatGpt({
+      model: 'gpt-test',
+      input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'look ' }, { type: 'input_image', image_url: 'data:image/jpeg;base64,bbb', detail: 'low' }] }],
+    });
+
+    expect(mapped.messages).toEqual([{ role: 'user', content: 'look [unsupported:input_image]' }]);
+    expect(mapped.messages[0].content).not.toContain('base64');
+    expect(mapped.messages[0].content).not.toContain('data:image');
+    expect(mapped.inputItems).toEqual([
+      { type: 'message', role: 'user', content: [{ type: 'text', text: 'look ' }, { type: 'image', imageUrl: 'data:image/jpeg;base64,bbb', detail: 'low' }] },
     ]);
   });
 
