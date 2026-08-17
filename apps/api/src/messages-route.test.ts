@@ -124,6 +124,11 @@ describe('/v1/chat/completions', () => {
       { role: 'assistant', content: 'checking\n[tool_call:call_1:get_weather] {"city":"Paris"}' },
       { role: 'user', content: '[tool_result:call_1] sunny' },
     ]);
+    expect(backend.lastRequest?.inputItems).toEqual([
+      { type: 'message', role: 'assistant', content: 'checking' },
+      { type: 'function_call', callId: 'call_1', name: 'get_weather', arguments: { city: 'Paris' } },
+      { type: 'function_call_output', callId: 'call_1', output: 'sunny' },
+    ]);
   });
 
   it('returns an OpenAI error for an unknown model', async () => {
@@ -275,6 +280,13 @@ describe('/v1/responses', () => {
       { role: 'assistant', content: 'hi' },
       { role: 'user', content: '[function_call:call_1:lookup] {"q":"x"}' },
       { role: 'user', content: '[function_call_output:call_1] done' },
+    ]);
+    expect(backend.lastRequest?.inputItems).toEqual([
+      { type: 'message', role: 'system', content: 'be concise' },
+      { type: 'message', role: 'user', content: 'hello there [unsupported:image_url] {"type":"image_url","image_url":{"url":"https://example.test/a.png"}}' },
+      { type: 'message', role: 'assistant', content: 'hi' },
+      { type: 'function_call', callId: 'call_1', name: 'lookup', arguments: { q: 'x' } },
+      { type: 'function_call_output', callId: 'call_1', output: 'done' },
     ]);
   });
 

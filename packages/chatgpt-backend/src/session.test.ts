@@ -137,6 +137,32 @@ describe('SessionChatGptBackend', () => {
     expect(calls[0].body.stop).toEqual(['END', 'STOP']);
   });
 
+  it('prefers structured inputItems when building the Codex responses body', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return sseResponse([{ type: 'response.completed' }]);
+    } });
+
+    await backend.complete({
+      ...request,
+      messages: [{ role: 'user', content: 'fallback only' }],
+      inputItems: [
+        { type: 'message', role: 'assistant', content: 'checking' },
+        { type: 'function_call', callId: 'call_1', name: 'lookup', arguments: { q: 'x' } },
+        { type: 'function_call', callId: 'call_2', name: 'lookup', arguments: '{"q":"x"}' },
+        { type: 'function_call_output', callId: 'call_1', output: 'done', isError: true },
+      ],
+    }, context);
+
+    expect(calls[0].body.input).toEqual([
+      { type: 'message', role: 'assistant', content: 'checking' },
+      { type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: '{"q":"x"}' },
+      { type: 'function_call', call_id: 'call_2', name: 'lookup', arguments: '{"q":"x"}' },
+      { type: 'function_call_output', call_id: 'call_1', output: 'done' },
+    ]);
+  });
+
   it('passes tools/tool_choice to the Codex responses body and parses tool calls', async () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {

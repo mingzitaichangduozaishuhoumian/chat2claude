@@ -66,9 +66,24 @@ describe('canonical request mapping', () => {
     expect(canonical.diagnostics.map((item) => item.code)).toContain('image_text_backend_placeholder');
   });
 
-  it('downgrades tool_use blocks with explicit placeholder', () => {
-    const request = base([{ type: 'tool_use', id: 'toolu_1', name: 'get_weather', input: { city: 'Paris' } }]);
-    expect(mapClaudeRequestToChatGpt(request).messages[0].content).toBe('[unsupported:tool_use:get_weather]');
+  it('maps Claude tool_use and tool_result blocks to structured inputItems while keeping text fallback', () => {
+    const mapped = mapClaudeRequestToChatGpt({
+      model: 'sonnet',
+      max_tokens: 64,
+      messages: [
+        { role: 'assistant', content: [{ type: 'text', text: 'checking' }, { type: 'tool_use', id: 'toolu_1', name: 'get_weather', input: { city: 'Paris' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [{ type: 'text', text: '72F' }], is_error: true }] },
+      ],
+    });
+    expect(mapped.messages).toEqual([
+      { role: 'assistant', content: 'checking[unsupported:tool_use:get_weather]' },
+      { role: 'user', content: '[tool_result:toolu_1:error] 72F' },
+    ]);
+    expect(mapped.inputItems).toEqual([
+      { type: 'message', role: 'assistant', content: 'checking' },
+      { type: 'function_call', callId: 'toolu_1', name: 'get_weather', arguments: { city: 'Paris' } },
+      { type: 'function_call_output', callId: 'toolu_1', output: '72F', isError: true },
+    ]);
   });
 
   it('keeps unknown blocks explicit instead of dropping them', () => {
@@ -139,6 +154,55 @@ describe('OpenAI request generation controls mapping', () => {
     expect(mapped.temperature).toBe(0.3);
     expect(mapped.topP).toBe(0.9);
     expect(mapped.stopSequences).toEqual(['END', 'STOP']);
+  });
+
+
+  it('maps OpenAI chat assistant tool_calls and tool messages to structured inputItems', () => {
+    const mapped = mapOpenAiChatRequestToChatGpt({
+      model: 'gpt-test',
+      messages: [
+        { role: 'assistant', content: 'checking', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Paris"}' } }] },
+        { role: 'assistant', tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'fallback', arguments: 'not-json' } }] },
+        { role: 'tool', tool_call_id: 'call_1', content: 'sunny' },
+      ],
+    });
+
+    expect(mapped.messages).toEqual([
+      { role: 'assistant', content: 'checking\n[tool_call:call_1:get_weather] {"city":"Paris"}' },
+      { role: 'assistant', content: '[tool_call:call_2:fallback] not-json' },
+      { role: 'user', content: '[tool_result:call_1] sunny' },
+    ]);
+    expect(mapped.inputItems).toEqual([
+      { type: 'message', role: 'assistant', content: 'checking' },
+      { type: 'function_call', callId: 'call_1', name: 'get_weather', arguments: { city: 'Paris' } },
+      { type: 'function_call', callId: 'call_2', name: 'fallback', arguments: 'not-json' },
+      { type: 'function_call_output', callId: 'call_1', output: 'sunny' },
+    ]);
+  });
+
+  it('maps OpenAI Responses function_call and function_call_output to structured inputItems', () => {
+    const mapped = mapOpenAiResponsesRequestToChatGpt({
+      model: 'gpt-test',
+      instructions: 'be concise',
+      input: [
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] },
+        { type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: { q: 'x' } },
+        { type: 'function_call_output', call_id: 'call_1', output: 'done' },
+      ],
+    });
+
+    expect(mapped.messages).toEqual([
+      { role: 'system', content: 'be concise' },
+      { role: 'user', content: 'hello' },
+      { role: 'user', content: '[function_call:call_1:lookup] {"q":"x"}' },
+      { role: 'user', content: '[function_call_output:call_1] done' },
+    ]);
+    expect(mapped.inputItems).toEqual([
+      { type: 'message', role: 'system', content: 'be concise' },
+      { type: 'message', role: 'user', content: 'hello' },
+      { type: 'function_call', callId: 'call_1', name: 'lookup', arguments: { q: 'x' } },
+      { type: 'function_call_output', callId: 'call_1', output: 'done' },
+    ]);
   });
 
   it('maps Responses string stop to a single backend stop sequence', () => {

@@ -1,6 +1,6 @@
-import type { ChatGptCompletionRequest, ChatGptMessage, ChatGptTool, ChatGptToolChoice } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptCompletionRequest, ChatGptInputItem, ChatGptMessage, ChatGptTool, ChatGptToolChoice } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ClaudeContentBlock, ClaudeMessagesRequest, ClaudeTool, ClaudeToolChoice } from '@chatgpt-to-claude/claude-protocol';
-import { normalizeClaudeMessagesToCanonical, flattenCanonicalContentForTextBackend, type CanonicalMappingDiagnostic } from './canonical.js';
+import { normalizeClaudeMessagesToCanonical, flattenCanonicalContentForTextBackend, type CanonicalContentBlock, type CanonicalMappingDiagnostic } from './canonical.js';
 import { resolveReasoningSpeed, type ReasoningSpeedDefaults } from './reasoning.js';
 export { normalizeClaudeMessagesToCanonical, flattenCanonicalContentForTextBackend } from './canonical.js';
 export interface BackendRequestOptions { backendModel?: string; backendOptions?: Record<string, unknown>; }
@@ -15,6 +15,7 @@ export function mapClaudeRequestToChatGpt(request: ClaudeMessagesRequest, defaul
   const stopSequences = normalizeStopSequences(request.stop_sequences);
   return {
     messages,
+    inputItems: mapCanonicalInputItems(canonical.messages, canonical.diagnostics),
     maxTokens: request.max_tokens,
     model: options.backendModel ?? request.model,
     reasoningEffort: resolved.reasoningEffort,
@@ -43,6 +44,33 @@ export function mapClaudeToolChoice(toolChoice: ClaudeToolChoice | undefined): C
   if (toolChoice.type === 'tool') return { type: 'tool', name: toolChoice.name };
   return { type: toolChoice.type };
 }
+
+function mapCanonicalInputItems(messages: Array<{ role: ChatGptMessage['role'] | 'tool'; content: CanonicalContentBlock[] }>, diagnostics: CanonicalMappingDiagnostic[]): ChatGptInputItem[] {
+  const inputItems: ChatGptInputItem[] = [];
+  for (const message of messages) {
+    const role = message.role === 'tool' ? 'user' : message.role;
+    let text = '';
+    const flushText = () => {
+      if (text) inputItems.push({ type: 'message', role, content: text });
+      text = '';
+    };
+    for (const block of message.content) {
+      if (block.kind === 'tool_use' && role === 'assistant') {
+        flushText();
+        inputItems.push({ type: 'function_call', callId: block.id, name: block.name, arguments: block.input });
+      } else if (block.kind === 'tool_result') {
+        flushText();
+        const output = typeof block.content === 'string' ? block.content : flattenCanonicalContentForTextBackend(block.content, diagnostics);
+        inputItems.push({ type: 'function_call_output', callId: block.toolUseId, output, ...(block.isError === undefined ? {} : { isError: block.isError }) });
+      } else {
+        text += flattenCanonicalContentForTextBackend([block], diagnostics);
+      }
+    }
+    flushText();
+  }
+  return inputItems;
+}
+
 function normalizeStopSequences(stop: string[] | undefined): string[] | undefined {
   const values = stop?.filter((item) => typeof item === 'string');
   return values?.length ? values : undefined;

@@ -1,4 +1,4 @@
-import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptInputItem, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
 import { createMessageId } from '@chatgpt-to-claude/shared';
 import { estimateTokens } from './response.js';
 import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningSpeedDefaults } from './reasoning.js';
@@ -43,6 +43,7 @@ export function mapOpenAiResponsesRequestToChatGpt(request: OpenAiResponsesReque
   const stopSequences = normalizeResponsesStop(request.stop);
   return {
     messages: mapResponsesInput(request.input, request.instructions),
+    inputItems: mapResponsesInputItems(request.input, request.instructions),
     maxTokens: request.max_output_tokens ?? request.max_tokens ?? 1024,
     model: options.backendModel ?? request.model,
     reasoningEffort: normalizeReasoningEffort(request.reasoning?.effort ?? request.reasoning_effort ?? modelDefaults?.reasoningEffort ?? defaults.globalReasoningEffort),
@@ -119,6 +120,25 @@ function stringifyResponsesInputItem(item: OpenAiResponsesInputItem): string {
   if (item.type === 'function_call_output') return `[function_call_output:${String(item.call_id ?? 'unknown')}] ${stringifyUnknown(item.output)}`;
   if (typeof item.output === 'string') return `[output] ${item.output}`;
   return `[unsupported:${String(item.type ?? 'input_item')}] ${stringifyUnknown(item)}`;
+}
+
+function mapResponsesInputItems(input: OpenAiResponsesRequest['input'], instructions?: string): ChatGptInputItem[] {
+  const inputItems: ChatGptInputItem[] = [];
+  if (typeof instructions === 'string' && instructions) inputItems.push({ type: 'message', role: 'system', content: instructions });
+  if (typeof input === 'string') {
+    inputItems.push({ type: 'message', role: 'user', content: input });
+    return inputItems;
+  }
+  for (const item of input) {
+    if (item.type === 'function_call') {
+      inputItems.push({ type: 'function_call', callId: String(item.call_id ?? 'unknown'), name: String(item.name ?? 'unknown'), arguments: item.arguments ?? {} });
+    } else if (item.type === 'function_call_output') {
+      inputItems.push({ type: 'function_call_output', callId: String(item.call_id ?? 'unknown'), output: stringifyUnknown(item.output) });
+    } else {
+      inputItems.push({ type: 'message', role: normalizeRole(item.role), content: stringifyResponsesInputItem(item) });
+    }
+  }
+  return inputItems;
 }
 
 function stringifyResponsesContentPart(part: unknown): string {

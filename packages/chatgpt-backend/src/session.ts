@@ -1,4 +1,4 @@
-import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
+import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputItem, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
 import { ChatGptBackendError, type ChatGptBackendErrorCode } from './errors.js';
 
@@ -126,7 +126,7 @@ function isAbortError(error: unknown): boolean {
 function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {
   const body: JsonObject = {
     model: request.model,
-    input: request.messages.map((message) => ({ role: message.role, content: message.content })),
+    input: request.inputItems?.length ? request.inputItems.map(toResponsesInputItem) : request.messages.map((message) => ({ type: 'message', role: message.role, content: message.content })),
     stream: true,
     store: false,
     instructions: '',
@@ -139,6 +139,17 @@ function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {
   if (request.tools?.length) body.tools = request.tools.map((tool) => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: tool.strict }));
   if (request.toolChoice) body.tool_choice = request.toolChoice.type === 'tool' ? { type: 'function', name: request.toolChoice.name } : request.toolChoice.type;
   return body;
+}
+
+function toResponsesInputItem(item: ChatGptInputItem): JsonObject {
+  if (item.type === 'message') return { type: 'message', role: item.role, content: item.content };
+  if (item.type === 'function_call') return { type: 'function_call', call_id: item.callId, name: item.name, arguments: stringifyArguments(item.arguments) };
+  return { type: 'function_call_output', call_id: item.callId, output: item.output };
+}
+
+function stringifyArguments(value: unknown): string {
+  if (typeof value === 'string') return value || '{}';
+  try { return JSON.stringify(value ?? {}); } catch { return String(value); }
 }
 
 function parseDiscoveredModels(value: unknown): ChatGptDiscoveredModel[] {

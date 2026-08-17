@@ -1,4 +1,4 @@
-import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptFinishReason, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptFinishReason, ChatGptInputItem, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
 import { createMessageId } from '@chatgpt-to-claude/shared';
 import { estimateTokens } from './response.js';
 import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningSpeedDefaults } from './reasoning.js';
@@ -62,6 +62,7 @@ export function mapOpenAiChatRequestToChatGpt(request: OpenAiChatCompletionReque
   const stopSequences = normalizeOpenAiStop(request.stop);
   return {
     messages,
+    inputItems: mapOpenAiChatInputItems(request.messages),
     maxTokens: request.max_completion_tokens ?? request.max_tokens ?? 1024,
     model: options.backendModel ?? request.model,
     reasoningEffort: normalizeReasoningEffort(request.reasoning_effort ?? modelDefaults?.reasoningEffort ?? defaults.globalReasoningEffort),
@@ -158,6 +159,28 @@ export function stringifyOpenAiContent(content: OpenAiChatMessage['content']): s
   if (content === undefined || content === null) return '';
   if (typeof content === 'string') return content;
   return content.map((part) => part.type === 'text' ? String(part.text ?? '') : `[unsupported:${String(part.type ?? 'content_part')}]`).join('');
+}
+
+function mapOpenAiChatInputItems(messages: OpenAiChatMessage[]): ChatGptInputItem[] {
+  const inputItems: ChatGptInputItem[] = [];
+  for (const message of messages) {
+    const content = stringifyOpenAiContent(message.content);
+    if (message.role === 'tool' && message.tool_call_id) {
+      inputItems.push({ type: 'function_call_output', callId: message.tool_call_id, output: content });
+    } else {
+      if (content) inputItems.push({ type: 'message', role: message.role === 'tool' ? 'user' : message.role, content });
+      for (const toolCall of message.tool_calls ?? []) {
+        const name = toolCall.function?.name ?? 'unknown';
+        const callId = toolCall.id ?? 'unknown';
+        inputItems.push({ type: 'function_call', callId, name, arguments: parseOpenAiToolArguments(toolCall.function?.arguments ?? '') });
+      }
+    }
+  }
+  return inputItems;
+}
+
+function parseOpenAiToolArguments(value: string): unknown {
+  try { return JSON.parse(value) as unknown; } catch { return value; }
 }
 
 function mapToolCalls(toolCalls: ChatGptCompletionResponse['toolCalls']): OpenAiChatResponseToolCall[] | undefined {

@@ -5,11 +5,15 @@ export type ChatGptSpeedPreference = 'fastest' | 'fast' | 'balanced' | 'quality'
 export type ChatGptFinishReason = 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'refusal' | 'interrupted' | 'error' | string;
 
 export interface ChatGptMessage { role: 'user' | 'assistant' | 'system'; content: string; }
+export type ChatGptInputItem =
+  | { type: 'message'; role: 'user' | 'assistant' | 'system'; content: string }
+  | { type: 'function_call'; callId: string; name: string; arguments: unknown }
+  | { type: 'function_call_output'; callId: string; output: string; isError?: boolean };
 export interface ChatGptTool { name: string; description?: string; inputSchema: Record<string, unknown>; strict?: boolean; raw?: unknown; }
 export type ChatGptToolChoice = { type: 'auto' | 'any' | 'none' } | { type: 'tool'; name: string };
 export interface ChatGptToolCall { id: string; name: string; input: unknown; }
 export interface ChatGptUsage { inputTokens?: number; outputTokens?: number; totalTokens?: number; raw?: unknown; }
-export interface ChatGptCompletionRequest { messages: ChatGptMessage[]; maxTokens: number; model: string; reasoningEffort?: ChatGptReasoningEffort; speedPreference?: ChatGptSpeedPreference; temperature?: number; topP?: number; stopSequences?: string[]; tools?: ChatGptTool[]; toolChoice?: ChatGptToolChoice; backendOptions?: Record<string, unknown>; }
+export interface ChatGptCompletionRequest { messages: ChatGptMessage[]; inputItems?: ChatGptInputItem[]; maxTokens: number; model: string; reasoningEffort?: ChatGptReasoningEffort; speedPreference?: ChatGptSpeedPreference; temperature?: number; topP?: number; stopSequences?: string[]; tools?: ChatGptTool[]; toolChoice?: ChatGptToolChoice; backendOptions?: Record<string, unknown>; }
 export interface ChatGptCompletionResponse { text: string; finishReason: ChatGptFinishReason; toolCalls?: ChatGptToolCall[]; usage?: ChatGptUsage; }
 export interface ChatGptDiscoveredModel { id: string; displayName?: string; capabilities?: Record<string, unknown>; raw?: unknown; }
 
