@@ -67,7 +67,7 @@ export function mapOpenAiResponsesRequestToChatGpt(request: OpenAiResponsesReque
 
 function mapResponsesBackendOptions(request: OpenAiResponsesRequest, backendOptions: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   const responsesBody: Record<string, unknown> = isPlainObject(backendOptions?.responsesBody) ? { ...(backendOptions.responsesBody as Record<string, unknown>) } : {};
-  for (const key of ['previous_response_id', 'store', 'metadata', 'parallel_tool_calls', 'truncation'] as const) {
+  for (const key of ['previous_response_id', 'metadata', 'parallel_tool_calls', 'truncation'] as const) {
     if (request[key] !== undefined) responsesBody[key] = request[key];
   }
   if (request.text !== undefined) responsesBody.text = request.text;

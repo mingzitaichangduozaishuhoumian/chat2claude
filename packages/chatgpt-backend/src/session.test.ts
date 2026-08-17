@@ -126,7 +126,7 @@ describe('SessionChatGptBackend', () => {
     expect(calls[0].body).not.toHaveProperty('stop');
   });
 
-  it('allowlists backend responsesBody fields and lets store true override the default', async () => {
+  it('allowlists backend responsesBody fields and keeps store false even when requested true', async () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
@@ -150,7 +150,7 @@ describe('SessionChatGptBackend', () => {
 
     expect(calls[0].body).toMatchObject({
       previous_response_id: 'resp_prev',
-      store: true,
+      store: false,
       metadata: { trace: 'abc' },
       parallel_tool_calls: false,
       truncation: 'auto',

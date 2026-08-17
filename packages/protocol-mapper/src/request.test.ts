@@ -291,7 +291,7 @@ describe('OpenAI request generation controls mapping', () => {
     expect(mapped.stopSequences).toEqual(['END']);
   });
 
-  it('maps Responses compatibility fields to backend responsesBody', () => {
+  it('maps Responses compatibility fields to backend responsesBody without forwarding store', () => {
     const text = { format: { type: 'json_schema', name: 'answer', schema: { type: 'object' } } };
     const mapped = mapOpenAiResponsesRequestToChatGpt({
       model: 'gpt-test',
@@ -310,13 +310,13 @@ describe('OpenAI request generation controls mapping', () => {
       responsesBody: {
         existing: 'ok',
         previous_response_id: 'resp_prev',
-        store: true,
         metadata: { trace: 'abc' },
         parallel_tool_calls: false,
         truncation: 'auto',
         text,
       },
     });
+    expect(mapped.backendOptions?.responsesBody).not.toHaveProperty('store');
   });
 
   it('flattens Responses response_format json_schema into text.format when text is absent', () => {

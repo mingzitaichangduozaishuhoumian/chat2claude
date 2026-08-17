@@ -650,7 +650,7 @@ describe('/v1/responses', () => {
     expect(res.status).toBe(200);
   });
 
-  it('preserves OpenAI Responses structured output fields in backend options', async () => {
+  it('preserves OpenAI Responses structured output fields in backend options without forwarding store', async () => {
     const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
     const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
     const text = { format: { type: 'json_schema', name: 'answer', schema: { type: 'object' } } };
@@ -665,12 +665,12 @@ describe('/v1/responses', () => {
     }) });
     expect(res.status).toBe(200);
     expect(backend.lastRequest?.backendOptions).toEqual({ responsesBody: {
-      store: true,
       metadata: { trace: 'abc' },
       parallel_tool_calls: false,
       truncation: 'auto',
       text,
     } });
+    expect(backend.lastRequest?.backendOptions?.responsesBody).not.toHaveProperty('store');
   });
 
   it('stores a non-stream responses response and prepends it for previous_response_id', async () => {
