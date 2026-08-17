@@ -13,6 +13,7 @@ import { ModelRegistry } from './services/model-registry.js';
 import { RequestLog } from './services/request-log.js';
 import { RuntimeApiKeys } from './services/runtime-api-keys.js';
 import { ChatGptAuthFlowService } from './services/chatgpt-auth-flow.js';
+import { SetupProvisioner } from './services/setup-provisioner.js';
 import { ResponsesStore } from './services/responses-store.js';
 
 const discoveredModels = [{ id: 'backend-test-model', displayName: 'Backend Test Model' }];
@@ -34,6 +35,48 @@ const adminJsonHeaders = jsonHeaders;
 const adminKeyHeaders = { 'x-api-key': 'test-key' };
 
 describe('AccountPool', () => {
+  it('preserves OAuth token metadata internally while redacting admin views', () => {
+    const accountPool = new AccountPool();
+    const view = accountPool.upsert({
+      id: 'session-oauth',
+      provider: 'chatgpt-session',
+      secret: {
+        type: 'chatgpt-session',
+        accessToken: ' access-token ',
+        refreshToken: ' refresh-token ',
+        idToken: ' id-token ',
+        expiresAt: ' 2026-08-17T01:00:00.000Z ',
+        email: ' user@example.test ',
+        accountId: ' account-id ',
+        planType: ' plus ',
+        cookie: ' cookie=value ',
+        deviceId: ' device-id ',
+        userAgent: ' user-agent ',
+      },
+      capabilities: ['chatgpt-session', 'messages'],
+    });
+
+    expect(accountPool.get('session-oauth')?.secret).toEqual({
+      type: 'chatgpt-session',
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      idToken: 'id-token',
+      expiresAt: '2026-08-17T01:00:00.000Z',
+      email: 'user@example.test',
+      accountId: 'account-id',
+      planType: 'plus',
+      cookie: 'cookie=value',
+      deviceId: 'device-id',
+      userAgent: 'user-agent',
+    });
+    expect(view).toMatchObject({ id: 'session-oauth', provider: 'chatgpt-session', hasSecret: true });
+    expect(view).not.toHaveProperty('secret');
+    expect(accountPool.list()[1]).not.toHaveProperty('secret');
+    expect(JSON.stringify(accountPool.list())).not.toContain('refresh-token');
+    expect(JSON.stringify(accountPool.list())).not.toContain('id-token');
+    expect(JSON.stringify(accountPool.list())).not.toContain('access-token');
+  });
+
   it('puts rate-limited accounts into cooldown and skips them until expiry', () => {
     let now = new Date('2026-08-17T00:00:00.000Z');
     const accountPool = new AccountPool({ now: () => now, rateLimitCooldownMs: 1_000 });
@@ -1546,11 +1589,17 @@ describe('/v1/models', () => {
 describe('/admin/api/accounts', () => {
   it('adds a chatgpt-session account and redacts secret from admin views', async () => {
     const app = createApp(env);
-    const addRes = await app.request('/admin/api/accounts', { method: 'POST', headers: adminJsonHeaders, body: JSON.stringify({ id: 'session-1', provider: 'chatgpt-session', label: 'Session 1', secret: { type: 'chatgpt-session', accessToken: 'token-1', cookie: 'cookie-1', deviceId: 'device-1', userAgent: 'ua-1' }, capabilities: ['chatgpt-session', 'messages'] }) });
+    const addRes = await app.request('/admin/api/accounts', { method: 'POST', headers: adminJsonHeaders, body: JSON.stringify({ id: 'session-1', provider: 'chatgpt-session', label: 'Session 1', secret: { type: 'chatgpt-session', accessToken: 'token-1', refreshToken: 'refresh-1', idToken: 'id-token-1', expiresAt: '2026-08-17T01:00:00.000Z', email: 'user@example.test', accountId: 'account-1', planType: 'plus', cookie: 'cookie-1', deviceId: 'device-1', userAgent: 'ua-1' }, capabilities: ['chatgpt-session', 'messages'] }) });
     expect(addRes.status).toBe(201);
     const addBody = await addRes.json() as { account: Record<string, unknown> };
     expect(addBody.account).toMatchObject({ id: 'session-1', provider: 'chatgpt-session', hasSecret: true });
     expect(addBody.account).not.toHaveProperty('secret');
+    expect(JSON.stringify(addBody)).not.toContain('token-1');
+    expect(JSON.stringify(addBody)).not.toContain('refresh-1');
+    expect(JSON.stringify(addBody)).not.toContain('id-token-1');
+    expect(JSON.stringify(addBody)).not.toContain('accessToken');
+    expect(JSON.stringify(addBody)).not.toContain('refreshToken');
+    expect(JSON.stringify(addBody)).not.toContain('idToken');
 
     const listRes = await app.request('/admin/api/accounts', { headers: adminKeyHeaders });
     expect(listRes.status).toBe(200);
@@ -1558,6 +1607,12 @@ describe('/admin/api/accounts', () => {
     const session = listBody.accounts.find((account) => account.id === 'session-1');
     expect(session).toMatchObject({ provider: 'chatgpt-session', hasSecret: true });
     expect(session).not.toHaveProperty('secret');
+    expect(JSON.stringify(listBody)).not.toContain('token-1');
+    expect(JSON.stringify(listBody)).not.toContain('refresh-1');
+    expect(JSON.stringify(listBody)).not.toContain('id-token-1');
+    expect(JSON.stringify(listBody)).not.toContain('accessToken');
+    expect(JSON.stringify(listBody)).not.toContain('refreshToken');
+    expect(JSON.stringify(listBody)).not.toContain('idToken');
   });
 
   it('adds, lists, patches, and health-checks runtime accounts', async () => {
@@ -1647,10 +1702,50 @@ describe('ChatGPT one-click auth admin flow', () => {
     expect(readyBody.provisionResult.boundAliases).toEqual({ sonnet: 'gpt-5-thinking' });
     expect(JSON.stringify(readyBody)).not.toContain('token-ready');
     expect(JSON.stringify(readyBody)).not.toContain('refresh-ready');
+    expect(JSON.stringify(readyBody)).not.toContain('id-ready');
+    expect(JSON.stringify(readyBody)).not.toContain('accessToken');
+    expect(JSON.stringify(readyBody)).not.toContain('refreshToken');
+    expect(JSON.stringify(readyBody)).not.toContain('idToken');
 
     const thirdRes = await app.request(`/admin/api/auth/chatgpt/${startBody.id}`);
     const thirdBody = await thirdRes.json() as { provisionResult: { apiKey: string } };
     expect(thirdBody.provisionResult.apiKey).toBe(readyBody.provisionResult.apiKey);
+  });
+
+  it('provisioning keeps OAuth token metadata internally and returns a redacted account', async () => {
+    const accountPool = new AccountPool();
+    const provisioner = new SetupProvisioner({
+      accountPool,
+      modelRegistry: new ModelRegistry(),
+      backend: new InspectingBackend([{ id: 'gpt-5-thinking' }]),
+      runtimeApiKeys: new RuntimeApiKeys(),
+    });
+    const result = await provisioner.provision({
+      type: 'chatgpt-session',
+      accessToken: 'token-ready',
+      refreshToken: 'refresh-ready',
+      idToken: 'id-ready',
+      expiresAt: '2026-08-17T01:00:00.000Z',
+      email: 'user@example.test',
+      accountId: 'account-ready',
+      planType: 'plus',
+    });
+
+    expect(accountPool.get('chatgpt-primary')?.secret).toEqual({
+      type: 'chatgpt-session',
+      accessToken: 'token-ready',
+      refreshToken: 'refresh-ready',
+      idToken: 'id-ready',
+      expiresAt: '2026-08-17T01:00:00.000Z',
+      email: 'user@example.test',
+      accountId: 'account-ready',
+      planType: 'plus',
+    });
+    expect(result.account).toMatchObject({ id: 'chatgpt-primary', provider: 'chatgpt-session', hasSecret: true });
+    expect(result.account).not.toHaveProperty('secret');
+    expect(JSON.stringify(result.account)).not.toContain('token-ready');
+    expect(JSON.stringify(result.account)).not.toContain('refresh-ready');
+    expect(JSON.stringify(result.account)).not.toContain('id-ready');
   });
 
   it('allows the returned apiKey to access /v1/models', async () => {

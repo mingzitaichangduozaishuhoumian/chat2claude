@@ -304,6 +304,12 @@ function normalizeSecret(value: unknown, provider: AccountProvider): ChatGptSess
   if (provider !== 'chatgpt-session' && raw.type !== 'chatgpt-session') return undefined;
   const secret: ChatGptSessionSecret = { type: 'chatgpt-session' };
   if (typeof raw.accessToken === 'string' && raw.accessToken.trim()) secret.accessToken = raw.accessToken.trim();
+  if (typeof raw.refreshToken === 'string' && raw.refreshToken.trim()) secret.refreshToken = raw.refreshToken.trim();
+  if (typeof raw.idToken === 'string' && raw.idToken.trim()) secret.idToken = raw.idToken.trim();
+  if (typeof raw.expiresAt === 'string' && raw.expiresAt.trim()) secret.expiresAt = raw.expiresAt.trim();
+  if (typeof raw.email === 'string' && raw.email.trim()) secret.email = raw.email.trim();
+  if (typeof raw.accountId === 'string' && raw.accountId.trim()) secret.accountId = raw.accountId.trim();
+  if (typeof raw.planType === 'string' && raw.planType.trim()) secret.planType = raw.planType.trim();
   if (typeof raw.cookie === 'string' && raw.cookie.trim()) secret.cookie = raw.cookie.trim();
   if (typeof raw.deviceId === 'string' && raw.deviceId.trim()) secret.deviceId = raw.deviceId.trim();
   if (typeof raw.userAgent === 'string' && raw.userAgent.trim()) secret.userAgent = raw.userAgent.trim();
