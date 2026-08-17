@@ -22,7 +22,7 @@ export interface CanonicalRequest { model: string; messages: CanonicalMessage[];
 export function normalizeClaudeMessagesToCanonical(request: ClaudeMessagesRequest): CanonicalRequest {
   const diagnostics: CanonicalMappingDiagnostic[] = [];
   const messages: CanonicalMessage[] = [];
-  const system = normalizeSystem(request.system);
+  const system = normalizeSystem(request.system, diagnostics);
   if (system.length) messages.push({ role: 'system', content: system });
   request.messages.forEach((message, messageIndex) => {
     messages.push({ role: message.role, content: normalizeContent(message.content, diagnostics, `messages[${messageIndex}].content`) });
@@ -34,10 +34,10 @@ export function flattenCanonicalContentForTextBackend(blocks: CanonicalContentBl
   return blocks.map((block, index) => flattenBlock(block, diagnostics, `${path}[${index}]`)).filter(Boolean).join('');
 }
 
-function normalizeSystem(system: ClaudeMessagesRequest['system']): CanonicalContentBlock[] {
+function normalizeSystem(system: ClaudeMessagesRequest['system'], diagnostics: CanonicalMappingDiagnostic[]): CanonicalContentBlock[] {
   if (!system) return [];
   if (typeof system === 'string') return system ? [{ kind: 'text', text: system }] : [];
-  return system.map((block) => ({ kind: 'text', text: block.text }));
+  return system.map((block, index) => normalizeBlock(block as ClaudeContentBlock, diagnostics, `system[${index}]`));
 }
 
 function normalizeContent(content: string | ClaudeContentBlock[], diagnostics: CanonicalMappingDiagnostic[], path: string): CanonicalContentBlock[] {

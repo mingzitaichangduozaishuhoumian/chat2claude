@@ -10,6 +10,46 @@ describe('canonical request mapping', () => {
     expect(mapClaudeRequestToChatGpt(base([{ type: 'text', text: 'hello' }, { type: 'text', text: ' world' }])).messages[0].content).toBe('hello world');
   });
 
+  it('prepends string system as the first backend message without reordering user messages', () => {
+    const mapped = mapClaudeRequestToChatGpt({
+      model: 'sonnet',
+      max_tokens: 64,
+      system: 'Always answer tersely.',
+      messages: [
+        { role: 'user', content: 'first' },
+        { role: 'assistant', content: 'ok' },
+        { role: 'user', content: 'second' },
+      ],
+    });
+
+    expect(mapped.messages).toEqual([
+      { role: 'system', content: 'Always answer tersely.' },
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'ok' },
+      { role: 'user', content: 'second' },
+    ]);
+  });
+
+  it('concatenates structured system text blocks', () => {
+    const mapped = mapClaudeRequestToChatGpt({
+      ...base('hello'),
+      system: [{ type: 'text', text: 'Be ' }, { type: 'text', text: 'concise.' }],
+    });
+
+    expect(mapped.messages[0]).toEqual({ role: 'system', content: 'Be concise.' });
+    expect(mapped.messages[1]).toEqual({ role: 'user', content: 'hello' });
+  });
+
+  it('keeps unsupported structured system blocks explicit instead of dropping them', () => {
+    const mapped = mapClaudeRequestToChatGpt({
+      ...base('hello'),
+      system: [{ type: 'text', text: 'Use this ' }, { type: 'future_system_block', payload: 1 } as never],
+    });
+
+    expect(mapped.messages[0]).toEqual({ role: 'system', content: 'Use this [unsupported:future_system_block]' });
+    expect(mapped.backendOptions?.mappingDiagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'unsupported_content_block', path: 'system[1]' })]));
+  });
+
   it('preserves tool_result content instead of silently dropping it', () => {
     const request = base([{ type: 'tool_result', tool_use_id: 'toolu_1', content: '72F' }]);
     const mapped = mapClaudeRequestToChatGpt(request);

@@ -507,6 +507,16 @@ describe('/v1/messages', () => {
     expect(backend.lastRequest?.model).toBe('backend-injected-model');
   });
 
+  it('prepends Claude system text before backend user messages', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const app = createMessagesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, system: 'be concise', messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(200);
+    expect(backend.lastRequest?.messages[0]).toEqual({ role: 'system', content: 'be concise' });
+    expect(backend.lastRequest?.messages[1]).toEqual({ role: 'user', content: 'hello' });
+  });
+
   it('releases account concurrency after a non-streaming request', async () => {
     const accountPool = new AccountPool();
     const app = createMessagesRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
@@ -767,6 +777,26 @@ describe('/v1/messages/count_tokens', () => {
     const body = await res.json() as { input_tokens: number };
     expect(Object.keys(body)).toEqual(['input_tokens']);
     expect(body.input_tokens).toBeGreaterThan(0);
+  });
+
+  it('includes system text in estimated input_tokens', async () => {
+    const app = createApp(env);
+    const withoutSystem = await app.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] }),
+    });
+    const withSystem = await app.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ model: 'sonnet', system: 'Always answer with detailed operational constraints.', messages: [{ role: 'user', content: 'hello' }] }),
+    });
+
+    expect(withoutSystem.status).toBe(200);
+    expect(withSystem.status).toBe(200);
+    const withoutBody = await withoutSystem.json() as { input_tokens: number };
+    const withBody = await withSystem.json() as { input_tokens: number };
+    expect(withBody.input_tokens).toBeGreaterThan(withoutBody.input_tokens);
   });
 
   it('returns Claude-like validation errors for invalid count token requests', async () => {
