@@ -7,7 +7,7 @@ import { createMessagesRoute } from './routes/messages.js';
 import { createModelsRoute } from './routes/models.js';
 import { createOpenAiChatRoute } from './routes/openai-chat.js';
 import { createOpenAiResponsesRoute } from './routes/openai-responses.js';
-import { apiKeyAuth } from './middleware/auth.js';
+import { adminApiAuth, apiKeyAuth } from './middleware/auth.js';
 import { AccountPool } from './services/account-pool.js';
 import { ModelRegistry } from './services/model-registry.js';
 import { RequestLog } from './services/request-log.js';
@@ -30,6 +30,8 @@ const env = {
   defaultResponseSpeed: 'balanced' as const,
 };
 const jsonHeaders = { 'content-type': 'application/json', 'x-api-key': 'test-key' };
+const adminJsonHeaders = jsonHeaders;
+const adminKeyHeaders = { 'x-api-key': 'test-key' };
 
 describe('AccountPool', () => {
   it('puts rate-limited accounts into cooldown and skips them until expiry', () => {
@@ -299,7 +301,7 @@ describe('/v1/chat/completions', () => {
 
   it('returns an OpenAI error for a disabled alias', async () => {
     const app = createApp(env);
-    const patchRes = await app.request('/admin/api/models/sonnet', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+    const patchRes = await app.request('/admin/api/models/sonnet', { method: 'PATCH', headers: adminJsonHeaders, body: JSON.stringify({ enabled: false }) });
     expect(patchRes.status).toBe(200);
     const res = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(400);
@@ -318,7 +320,7 @@ describe('/v1/chat/completions', () => {
 
   it('returns an OpenAI error for a stale alias binding', async () => {
     const app = createApp(env);
-    const patchRes = await app.request('/admin/api/models/sonnet', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backendModel: 'missing-backend-model' }) });
+    const patchRes = await app.request('/admin/api/models/sonnet', { method: 'PATCH', headers: adminJsonHeaders, body: JSON.stringify({ backendModel: 'missing-backend-model' }) });
     expect(patchRes.status).toBe(200);
     const res = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(404);
@@ -371,6 +373,32 @@ describe('/v1/chat/completions', () => {
     await res.text();
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
     expect(accountPool.list()[0].status).toBe('available');
+  });
+});
+
+describe('ResponsesStore', () => {
+  it('isolates records by owner and lazily expires or evicts records', () => {
+    let now = 1_000;
+    const store = new ResponsesStore({ now: () => now, ttlMs: 100, maxRecords: 2 });
+    const request = { model: 'sonnet', input: 'hello' } as any;
+    const responseA = { id: 'resp_a', output_text: 'A' } as any;
+    const responseB = { id: 'resp_b', output_text: 'B' } as any;
+    const responseC = { id: 'resp_c', output_text: 'C' } as any;
+
+    store.put('owner-a', request, responseA);
+    expect(store.get('owner-a', 'resp_a')?.response.output_text).toBe('A');
+    expect(store.get('owner-b', 'resp_a')).toBeUndefined();
+
+    now = 1_101;
+    expect(store.get('owner-a', 'resp_a')).toBeUndefined();
+
+    now = 2_000;
+    store.put('owner-a', request, responseA);
+    store.put('owner-a', request, responseB);
+    store.put('owner-a', request, responseC);
+    expect(store.get('owner-a', 'resp_a')).toBeUndefined();
+    expect(store.get('owner-a', 'resp_b')?.response.output_text).toBe('B');
+    expect(store.get('owner-a', 'resp_c')?.response.output_text).toBe('C');
   });
 });
 
@@ -519,7 +547,7 @@ describe('/v1/responses', () => {
     const firstRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', input: 'first', store: true, metadata: { trace: 'one' } }) });
     expect(firstRes.status).toBe(200);
     const firstBody = await firstRes.json() as { id: string; output_text: string };
-    expect(responsesStore.get(firstBody.id)?.metadata).toEqual({ trace: 'one' });
+    expect(responsesStore.get('anonymous', firstBody.id)?.metadata).toEqual({ trace: 'one' });
 
     const secondRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', input: 'second', previous_response_id: firstBody.id }) });
     expect(secondRes.status).toBe(200);
@@ -528,6 +556,34 @@ describe('/v1/responses', () => {
       { role: 'user', content: 'second' },
     ]);
     expect(backend.lastRequest?.backendOptions).toBeUndefined();
+  });
+
+  it('keeps stored responses isolated by authenticated owner', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const runtimeApiKeys = new RuntimeApiKeys();
+    const keyA = 'key-a';
+    const keyB = 'key-b';
+    runtimeApiKeys.add(keyA);
+    runtimeApiKeys.add(keyB);
+    const responsesStore = new ResponsesStore();
+    const app = new Hono();
+    app.use('/v1/*', apiKeyAuth([], runtimeApiKeys));
+    app.route('/', createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool(), responsesStore }));
+
+    const firstRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': keyA }, body: JSON.stringify({ model: 'sonnet', input: 'first', store: true }) });
+    expect(firstRes.status).toBe(200);
+    const firstBody = await firstRes.json() as { id: string; output_text: string };
+
+    const otherOwnerRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': keyB }, body: JSON.stringify({ model: 'sonnet', input: 'second', previous_response_id: firstBody.id }) });
+    expect(otherOwnerRes.status).toBe(404);
+    expect((await otherOwnerRes.json() as { error: { type: string } }).error.type).toBe('not_found_error');
+
+    const sameOwnerRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': keyA }, body: JSON.stringify({ model: 'sonnet', input: 'second', previous_response_id: firstBody.id }) });
+    expect(sameOwnerRes.status).toBe(200);
+    expect(backend.lastRequest?.messages).toEqual([
+      { role: 'assistant', content: firstBody.output_text },
+      { role: 'user', content: 'second' },
+    ]);
   });
 
   it('returns not_found_error when previous_response_id is not in the local store', async () => {
@@ -551,7 +607,7 @@ describe('/v1/responses', () => {
     expect(firstRes.status).toBe(200);
     const firstText = await firstRes.text();
     const firstId = extractResponsesCompletedId(firstText);
-    expect(responsesStore.get(firstId)?.response.output_text).toBe('backend:backend-test-model');
+    expect(responsesStore.get('anonymous', firstId)?.response.output_text).toBe('backend:backend-test-model');
 
     const secondRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', input: 'second', previous_response_id: firstId }) });
     expect(secondRes.status).toBe(200);
@@ -569,7 +625,7 @@ describe('/v1/responses', () => {
     const text = await res.text();
     expect(text).toContain('event: response.failed');
     expect(responsesStore.count()).toBe(0);
-    expect(responsesStore.get('resp_failed')).toBeUndefined();
+    expect(responsesStore.get('anonymous', 'resp_failed')).toBeUndefined();
   });
 
   it('streams a forced tool call in responses SSE', async () => {
@@ -700,7 +756,7 @@ describe('/v1/messages', () => {
 
   it('uses patched alias defaults in mock echo', async () => {
     const app = createApp(env);
-    const patchRes = await app.request('/admin/api/models/sonnet', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ defaults: { reasoning_effort: 'max', speed: 'quality' } }) });
+    const patchRes = await app.request('/admin/api/models/sonnet', { method: 'PATCH', headers: adminJsonHeaders, body: JSON.stringify({ defaults: { reasoning_effort: 'max', speed: 'quality' } }) });
     expect(patchRes.status).toBe(200);
 
     const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
@@ -791,7 +847,7 @@ describe('/v1/messages', () => {
 
   it('returns a Claude error for a disabled alias', async () => {
     const app = createApp(env);
-    const patchRes = await app.request('/admin/api/models/sonnet', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+    const patchRes = await app.request('/admin/api/models/sonnet', { method: 'PATCH', headers: adminJsonHeaders, body: JSON.stringify({ enabled: false }) });
     expect(patchRes.status).toBe(200);
 
     const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
@@ -812,7 +868,7 @@ describe('/v1/messages', () => {
 
   it('returns a clear error for a stale alias binding', async () => {
     const app = createApp(env);
-    const patchRes = await app.request('/admin/api/models/sonnet', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backendModel: 'missing-backend-model' }) });
+    const patchRes = await app.request('/admin/api/models/sonnet', { method: 'PATCH', headers: adminJsonHeaders, body: JSON.stringify({ backendModel: 'missing-backend-model' }) });
     expect(patchRes.status).toBe(200);
     const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(404);
@@ -1084,10 +1140,12 @@ describe('API key auth', () => {
   it('enables a random runtime development key through admin dev-enable without restart', async () => {
     const app = createApp({ ...env, apiKeys: [] });
     const firstEnableRes = await app.request('/admin/api/api-keys/dev-enable', { method: 'POST' });
-    const secondEnableRes = await app.request('/admin/api/api-keys/dev-enable', { method: 'POST' });
     expect(firstEnableRes.status).toBe(200);
-    expect(secondEnableRes.status).toBe(200);
     const firstEnableBody = await firstEnableRes.json() as { key: string; status: { apiKeysConfigured: boolean; runtimeApiKeysConfigured: boolean } };
+    const secondEnableWithoutKeyRes = await app.request('/admin/api/api-keys/dev-enable', { method: 'POST' });
+    expect(secondEnableWithoutKeyRes.status).toBe(401);
+    const secondEnableRes = await app.request('/admin/api/api-keys/dev-enable', { method: 'POST', headers: { 'x-api-key': firstEnableBody.key } });
+    expect(secondEnableRes.status).toBe(200);
     const secondEnableBody = await secondEnableRes.json() as { key: string };
     expect(firstEnableBody.key).toMatch(/^sk-dev-[A-Za-z0-9_-]+$/);
     expect(secondEnableBody.key).toMatch(/^sk-dev-[A-Za-z0-9_-]+$/);
@@ -1097,6 +1155,31 @@ describe('API key auth', () => {
 
     const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': firstEnableBody.key }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(200);
+  });
+
+  it('protects admin API with configured env key while leaving setup status public', async () => {
+    const app = createApp(env);
+    const noKeyRes = await app.request('/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'admin-protected', label: 'Admin Protected' }) });
+    expect(noKeyRes.status).toBe(401);
+
+    const withKeyRes = await app.request('/admin/api/accounts', { method: 'POST', headers: adminJsonHeaders, body: JSON.stringify({ id: 'admin-protected', label: 'Admin Protected' }) });
+    expect(withKeyRes.status).toBe(201);
+
+    const setupStatusRes = await app.request('/admin/api/setup/status');
+    expect(setupStatusRes.status).toBe(200);
+  });
+
+  it('allows bootstrap admin APIs with no keys then requires the generated runtime key for sensitive admin APIs', async () => {
+    const app = createApp({ ...env, apiKeys: [] });
+    const enableRes = await app.request('/admin/api/api-keys/dev-enable', { method: 'POST' });
+    expect(enableRes.status).toBe(200);
+    const enableBody = await enableRes.json() as { key: string };
+
+    const noKeyAddRes = await app.request('/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'runtime-admin', label: 'Runtime Admin' }) });
+    expect(noKeyAddRes.status).toBe(401);
+
+    const withKeyAddRes = await app.request('/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': enableBody.key }, body: JSON.stringify({ id: 'runtime-admin', label: 'Runtime Admin' }) });
+    expect(withKeyAddRes.status).toBe(201);
   });
 
   it('rejects admin dev-enable in production', async () => {
@@ -1147,6 +1230,13 @@ describe('/admin', () => {
     expect(html).toContain('<details id="advanced-import">');
     expect(html).toContain('高级：手动导入 accessToken / cookie');
     expect(html).toContain('__ORIGIN__');
+    expect(html).toContain("if (result.apiKey) saveAdminApiKey(result.apiKey, true);");
+    expect(html).toContain("headers.set('x-api-key', key);");
+    expect(html).toContain("key === 'apiKey' ? '<saved-in-browser>'");
+    expect(html).toContain("document.getElementById('api-key').textContent = result.apiKey ? 'API Key 已保存到本浏览器' : '<your-api-key>';");
+    expect(html).not.toContain("document.getElementById('api-key').textContent = result.apiKey;");
+    expect(html).not.toContain("JSON.stringify(body, null, 2);");
+    expect(html).not.toContain("replace('<your-api-key>', result.apiKey)");
     expect(html).not.toContain('localhost:3000/v1/messages');
   });
 
@@ -1285,13 +1375,13 @@ describe('/v1/models', () => {
 describe('/admin/api/accounts', () => {
   it('adds a chatgpt-session account and redacts secret from admin views', async () => {
     const app = createApp(env);
-    const addRes = await app.request('/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'session-1', provider: 'chatgpt-session', label: 'Session 1', secret: { type: 'chatgpt-session', accessToken: 'token-1', cookie: 'cookie-1', deviceId: 'device-1', userAgent: 'ua-1' }, capabilities: ['chatgpt-session', 'messages'] }) });
+    const addRes = await app.request('/admin/api/accounts', { method: 'POST', headers: adminJsonHeaders, body: JSON.stringify({ id: 'session-1', provider: 'chatgpt-session', label: 'Session 1', secret: { type: 'chatgpt-session', accessToken: 'token-1', cookie: 'cookie-1', deviceId: 'device-1', userAgent: 'ua-1' }, capabilities: ['chatgpt-session', 'messages'] }) });
     expect(addRes.status).toBe(201);
     const addBody = await addRes.json() as { account: Record<string, unknown> };
     expect(addBody.account).toMatchObject({ id: 'session-1', provider: 'chatgpt-session', hasSecret: true });
     expect(addBody.account).not.toHaveProperty('secret');
 
-    const listRes = await app.request('/admin/api/accounts');
+    const listRes = await app.request('/admin/api/accounts', { headers: adminKeyHeaders });
     expect(listRes.status).toBe(200);
     const listBody = await listRes.json() as { accounts: Array<Record<string, unknown>> };
     const session = listBody.accounts.find((account) => account.id === 'session-1');
@@ -1301,22 +1391,22 @@ describe('/admin/api/accounts', () => {
 
   it('adds, lists, patches, and health-checks runtime accounts', async () => {
     const app = createApp(env);
-    const addRes = await app.request('/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'mock-2', label: 'Mock 2', maxConcurrency: 3, capabilities: ['mock', 'messages'] }) });
+    const addRes = await app.request('/admin/api/accounts', { method: 'POST', headers: adminJsonHeaders, body: JSON.stringify({ id: 'mock-2', label: 'Mock 2', maxConcurrency: 3, capabilities: ['mock', 'messages'] }) });
     expect(addRes.status).toBe(201);
     const addBody = await addRes.json() as { account: { id: string; label: string; maxConcurrency: number; status: string; enabled: boolean } };
     expect(addBody.account).toMatchObject({ id: 'mock-2', label: 'Mock 2', maxConcurrency: 3, status: 'available', enabled: true });
 
-    const listRes = await app.request('/admin/api/accounts');
+    const listRes = await app.request('/admin/api/accounts', { headers: adminKeyHeaders });
     expect(listRes.status).toBe(200);
     const listBody = await listRes.json() as { accounts: Array<{ id: string }> };
     expect(listBody.accounts.map((account) => account.id)).toContain('mock-2');
 
-    const patchRes = await app.request('/admin/api/accounts/mock-2', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: false, lastError: 'manual disable' }) });
+    const patchRes = await app.request('/admin/api/accounts/mock-2', { method: 'PATCH', headers: adminJsonHeaders, body: JSON.stringify({ enabled: false, lastError: 'manual disable' }) });
     expect(patchRes.status).toBe(200);
     const patchBody = await patchRes.json() as { account: { status: string; enabled: boolean; lastError: string } };
     expect(patchBody.account).toMatchObject({ status: 'disabled', enabled: false, lastError: 'manual disable' });
 
-    const healthRes = await app.request('/admin/api/accounts/mock-2/health-check', { method: 'POST' });
+    const healthRes = await app.request('/admin/api/accounts/mock-2/health-check', { method: 'POST', headers: adminKeyHeaders });
     expect(healthRes.status).toBe(200);
     const healthBody = await healthRes.json() as { ok: boolean; account: { status: string; lastError: string | null; lastUsedAt: string | null } };
     expect(healthBody.ok).toBe(true);
@@ -1465,7 +1555,7 @@ describe('session admin model discovery', () => {
 
   it('returns a clear error when session model refresh has no session account', async () => {
     const app = createSessionAdminApp(new InspectingBackend([{ id: 'backend-session-model' }]));
-    const refreshRes = await app.request('/admin/api/models/refresh', { method: 'POST' });
+    const refreshRes = await app.request('/admin/api/models/refresh', { method: 'POST', headers: adminKeyHeaders });
     expect(refreshRes.status).toBe(409);
     const body = await refreshRes.json() as { error: string };
     expect(body.error).toContain('No available chatgpt-session account');
@@ -1499,12 +1589,12 @@ describe('/admin/api/models', () => {
 
   it('patches, lists, refreshes, and resets alias overlay models', async () => {
     const app = createApp(env);
-    const patchRes = await app.request('/admin/api/models/haiku', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backendModel: 'backend-test-model', enabled: false, defaults: { reasoning_effort: 'minimal', speed: 'fastest' } }) });
+    const patchRes = await app.request('/admin/api/models/haiku', { method: 'PATCH', headers: adminJsonHeaders, body: JSON.stringify({ backendModel: 'backend-test-model', enabled: false, defaults: { reasoning_effort: 'minimal', speed: 'fastest' } }) });
     expect(patchRes.status).toBe(200);
     const patchBody = await patchRes.json() as { model: { backendModel: string; enabled: boolean; defaults: { reasoning_effort: string; speed: string } } };
     expect(patchBody.model).toMatchObject({ backendModel: 'backend-test-model', enabled: false, defaults: { reasoning_effort: 'minimal', speed: 'fastest' } });
 
-    const adminListRes = await app.request('/admin/api/models');
+    const adminListRes = await app.request('/admin/api/models', { headers: adminKeyHeaders });
     const adminListBody = await adminListRes.json() as { aliases: Array<{ id: string; enabled: boolean }>; discovered: Array<{ id: string }>; combined: Array<{ id: string }> };
     expect(adminListBody.aliases.find((model) => model.id === 'haiku')?.enabled).toBe(false);
     expect(adminListBody.discovered.map((model) => model.id)).toContain('backend-test-model');
@@ -1514,12 +1604,12 @@ describe('/admin/api/models', () => {
     const publicListBody = await publicListRes.json() as { data: Array<{ id: string }> };
     expect(publicListBody.data.map((model) => model.id)).not.toContain('haiku');
 
-    const refreshRes = await app.request('/admin/api/models/refresh', { method: 'POST' });
+    const refreshRes = await app.request('/admin/api/models/refresh', { method: 'POST', headers: adminKeyHeaders });
     expect(refreshRes.status).toBe(200);
     const refreshBody = await refreshRes.json() as { discovered: Array<{ id: string }> };
     expect(refreshBody.discovered.map((model) => model.id)).toContain('backend-test-model');
 
-    const resetRes = await app.request('/admin/api/models/reset', { method: 'POST' });
+    const resetRes = await app.request('/admin/api/models/reset', { method: 'POST', headers: adminKeyHeaders });
     expect(resetRes.status).toBe(200);
     const resetBody = await resetRes.json() as { models: Array<{ id: string; backendModel?: string; enabled: boolean; defaults: { reasoning_effort: string; speed: string } }> };
     const resetHaiku = resetBody.models.find((model) => model.id === 'haiku');

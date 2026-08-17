@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { createLogger } from '@chatgpt-to-claude/shared';
 import { loadEnv, type AppEnv } from './config/env.js';
-import { apiKeyAuth } from './middleware/auth.js';
+import { adminApiAuth, apiKeyAuth } from './middleware/auth.js';
 import { healthRoute } from './routes/health.js';
 import { createModelsRoute } from './routes/models.js';
 import { createMessagesRoute } from './routes/messages.js';
@@ -37,6 +37,7 @@ export function createApp(env: AppEnv = loadEnv()): Hono {
   app.route('/', createOpenAiChatRoute({ backend, requestLog, modelRegistry, accountPool, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createOpenAiResponsesRoute({ backend, requestLog, modelRegistry, accountPool, responsesStore, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createMetricsRoute(requestLog));
+  app.use('/admin/api/*', adminApiAuth(env.apiKeys, runtimeApiKeys));
   app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend }));
   return app;
 }

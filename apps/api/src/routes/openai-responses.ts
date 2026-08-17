@@ -18,7 +18,8 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
     try {
       if (deps.ready) await deps.ready;
       const request = parseOpenAiResponsesRequest(await c.req.json());
-      const downstreamRequest = withPreviousResponseContext(request, responsesStore);
+      const ownerId = String((c as { get: (key: string) => unknown }).get('ownerId') ?? 'anonymous');
+      const downstreamRequest = withPreviousResponseContext(ownerId, request, responsesStore);
       const accountProvider = accountProviderForBackend(deps.backendProvider);
       const account = deps.accountPool.acquire({ provider: accountProvider, capability: 'messages' });
       if (!account) throw new ClaudeApiError(`No available ${accountProvider} account. Import and health-check a ChatGPT session account before calling /v1/responses.`, 503, 'overloaded_error');
@@ -36,7 +37,7 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
         deps.requestLog.record({ route: '/v1/responses', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {
-          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToOpenAiResponsesSse(downstreamRequest, deps.backend.stream(backendRequest, backendContext), { onCompleted: (response) => { if (request.store === true) responsesStore.put(request, response); } }), (error) => openAiResponsesStreamError(error, request.model));
+          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToOpenAiResponsesSse(downstreamRequest, deps.backend.stream(backendRequest, backendContext), { onCompleted: (response) => { if (request.store === true) responsesStore.put(ownerId, request, response); } }), (error) => openAiResponsesStreamError(error, request.model));
           const stream = readableStreamFromAsyncIterable(events);
           releaseDeferredToStream = true;
           return new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' } });
@@ -44,7 +45,7 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
 
         const backendResponse = await deps.backend.complete(backendRequest, backendContext);
         const response = mapChatGptResponseToOpenAiResponses(downstreamRequest, backendResponse);
-        if (request.store === true) responsesStore.put(request, response);
+        if (request.store === true) responsesStore.put(ownerId, request, response);
         return c.json(response);
       } catch (error) {
         releaseError = error;
@@ -60,10 +61,10 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
   return app;
 }
 
-function withPreviousResponseContext(request: OpenAiResponsesRequest, responsesStore: ResponsesStore): OpenAiResponsesRequest {
+function withPreviousResponseContext(ownerId: string, request: OpenAiResponsesRequest, responsesStore: ResponsesStore): OpenAiResponsesRequest {
   const previousResponseId = typeof request.previous_response_id === 'string' ? request.previous_response_id : '';
   if (!previousResponseId) return request;
-  const previous = responsesStore.get(previousResponseId);
+  const previous = responsesStore.get(ownerId, previousResponseId);
   if (!previous) throw new ClaudeApiError(`Previous response not found: ${previousResponseId}`, 404, 'not_found_error');
   const outputText = previous.response.output_text;
   const input = outputText ? prependAssistantMessage(request.input, outputText) : request.input;

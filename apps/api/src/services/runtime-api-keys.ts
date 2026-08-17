@@ -25,6 +25,14 @@ export class RuntimeApiKeys {
     return this.keys.has(key);
   }
 
+  hasAny(): boolean {
+    return this.keys.size > 0;
+  }
+
+  get isEmpty(): boolean {
+    return this.keys.size === 0;
+  }
+
   get size(): number {
     return this.keys.size;
   }

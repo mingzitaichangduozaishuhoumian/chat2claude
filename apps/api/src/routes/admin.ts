@@ -245,6 +245,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       <section class="card">
         <h2>浏览器授权（Codex OAuth）</h2>
         <p>API Key：<span id="key-state" class="status ${keyTone}">${escapeHtml(keyState)}</span></p>
+        <div class="row"><input id="admin-api-key" type="password" placeholder="Admin API Key" autocomplete="off" /><button id="save-admin-api-key" class="secondary" type="button">保存 Admin API Key</button></div>
         <p class="muted">当前 backend：<code>${escapeHtml(setupStatus.backend.provider)}</code>。不会启动独立 Chrome/新 profile；点击下方按钮后只生成授权链接，你自行在当前浏览器打开。</p>
         <div class="row"><button id="auth-chatgpt">生成 Codex OAuth 授权链接</button><button id="cancel-auth" class="secondary" disabled>取消</button></div>
         <p id="auth-message" class="muted">${escapeHtml(setupStatus.nextStep)}</p>
@@ -273,6 +274,12 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     let pollTimer = null;
     const curlExample = document.getElementById('curl-example');
     curlExample.textContent = curlExample.dataset.template.replace('__ORIGIN__', window.location.origin);
+    const adminKeyInput = document.getElementById('admin-api-key');
+    adminKeyInput.value = getStoredAdminApiKey();
+    document.getElementById('save-admin-api-key').addEventListener('click', () => {
+      saveAdminApiKey(adminKeyInput.value.trim(), true);
+      document.getElementById('result').textContent = adminKeyInput.value.trim() ? 'Admin API Key 已保存到本浏览器。' : 'Admin API Key 已清除。';
+    });
 
     document.getElementById('auth-chatgpt').addEventListener('click', async () => {
       const body = await postJson('/admin/api/auth/chatgpt/start');
@@ -280,7 +287,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       document.getElementById('cancel-auth').disabled = false;
       document.getElementById('auth-message').textContent = authStartMessage(body);
       showAuthLink(body.authorizeUrl);
-      document.getElementById('result').textContent = JSON.stringify(body, null, 2);
+      renderResult(body);
       schedulePoll(1200);
     });
     document.getElementById('cancel-auth').addEventListener('click', async () => {
@@ -289,7 +296,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       clearPoll();
       document.getElementById('cancel-auth').disabled = true;
       document.getElementById('auth-message').textContent = body.message || '已取消。';
-      document.getElementById('result').textContent = JSON.stringify(body, null, 2);
+      renderResult(body);
     });
     document.getElementById('copy-auth-link').addEventListener('click', async () => {
       const link = document.getElementById('auth-link').href;
@@ -301,7 +308,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       const redirectUrl = document.getElementById('oauth-callback-url').value.trim();
       if (!redirectUrl) { document.getElementById('auth-message').textContent = '请粘贴完整 callback URL。'; return; }
       const body = await postJson('/admin/api/auth/chatgpt/callback', { redirectUrl });
-      document.getElementById('result').textContent = JSON.stringify(body, null, 2);
+      renderResult(body);
       if (body.id) currentFlowId = body.id;
       document.getElementById('auth-message').textContent = body.message || 'callback 已提交，正在轮询换取 token。';
       schedulePoll(300);
@@ -313,7 +320,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
         deviceId: document.getElementById('session-device-id').value,
         userAgent: document.getElementById('session-user-agent').value,
       });
-      document.getElementById('result').textContent = JSON.stringify(body, null, 2);
+      renderResult(body);
       if (body.apiKey) showReady(body);
       await loadAccounts(); await loadModels();
     });
@@ -340,7 +347,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       if (!currentFlowId) return;
       const body = await getJson('/admin/api/auth/chatgpt/' + encodeURIComponent(currentFlowId));
       document.getElementById('auth-message').textContent = body.message || body.state || '';
-      document.getElementById('result').textContent = JSON.stringify(body, null, 2);
+      renderResult(body);
       if (body.provisionResult?.apiKey) {
         clearPoll(); document.getElementById('cancel-auth').disabled = true; showReady(body.provisionResult); await loadAccounts(); await loadModels(); return;
       }
@@ -348,11 +355,12 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       schedulePoll(1800);
     }
     function showReady(result) {
+      if (result.apiKey) saveAdminApiKey(result.apiKey, true);
       const endpoint = window.location.origin + '/v1/messages';
       document.getElementById('api-config').hidden = false;
       document.getElementById('endpoint').textContent = endpoint;
-      document.getElementById('api-key').textContent = result.apiKey;
-      const curl = curlExample.dataset.template.replace('__ORIGIN__', window.location.origin).replace('<your-api-key>', result.apiKey);
+      document.getElementById('api-key').textContent = result.apiKey ? 'API Key 已保存到本浏览器' : '<your-api-key>';
+      const curl = curlExample.dataset.template.replace('__ORIGIN__', window.location.origin);
       document.getElementById('ready-curl').textContent = curl;
       curlExample.textContent = curl;
       const keyState = document.getElementById('key-state'); keyState.textContent = '已配置'; keyState.className = 'status ok';
@@ -361,10 +369,10 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
 
     document.getElementById('add-account').addEventListener('click', async () => {
       const body = await postJson('/admin/api/accounts', { provider: 'mock', label: document.getElementById('account-label').value, maxConcurrency: Number(document.getElementById('account-concurrency').value || 1), capabilities: ['mock', 'messages'] });
-      document.getElementById('result').textContent = JSON.stringify(body, null, 2); await loadAccounts();
+      renderResult(body); await loadAccounts();
     });
-    document.getElementById('reset-models').addEventListener('click', async () => { const body = await postJson('/admin/api/models/reset'); document.getElementById('result').textContent = JSON.stringify(body, null, 2); await loadModels(); });
-    document.getElementById('refresh-models').addEventListener('click', async () => { const body = await postJson('/admin/api/models/refresh'); document.getElementById('result').textContent = JSON.stringify(body, null, 2); await loadModels(); });
+    document.getElementById('reset-models').addEventListener('click', async () => { const body = await postJson('/admin/api/models/reset'); renderResult(body); await loadModels(); });
+    document.getElementById('refresh-models').addEventListener('click', async () => { const body = await postJson('/admin/api/models/refresh'); renderResult(body); await loadModels(); });
 
     async function loadAccounts() {
       const body = await getJson('/admin/api/accounts'); const accounts = body.accounts || [];
@@ -372,7 +380,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       document.getElementById('accounts').innerHTML = '<div class="table-wrap"><table><thead><tr><th>ID</th><th>标识</th><th>Provider</th><th>状态</th><th>并发</th><th>Secret</th><th>最近使用</th><th>能力</th><th>操作</th></tr></thead><tbody>' + accounts.map((account) =>
         '<tr><td><code>' + esc(account.id) + '</code></td><td>' + esc(account.label) + '</td><td>' + esc(account.provider || 'mock') + '</td><td><span class="pill">' + esc(account.status) + (account.enabled ? '' : ' / disabled') + '</span></td><td>' + account.currentConcurrency + '/' + account.maxConcurrency + '</td><td>' + (account.hasSecret ? '已导入' : '-') + '</td><td>' + esc(account.lastUsedAt || '-') + '</td><td>' + esc((account.capabilities || []).join(', ')) + '</td><td><button class="secondary" data-health="' + esc(account.id) + '">健康检查</button></td></tr>'
       ).join('') + '</tbody></table></div>';
-      document.querySelectorAll('[data-health]').forEach((button) => button.addEventListener('click', async () => { const body = await postJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.health) + '/health-check'); document.getElementById('result').textContent = JSON.stringify(body, null, 2); await loadAccounts(); }));
+      document.querySelectorAll('[data-health]').forEach((button) => button.addEventListener('click', async () => { const body = await postJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.health) + '/health-check'); renderResult(body); await loadAccounts(); }));
     }
     async function loadModels() {
       const body = await getJson('/admin/api/models'); const aliases = body.aliases || body.models || []; const discovered = body.discovered || [];
@@ -383,11 +391,46 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       ).join('') + '</tbody></table></div>';
       document.querySelectorAll('[data-save-model]').forEach((button) => button.addEventListener('click', async () => saveModel(button.dataset.saveModel)));
     }
-    async function saveModel(id) { const byField = (field) => document.querySelector('[data-id="' + CSS.escape(id) + '"][data-field="' + field + '"]'); const body = await patchJson('/admin/api/models/' + encodeURIComponent(id), { backendModel: byField('backendModel').value, enabled: byField('enabled').checked, defaults: { reasoning_effort: byField('reasoning_effort').value, speed: byField('speed').value } }); document.getElementById('result').textContent = JSON.stringify(body, null, 2); await loadModels(); }
+    async function saveModel(id) { const byField = (field) => document.querySelector('[data-id="' + CSS.escape(id) + '"][data-field="' + field + '"]'); const body = await patchJson('/admin/api/models/' + encodeURIComponent(id), { backendModel: byField('backendModel').value, enabled: byField('enabled').checked, defaults: { reasoning_effort: byField('reasoning_effort').value, speed: byField('speed').value } }); renderResult(body); await loadModels(); }
     function selectHtml(id, field, options, current) { return '<select data-field="' + field + '" data-id="' + esc(id) + '">' + options.map((option) => '<option value="' + option + '" ' + (option === current ? 'selected' : '') + '>' + option + '</option>').join('') + '</select>'; }
-    async function getJson(url) { return (await fetch(url)).json(); }
-    async function postJson(url, body) { return (await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })).json(); }
-    async function patchJson(url, body) { return (await fetch(url, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json(); }
+    function renderResult(body) { document.getElementById('result').textContent = JSON.stringify(redactApiKeys(body), null, 2); }
+    function redactApiKeys(value) {
+      if (Array.isArray(value)) return value.map(redactApiKeys);
+      if (!value || typeof value !== 'object') return value;
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'apiKey' ? '<saved-in-browser>' : redactApiKeys(item)]));
+    }
+    async function getJson(url) { return requestJson(url); }
+    async function postJson(url, body) { return requestJson(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); }
+    async function patchJson(url, body) { return requestJson(url, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); }
+    async function requestJson(url, init) {
+      const response = await fetchWithAdminKey(url, init);
+      if (response.status !== 401) return response.json();
+      const entered = window.prompt('请输入 Admin API Key');
+      if (entered && entered.trim()) {
+        saveAdminApiKey(entered.trim(), true);
+        const retry = await fetchWithAdminKey(url, init);
+        return retry.json();
+      }
+      document.getElementById('result').textContent = '需要 Admin API Key 才能访问该接口。';
+      return response.json();
+    }
+    async function fetchWithAdminKey(url, init) {
+      const options = { ...(init || {}) };
+      const headers = new Headers(options.headers || {});
+      const key = getStoredAdminApiKey();
+      if (key) headers.set('x-api-key', key);
+      options.headers = headers;
+      return fetch(url, options);
+    }
+    function getStoredAdminApiKey() { return localStorage.getItem('adminApiKey') || sessionStorage.getItem('adminApiKey') || ''; }
+    function saveAdminApiKey(key, persistent) {
+      if (key) {
+        (persistent ? localStorage : sessionStorage).setItem('adminApiKey', key);
+        adminKeyInput.value = key;
+        return;
+      }
+      localStorage.removeItem('adminApiKey'); sessionStorage.removeItem('adminApiKey'); adminKeyInput.value = '';
+    }
     function esc(value) { return String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])); }
     loadAccounts(); loadModels();
   </script>
