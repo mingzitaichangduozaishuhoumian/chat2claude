@@ -5,6 +5,7 @@ import { mapChatGptResponseToClaude, mapChatGptStreamToClaudeSse, mapClaudeReque
 import type { RequestLog } from '../services/request-log.js';
 import { ModelRegistryError, type ModelRegistry } from '../services/model-registry.js';
 import type { AccountPool, AccountProvider } from '../services/account-pool.js';
+import { accountReleaseError } from './account-release-error.js';
 import { mapChatGptBackendError, mapErrorPayload } from './backend-errors.js';
 
 export interface MessagesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; }
@@ -44,7 +45,7 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
         releaseError = error;
         throw error;
       } finally {
-        if (!releaseDeferredToStream) deps.accountPool.release(account.id, releaseError);
+        if (!releaseDeferredToStream) deps.accountPool.release(account.id, accountReleaseError(releaseError));
       }
     } catch (error) {
       const apiError = error instanceof ClaudeApiError ? error : mapChatGptBackendError(error) ?? (error instanceof ModelRegistryError ? new ClaudeApiError(error.message, error.status, error.status === 404 ? 'not_found_error' : 'invalid_request_error') : new ClaudeApiError(error instanceof Error ? error.message : 'Invalid request'));
@@ -66,7 +67,7 @@ async function* releaseAccountWhenDone(accountPool: AccountPool, accountId: stri
     releaseError = error;
     yield* onError(error);
   } finally {
-    accountPool.release(accountId, releaseError);
+    accountPool.release(accountId, accountReleaseError(releaseError));
   }
 }
 

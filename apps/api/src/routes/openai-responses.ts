@@ -6,6 +6,7 @@ import type { RequestLog } from '../services/request-log.js';
 import { ResponsesStore } from '../services/responses-store.js';
 import { ModelRegistryError, type ModelRegistry } from '../services/model-registry.js';
 import type { AccountPool, AccountProvider } from '../services/account-pool.js';
+import { accountReleaseError } from './account-release-error.js';
 import { mapChatGptBackendError, mapErrorPayload } from './backend-errors.js';
 
 export interface OpenAiResponsesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; responsesStore?: ResponsesStore; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; }
@@ -49,7 +50,7 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
         releaseError = error;
         throw error;
       } finally {
-        if (!releaseDeferredToStream) deps.accountPool.release(account.id, releaseError);
+        if (!releaseDeferredToStream) deps.accountPool.release(account.id, accountReleaseError(releaseError));
       }
     } catch (error) {
       const apiError = error instanceof ClaudeApiError ? error : mapChatGptBackendError(error) ?? (error instanceof ModelRegistryError ? new ClaudeApiError(error.message, error.status, error.status === 404 ? 'not_found_error' : 'invalid_request_error') : new ClaudeApiError(error instanceof Error ? error.message : 'Invalid request'));
@@ -81,6 +82,7 @@ function parseOpenAiResponsesRequest(value: unknown): OpenAiResponsesRequest {
   const body = value;
   if (typeof body.model !== 'string' || !body.model) throw new ClaudeApiError('model is required');
   if (typeof body.input !== 'string' && !Array.isArray(body.input)) throw new ClaudeApiError('input must be a string or array');
+  validateResponsesInput(body.input);
   const maxTokens = body.max_output_tokens ?? body.max_tokens;
   if (maxTokens !== undefined && (typeof maxTokens !== 'number' || !Number.isInteger(maxTokens) || maxTokens < 1)) throw new ClaudeApiError('max_output_tokens/max_tokens must be a positive integer');
   if (body.stream !== undefined && typeof body.stream !== 'boolean') throw new ClaudeApiError('stream must be a boolean');
@@ -111,6 +113,18 @@ function validateStop(stop: unknown): void {
   if (!Array.isArray(stop) || stop.some((item) => typeof item !== 'string')) throw new ClaudeApiError('stop must be a string, string array, or null');
 }
 
+function validateResponsesInput(input: unknown): void {
+  if (!Array.isArray(input)) return;
+  for (const item of input) {
+    if (!isObject(item)) throw new ClaudeApiError('input items must be objects');
+    const content = item.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      if (typeof part !== 'string' && !isObject(part)) throw new ClaudeApiError('input content parts must be strings or objects');
+    }
+  }
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -131,7 +145,7 @@ async function* releaseAccountWhenDone(accountPool: AccountPool, accountId: stri
     releaseError = error;
     yield* onError(error);
   } finally {
-    accountPool.release(accountId, releaseError);
+    accountPool.release(accountId, accountReleaseError(releaseError));
   }
 }
 

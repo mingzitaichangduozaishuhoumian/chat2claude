@@ -5,6 +5,7 @@ import { mapChatGptResponseToOpenAiChat, mapChatGptStreamToOpenAiChatSse, mapOpe
 import type { RequestLog } from '../services/request-log.js';
 import { ModelRegistryError, type ModelRegistry } from '../services/model-registry.js';
 import type { AccountPool, AccountProvider } from '../services/account-pool.js';
+import { accountReleaseError } from './account-release-error.js';
 import { mapChatGptBackendError, mapErrorPayload } from './backend-errors.js';
 
 export interface OpenAiChatRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; }
@@ -44,7 +45,7 @@ export function createOpenAiChatRoute(deps: OpenAiChatRouteDeps): Hono {
         releaseError = error;
         throw error;
       } finally {
-        if (!releaseDeferredToStream) deps.accountPool.release(account.id, releaseError);
+        if (!releaseDeferredToStream) deps.accountPool.release(account.id, accountReleaseError(releaseError));
       }
     } catch (error) {
       const apiError = error instanceof ClaudeApiError ? error : mapChatGptBackendError(error) ?? (error instanceof ModelRegistryError ? new ClaudeApiError(error.message, error.status, error.status === 404 ? 'not_found_error' : 'invalid_request_error') : new ClaudeApiError(error instanceof Error ? error.message : 'Invalid request'));
@@ -88,6 +89,11 @@ function validateOpenAiChatMessage(message: unknown): void {
   if (!isObject(message)) throw new ClaudeApiError('message must be an object');
   if (message.role !== 'system' && message.role !== 'developer' && message.role !== 'user' && message.role !== 'assistant' && message.role !== 'tool') throw new ClaudeApiError('message.role must be system, developer, user, assistant, or tool');
   if (message.content !== undefined && message.content !== null && typeof message.content !== 'string' && !Array.isArray(message.content)) throw new ClaudeApiError('message.content must be a string, null, or array');
+  if (Array.isArray(message.content)) {
+    for (const part of message.content) {
+      if (!isObject(part)) throw new ClaudeApiError('message.content parts must be objects');
+    }
+  }
   if (message.tool_calls !== undefined && !Array.isArray(message.tool_calls)) throw new ClaudeApiError('message.tool_calls must be an array');
   if (message.role === 'tool' && message.tool_call_id !== undefined && typeof message.tool_call_id !== 'string') throw new ClaudeApiError('message.tool_call_id must be a string');
 }
@@ -121,7 +127,7 @@ async function* releaseAccountWhenDone(accountPool: AccountPool, accountId: stri
     releaseError = error;
     yield* onError(error);
   } finally {
-    accountPool.release(accountId, releaseError);
+    accountPool.release(accountId, accountReleaseError(releaseError));
   }
 }
 

@@ -126,6 +126,15 @@ describe('/v1/chat/completions', () => {
     expect((await badIncludeUsage.json() as { error: { type: string } }).error.type).toBe('invalid_request_error');
   });
 
+  it('rejects invalid OpenAI chat content parts before acquiring an account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiChatRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', messages: [{ role: 'user', content: [null] }] }) });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: { type: string; message: string } }).error).toMatchObject({ type: 'invalid_request_error', message: 'message.content parts must be objects' });
+    expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0, lastUsedAt: null, lastError: null });
+  });
+
   it('returns an OpenAI non-streaming chat completion with text content', async () => {
     const app = createApp(env);
     const res = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, reasoning_effort: 'low', response_speed: 'fast', messages: [{ role: 'user', content: 'hello' }] }) });
@@ -273,14 +282,19 @@ describe('/v1/chat/completions', () => {
     ]);
   });
 
-  it('returns an OpenAI error for an unknown model', async () => {
-    const app = createApp(env);
-    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'unknown-model', messages: [{ role: 'user', content: 'hello' }] }) });
+  it('returns an OpenAI error for an unknown model without poisoning the account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiChatRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'unknown-model', messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(404);
     const body = await res.json() as { error: { type: string; message: string; code: null } };
     expect(body.error.type).toBe('not_found_error');
     expect(body.error.message).toContain('Unknown model: unknown-model');
     expect(body.error.code).toBeNull();
+    expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0, lastError: null, lastErrorCode: null });
+
+    const retryRes = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(retryRes.status).toBe(200);
   });
 
   it('returns an OpenAI error for a disabled alias', async () => {
@@ -376,6 +390,15 @@ describe('/v1/responses', () => {
     const badReasoningEffort = await app.request('/v1/responses', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', input: 'hello', reasoning: { effort: 1 } }) });
     expect(badReasoningEffort.status).toBe(400);
     expect((await badReasoningEffort.json() as { error: { type: string } }).error.type).toBe('invalid_request_error');
+  });
+
+  it('rejects invalid OpenAI responses input items before acquiring an account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiResponsesRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', input: [null] }) });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: { type: string; message: string } }).error).toMatchObject({ type: 'invalid_request_error', message: 'input items must be objects' });
+    expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0, lastUsedAt: null, lastError: null });
   });
 
   it('returns a non-streaming responses text response', async () => {
@@ -590,7 +613,7 @@ describe('/v1/responses', () => {
 
   it('emits responses failed SSE and records account error when streaming backend throws', async () => {
     const accountPool = new AccountPool();
-    const app = createOpenAiResponsesRoute({ backend: new ThrowingStreamBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const app = createOpenAiResponsesRoute({ backend: new ThrowingStreamBackend([{ id: 'backend-test-model' }], new ChatGptBackendError('backend stream boom', 'upstream_error')), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
     const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', stream: true, input: 'hello' }) });
     expect(res.status).toBe(200);
     expect(accountPool.list()[0].currentConcurrency).toBe(1);
@@ -599,20 +622,25 @@ describe('/v1/responses', () => {
     expect(text).toContain('"type":"response.failed"');
     expect(text).toContain('"response":{"id":"resp_failed","object":"response"');
     expect(text).toContain('"status":"failed"');
-    expect(text).toContain('"error":{"message":"backend stream boom","type":"invalid_request_error","code":null}');
+    expect(text).toContain('"error":{"message":"backend stream boom","type":"api_error","code":null}');
     expect(text).toContain('data: [DONE]');
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
     expect(accountPool.list()[0].status).toBe('error');
     expect(accountPool.list()[0].lastError).toBe('backend stream boom');
   });
 
-  it('returns an OpenAI error for an unknown responses model', async () => {
-    const app = createApp(env);
-    const res = await app.request('/v1/responses', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'unknown-model', input: 'hello' }) });
+  it('returns an OpenAI error for an unknown responses model without poisoning the account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiResponsesRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'unknown-model', input: 'hello' }) });
     expect(res.status).toBe(404);
     const body = await res.json() as { error: { type: string; message: string } };
     expect(body.error.type).toBe('not_found_error');
     expect(body.error.message).toContain('Unknown model: unknown-model');
+    expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0, lastError: null, lastErrorCode: null });
+
+    const retryRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', input: 'hello' }) });
+    expect(retryRes.status).toBe(200);
   });
 
   it('maps backend rate limit errors to an OpenAI rate_limit_error and cools down the account', async () => {
@@ -727,14 +755,26 @@ describe('/v1/messages', () => {
     expect(text).toContain('"stop_reason":"tool_use"');
   });
 
-  it('returns a Claude error for an unknown model', async () => {
-    const app = createApp(env);
-    const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'unknown-model', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+  it('returns Claude model errors without poisoning the account', async () => {
+    const accountPool = new AccountPool();
+    const modelRegistry = new ModelRegistry({ discoveredModels });
+    const app = createMessagesRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry, accountPool });
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'unknown-model', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(404);
     const body = await res.json() as { type: string; error: { type: string; message: string } };
     expect(body.type).toBe('error');
     expect(body.error.type).toBe('not_found_error');
     expect(body.error.message).toContain('Unknown model: unknown-model');
+    expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0, lastError: null, lastErrorCode: null });
+
+    modelRegistry.update('sonnet', { backendModel: 'missing-backend-model' });
+    const staleRes = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(staleRes.status).toBe(404);
+    expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0, lastError: null, lastErrorCode: null });
+
+    modelRegistry.update('sonnet', { backendModel: 'backend-test-model' });
+    const retryRes = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(retryRes.status).toBe(200);
   });
 
   it('maps backend rate limit errors to a Claude rate_limit_error', async () => {
