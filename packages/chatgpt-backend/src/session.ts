@@ -70,7 +70,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       if (data === '[DONE]') break;
       const parsed = parseJson(data);
       if (!parsed) continue;
-      latestUsage = extractUsage(parsed) ?? latestUsage;
+      latestUsage = mergeUsage(latestUsage, extractUsage(parsed));
       const delta = extractTextDelta(parsed);
       if (delta) yield { type: 'text_delta', text: delta };
       const toolCall = extractToolCall(parsed);
@@ -305,6 +305,17 @@ function normalizeUsage(value: unknown): ChatGptUsage | undefined {
     raw,
   };
   return usage.inputTokens !== undefined || usage.outputTokens !== undefined || usage.totalTokens !== undefined ? usage : undefined;
+}
+
+function mergeUsage(current: ChatGptUsage | undefined, next: ChatGptUsage | undefined): ChatGptUsage | undefined {
+  if (!next) return current;
+  if (!current) return next;
+  return {
+    inputTokens: next.inputTokens ?? current.inputTokens,
+    outputTokens: next.outputTokens ?? current.outputTokens,
+    totalTokens: next.totalTokens ?? current.totalTokens,
+    raw: next.raw ?? current.raw,
+  };
 }
 
 function readTokenCount(value: unknown): number | undefined {

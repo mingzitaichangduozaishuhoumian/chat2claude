@@ -75,18 +75,19 @@ describe('SessionChatGptBackend', () => {
     ]);
   });
 
-  it('parses upstream usage from stream events and carries latest usage to done', async () => {
-    const usage = { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 };
+  it('merges usage fields from separate stream events into done usage', async () => {
+    const earlyUsage = { input_tokens: 11 };
+    const completedUsage = { output_tokens: 7, total_tokens: 18 };
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
-      { type: 'response.output_text.delta', delta: 'hello', token_usage: { input_tokens: 3 } },
-      { type: 'response.completed', response: { usage }, finish_reason: 'stop' },
+      { type: 'response.output_text.delta', delta: 'hello', token_usage: earlyUsage },
+      { type: 'response.completed', response: { usage: completedUsage }, finish_reason: 'stop' },
     ]) });
 
     const events = [];
     for await (const event of backend.stream(request, context)) events.push(event);
     expect(events).toEqual([
       { type: 'text_delta', text: 'hello' },
-      { type: 'done', finishReason: 'stop', usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18, raw: usage } },
+      { type: 'done', finishReason: 'stop', usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18, raw: completedUsage } },
     ]);
   });
 
