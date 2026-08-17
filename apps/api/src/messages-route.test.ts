@@ -28,6 +28,75 @@ const env = {
 };
 const jsonHeaders = { 'content-type': 'application/json', 'x-api-key': 'test-key' };
 
+describe('/v1/chat/completions', () => {
+  it('is protected by the /v1 API key middleware', async () => {
+    const app = createApp({ ...env, apiKeys: ['secret'] });
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns an OpenAI non-streaming chat completion with text content', async () => {
+    const app = createApp(env);
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, reasoning_effort: 'low', response_speed: 'fast', messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { object: string; model: string; choices: Array<{ message: { role: string; content: string }; finish_reason: string }>; usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } };
+    expect(body.object).toBe('chat.completion');
+    expect(body.model).toBe('sonnet');
+    expect(body.choices[0].message.role).toBe('assistant');
+    expect(body.choices[0].message.content).toBe('Echo:[effort=low,speed=fast] hello');
+    expect(body.choices[0].finish_reason).toBe('stop');
+    expect(body.usage.total_tokens).toBe(body.usage.prompt_tokens + body.usage.completion_tokens);
+  });
+
+  it('streams OpenAI chat completion chunks with text deltas', async () => {
+    const app = createApp(env);
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hello' }] }) });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
+    const text = await res.text();
+    expect(text).toContain('"object":"chat.completion.chunk"');
+    expect(text).toContain('"delta":{"role":"assistant"}');
+    expect(text).toContain('Echo:[effort=med');
+    expect(text).toContain('ium,speed=balanc');
+    expect(text).toContain('ed] hello');
+    expect(text).toContain('"finish_reason":"stop"');
+    expect(text).toContain('data: [DONE]');
+  });
+
+  it('returns OpenAI tool_calls when a function tool is forced', async () => {
+    const app = createApp(env);
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({
+      model: 'sonnet',
+      max_tokens: 64,
+      messages: [{ role: 'user', content: 'call weather' }],
+      tools: [{ type: 'function', function: { name: 'get_weather', description: 'weather', parameters: { type: 'object', properties: { city: { type: 'string' } } } } }],
+      tool_choice: { type: 'function', function: { name: 'get_weather' } },
+    }) });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { choices: Array<{ message: { content: string | null; tool_calls: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }; finish_reason: string }> };
+    expect(body.choices[0].finish_reason).toBe('tool_calls');
+    expect(body.choices[0].message.content).toBeNull();
+    expect(body.choices[0].message.tool_calls).toEqual([{ id: 'call_mock_get_weather', type: 'function', function: { name: 'get_weather', arguments: '{}' } }]);
+  });
+
+  it('streams OpenAI tool call deltas when a function tool is forced', async () => {
+    const app = createApp(env);
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({
+      model: 'sonnet',
+      max_tokens: 64,
+      stream: true,
+      messages: [{ role: 'user', content: 'call weather' }],
+      tools: [{ type: 'function', function: { name: 'get_weather', description: 'weather', parameters: { type: 'object', properties: {} } } }],
+      tool_choice: 'required',
+    }) });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain('"tool_calls":[{"index":0,"id":"call_mock_get_weather","type":"function","function":{"name":"get_weather","arguments":"{}"}}]');
+    expect(text).toContain('"finish_reason":"tool_calls"');
+    expect(text).toContain('data: [DONE]');
+  });
+});
+
 describe('/v1/messages', () => {
   it('uses the default mock backend model when model JSON is unset', async () => {
     const app = createApp({ ...env, mockBackendModelsJson: undefined });

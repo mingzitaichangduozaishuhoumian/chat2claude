@@ -4,3 +4,4 @@ export * from './streaming.js';
 export * from './reasoning.js';
 export * from './stop-reason.js';
 export * from './canonical.js';
+export * from './openai-chat.js';

@@ -5,6 +5,7 @@ import { apiKeyAuth } from './middleware/auth.js';
 import { healthRoute } from './routes/health.js';
 import { createModelsRoute } from './routes/models.js';
 import { createMessagesRoute } from './routes/messages.js';
+import { createOpenAiChatRoute } from './routes/openai-chat.js';
 import { createCountTokensRoute } from './routes/count-tokens.js';
 import { createMetricsRoute } from './routes/metrics.js';
 import { createAdminRoute } from './routes/admin.js';
@@ -30,6 +31,7 @@ export function createApp(env: AppEnv = loadEnv()): Hono {
   app.route('/', createModelsRoute({ modelRegistry, ready: modelRegistryReady }));
   app.route('/', createCountTokensRoute());
   app.route('/', createMessagesRoute({ backend, requestLog, modelRegistry, accountPool, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
+  app.route('/', createOpenAiChatRoute({ backend, requestLog, modelRegistry, accountPool, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createMetricsRoute(requestLog));
   app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend }));
   return app;
