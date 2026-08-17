@@ -200,6 +200,69 @@ describe('/v1/chat/completions', () => {
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
   });
 
+  it('rejects OpenAI chat forced function tool_choice without matching tools before acquiring an account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiChatRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+
+    for (const body of [
+      { model: 'sonnet', messages: [{ role: 'user', content: 'call weather' }], tool_choice: { type: 'function', name: 'get_weather' } },
+      { model: 'sonnet', messages: [{ role: 'user', content: 'call weather' }], tools: [], tool_choice: { type: 'function', name: 'get_weather' } },
+    ]) {
+      const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      expect(res.status).toBe(400);
+      expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0 });
+    }
+  });
+
+  it('rejects malformed OpenAI chat function tools before acquiring an account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiChatRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      messages: [{ role: 'user', content: 'call weather' }],
+      tools: [{ type: 'function' }],
+    }) });
+    expect(res.status).toBe(400);
+    expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0 });
+  });
+
+  it('rejects OpenAI chat function tool parameters arrays before acquiring an account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiChatRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      messages: [{ role: 'user', content: 'call weather' }],
+      tools: [{ type: 'function', function: { name: 'get_weather', parameters: [] } }],
+    }) });
+    expect(res.status).toBe(400);
+    expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0 });
+  });
+
+  it('rejects OpenAI chat forced tool_choice names not present in tools before acquiring an account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiChatRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      messages: [{ role: 'user', content: 'call weather' }],
+      tools: [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object' } } }],
+      tool_choice: { type: 'function', name: 'lookup_weather' },
+    }) });
+    expect(res.status).toBe(400);
+    expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0 });
+  });
+
+  it('rejects unsupported OpenAI chat tool types before acquiring an account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiChatRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      messages: [{ role: 'user', content: 'search' }],
+      tools: [{ type: 'web_search' }],
+    }) });
+    expect(res.status).toBe(400);
+    expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0 });
+  });
+
   it('streams OpenAI tool call deltas when a function tool is forced', async () => {
     const app = createApp(env);
     const res = await app.request('/v1/chat/completions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({
@@ -504,16 +567,87 @@ describe('/v1/responses', () => {
     ]);
   });
 
-  it('ignores responses forced function tool_choice when name is missing', async () => {
-    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
-    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+  it('rejects responses forced function tool_choice when name is missing before acquiring an account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiResponsesRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
     const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
       model: 'sonnet',
       input: 'hello',
       tool_choice: { type: 'function', function: {} },
     }) });
+    expect(res.status).toBe(400);
+    expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0 });
+  });
+
+  it('rejects OpenAI responses forced function tool_choice without matching tools before acquiring an account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiResponsesRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+
+    for (const body of [
+      { model: 'sonnet', input: 'hello', tool_choice: { type: 'function', name: 'get_weather' } },
+      { model: 'sonnet', input: 'hello', tools: [], tool_choice: { type: 'function', name: 'get_weather' } },
+    ]) {
+      const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      expect(res.status).toBe(400);
+      expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0 });
+    }
+  });
+
+  it('rejects malformed OpenAI responses function tools before acquiring an account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiResponsesRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      input: 'hello',
+      tools: [{ type: 'function' }],
+    }) });
+    expect(res.status).toBe(400);
+    expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0 });
+  });
+
+  it('rejects OpenAI responses function tool parameter arrays before acquiring an account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiResponsesRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      input: 'hello',
+      tools: [{ type: 'function', name: 'get_weather', parameters: [] }],
+    }) });
+    expect(res.status).toBe(400);
+    expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0 });
+  });
+
+  it('rejects OpenAI responses forced tool_choice names not present in tools before acquiring an account', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiResponsesRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
+    const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      input: 'hello',
+      tools: [{ type: 'function', name: 'get_weather', parameters: { type: 'object' } }],
+      tool_choice: { type: 'function', name: 'lookup_weather' },
+    }) });
+    expect(res.status).toBe(400);
+    expect(accountPool.list()[0]).toMatchObject({ status: 'available', currentConcurrency: 0 });
+  });
+
+  it('allows OpenAI responses built-in tool types', async () => {
+    const app = createApp(env);
+    const res = await app.request('/v1/responses', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({
+      model: 'sonnet',
+      input: 'search',
+      tools: [{ type: 'web_search_preview' }],
+    }) });
     expect(res.status).toBe(200);
-    expect(backend.lastRequest?.toolChoice).toBeUndefined();
+  });
+
+  it('allows OpenAI responses built-in tool_choice types', async () => {
+    const app = createApp(env);
+    const res = await app.request('/v1/responses', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({
+      model: 'sonnet',
+      input: 'search',
+      tool_choice: { type: 'web_search_preview' },
+    }) });
+    expect(res.status).toBe(200);
   });
 
   it('preserves OpenAI Responses structured output fields in backend options', async () => {

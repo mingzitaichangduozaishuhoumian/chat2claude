@@ -73,7 +73,7 @@ function mapResponsesBackendOptions(request: OpenAiResponsesRequest, backendOpti
   if (request.text !== undefined) responsesBody.text = request.text;
   else if (request.response_format !== undefined) {
     const text = isPlainObject(responsesBody.text) ? { ...(responsesBody.text as Record<string, unknown>) } : {};
-    responsesBody.text = { ...text, format: request.response_format };
+    if (text.format === undefined) responsesBody.text = { ...text, format: normalizeOpenAiResponseFormat(request.response_format) };
   }
   if (!Object.keys(responsesBody).length) return backendOptions;
   return { ...backendOptions, responsesBody };
@@ -81,6 +81,13 @@ function mapResponsesBackendOptions(request: OpenAiResponsesRequest, backendOpti
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeOpenAiResponseFormat(responseFormat: Record<string, unknown>): Record<string, unknown> {
+  if (responseFormat.type !== 'json_schema') return responseFormat;
+  const jsonSchema = responseFormat.json_schema;
+  if (!isPlainObject(jsonSchema)) return responseFormat;
+  return { type: 'json_schema', ...jsonSchema };
 }
 
 export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequest, response: ChatGptCompletionResponse): OpenAiResponsesResponse {

@@ -213,6 +213,17 @@ describe('SessionChatGptBackend', () => {
     ]);
   });
 
+  it('maps internal any toolChoice to the Codex required tool_choice dialect', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return sseResponse([{ type: 'response.completed' }]);
+    } });
+
+    await backend.complete({ ...request, toolChoice: { type: 'any' } }, context);
+    expect(calls[0].body.tool_choice).toBe('required');
+  });
+
   it('passes tools/tool_choice to the Codex responses body and parses tool calls', async () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {

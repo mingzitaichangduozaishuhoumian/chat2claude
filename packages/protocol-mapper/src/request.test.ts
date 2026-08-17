@@ -319,14 +319,14 @@ describe('OpenAI request generation controls mapping', () => {
     });
   });
 
-  it('maps Responses response_format as text.format when text is absent', () => {
-    const responseFormat = { type: 'json_schema', json_schema: { name: 'answer', schema: { type: 'object' } } };
+  it('flattens Responses response_format json_schema into text.format when text is absent', () => {
+    const responseFormat = { type: 'json_schema', json_schema: { name: 'answer', description: 'answer schema', schema: { type: 'object' }, strict: true } };
     const mapped = mapOpenAiResponsesRequestToChatGpt({ model: 'gpt-test', input: 'hello', response_format: responseFormat });
 
-    expect(mapped.backendOptions?.responsesBody).toEqual({ text: { format: responseFormat } });
+    expect(mapped.backendOptions?.responsesBody).toEqual({ text: { format: { type: 'json_schema', name: 'answer', description: 'answer schema', schema: { type: 'object' }, strict: true } } });
   });
 
-  it('merges Responses response_format with existing backend text options', () => {
+  it('keeps Responses response_format json_object unchanged and merges existing text options', () => {
     const responseFormat = { type: 'json_object' };
     const mapped = mapOpenAiResponsesRequestToChatGpt(
       { model: 'gpt-test', input: 'hello', response_format: responseFormat },
@@ -337,7 +337,18 @@ describe('OpenAI request generation controls mapping', () => {
     expect(mapped.backendOptions?.responsesBody).toEqual({ text: { verbosity: 'low', format: responseFormat } });
   });
 
-  it('maps Chat response_format to backend responsesBody text.format', () => {
+  it('does not let Responses response_format overwrite an existing text.format', () => {
+    const existingFormat = { type: 'text' };
+    const mapped = mapOpenAiResponsesRequestToChatGpt(
+      { model: 'gpt-test', input: 'hello', response_format: { type: 'json_object' } },
+      {},
+      { backendOptions: { responsesBody: { text: { format: existingFormat } } } }
+    );
+
+    expect(mapped.backendOptions?.responsesBody).toEqual({ text: { format: existingFormat } });
+  });
+
+  it('maps Chat response_format json_object to backend responsesBody text.format unchanged', () => {
     const responseFormat = { type: 'json_object' };
     const mapped = mapOpenAiChatRequestToChatGpt({
       model: 'gpt-test',
@@ -346,5 +357,26 @@ describe('OpenAI request generation controls mapping', () => {
     }, {}, { backendOptions: { keep: true } });
 
     expect(mapped.backendOptions).toEqual({ keep: true, responsesBody: { text: { format: responseFormat } } });
+  });
+
+  it('flattens Chat response_format json_schema into backend responsesBody text.format', () => {
+    const mapped = mapOpenAiChatRequestToChatGpt({
+      model: 'gpt-test',
+      messages: [{ role: 'user', content: 'hello' }],
+      response_format: { type: 'json_schema', json_schema: { name: 'answer', schema: { type: 'object' }, strict: false } },
+    });
+
+    expect(mapped.backendOptions?.responsesBody).toEqual({ text: { format: { type: 'json_schema', name: 'answer', schema: { type: 'object' }, strict: false } } });
+  });
+
+  it('does not let Chat response_format overwrite an existing text.format', () => {
+    const existingFormat = { type: 'text' };
+    const mapped = mapOpenAiChatRequestToChatGpt({
+      model: 'gpt-test',
+      messages: [{ role: 'user', content: 'hello' }],
+      response_format: { type: 'json_object' },
+    }, {}, { backendOptions: { responsesBody: { text: { format: existingFormat } } } });
+
+    expect(mapped.backendOptions?.responsesBody).toEqual({ text: { format: existingFormat } });
   });
 });

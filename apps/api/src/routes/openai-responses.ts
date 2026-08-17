@@ -98,7 +98,8 @@ function parseOpenAiResponsesRequest(value: unknown): OpenAiResponsesRequest {
   if (body.speed !== undefined && typeof body.speed !== 'string') throw new ClaudeApiError('speed must be a string');
   if (body.response_speed !== undefined && typeof body.response_speed !== 'string') throw new ClaudeApiError('response_speed must be a string');
   if (body.tools !== undefined && !Array.isArray(body.tools)) throw new ClaudeApiError('tools must be an array');
-  if (body.tool_choice !== undefined && typeof body.tool_choice !== 'string' && !isObject(body.tool_choice)) throw new ClaudeApiError('tool_choice must be a string or object');
+  validateTools(body.tools);
+  validateToolChoice(body.tool_choice, body.tools);
   if (body.previous_response_id !== undefined && body.previous_response_id !== null && typeof body.previous_response_id !== 'string') throw new ClaudeApiError('previous_response_id must be a string or null');
   if (body.store !== undefined && body.store !== null && typeof body.store !== 'boolean') throw new ClaudeApiError('store must be a boolean or null');
   if (body.metadata !== undefined && body.metadata !== null && !isObject(body.metadata)) throw new ClaudeApiError('metadata must be an object or null');
@@ -124,6 +125,46 @@ function validateResponsesInput(input: unknown): void {
       if (typeof part !== 'string' && !isObject(part)) throw new ClaudeApiError('input content parts must be strings or objects');
     }
   }
+}
+
+function validateTools(tools: unknown): void {
+  if (tools === undefined) return;
+  if (!Array.isArray(tools)) throw new ClaudeApiError('tools must be an array');
+  for (const tool of tools) {
+    if (!isObject(tool)) throw new ClaudeApiError('tools items must be objects');
+    if (typeof tool.type !== 'string' || !tool.type.trim()) throw new ClaudeApiError('tool type is required');
+    if (tool.type !== 'function') continue;
+    const fn = isObject(tool.function) ? tool.function : tool;
+    const name = typeof fn.name === 'string' ? fn.name : undefined;
+    if (!name?.trim()) throw new ClaudeApiError('function tool name is required');
+    if (tool.parameters !== undefined && !isObject(tool.parameters)) throw new ClaudeApiError('function tool parameters must be an object');
+    if (isObject(tool.function) && tool.function.parameters !== undefined && !isObject(tool.function.parameters)) throw new ClaudeApiError('function tool parameters must be an object');
+  }
+}
+
+function validateToolChoice(toolChoice: unknown, tools: unknown): void {
+  if (toolChoice === undefined) return;
+  if (typeof toolChoice === 'string') {
+    if (toolChoice !== 'auto' && toolChoice !== 'none' && toolChoice !== 'required') throw new ClaudeApiError(`Unsupported tool_choice: ${toolChoice}`);
+    return;
+  }
+  if (!isObject(toolChoice)) throw new ClaudeApiError('tool_choice must be a string or object');
+  if (typeof toolChoice.type !== 'string' || !toolChoice.type.trim()) throw new ClaudeApiError('tool_choice type is required');
+  if (toolChoice.type !== 'function') return;
+  const fn = toolChoice.function;
+  const name = typeof toolChoice.name === 'string' ? toolChoice.name : isObject(fn) && typeof fn.name === 'string' ? fn.name : undefined;
+  if (!name?.trim()) throw new ClaudeApiError('tool_choice function name is required');
+  if (!Array.isArray(tools) || !responsesFunctionToolNames(tools).has(name)) throw new ClaudeApiError(`tool_choice function name is not in tools: ${name}`);
+}
+
+function responsesFunctionToolNames(tools: unknown[]): Set<string> {
+  const names = new Set<string>();
+  for (const tool of tools) {
+    if (!isObject(tool) || tool.type !== 'function') continue;
+    const fn = isObject(tool.function) ? tool.function : tool;
+    if (typeof fn.name === 'string' && fn.name.trim()) names.add(fn.name);
+  }
+  return names;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

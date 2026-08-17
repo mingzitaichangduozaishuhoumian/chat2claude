@@ -82,8 +82,16 @@ function mapOpenAiChatBackendOptions(request: OpenAiChatCompletionRequest, backe
   if (request.response_format === undefined) return backendOptions;
   const responsesBody: Record<string, unknown> = isPlainObject(backendOptions?.responsesBody) ? { ...(backendOptions.responsesBody as Record<string, unknown>) } : {};
   const text = isPlainObject(responsesBody.text) ? { ...(responsesBody.text as Record<string, unknown>) } : {};
-  responsesBody.text = { ...text, format: request.response_format };
+  if (text.format !== undefined) return { ...backendOptions, responsesBody };
+  responsesBody.text = { ...text, format: normalizeOpenAiResponseFormat(request.response_format) };
   return { ...backendOptions, responsesBody };
+}
+
+function normalizeOpenAiResponseFormat(responseFormat: Record<string, unknown>): Record<string, unknown> {
+  if (responseFormat.type !== 'json_schema') return responseFormat;
+  const jsonSchema = responseFormat.json_schema;
+  if (!isPlainObject(jsonSchema)) return responseFormat;
+  return { type: 'json_schema', ...jsonSchema };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
