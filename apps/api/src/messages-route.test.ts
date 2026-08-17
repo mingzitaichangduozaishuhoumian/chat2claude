@@ -13,6 +13,7 @@ import { ModelRegistry } from './services/model-registry.js';
 import { RequestLog } from './services/request-log.js';
 import { RuntimeApiKeys } from './services/runtime-api-keys.js';
 import { ChatGptAuthFlowService } from './services/chatgpt-auth-flow.js';
+import { ResponsesStore } from './services/responses-store.js';
 
 const discoveredModels = [{ id: 'backend-test-model', displayName: 'Backend Test Model' }];
 const env = {
@@ -406,7 +407,6 @@ describe('/v1/responses', () => {
     const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
       model: 'sonnet',
       input: 'hello',
-      previous_response_id: 'resp_prev',
       store: true,
       metadata: { trace: 'abc' },
       parallel_tool_calls: false,
@@ -415,13 +415,73 @@ describe('/v1/responses', () => {
     }) });
     expect(res.status).toBe(200);
     expect(backend.lastRequest?.backendOptions).toEqual({ responsesBody: {
-      previous_response_id: 'resp_prev',
       store: true,
       metadata: { trace: 'abc' },
       parallel_tool_calls: false,
       truncation: 'auto',
       text,
     } });
+  });
+
+  it('stores a non-stream responses response and prepends it for previous_response_id', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const responsesStore = new ResponsesStore();
+    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool(), responsesStore });
+
+    const firstRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', input: 'first', store: true, metadata: { trace: 'one' } }) });
+    expect(firstRes.status).toBe(200);
+    const firstBody = await firstRes.json() as { id: string; output_text: string };
+    expect(responsesStore.get(firstBody.id)?.metadata).toEqual({ trace: 'one' });
+
+    const secondRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', input: 'second', previous_response_id: firstBody.id }) });
+    expect(secondRes.status).toBe(200);
+    expect(backend.lastRequest?.messages).toEqual([
+      { role: 'assistant', content: firstBody.output_text },
+      { role: 'user', content: 'second' },
+    ]);
+    expect(backend.lastRequest?.backendOptions).toBeUndefined();
+  });
+
+  it('returns not_found_error when previous_response_id is not in the local store', async () => {
+    const accountPool = new AccountPool();
+    const app = createOpenAiResponsesRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool, responsesStore: new ResponsesStore() });
+    const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', input: 'hello', previous_response_id: 'resp_missing' }) });
+    expect(res.status).toBe(404);
+    const body = await res.json() as { error: { type: string; message: string } };
+    expect(body.error.type).toBe('not_found_error');
+    expect(body.error.message).toBe('Previous response not found: resp_missing');
+    expect(accountPool.list()[0].status).toBe('available');
+    expect(accountPool.list()[0].currentConcurrency).toBe(0);
+  });
+
+  it('stores a completed streaming responses response for previous_response_id continuation', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const responsesStore = new ResponsesStore();
+    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool(), responsesStore });
+
+    const firstRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', stream: true, input: 'first', store: true }) });
+    expect(firstRes.status).toBe(200);
+    const firstText = await firstRes.text();
+    const firstId = extractResponsesCompletedId(firstText);
+    expect(responsesStore.get(firstId)?.response.output_text).toBe('backend:backend-test-model');
+
+    const secondRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', input: 'second', previous_response_id: firstId }) });
+    expect(secondRes.status).toBe(200);
+    expect(backend.lastRequest?.messages).toEqual([
+      { role: 'assistant', content: 'backend:backend-test-model' },
+      { role: 'user', content: 'second' },
+    ]);
+  });
+
+  it('does not store a failed streaming responses response', async () => {
+    const responsesStore = new ResponsesStore();
+    const app = createOpenAiResponsesRoute({ backend: new ThrowingStreamBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool(), responsesStore });
+    const res = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', stream: true, input: 'hello', store: true }) });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain('event: response.failed');
+    expect(responsesStore.count()).toBe(0);
+    expect(responsesStore.get('resp_failed')).toBeUndefined();
   });
 
   it('streams a forced tool call in responses SSE', async () => {
@@ -766,6 +826,13 @@ describe('/v1/messages', () => {
     expect(body.error.message).toContain('No available chatgpt-session account');
   });
 });
+
+function extractResponsesCompletedId(text: string): string {
+  const dataLine = text.split('\n').find((line) => line.startsWith('data: ') && line.includes('"type":"response.completed"'));
+  if (!dataLine) throw new Error('response.completed event not found');
+  const event = JSON.parse(dataLine.slice('data: '.length)) as { response: { id: string } };
+  return event.response.id;
+}
 
 class InspectingBackend implements ChatGptBackendClient {
   lastRequest: ChatGptCompletionRequest | undefined;

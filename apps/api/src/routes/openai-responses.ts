@@ -1,20 +1,23 @@
 import { Hono } from 'hono';
 import type { ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
-import { mapChatGptResponseToOpenAiResponses, mapChatGptStreamToOpenAiResponsesSse, mapOpenAiResponsesRequestToChatGpt, readableStreamFromAsyncIterable, type OpenAiResponsesRequest, type ReasoningSpeedDefaults } from '@chatgpt-to-claude/protocol-mapper';
+import { mapChatGptResponseToOpenAiResponses, mapChatGptStreamToOpenAiResponsesSse, mapOpenAiResponsesRequestToChatGpt, readableStreamFromAsyncIterable, type OpenAiResponsesInputItem, type OpenAiResponsesRequest, type ReasoningSpeedDefaults } from '@chatgpt-to-claude/protocol-mapper';
 import type { RequestLog } from '../services/request-log.js';
+import { ResponsesStore } from '../services/responses-store.js';
 import { ModelRegistryError, type ModelRegistry } from '../services/model-registry.js';
 import type { AccountPool, AccountProvider } from '../services/account-pool.js';
 import { mapChatGptBackendError, mapErrorPayload } from './backend-errors.js';
 
-export interface OpenAiResponsesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; }
+export interface OpenAiResponsesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; responsesStore?: ResponsesStore; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; }
 
 export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono {
   const app = new Hono();
+  const responsesStore = deps.responsesStore ?? new ResponsesStore();
   app.post('/v1/responses', async (c) => {
     try {
       if (deps.ready) await deps.ready;
       const request = parseOpenAiResponsesRequest(await c.req.json());
+      const downstreamRequest = withPreviousResponseContext(request, responsesStore);
       const accountProvider = accountProviderForBackend(deps.backendProvider);
       const account = deps.accountPool.acquire({ provider: accountProvider, capability: 'messages' });
       if (!account) throw new ClaudeApiError(`No available ${accountProvider} account. Import and health-check a ChatGPT session account before calling /v1/responses.`, 503, 'overloaded_error');
@@ -25,21 +28,23 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
       try {
         if (deps.backendProvider === 'session') await deps.modelRegistry.refreshFromBackend(deps.backend, backendContext);
         const resolution = deps.modelRegistry.resolve(request.model);
-        const backendRequest = mapOpenAiResponsesRequestToChatGpt(request, {
+        const backendRequest = mapOpenAiResponsesRequestToChatGpt(downstreamRequest, {
           ...deps.defaults,
           modelDefaults: { ...deps.defaults?.modelDefaults, [request.model]: { reasoningEffort: resolution.model.defaults.reasoning_effort, speedPreference: resolution.model.defaults.speed } },
         }, { backendModel: resolution.backendModel });
         deps.requestLog.record({ route: '/v1/responses', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {
-          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToOpenAiResponsesSse(request, deps.backend.stream(backendRequest, backendContext)), (error) => openAiResponsesStreamError(error, request.model));
+          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToOpenAiResponsesSse(downstreamRequest, deps.backend.stream(backendRequest, backendContext), { onCompleted: (response) => { if (request.store === true) responsesStore.put(request, response); } }), (error) => openAiResponsesStreamError(error, request.model));
           const stream = readableStreamFromAsyncIterable(events);
           releaseDeferredToStream = true;
           return new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' } });
         }
 
         const backendResponse = await deps.backend.complete(backendRequest, backendContext);
-        return c.json(mapChatGptResponseToOpenAiResponses(request, backendResponse));
+        const response = mapChatGptResponseToOpenAiResponses(downstreamRequest, backendResponse);
+        if (request.store === true) responsesStore.put(request, response);
+        return c.json(response);
       } catch (error) {
         releaseError = error;
         throw error;
@@ -52,6 +57,23 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
     }
   });
   return app;
+}
+
+function withPreviousResponseContext(request: OpenAiResponsesRequest, responsesStore: ResponsesStore): OpenAiResponsesRequest {
+  const previousResponseId = typeof request.previous_response_id === 'string' ? request.previous_response_id : '';
+  if (!previousResponseId) return request;
+  const previous = responsesStore.get(previousResponseId);
+  if (!previous) throw new ClaudeApiError(`Previous response not found: ${previousResponseId}`, 404, 'not_found_error');
+  const outputText = previous.response.output_text;
+  const input = outputText ? prependAssistantMessage(request.input, outputText) : request.input;
+  return { ...request, input, previous_response_id: undefined };
+}
+
+function prependAssistantMessage(input: OpenAiResponsesRequest['input'], outputText: string): OpenAiResponsesInputItem[] {
+  const assistantMessage = { type: 'message', role: 'assistant', content: outputText };
+  return typeof input === 'string'
+    ? [assistantMessage, { type: 'message', role: 'user', content: input }]
+    : [assistantMessage, ...input];
 }
 
 function parseOpenAiResponsesRequest(value: unknown): OpenAiResponsesRequest {

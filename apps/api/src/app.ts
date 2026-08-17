@@ -14,6 +14,7 @@ import { AccountPool } from './services/account-pool.js';
 import { RequestLog } from './services/request-log.js';
 import { RuntimeApiKeys } from './services/runtime-api-keys.js';
 import { ModelRegistry } from './services/model-registry.js';
+import { ResponsesStore } from './services/responses-store.js';
 import { createChatGptBackend } from './services/backend-factory.js';
 export function createApp(env: AppEnv = loadEnv()): Hono {
   const app = new Hono();
@@ -23,6 +24,7 @@ export function createApp(env: AppEnv = loadEnv()): Hono {
   const requestLog = new RequestLog();
   const runtimeApiKeys = new RuntimeApiKeys();
   const modelRegistry = new ModelRegistry();
+  const responsesStore = new ResponsesStore();
   const modelRegistryReady = modelRegistry.refreshFromBackend(backend);
   app.onError((error, c) => { logger.error('Unhandled API error', { error: error.message }); return c.json({ type: 'error', error: { type: 'internal_server_error', message: 'Internal server error' } }, 500); });
   app.get('/', (c) => c.redirect('/admin'));
@@ -33,7 +35,7 @@ export function createApp(env: AppEnv = loadEnv()): Hono {
   app.route('/', createCountTokensRoute());
   app.route('/', createMessagesRoute({ backend, requestLog, modelRegistry, accountPool, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createOpenAiChatRoute({ backend, requestLog, modelRegistry, accountPool, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
-  app.route('/', createOpenAiResponsesRoute({ backend, requestLog, modelRegistry, accountPool, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
+  app.route('/', createOpenAiResponsesRoute({ backend, requestLog, modelRegistry, accountPool, responsesStore, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createMetricsRoute(requestLog));
   app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend }));
   return app;

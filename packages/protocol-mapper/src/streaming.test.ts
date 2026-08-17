@@ -41,6 +41,18 @@ describe('mapChatGptStreamToClaudeSse', () => {
     expect(text).toContain('"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}');
   });
 
+  it('calls OpenAI responses onCompleted with the completed response before DONE', async () => {
+    const completed: Array<{ id: string; output_text: string }> = [];
+    const text = await collect(mapChatGptStreamToOpenAiResponsesSse({ model: 'gpt-test', input: 'hello' }, async function* () {
+      yield { type: 'text_delta' as const, text: 'hello' };
+      yield { type: 'done' as const };
+    }(), { onCompleted: async (response) => { completed.push({ id: response.id, output_text: response.output_text }); } }));
+    expect(completed).toHaveLength(1);
+    expect(completed[0].output_text).toBe('hello');
+    expect(text).toContain(`"id":"${completed[0].id}"`);
+    expect(text).toContain('data: [DONE]');
+  });
+
   it('does not emit an OpenAI chat usage chunk by default', async () => {
     const chunks = parseOpenAiData(await collect(mapChatGptStreamToOpenAiChatSse({ model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] }, async function* () {
       yield { type: 'text_delta' as const, text: 'hello' };

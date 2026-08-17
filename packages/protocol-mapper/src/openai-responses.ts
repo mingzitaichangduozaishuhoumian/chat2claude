@@ -103,7 +103,9 @@ export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequ
   };
 }
 
-export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiResponsesRequest, events: AsyncIterable<ChatGptStreamEvent>): AsyncIterable<string> {
+export interface OpenAiResponsesStreamOptions { onCompleted?: (response: OpenAiResponsesResponse) => void | Promise<void>; }
+
+export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiResponsesRequest, events: AsyncIterable<ChatGptStreamEvent>, options: OpenAiResponsesStreamOptions = {}): AsyncIterable<string> {
   const id = createResponsesId();
   const createdAt = currentUnixSeconds();
   const base = { response_id: id, created_at: createdAt, model: request.model };
@@ -125,7 +127,9 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
     }
   }
   if (outputText || !output.length) output.unshift({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: outputText }] });
-  yield responsesSse('response.completed', { ...base, type: 'response.completed', response: createMinimalResponse(id, createdAt, request.model, output, outputText, usage) });
+  const response = createMinimalResponse(id, createdAt, request.model, output, outputText, usage);
+  await options.onCompleted?.(response);
+  yield responsesSse('response.completed', { ...base, type: 'response.completed', response });
   yield 'data: [DONE]\n\n';
 }
 
