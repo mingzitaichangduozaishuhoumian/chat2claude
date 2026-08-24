@@ -28,14 +28,14 @@ export function apiKeyAuth(apiKeys: string[], runtimeApiKeys: RuntimeApiKeys): M
   };
 }
 
-export function adminApiAuth(apiKeys: string[], runtimeApiKeys: RuntimeApiKeys): MiddlewareHandler {
+export function adminApiAuth(apiKeys: string[], runtimeApiKeys: RuntimeApiKeys, options: { allowAnonymousBootstrap: boolean }): MiddlewareHandler {
   const envKeys = new Set(apiKeys);
   return async (c, next) => {
     const path = new URL(c.req.url).pathname;
     if (PUBLIC_ADMIN_API_PATHS.has(path)) return next();
 
     const hasAnyKey = envKeys.size > 0 || runtimeApiKeys.hasAny();
-    if (!hasAnyKey && isBootstrapAdminApiPath(path)) return next();
+    if (!hasAnyKey && options.allowAnonymousBootstrap && isBootstrapAdminApiPath(path)) return next();
 
     const apiKey = extractApiKey(c.req.header('x-api-key'), c.req.header('authorization'));
     const ownerId = ownerIdForApiKey(apiKey, envKeys, runtimeApiKeys);

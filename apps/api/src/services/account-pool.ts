@@ -58,6 +58,27 @@ export interface AccountPoolOptions {
   rateLimitCooldownMs?: number;
 }
 
+export interface SessionSecretVersion {
+  accessToken?: string;
+  refreshToken?: string;
+}
+
+interface AccountCredentialErrorOwner extends SessionSecretVersion {
+  accountId: string;
+}
+
+const ACCOUNT_CREDENTIAL_ERROR_OWNER = Symbol('accountCredentialErrorOwner');
+type OwnedCredentialError = Error & { [ACCOUNT_CREDENTIAL_ERROR_OWNER]?: AccountCredentialErrorOwner };
+
+export function markAccountCredentialError<T>(error: T, account: { id: string; secret?: ChatGptSessionSecret }): T {
+  if (!(error instanceof Error) || !account.secret) return error;
+  Object.defineProperty(error, ACCOUNT_CREDENTIAL_ERROR_OWNER, {
+    configurable: true,
+    value: { accountId: account.id, accessToken: account.secret.accessToken, refreshToken: account.secret.refreshToken },
+  });
+  return error;
+}
+
 export class AccountPool {
   private readonly accounts: Account[];
   private readonly now: () => Date;
@@ -85,6 +106,34 @@ export class AccountPool {
     const existing = this.accounts.find((item) => item.id === input.id);
     if (!existing) return this.add(input);
     return this.update(input.id, input) ?? this.add(input);
+  }
+
+  commitProvisionedSession(input: AccountCreateInput & { id: string }, committedAt: Date): AccountView {
+    const committedAtIso = committedAt.toISOString();
+    const existingIndex = this.accounts.findIndex((account) => account.id === input.id);
+    const existing = existingIndex === -1 ? undefined : this.accounts[existingIndex];
+    const secret = normalizeSecret(input.secret, 'chatgpt-session');
+    if (!secret?.accessToken) throw new Error('Provisioned ChatGPT session requires an access token.');
+    const enabled = typeof input.enabled === 'boolean' ? input.enabled : true;
+    const next: Account = {
+      id: input.id,
+      label: normalizeString(input.label, 'ChatGPT Session Account'),
+      provider: 'chatgpt-session',
+      status: enabled ? 'available' : 'disabled',
+      enabled,
+      maxConcurrency: normalizePositiveInteger(input.maxConcurrency, existing?.maxConcurrency ?? 1),
+      currentConcurrency: existing?.currentConcurrency ?? 0,
+      lastUsedAt: committedAtIso,
+      lastError: null,
+      lastErrorCode: null,
+      cooldownUntil: null,
+      capabilities: normalizeStringArray(input.capabilities, ['chatgpt-session', 'messages']),
+      secret,
+      createdAt: existing?.createdAt ?? committedAtIso,
+    };
+    if (existingIndex === -1) this.accounts.push(next);
+    else this.accounts[existingIndex] = next;
+    return toAccountView(next);
   }
 
   update(id: string, patch: AccountPatchInput): AccountView | undefined {
@@ -118,6 +167,16 @@ export class AccountPool {
   get(id: string): Account | undefined {
     const account = this.accounts.find((item) => item.id === id);
     return account ? cloneAccount(account) : undefined;
+  }
+
+  compareAndSwapSessionSecret(id: string, expected: SessionSecretVersion, nextSecret: ChatGptSessionSecret): Account | undefined {
+    const account = this.accounts.find((item) => item.id === id);
+    if (!account || account.provider !== 'chatgpt-session' || !account.secret) return undefined;
+    if (account.secret.accessToken !== expected.accessToken || account.secret.refreshToken !== expected.refreshToken) return undefined;
+    const normalized = normalizeSecret(nextSecret, 'chatgpt-session');
+    if (!normalized?.accessToken) return undefined;
+    account.secret = normalized;
+    return cloneAccount(account);
   }
 
   firstAvailable(options: AccountAcquireOptions = {}): Account | undefined {
@@ -160,7 +219,7 @@ export class AccountPool {
     const account = this.accounts.find((item) => item.id === id);
     if (!account) return undefined;
     account.currentConcurrency = Math.max(0, account.currentConcurrency - 1);
-    this.applyReleaseResult(account, error);
+    this.applyReleaseResult(account, isStaleCredentialError(account, error) ? undefined : error);
     return toAccountView(account);
   }
 
@@ -215,6 +274,13 @@ export class AccountPool {
       }
     }
   }
+}
+
+function isStaleCredentialError(account: Account, error: unknown): boolean {
+  if (!(error instanceof ChatGptBackendError) || error.code !== 'unauthorized') return false;
+  const owner = (error as OwnedCredentialError)[ACCOUNT_CREDENTIAL_ERROR_OWNER];
+  if (!owner || owner.accountId !== account.id || !account.secret) return false;
+  return owner.accessToken !== account.secret.accessToken || owner.refreshToken !== account.secret.refreshToken;
 }
 
 function createAccount(input: AccountCreateInput, now: () => Date = () => new Date()): Account {

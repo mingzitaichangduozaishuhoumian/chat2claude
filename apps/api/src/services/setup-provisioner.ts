@@ -1,9 +1,12 @@
+import type { Account, AccountPool, AccountView } from './account-pool.js';
 import type { ChatGptBackendClient, ChatGptDiscoveredModel, ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
-import type { AccountPool, AccountView } from './account-pool.js';
-import type { ModelRegistry } from './model-registry.js';
-import type { RuntimeApiKeys } from './runtime-api-keys.js';
+import type { ModelRegistry, PreparedModelProvisioning } from './model-registry.js';
+import { candidateSessionContext } from './refresh-aware-backend.js';
+import type { ProvisionCommitBoundary } from './provision-commit.js';
+import type { PreparedRuntimeApiKey, RuntimeApiKeys } from './runtime-api-keys.js';
 
 export const PRIMARY_CHATGPT_ACCOUNT_ID = 'chatgpt-primary';
+const PRIMARY_RUNTIME_KEY_NAME = 'chatgpt-primary';
 
 export interface SetupProvisionerOptions {
   accountPool: AccountPool;
@@ -20,51 +23,101 @@ export interface ProvisionResult {
   boundAliases: Record<string, string>;
 }
 
+interface PreparedProvisioningCommit {
+  account: Account;
+  models: PreparedModelProvisioning;
+  runtimeKey: PreparedRuntimeApiKey;
+  modelIds: string[];
+}
+
 export class SetupProvisioner {
+  private provisioningTail: Promise<void> = Promise.resolve();
+
   constructor(private readonly options: SetupProvisionerOptions) {}
 
-  async provision(secret: ChatGptSessionSecret): Promise<ProvisionResult> {
-    const account = this.options.accountPool.upsert({
+  provision(secret: ChatGptSessionSecret, signal?: AbortSignal, commitBoundary: ProvisionCommitBoundary = commitImmediately): Promise<ProvisionResult> {
+    const task = this.provisioningTail.then(() => this.provisionSerial(secret, signal, commitBoundary));
+    this.provisioningTail = task.then(() => undefined, () => undefined);
+    return task;
+  }
+
+  private async provisionSerial(secret: ChatGptSessionSecret, signal: AbortSignal | undefined, commitBoundary: ProvisionCommitBoundary): Promise<ProvisionResult> {
+    assertProvisioningNotCancelled(signal);
+    const candidate = createCandidateAccount(secret);
+    const context = candidateSessionContext(candidate);
+    if (this.options.backend.healthCheck) {
+      const health = await this.options.backend.healthCheck(context);
+      assertProvisioningNotCancelled(signal);
+      if (!health.ok) throw new Error(health.message ?? 'ChatGPT session health check failed');
+    }
+    const discovered = await this.options.backend.listModels(context);
+    assertProvisioningNotCancelled(signal);
+    const prepared = this.prepareCommit(candidate, discovered);
+    assertProvisioningNotCancelled(signal);
+    return commitBoundary((committedAt) => this.commitPrepared(prepared, committedAt));
+  }
+
+  private prepareCommit(account: Account, discovered: ChatGptDiscoveredModel[]): PreparedProvisioningCommit {
+    const best = chooseBestModel(discovered);
+    return {
+      account,
+      models: this.options.modelRegistry.prepareProvisioning(discovered, 'sonnet', best?.id),
+      runtimeKey: this.options.runtimeApiKeys.prepareNamedKey(PRIMARY_RUNTIME_KEY_NAME),
+      modelIds: discovered.map((model) => model.id),
+    };
+  }
+
+  private commitPrepared(prepared: PreparedProvisioningCommit, committedAt: Date): ProvisionResult {
+    const account = this.options.accountPool.commitProvisionedSession({
       id: PRIMARY_CHATGPT_ACCOUNT_ID,
       provider: 'chatgpt-session',
       label: 'ChatGPT Primary Session',
       enabled: true,
       maxConcurrency: 1,
       capabilities: ['chatgpt-session', 'messages'],
-      secret,
-    });
-
-    const internalAccount = this.options.accountPool.get(account.id);
-    if (!internalAccount) throw new Error(`Provisioned account not found: ${account.id}`);
-
-    if (this.options.backend.healthCheck) {
-      const health = await this.options.backend.healthCheck({ account: internalAccount });
-      if (!health.ok) {
-        this.options.accountPool.markError(account.id, health.message ?? 'ChatGPT session health check failed');
-        throw new Error(health.message ?? 'ChatGPT session health check failed');
-      }
-    }
-    const healthyAccount = this.options.accountPool.markHealthy(account.id) ?? account;
-    const view = await this.options.modelRegistry.refreshFromBackend(this.options.backend, { account: internalAccount });
-    const best = chooseBestModel(view.discovered.map((model) => model.discovered ?? { id: model.id, displayName: model.display_name }));
-    const boundAliases: Record<string, string> = {};
-    if (best) {
-      const updated = this.options.modelRegistry.update('sonnet', { backendModel: best.id, enabled: true });
-      if (updated?.backendModel) boundAliases.sonnet = updated.backendModel;
-    }
-
+      secret: prepared.account.secret,
+    }, committedAt);
+    this.options.modelRegistry.commitPreparedProvisioning(prepared.models);
+    const apiKey = this.options.runtimeApiKeys.commitPreparedNamedKey(prepared.runtimeKey);
     return {
       ok: true,
-      apiKey: this.options.runtimeApiKeys.create(),
-      account: healthyAccount,
-      modelsDiscovered: view.discovered.map((model) => model.id),
-      boundAliases,
+      apiKey,
+      account,
+      modelsDiscovered: prepared.modelIds,
+      boundAliases: { ...prepared.models.boundAliases },
     };
   }
 }
 
 export function chooseBestModel(models: ChatGptDiscoveredModel[]): ChatGptDiscoveredModel | undefined {
   return [...models].sort((a, b) => modelScore(b) - modelScore(a))[0];
+}
+
+function createCandidateAccount(secret: ChatGptSessionSecret): Account {
+  return {
+    id: PRIMARY_CHATGPT_ACCOUNT_ID,
+    provider: 'chatgpt-session',
+    label: 'ChatGPT Primary Session',
+    status: 'available',
+    enabled: true,
+    maxConcurrency: 1,
+    currentConcurrency: 0,
+    lastUsedAt: null,
+    lastError: null,
+    lastErrorCode: null,
+    cooldownUntil: null,
+    capabilities: ['chatgpt-session', 'messages'],
+    secret: { ...secret },
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function assertProvisioningNotCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new Error('ChatGPT setup provisioning was cancelled.');
+}
+
+function commitImmediately<T>(commit: (committedAt: Date) => T): T {
+  return commit(new Date());
 }
 
 function modelScore(model: ChatGptDiscoveredModel): number {

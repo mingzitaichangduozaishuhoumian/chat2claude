@@ -28,7 +28,6 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
   const provisioner = options.setupProvisioner ?? new SetupProvisioner(options);
 
   app.get('/admin', (c) => c.html(renderAdminPage(status(options))));
-  app.get('/admin/accounts', (c) => c.json({ accounts: options.accountPool.list() }));
   app.get('/admin/api/setup/status', (c) => c.json(status(options)));
   app.get('/admin/api/auth/status', (c) => c.json(authStatus(options)));
 
@@ -62,15 +61,9 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     const snapshot = await authFlow.status(id);
     if (!snapshot) return c.json({ error: 'Auth flow not found' }, 404);
     if (snapshot.state !== 'ready' || snapshot.provisioned) return c.json(snapshot);
-    const secret = authFlow.getSecret(id);
-    if (!secret?.accessToken) return c.json(snapshot);
-    try {
-      authFlow.markProvisioning(id);
-      const result = await provisioner.provision(secret);
-      return c.json(authFlow.markProvisioned(id, sanitizeProvisionResult(result)) ?? { ...snapshot, provisionResult: sanitizeProvisionResult(result) });
-    } catch (error) {
-      return c.json(authFlow.markError(id, error) ?? { error: error instanceof Error ? error.message : String(error) }, 502);
-    }
+    const provisioned = await authFlow.provision(id, async (secret, signal, commitBoundary) => sanitizeProvisionResult(await provisioner.provision(secret, signal, commitBoundary)));
+    if (!provisioned) return c.json({ error: 'Auth flow not found' }, 404);
+    return c.json(provisioned, provisioned.state === 'error' ? 502 : 200);
   });
   app.post('/admin/api/auth/chatgpt/:id/cancel', async (c) => {
     const snapshot = await authFlow.cancel(c.req.param('id'));
@@ -228,7 +221,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ChatGPT to Claude 运维控制台</title>
+  <title>chat2claude 个人自托管控制台</title>
   <style>
     :root { --ink:#07100f; --panel:rgba(12,24,24,.88); --line:rgba(126,154,146,.24); --text:#e6eee9; --muted:#8fa29b; --gold:#e6b451; --cyan:#42d6c6; --danger:#ff7d64; color-scheme:dark; }
     *{box-sizing:border-box} body{margin:0;min-height:100vh;color:var(--text);font-family:"Microsoft YaHei UI",system-ui,sans-serif;background:radial-gradient(circle at 20% -10%,rgba(230,180,81,.2),transparent 34rem),radial-gradient(circle at 78% 12%,rgba(66,214,198,.16),transparent 30rem),linear-gradient(90deg,#050908,#0a1413 45%,#080d0c)}
@@ -240,7 +233,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
 </head>
 <body>
   <main><div class="shell">
-    <header class="hero"><p class="muted">Operations Console</p><h1>ChatGPT to Claude 运维控制台</h1><p>普通使用走“浏览器授权（Codex OAuth）”：后台只生成授权链接和监听本地 callback，不启动独立 Chrome/新 profile，也不会从已登录 chatgpt.com 页面抓 session。你在当前浏览器/已登录账号环境中打开链接授权后，系统会初始化账号、刷新模型、绑定 sonnet alias，并生成可复制的 Claude 兼容 API 配置。</p></header>
+    <header class="hero"><p class="muted">Personal Self-hosted Console</p><h1>chat2claude 个人自托管控制台</h1><p>这是 local-first 的个人开源兼容层。请只授权本人控制或已获明确授权的 ChatGPT/Codex 账号及其包含的用量；不得公开转售个人订阅流量、向不特定第三方重新提供或进行大规模共享。普通使用走“浏览器授权（Codex OAuth）”：后台只生成授权链接和监听本地 callback，不启动独立 Chrome/新 profile，也不会从已登录 chatgpt.com 页面抓 session。</p></header>
     <div class="content">
       <section class="card">
         <h2>浏览器授权（Codex OAuth）</h2>
@@ -255,14 +248,14 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
           <button id="copy-auth-link" class="secondary" type="button" hidden>复制授权链接</button>
         </div>
         <div class="stack">
-          <p class="muted">如果授权完成后浏览器显示无法连接 <code>localhost:1455</code>，请复制地址栏里的完整 callback URL 粘贴到这里提交。</p>
-          <div class="row"><input id="oauth-callback-url" placeholder="http://localhost:1455/auth/callback?code=...&state=..." /><button id="submit-oauth-callback" class="secondary" type="button">提交 callback URL</button></div>
+          <p class="muted">如果授权完成后浏览器显示无法连接本地 callback（默认 1455，必要时自动使用 1457），请原样复制地址栏里的完整 URL。后台会严格校验协议、host、端口和路径。</p>
+          <div class="row"><input id="oauth-callback-url" placeholder="粘贴授权链接对应的完整 localhost callback URL" /><button id="submit-oauth-callback" class="secondary" type="button">提交 callback URL</button></div>
         </div>
       </section>
       <aside class="card"><h2>3 步完成</h2><ol class="steps"><li><div><strong>浏览器授权</strong><span class="muted">生成 Codex OAuth 链接，在当前浏览器/已登录账号环境中打开授权。</span></div></li><li><div><strong>自动初始化</strong><span class="muted">服务自动创建 chatgpt-primary、health-check、刷新模型并绑定 sonnet。</span></div></li><li><div><strong>复制 API 配置</strong><span class="muted">ready 后复制 endpoint、key 和 curl 示例。</span></div></li></ol></aside>
       <section class="card full" id="api-config" hidden><h2>API 配置</h2><div class="stack"><p>Endpoint：<code id="endpoint"></code></p><p>API Key：<code id="api-key"></code></p><pre id="ready-curl"></pre></div></section>
       <section class="card full"><details id="advanced-import"><summary>高级：手动导入 accessToken / cookie</summary><p class="muted">OAuth 不可用或已有 session secret 时使用。表单会走同一套 provisioning，不会返回 token/cookie。</p><div class="row"><input id="session-access-token" placeholder="accessToken" /><input id="session-cookie" placeholder="cookie（可选）" /><input id="session-device-id" placeholder="deviceId（可选）" /><input id="session-user-agent" placeholder="userAgent（可选）" /><button id="manual-complete" class="secondary">导入并初始化</button></div></details></section>
-      <section class="card full"><h2>账号池（高级管理）</h2><div class="row"><input id="account-label" placeholder="账号标识" value="Mock ChatGPT Account" /><input id="account-concurrency" type="number" min="1" value="1" aria-label="最大并发" /><button id="add-account" class="secondary">添加 mock 账号</button></div><div id="accounts"><div class="empty">正在读取账号池状态。</div></div></section>
+      <section class="card full"><h2>个人账号池（高级）</h2><p class="muted">仅用于同一自托管操作者管理本人控制或获授权的账号，并进行故障隔离、冷却、并发控制和本地调度；禁止用于公开转售订阅流量或面向不特定第三方的大规模共享。</p><div class="row"><input id="account-label" placeholder="账号标识" value="Mock ChatGPT Account" /><input id="account-concurrency" type="number" min="1" value="1" aria-label="最大并发" /><button id="add-account" class="secondary">添加 mock 账号</button></div><div id="accounts"><div class="empty">正在读取个人账号池状态。</div></div></section>
       <section class="card full"><h2>模型映射（高级管理）</h2><p class="muted">后端模型来自 discovery；alias overlay 负责映射、启用状态与缺省 reasoning_effort / response_speed。</p><div class="row"><button id="reset-models" class="secondary">重置 alias overlay</button><button id="refresh-models" class="secondary">刷新 backend discovery</button></div><div id="models"><div class="empty">正在加载模型映射。</div></div></section>
       <section class="card"><h2>结果面板</h2><pre id="result">${escapeHtml(setupStatus.nextStep)}</pre></section>
       <section class="card"><h2>curl 示例</h2><p class="muted">示例地址由当前页面 origin 生成。</p><pre id="curl-example" data-template="${escapeHtml(curlTemplate)}">${escapeHtml(curlTemplate)}</pre></section>

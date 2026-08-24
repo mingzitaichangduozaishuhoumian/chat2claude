@@ -1,3 +1,4 @@
+import { createServer } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { ChatGptBackendError, SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
@@ -8,7 +9,7 @@ import { createModelsRoute } from './routes/models.js';
 import { createOpenAiChatRoute } from './routes/openai-chat.js';
 import { createOpenAiResponsesRoute } from './routes/openai-responses.js';
 import { adminApiAuth, apiKeyAuth } from './middleware/auth.js';
-import { AccountPool } from './services/account-pool.js';
+import { AccountPool, markAccountCredentialError } from './services/account-pool.js';
 import { ModelRegistry } from './services/model-registry.js';
 import { RequestLog } from './services/request-log.js';
 import { RuntimeApiKeys } from './services/runtime-api-keys.js';
@@ -57,6 +58,8 @@ const env = {
   port: 3000,
   host: '127.0.0.1',
   apiKeys: ['test-key'],
+  allowAnonymousBootstrap: true,
+  localContainerBootstrap: false,
   logLevel: 'error' as const,
   mockResponsePrefix: 'Echo:',
   mockBackendModelsJson: JSON.stringify(discoveredModels),
@@ -111,6 +114,27 @@ describe('AccountPool', () => {
     expect(JSON.stringify(accountPool.list())).not.toContain('refresh-token');
     expect(JSON.stringify(accountPool.list())).not.toContain('id-token');
     expect(JSON.stringify(accountPool.list())).not.toContain('access-token');
+  });
+
+  it('does not let a stale credential failure poison newly reauthorized account state on release', () => {
+    const accountPool = new AccountPool();
+    accountPool.add({ id: 'session-release', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'old-access', refreshToken: 'old-refresh' } });
+    const acquired = accountPool.acquire({ provider: 'chatgpt-session' })!;
+    accountPool.compareAndSwapSessionSecret('session-release', { accessToken: 'old-access', refreshToken: 'old-refresh' }, { type: 'chatgpt-session', accessToken: 'new-access', refreshToken: 'new-refresh' });
+    accountPool.release(acquired.id, markAccountCredentialError(new ChatGptBackendError('stale 401', 'unauthorized', { status: 401 }), acquired));
+    expect(accountPool.get('session-release')).toMatchObject({ status: 'available', lastError: null, lastErrorCode: null, secret: { accessToken: 'new-access', refreshToken: 'new-refresh' } });
+  });
+
+  it('keeps a stale-version rate limit as cooldown so another session account can be scheduled', () => {
+    const accountPool = new AccountPool();
+    accountPool.add({ id: 'session-rate-limited', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'old-access', refreshToken: 'old-refresh' } });
+    accountPool.add({ id: 'session-fallback', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'fallback-access', refreshToken: 'fallback-refresh' } });
+    const acquired = accountPool.acquire({ provider: 'chatgpt-session' })!;
+    expect(acquired.id).toBe('session-rate-limited');
+    accountPool.compareAndSwapSessionSecret(acquired.id, { accessToken: 'old-access', refreshToken: 'old-refresh' }, { type: 'chatgpt-session', accessToken: 'new-access', refreshToken: 'new-refresh' });
+    accountPool.release(acquired.id, markAccountCredentialError(new ChatGptBackendError('stale 429', 'rate_limited', { status: 429 }), acquired));
+    expect(accountPool.get(acquired.id)).toMatchObject({ status: 'cooldown', lastErrorCode: 'rate_limited' });
+    expect(accountPool.firstAvailable({ provider: 'chatgpt-session' })?.id).toBe('session-fallback');
   });
 
   it('puts rate-limited accounts into cooldown and skips them until expiry', () => {
@@ -1436,6 +1460,18 @@ describe('API key auth', () => {
     expect(withKeyAddRes.status).toBe(201);
   });
 
+  it('rejects anonymous bootstrap when the deployment is not explicitly local', async () => {
+    const app = createApp({ ...env, host: '0.0.0.0', apiKeys: [], allowAnonymousBootstrap: false });
+    const res = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST' });
+    expect(res.status).toBe(401);
+  });
+
+  it('does not expose the legacy unprotected /admin/accounts route', async () => {
+    const app = createApp(env);
+    const res = await app.request('/admin/accounts');
+    expect(res.status).toBe(404);
+  });
+
   it('rejects admin dev-enable in production', async () => {
     const previousNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
@@ -1468,14 +1504,27 @@ describe('/admin', () => {
     expect(res.status).toBe(204);
   });
 
+  it('closes the OAuth callback listener when the application is disposed', async () => {
+    const port = await reserveCallbackPort();
+    const authFlow = new ChatGptAuthFlowService({ callbackPort: port });
+    const app = createApp(env, { authFlow });
+    const started = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST', headers: adminKeyHeaders });
+    expect(started.status).toBe(201);
+    expect((await fetch(`http://127.0.0.1:${port}/wrong`)).status).toBe(404);
+    await app.dispose();
+    await expect(fetch(`http://127.0.0.1:${port}/wrong`)).rejects.toThrow();
+  });
+
   it('returns the server-rendered admin HTML page', async () => {
     const app = createApp(env);
     const res = await app.request('/admin');
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/html');
     const html = await res.text();
-    expect(html).toContain('ChatGPT to Claude 运维控制台');
+    expect(html).toContain('chat2claude 个人自托管控制台');
     expect(html).toContain('浏览器授权（Codex OAuth）');
+    expect(html).toContain('个人账号池（高级）');
+    expect(html).toContain('禁止用于公开转售订阅流量');
     expect(html).toContain('不会启动独立 Chrome/新 profile');
     expect(html).toContain('id="auth-link"');
     expect(html).toContain('id="copy-auth-link"');
@@ -1695,12 +1744,13 @@ describe('ChatGPT one-click auth admin flow', () => {
     expect(res.status).toBe(201);
     const body = await res.json() as { id: string; authorizeUrl: string; state: string; openedByService: boolean };
     const url = new URL(body.authorizeUrl);
-    expect(body.id).toMatch(/^flow-/);
+    expect(body.id).toMatch(/^[A-Za-z0-9_-]{32}$/);
     expect(url.origin + url.pathname).toBe('https://auth.openai.com/oauth/authorize');
     expect(url.searchParams.get('client_id')).toBe('app_EMoamEEZ73f0CkXaXp7hrann');
     expect(url.searchParams.get('response_type')).toBe('code');
     expect(url.searchParams.get('redirect_uri')).toBe('http://localhost:1455/auth/callback');
-    expect(url.searchParams.get('scope')).toBe('openid email profile offline_access');
+    expect(url.searchParams.get('scope')).toBe('openid profile email offline_access api.connectors.read api.connectors.invoke');
+    expect(url.searchParams.get('originator')).toBe('chat2claude');
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
     expect(url.searchParams.get('prompt')).toBe('login');
     expect(url.searchParams.get('id_token_add_organizations')).toBe('true');
@@ -1799,7 +1849,10 @@ describe('ChatGPT one-click auth admin flow', () => {
     const startRes = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST' });
     const { id, authorizeUrl } = await startRes.json() as { id: string; authorizeUrl: string };
     const oauthState = new URL(authorizeUrl).searchParams.get('state');
-    await app.request('/admin/api/auth/chatgpt/callback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: 'code-ready', state: oauthState }) });
+    const rawCallback = await app.request('/admin/api/auth/chatgpt/callback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: 'code-ready', state: oauthState }) });
+    expect(rawCallback.status).toBe(400);
+    const callback = await app.request('/admin/api/auth/chatgpt/callback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ redirectUrl: `http://localhost:1455/auth/callback?code=code-ready&state=${oauthState}` }) });
+    expect(callback.status).toBe(200);
     const pollRes = await app.request(`/admin/api/auth/chatgpt/${id}`);
     const pollBody = await pollRes.json() as { provisionResult: { apiKey: string } };
 
@@ -1819,6 +1872,8 @@ describe('ChatGPT one-click auth admin flow', () => {
 
     const secondRes = await app.request('/admin/api/auth/chatgpt/complete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ secret: { accessToken: 'manual-token-2' } }) });
     expect(secondRes.status).toBe(200);
+    const secondBody = await secondRes.json() as { apiKey: string };
+    expect(secondBody.apiKey).toBe(firstBody.apiKey);
     const accountsRes = await app.request('/admin/api/accounts');
     const accountsBody = await accountsRes.json() as { accounts: Array<Record<string, unknown>> };
     expect(accountsBody.accounts.filter((account) => account.id === 'chatgpt-primary')).toHaveLength(1);
@@ -1873,6 +1928,15 @@ describe('session admin model discovery', () => {
     expect(body.error).toContain('No available chatgpt-session account');
   });
 });
+
+async function reserveCallbackPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Failed to reserve callback port');
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return address.port;
+}
 
 describe('/admin/api/models', () => {
   it('uses MODEL_REGISTRY_JSON as alias overlay source and resets back to it', () => {

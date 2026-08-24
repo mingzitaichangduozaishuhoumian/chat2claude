@@ -65,6 +65,12 @@ export interface AdminModelsView {
   combined: RuntimeModel[];
 }
 
+export interface PreparedModelProvisioning {
+  aliases: AliasOverlay[];
+  discoveredModels: ChatGptDiscoveredModel[];
+  boundAliases: Record<string, string>;
+}
+
 const REASONING_EFFORTS: ReasoningEffort[] = ['off', 'minimal', 'low', 'medium', 'high', 'max'];
 const RESPONSE_SPEEDS: SpeedPreference[] = ['fastest', 'fast', 'balanced', 'quality'];
 
@@ -80,8 +86,30 @@ export class ModelRegistry {
   }
 
   async refreshFromBackend(backend: ChatGptBackendClient, context?: ChatGptBackendRequestContext): Promise<AdminModelsView> {
-    this.discoveredModels = cloneDiscoveredModels(await backend.listModels(context));
+    return this.replaceDiscoveredModels(await backend.listModels(context));
+  }
+
+  replaceDiscoveredModels(models: ChatGptDiscoveredModel[]): AdminModelsView {
+    this.discoveredModels = cloneDiscoveredModels(models);
     return this.adminView();
+  }
+
+  prepareProvisioning(models: ChatGptDiscoveredModel[], aliasId: string, backendModel?: string): PreparedModelProvisioning {
+    const aliases = cloneAliases(this.aliases);
+    const boundAliases: Record<string, string> = {};
+    if (backendModel) {
+      const index = aliases.findIndex((alias) => alias.id === aliasId);
+      if (index !== -1) {
+        aliases[index] = { ...aliases[index], backendModel, enabled: true };
+        boundAliases[aliasId] = backendModel;
+      }
+    }
+    return { aliases, discoveredModels: cloneDiscoveredModels(models), boundAliases };
+  }
+
+  commitPreparedProvisioning(prepared: PreparedModelProvisioning): void {
+    this.aliases = prepared.aliases;
+    this.discoveredModels = prepared.discoveredModels;
   }
 
   list(): RuntimeModel[] {

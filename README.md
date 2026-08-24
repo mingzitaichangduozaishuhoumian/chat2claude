@@ -1,8 +1,10 @@
 # chatgpt-to-claude
 
-`chatgpt-to-claude` 是一个 TypeScript + Hono 的 Claude Messages API 兼容层，向上暴露 Claude-like `/v1/messages`、`/v1/models`，向下可接入 mock backend 或真实 ChatGPT session backend。
+`chatgpt-to-claude` 是一个 TypeScript + Hono 的个人自托管、local-first 开源 Claude/OpenAI 兼容层，向上暴露 Claude-like `/v1/messages`、OpenAI-compatible `/v1/chat/completions`、`/v1/responses` 和 `/v1/models`，向下可接入 mock backend 或真实 ChatGPT session backend。
 
-普通用户路径已经改为“浏览器授权（Codex OAuth）”：打开 `/admin` 后生成 OpenAI Codex OAuth PKCE 授权链接，服务不会启动独立 Chrome/新 profile，也不再依赖已登录 `chatgpt.com` 页面抓 token。用户在当前浏览器/已登录账号环境中打开链接授权；成功后自动创建 `chatgpt-primary` 账号、执行 health-check、刷新模型、绑定 `sonnet` alias、生成 runtime API key，并在页面展示 endpoint/key/curl。手动 accessToken/cookie 导入仍保留在高级区域作为 fallback。
+本项目面向使用本人控制或已获明确授权的 ChatGPT/Codex 账号及其包含用量的个人自托管场景。不得将个人订阅流量公开转售、向不特定第三方重新提供或进行大规模共享；它不是订阅聚合、流量转售或多租户共享网关。
+
+普通用户路径是“浏览器授权（Codex OAuth）”：打开 `/admin` 后生成 OpenAI Codex OAuth PKCE 授权链接，服务不会启动独立 Chrome/新 profile，也不再依赖已登录 `chatgpt.com` 页面抓 token。用户在当前浏览器/已登录账号环境中打开链接授权；成功后自动创建 `chatgpt-primary` 账号、执行 health-check、刷新模型、绑定 `sonnet` alias、生成幂等的进程内 runtime API key，并在页面展示 endpoint/key/curl。手动 accessToken/cookie 导入仍保留在高级区域作为 fallback。
 
 ## 技术栈
 
@@ -48,14 +50,14 @@ corepack pnpm check
 corepack pnpm start
 ```
 
-服务默认只监听本机 `127.0.0.1`（`http://localhost:3000`），健康检查为 `http://localhost:3000/healthz`。如需局域网/公网访问，必须预先设置 `API_KEYS`，并显式设置 `HOST=0.0.0.0`。
+服务默认只监听本机 `127.0.0.1`（`http://localhost:3000`），健康检查为 `http://localhost:3000/healthz`。非 loopback `HOST` 在没有预配置 `API_KEYS` 时会拒绝启动，避免匿名 bootstrap 暴露到局域网/公网。`LOCAL_CONTAINER_BOOTSTRAP=true` 只供 `docker-compose.yml` 的容器内 `0.0.0.0` 监听使用；compose 将宿主端口固定发布为 `127.0.0.1:3000:3000`，不得把该开关当作公网部署默认值。
 
 ## 一键授权流程
 
-1. `POST /admin/api/auth/chatgpt/start` 创建授权 flow，生成 OAuth `state`、PKCE `code_verifier` / `code_challenge`，返回 `https://auth.openai.com/oauth/authorize` 授权链接。服务不会打开浏览器，不会启动独立 Chrome/新 profile。
-2. 服务会尽量在 `127.0.0.1:1455` 启动本地 callback listener，接收 `GET /auth/callback?code=&state=...` 并返回中文完成页。如果 1455 端口占用或监听失败，start 仍返回授权链接；授权后浏览器若显示无法连接 `localhost:1455`，把地址栏完整 callback URL 粘贴回后台提交。
-3. `POST /admin/api/auth/chatgpt/callback` 支持 `{ "redirectUrl": "http://localhost:1455/auth/callback?..." }` / `{ "redirect_url": ... }` / `{ "code": "...", "state": "..." }`，只记录 OAuth code 和 state，不向前端暴露 token。
-4. 前端轮询 `GET /admin/api/auth/chatgpt/:id`。当 flow 已收到 code 且还没有 secret 时，服务调用 `https://auth.openai.com/oauth/token` 使用 `authorization_code` + PKCE `code_verifier` 换取 token，并把 `access_token` 作为兼容的 `chatgpt-session` secret 保存；`refresh_token` / `id_token` / `expiresAt` 仅保存在内部 secret，不返回给前端或日志。
+1. `POST /admin/api/auth/chatgpt/start` 创建授权 flow，使用密码学随机 flow ID、一次性 OAuth `state`、PKCE `code_verifier` / `code_challenge`，返回 `https://auth.openai.com/oauth/authorize` 授权链接。当前 scope 为 `openid profile email offline_access api.connectors.read api.connectors.invoke`，并诚实标记 `originator=chat2claude`。服务不会打开浏览器，不会启动独立 Chrome/新 profile。
+2. 服务优先在 `127.0.0.1:1455` 启动本地 callback listener；若默认端口不可用，会尝试已注册的 `1457` fallback，并用实际端口构造授权 URL。listener 的成功/失败页面返回真实 HTTP 状态并设置 no-store、no-referrer、CSP 和 nosniff 安全头。
+3. `POST /admin/api/auth/chatgpt/callback` 支持粘贴完整 `redirectUrl` / `redirect_url`，也支持结构化 `code` + `state`。粘贴 URL 必须与该 flow 的实际 `http://localhost:<1455|1457>/auth/callback` 完全匹配；错误协议、host、端口、path、userinfo、fragment、重复或冲突参数会被拒绝。state 成功接收后只能消费一次。
+4. 前端轮询 `GET /admin/api/auth/chatgpt/:id`。authorization-code exchange 与 provisioning 都按 flow single-flight；并发轮询不会重复换码、重复创建账号或生成多批 key。换码完成后清理 code/verifier，provisioning 完成后清理 flow secret 副本。`refresh_token` / `id_token` / `expiresAt` 仅保存在进程内账号 secret，不返回给前端、错误或日志。
 5. 拿到 OAuth access token 后自动 provisioning：
    - upsert 固定账号 `chatgpt-primary`，provider 为 `chatgpt-session`；
    - 调用 backend `healthCheck({ account })`；
@@ -63,6 +65,9 @@ corepack pnpm start
    - 从 discovery 中按关键词优先级选择最佳模型绑定到 `sonnet` alias（`gpt-5`、`codex`、`thinking`、`gpt-4`、第一个）；
    - 生成进程内 runtime API key。
 6. 页面只展示脱敏账号信息、API key、base URL 和 curl，不返回 accessToken/cookie/id_token/refresh_token。
+7. 运行时会在 token 到期前 60 秒主动 refresh，并原子写回 refresh-token rotation。同账号并发 refresh 合并为一次；首次 401 会使用最新凭据最多重试一次。流式请求只有在尚未输出任何事件时才允许 refresh/retry，避免重复内容。
+
+OAuth 凭据、账号池和 runtime key 都只保存在当前进程/本地浏览器；没有数据库或远端同步。服务重启后需要重新授权或重新导入 session。
 
 取消授权：`POST /admin/api/auth/chatgpt/:id/cancel`。服务只取消当前 OAuth flow；不会启动或关闭用户浏览器。
 
@@ -142,9 +147,9 @@ alias overlay 启动时从外部配置源读取：
 
 `config/models.json` 只管理 alias 映射，不是真实后端模型表。管理后台的 reset 会恢复 alias overlay，refresh 会重新拉取 backend discovery。
 
-### 账号池
+### 个人账号池
 
-账号字段包含：`id`、`label`、`provider`、`status`、`enabled`、`maxConcurrency`、`currentConcurrency`、`lastUsedAt`、`lastError`、`capabilities`、`hasSecret`、`createdAt`。内部账号可携带 `secret` 供 backend 使用，但 admin list/add/update/provisioning 响应会脱敏，只暴露 `hasSecret`。当前只做进程内 runtime 管理，重启后恢复默认状态。
+多账号池保留给同一自托管操作者管理本人控制或获明确授权的账号，用于故障隔离、冷却、并发控制和本地调度，不用于公开转售或面向不特定第三方的大规模共享。账号字段包含：`id`、`label`、`provider`、`status`、`enabled`、`maxConcurrency`、`currentConcurrency`、`lastUsedAt`、`lastError`、`capabilities`、`hasSecret`、`createdAt`。内部账号可携带 `secret` 供 backend 使用，但 admin list/add/update/provisioning 响应会脱敏，只暴露 `hasSecret`。当前只做进程内 runtime 管理，重启后恢复默认状态。
 
 ### Backend 配置
 

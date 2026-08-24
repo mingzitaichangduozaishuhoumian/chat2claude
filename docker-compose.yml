@@ -2,6 +2,9 @@ services:
   api:
     build: .
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
+    environment:
+      HOST: 0.0.0.0
+      LOCAL_CONTAINER_BOOTSTRAP: "true"
     env_file:
       - .env.example
