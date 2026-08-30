@@ -4,6 +4,7 @@ import type { ModelRegistry, PreparedModelProvisioning } from './model-registry.
 import { candidateSessionContext } from './refresh-aware-backend.js';
 import type { ProvisionCommitBoundary } from './provision-commit.js';
 import type { PreparedRuntimeApiKey, RuntimeApiKeys } from './runtime-api-keys.js';
+import type { DurableRuntimeState } from './durable-runtime-state.js';
 
 export const PRIMARY_CHATGPT_ACCOUNT_ID = 'chatgpt-primary';
 const PRIMARY_RUNTIME_KEY_NAME = 'chatgpt-primary';
@@ -13,6 +14,7 @@ export interface SetupProvisionerOptions {
   modelRegistry: ModelRegistry;
   backend: ChatGptBackendClient;
   runtimeApiKeys: RuntimeApiKeys;
+  durableState?: DurableRuntimeState;
 }
 
 export interface ProvisionResult {
@@ -68,17 +70,21 @@ export class SetupProvisioner {
   }
 
   private commitPrepared(prepared: PreparedProvisioningCommit, committedAt: Date): ProvisionResult {
-    const account = this.options.accountPool.commitProvisionedSession({
-      id: PRIMARY_CHATGPT_ACCOUNT_ID,
-      provider: 'chatgpt-session',
-      label: 'ChatGPT Primary Session',
-      enabled: true,
-      maxConcurrency: 1,
-      capabilities: ['chatgpt-session', 'messages'],
-      secret: prepared.account.secret,
-    }, committedAt);
+    const commitCoreState = () => {
+      const account = this.options.accountPool.commitProvisionedSession({
+        id: PRIMARY_CHATGPT_ACCOUNT_ID,
+        provider: 'chatgpt-session',
+        label: 'ChatGPT Primary Session',
+        enabled: true,
+        maxConcurrency: 1,
+        capabilities: ['chatgpt-session', 'messages'],
+        secret: prepared.account.secret,
+      }, committedAt);
+      const apiKey = this.options.runtimeApiKeys.commitPreparedNamedKey(prepared.runtimeKey);
+      return { account, apiKey };
+    };
+    const { account, apiKey } = this.options.durableState ? this.options.durableState.transaction(commitCoreState) : commitCoreState();
     this.options.modelRegistry.commitPreparedProvisioning(prepared.models);
-    const apiKey = this.options.runtimeApiKeys.commitPreparedNamedKey(prepared.runtimeKey);
     return {
       ok: true,
       apiKey,
@@ -96,6 +102,8 @@ export function chooseBestModel(models: ChatGptDiscoveredModel[]): ChatGptDiscov
 function createCandidateAccount(secret: ChatGptSessionSecret): Account {
   return {
     id: PRIMARY_CHATGPT_ACCOUNT_ID,
+    // Candidate-only account; a committed pool account receives its own incarnation.
+    incarnation: 0,
     provider: 'chatgpt-session',
     label: 'ChatGPT Primary Session',
     status: 'available',

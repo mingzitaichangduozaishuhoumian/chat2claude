@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readCommaList, readNumber, type LogLevel } from '@chatgpt-to-claude/shared';
 import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningEffort, type SpeedPreference } from '@chatgpt-to-claude/protocol-mapper';
 
@@ -17,11 +19,15 @@ export interface AppEnv {
   chatGptRequestTimeoutMs: number;
   defaultReasoningEffort: ReasoningEffort;
   defaultResponseSpeed: SpeedPreference;
+  dataDir: string;
+  runtimeStatePath: string;
+  stateEncryptionKey?: Uint8Array;
 }
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
   const host = source.HOST?.trim() || '127.0.0.1';
   const apiKeys = readCommaList(source.API_KEYS);
+  const dataDir = source.DATA_DIR?.trim() ? resolve(source.DATA_DIR.trim()) : fileURLToPath(new URL('../../data', import.meta.url));
   const localContainerBootstrap = parseBoolean(source.LOCAL_CONTAINER_BOOTSTRAP);
   const allowAnonymousBootstrap = isLoopbackHost(host) || localContainerBootstrap;
   if (!isLoopbackHost(host) && apiKeys.length === 0 && !localContainerBootstrap) {
@@ -41,6 +47,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     chatGptRequestTimeoutMs: readNumber(source.CHATGPT_REQUEST_TIMEOUT_MS, 60000),
     defaultReasoningEffort: normalizeReasoningEffort(source.DEFAULT_REASONING_EFFORT),
     defaultResponseSpeed: normalizeSpeedPreference(source.DEFAULT_RESPONSE_SPEED),
+    dataDir,
+    runtimeStatePath: resolve(dataDir, 'runtime-state.json'),
+    stateEncryptionKey: parseStateEncryptionKey(source.STATE_ENCRYPTION_KEY),
   };
 }
 
@@ -52,3 +61,12 @@ export function isLoopbackHost(host: string): boolean {
 function parseBoolean(value: string | undefined): boolean { return value?.trim().toLowerCase() === 'true'; }
 function parseLogLevel(value: string | undefined): LogLevel { return value === 'debug' || value === 'warn' || value === 'error' ? value : 'info'; }
 function parseBackendProvider(value: string | undefined): ChatGptBackendProvider { return value === 'session' ? 'session' : 'mock'; }
+
+function parseStateEncryptionKey(value: string | undefined): Uint8Array | undefined {
+  if (value === undefined) return undefined;
+  const encoded = value;
+  if (!encoded || encoded.trim() !== encoded || !/^[A-Za-z0-9+/]{43}=$/.test(encoded)) throw new Error('STATE_ENCRYPTION_KEY must be a base64-encoded 32-byte key.');
+  const key = Buffer.from(encoded, 'base64');
+  if (key.length !== 32 || key.toString('base64') !== encoded) throw new Error('STATE_ENCRYPTION_KEY must be a base64-encoded 32-byte key.');
+  return key;
+}

@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ChatGptBackendClient, ChatGptBackendRequestContext } from '@chatgpt-to-claude/chatgpt-backend';
 import { AccountPool } from './account-pool.js';
@@ -5,6 +8,8 @@ import { ModelRegistry } from './model-registry.js';
 import { RuntimeApiKeys } from './runtime-api-keys.js';
 import { SetupProvisioner } from './setup-provisioner.js';
 import { ChatGptAuthFlowService } from './chatgpt-auth-flow.js';
+import { DurableRuntimeState } from './durable-runtime-state.js';
+import { RuntimeStateStore } from './runtime-state-store.js';
 
 function setup(backend: ChatGptBackendClient) {
   const accountPool = new AccountPool();
@@ -41,6 +46,42 @@ describe('SetupProvisioner', () => {
     const reauthorized = await provisioner.provision({ type: 'chatgpt-session', accessToken: 'candidate-access-2' });
     expect(reauthorized.apiKey).toBe(result.apiKey);
     expect(accountPool.get('chatgpt-primary')?.secret?.accessToken).toBe('candidate-access-2');
+  });
+
+  it('atomically persists the provisioned account and named runtime key', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'chat2claude-provision-'));
+    try {
+      const backend = backendFrom({ listModels: async () => [{ id: 'gpt-5-codex' }] });
+      const accountPool = new AccountPool();
+      const modelRegistry = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+      const runtimeApiKeys = new RuntimeApiKeys();
+      const store = new RuntimeStateStore({ path: join(directory, 'runtime-state.json') });
+      const durableState = new DurableRuntimeState({ accountPool, runtimeApiKeys, store });
+      const provisioner = new SetupProvisioner({ accountPool, modelRegistry, runtimeApiKeys, backend, durableState });
+
+      const result = await provisioner.provision({ type: 'chatgpt-session', accessToken: 'durable-access' });
+      const restoredAccounts = new AccountPool();
+      const restoredKeys = new RuntimeApiKeys();
+      new DurableRuntimeState({ accountPool: restoredAccounts, runtimeApiKeys: restoredKeys, store }).hydrate();
+      expect(restoredAccounts.get('chatgpt-primary')?.secret?.accessToken).toBe('durable-access');
+      expect(restoredKeys.getOrCreate('chatgpt-primary')).toBe(result.apiKey);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls account and key memory back when durable provisioning persistence fails', async () => {
+    const backend = backendFrom({ listModels: async () => [{ id: 'gpt-5-codex' }] });
+    const { accountPool, modelRegistry, runtimeApiKeys } = setup(backend);
+    const store = new RuntimeStateStore({ path: 'unused-runtime-state.json' });
+    store.save = () => { throw new Error('injected persist failure'); };
+    const durableState = new DurableRuntimeState({ accountPool, runtimeApiKeys, store });
+    const provisioner = new SetupProvisioner({ accountPool, modelRegistry, runtimeApiKeys, backend, durableState });
+
+    await expect(provisioner.provision({ type: 'chatgpt-session', accessToken: 'candidate-access' })).rejects.toThrow('injected persist failure');
+    expect(accountPool.get('chatgpt-primary')?.secret?.accessToken).toBe('healthy-access');
+    expect(runtimeApiKeys.size).toBe(0);
+    expect(modelRegistry.get('sonnet')?.backendModel).toBeUndefined();
   });
 
   it('does not commit an aborted candidate after asynchronous validation', async () => {

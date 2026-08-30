@@ -4,7 +4,7 @@
 
 本项目面向使用本人控制或已获明确授权的 ChatGPT/Codex 账号及其包含用量的个人自托管场景。不得将个人订阅流量公开转售、向不特定第三方重新提供或进行大规模共享；它不是订阅聚合、流量转售或多租户共享网关。
 
-普通用户路径是“浏览器授权（Codex OAuth）”：打开 `/admin` 后生成 OpenAI Codex OAuth PKCE 授权链接，服务不会启动独立 Chrome/新 profile，也不再依赖已登录 `chatgpt.com` 页面抓 token。用户在当前浏览器/已登录账号环境中打开链接授权；成功后自动创建 `chatgpt-primary` 账号、执行 health-check、刷新模型、绑定 `sonnet` alias、生成幂等的进程内 runtime API key，并在页面展示 endpoint/key/curl。手动 accessToken/cookie 导入仍保留在高级区域作为 fallback。
+普通用户路径是“浏览器授权（Codex OAuth）”：打开 `/admin` 后生成 OpenAI Codex OAuth PKCE 授权链接，服务不会启动独立 Chrome/新 profile，也不再依赖已登录 `chatgpt.com` 页面抓 token。用户在当前浏览器/已登录账号环境中打开链接授权；成功后自动创建 `chatgpt-primary` 账号、执行 health-check、刷新模型、绑定 `sonnet` alias、生成幂等的持久化 runtime API key，并在页面展示 endpoint/key/curl。手动 accessToken/cookie 导入仍保留在高级区域作为 fallback。
 
 ## 技术栈
 
@@ -63,11 +63,11 @@ corepack pnpm start
    - 调用 backend `healthCheck({ account })`；
    - `modelRegistry.refreshFromBackend(backend, { account })`；
    - 从 discovery 中按关键词优先级选择最佳模型绑定到 `sonnet` alias（`gpt-5`、`codex`、`thinking`、`gpt-4`、第一个）；
-   - 生成进程内 runtime API key。
+   - 生成持久化 runtime API key。
 6. 页面只展示脱敏账号信息、API key、base URL 和 curl，不返回 accessToken/cookie/id_token/refresh_token。
 7. 运行时会在 token 到期前 60 秒主动 refresh，并原子写回 refresh-token rotation。同账号并发 refresh 合并为一次；首次 401 会使用最新凭据最多重试一次。流式请求只有在尚未输出任何事件时才允许 refresh/retry，避免重复内容。
 
-OAuth 凭据、账号池和 runtime key 都只保存在当前进程/本地浏览器；没有数据库或远端同步。服务重启后需要重新授权或重新导入 session。
+OAuth 凭据、账号池和 runtime key 会持久保存到本机 `DATA_DIR/runtime-state.json`；没有数据库或远端同步。默认 `DATA_DIR` 为 API 应用的 `data` 目录；例如在 `.env` 设置 `DATA_DIR=./custom-data` 可指定其他目录。可选的 `STATE_ENCRYPTION_KEY` 会以 AES-256-GCM 加密状态文件，必须是无空白、严格标准 base64 编码的 32 字节密钥（44 个字符、末尾一个 `=`）；请先用 `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"` 生成，再将完整输出写入 `.env`。Docker Compose 默认挂载命名卷 `runtime-state` 到 `/app/data`，因此容器重启会恢复账号和 runtime key。
 
 取消授权：`POST /admin/api/auth/chatgpt/:id/cancel`。服务只取消当前 OAuth flow；不会启动或关闭用户浏览器。
 
@@ -96,9 +96,12 @@ curl -X POST http://localhost:3000/admin/api/auth/chatgpt/complete \
 - `GET /admin/api/auth/chatgpt/:id`：轮询授权；收到 code 后 exchange token，拿到 secret 后自动 provisioning（只执行一次）
 - `POST /admin/api/auth/chatgpt/:id/cancel`：取消授权 flow
 - `POST /admin/api/auth/chatgpt/complete`：高级手动导入 session，并走同一套 provisioning
-- `POST /admin/api/api-keys/dev-enable`：开发阶段生成随机临时 key；`NODE_ENV=production` 时禁用
+- `POST /admin/api/api-keys/dev-enable`：开发阶段生成随机持久 runtime key；`NODE_ENV=production` 时禁用
+- `GET /admin/api/api-keys`：列出脱敏的 runtime key 记录（稳定 ID、可选名称、创建时间和前缀；不返回原始 key）
+- `DELETE /admin/api/api-keys/:id`：撤销指定 runtime key；撤销后立即失效，删除最后一个 runtime key 后是否可匿名 bootstrap 仍仅由现有本地监听、无 `API_KEYS` 和无 runtime key 策略决定
 - `GET /admin/api/accounts` / `POST /admin/api/accounts`：列出或添加运行时账号；列表只返回 `hasSecret`
 - `PATCH /admin/api/accounts/:id`：更新账号元数据
+- `DELETE /admin/api/accounts/:id`：删除持久账号；不存在返回 404，有进行中的请求（`currentConcurrency > 0`）返回 409
 - `POST /admin/api/accounts/:id/health-check`：执行健康检查；session 账号成功后会刷新模型 discovery
 - `GET /admin/api/models`：列出 alias overlay、backend discovery 与合并后的 runtime 模型视图
 - `PATCH /admin/api/models/:id`：更新 alias 的 backendModel 映射、启用状态与默认 `reasoning_effort` / `speed`
@@ -149,7 +152,7 @@ alias overlay 启动时从外部配置源读取：
 
 ### 个人账号池
 
-多账号池保留给同一自托管操作者管理本人控制或获明确授权的账号，用于故障隔离、冷却、并发控制和本地调度，不用于公开转售或面向不特定第三方的大规模共享。账号字段包含：`id`、`label`、`provider`、`status`、`enabled`、`maxConcurrency`、`currentConcurrency`、`lastUsedAt`、`lastError`、`capabilities`、`hasSecret`、`createdAt`。内部账号可携带 `secret` 供 backend 使用，但 admin list/add/update/provisioning 响应会脱敏，只暴露 `hasSecret`。当前只做进程内 runtime 管理，重启后恢复默认状态。
+多账号池保留给同一自托管操作者管理本人控制或获明确授权的账号，用于故障隔离、冷却、并发控制和本地调度，不用于公开转售或面向不特定第三方的大规模共享。账号字段包含：`id`、`label`、`provider`、`status`、`enabled`、`maxConcurrency`、`currentConcurrency`、`lastUsedAt`、`lastError`、`capabilities`、`hasSecret`、`createdAt`。内部账号可携带 `secret` 供 backend 使用，但 admin list/add/update/provisioning 响应会脱敏，只暴露 `hasSecret`。账号与 runtime key 的可变管理操作会原子持久化，重启后恢复；请求中的临时并发计数不会持久化，并会以 0 恢复。
 
 ### Backend 配置
 

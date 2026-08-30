@@ -1,8 +1,13 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AccountPool } from './account-pool.js';
 import { CodexOAuthClient } from './codex-oauth-client.js';
 import { RuntimeApiKeys } from './runtime-api-keys.js';
 import { SessionCredentialManager } from './session-credential-manager.js';
+import { DurableRuntimeState } from './durable-runtime-state.js';
+import { RuntimeStateStore } from './runtime-state-store.js';
 
 function addSession(pool: AccountPool, id: string, expiresAt = '2026-08-22T02:00:00.000Z') {
   pool.add({ id, provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: `${id}-access-1`, refreshToken: `${id}-refresh-1`, expiresAt, email: `${id}@example.test`, cookie: `${id}=cookie` } });
@@ -16,6 +21,17 @@ describe('AccountPool credential CAS', () => {
     expect(pool.compareAndSwapSessionSecret('session', { accessToken: 'wrong', refreshToken: 'session-refresh-1' }, { type: 'chatgpt-session', accessToken: 'stale' })).toBeUndefined();
     expect(pool.compareAndSwapSessionSecret('session', { accessToken: 'session-access-1', refreshToken: 'session-refresh-1' }, { type: 'chatgpt-session', accessToken: 'session-access-2', refreshToken: 'session-refresh-2' })?.secret?.accessToken).toBe('session-access-2');
     expect(pool.compareAndSwapSessionSecret('session', { accessToken: 'session-access-1', refreshToken: 'session-refresh-1' }, { type: 'chatgpt-session', accessToken: 'stale' })).toBeUndefined();
+  });
+
+  it('does not write durable state for a credential version mismatch', () => {
+    const pool = new AccountPool();
+    addSession(pool, 'session');
+    const store = new RuntimeStateStore({ path: 'unused-runtime-state.json' });
+    let writes = 0;
+    store.save = () => { writes += 1; };
+    const durableState = new DurableRuntimeState({ accountPool: pool, runtimeApiKeys: new RuntimeApiKeys(), store });
+    expect(durableState.compareAndSwapSessionSecret('session', { accessToken: 'wrong', refreshToken: 'session-refresh-1' }, { type: 'chatgpt-session', accessToken: 'stale' })).toBeUndefined();
+    expect(writes).toBe(0);
   });
 });
 
@@ -44,6 +60,56 @@ describe('SessionCredentialManager', () => {
     const fresh = await manager.getFreshAccount(account);
     expect(fresh.secret).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2', email: 'session@example.test', cookie: 'session=cookie' });
     expect(pool.get('session')?.secret?.accessToken).toBe('access-2');
+  });
+
+  it('persists rotated credentials before returning a successful refresh', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'chat2claude-refresh-'));
+    try {
+      const path = join(directory, 'runtime-state.json');
+      const pool = new AccountPool();
+      const account = addSession(pool, 'session', '2026-08-22T00:00:00.000Z');
+      const keys = new RuntimeApiKeys();
+      const store = new RuntimeStateStore({ path });
+      const durableState = new DurableRuntimeState({ accountPool: pool, runtimeApiKeys: keys, store });
+      durableState.persist();
+      const manager = new SessionCredentialManager({
+        accountPool: pool,
+        durableState,
+        now: () => new Date('2026-08-22T00:00:00.000Z'),
+        oauthClient: new CodexOAuthClient({ fetch: async () => Response.json({ access_token: 'access-2', refresh_token: 'refresh-2' }) }),
+      });
+
+      await manager.getFreshAccount(account);
+      const restoredPool = new AccountPool();
+      new DurableRuntimeState({ accountPool: restoredPool, runtimeApiKeys: new RuntimeApiKeys(), store }).hydrate();
+      expect(restoredPool.get('session')?.secret).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects refresh and rolls memory back when rotated credentials cannot persist', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'chat2claude-refresh-fail-'));
+    try {
+      const pool = new AccountPool();
+      const account = addSession(pool, 'session', '2026-08-22T00:00:00.000Z');
+      const store = new RuntimeStateStore({ path: join(directory, 'runtime-state.json') });
+      const durableState = new DurableRuntimeState({ accountPool: pool, runtimeApiKeys: new RuntimeApiKeys(), store });
+      durableState.persist();
+      pool.acquire({ provider: 'chatgpt-session' });
+      store.save = () => { throw new Error('injected disk failure'); };
+      const manager = new SessionCredentialManager({
+        accountPool: pool,
+        durableState,
+        now: () => new Date('2026-08-22T00:00:00.000Z'),
+        oauthClient: new CodexOAuthClient({ fetch: async () => Response.json({ access_token: 'access-2', refresh_token: 'refresh-2' }) }),
+      });
+
+      await expect(manager.getFreshAccount(account)).rejects.toThrow('injected disk failure');
+      expect(pool.get('session')).toMatchObject({ currentConcurrency: 1, secret: { accessToken: 'session-access-1', refreshToken: 'session-refresh-1' } });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('single-flights refresh per account while allowing different accounts independently', async () => {
@@ -83,6 +149,22 @@ describe('SessionCredentialManager', () => {
     await expect(secondPending).resolves.toMatchObject({ secret: { accessToken: 'access-3' } });
     oldRefresh.resolve(Response.json({ access_token: 'stale-access' }));
     await expect(firstPending).resolves.toMatchObject({ secret: { accessToken: 'access-3' } });
+  });
+
+  it('does not write a stale refresh result after delete/recreate with identical credentials', async () => {
+    const pool = new AccountPool();
+    const stale = addSession(pool, 'session', '2026-08-22T00:00:00.000Z');
+    const refresh = deferred<Response>();
+    const manager = new SessionCredentialManager({ accountPool: pool, now: () => new Date('2026-08-22T00:00:00.000Z'), oauthClient: new CodexOAuthClient({ fetch: async () => refresh.promise }) });
+    const pending = manager.getFreshAccount(stale);
+    await Promise.resolve();
+    expect(pool.remove('session')).toBeDefined();
+    const replacement = addSession(pool, 'session', '2026-08-22T00:00:00.000Z');
+    expect(replacement.secret).toMatchObject({ accessToken: 'session-access-1', refreshToken: 'session-refresh-1' });
+    refresh.resolve(Response.json({ access_token: 'stale-access', refresh_token: 'stale-refresh' }));
+
+    await expect(pending).rejects.toMatchObject({ code: 'unauthorized' });
+    expect(pool.get('session')).toMatchObject({ secret: { accessToken: 'session-access-1', refreshToken: 'session-refresh-1' } });
   });
 
   it('suppresses a stale refresh failure after reauthorization replaces canonical credentials', async () => {

@@ -5,6 +5,8 @@ export type AccountProvider = 'mock' | 'chatgpt-session';
 
 export interface Account {
   id: string;
+  /** Runtime-only identity that distinguishes delete/recreate cycles for the same id. */
+  incarnation: number;
   label: string;
   provider: AccountProvider;
   status: AccountStatus;
@@ -20,7 +22,7 @@ export interface Account {
   createdAt: string;
 }
 
-export interface AccountView extends Omit<Account, 'secret'> {
+export interface AccountView extends Omit<Account, 'secret' | 'incarnation'> {
   hasSecret: boolean;
 }
 
@@ -63,6 +65,17 @@ export interface SessionSecretVersion {
   refreshToken?: string;
 }
 
+/** v1-compatible persisted form; incarnation exists only for this process lifetime. */
+export type PersistedAccount = Omit<Account, 'currentConcurrency' | 'incarnation'>;
+
+export interface AccountPoolState {
+  accounts: PersistedAccount[];
+}
+
+export interface AccountPoolSnapshot {
+  accounts: Account[];
+}
+
 interface AccountCredentialErrorOwner extends SessionSecretVersion {
   accountId: string;
 }
@@ -83,11 +96,16 @@ export class AccountPool {
   private readonly accounts: Account[];
   private readonly now: () => Date;
   private readonly rateLimitCooldownMs: number;
+  private nextIncarnation = 1;
 
   constructor(options: AccountPoolOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.rateLimitCooldownMs = typeof options.rateLimitCooldownMs === 'number' && Number.isFinite(options.rateLimitCooldownMs) && options.rateLimitCooldownMs >= 0 ? options.rateLimitCooldownMs : 60_000;
-    this.accounts = [createAccount({ id: 'mock-account', label: 'Mock ChatGPT Account' }, this.now)];
+    this.accounts = [this.createAccount({ id: 'mock-account', label: 'Mock ChatGPT Account' })];
+  }
+
+  private createAccount(input: AccountCreateInput): Account {
+    return createAccount(input, this.now, this.nextIncarnation++);
   }
 
   list(): AccountView[] {
@@ -95,8 +113,24 @@ export class AccountPool {
     return this.accounts.map(toAccountView);
   }
 
+  exportState(): AccountPoolState {
+    return { accounts: this.accounts.map(toPersistedAccount) };
+  }
+
+  snapshot(): AccountPoolSnapshot {
+    return { accounts: this.accounts.map(cloneAccount) };
+  }
+
+  importState(state: AccountPoolState): void {
+    this.accounts.splice(0, this.accounts.length, ...state.accounts.map((account) => fromPersistedAccount(account, this.nextIncarnation++)));
+  }
+
+  restore(snapshot: AccountPoolSnapshot): void {
+    this.accounts.splice(0, this.accounts.length, ...snapshot.accounts.map(cloneAccount));
+  }
+
   add(input: AccountCreateInput): AccountView {
-    const account = createAccount(input, this.now);
+    const account = this.createAccount(input);
     if (this.accounts.some((item) => item.id === account.id)) throw new Error(`Account already exists: ${account.id}`);
     this.accounts.push(account);
     return toAccountView(account);
@@ -117,6 +151,7 @@ export class AccountPool {
     const enabled = typeof input.enabled === 'boolean' ? input.enabled : true;
     const next: Account = {
       id: input.id,
+      incarnation: existing?.incarnation ?? this.nextIncarnation++,
       label: normalizeString(input.label, 'ChatGPT Session Account'),
       provider: 'chatgpt-session',
       status: enabled ? 'available' : 'disabled',
@@ -169,9 +204,16 @@ export class AccountPool {
     return account ? cloneAccount(account) : undefined;
   }
 
-  compareAndSwapSessionSecret(id: string, expected: SessionSecretVersion, nextSecret: ChatGptSessionSecret): Account | undefined {
+  remove(id: string): AccountView | undefined {
+    const index = this.accounts.findIndex((item) => item.id === id);
+    if (index === -1) return undefined;
+    const [account] = this.accounts.splice(index, 1);
+    return toAccountView(account);
+  }
+
+  compareAndSwapSessionSecret(id: string, expected: SessionSecretVersion, nextSecret: ChatGptSessionSecret, expectedIncarnation?: number): Account | undefined {
     const account = this.accounts.find((item) => item.id === id);
-    if (!account || account.provider !== 'chatgpt-session' || !account.secret) return undefined;
+    if (!account || (expectedIncarnation !== undefined && account.incarnation !== expectedIncarnation) || account.provider !== 'chatgpt-session' || !account.secret) return undefined;
     if (account.secret.accessToken !== expected.accessToken || account.secret.refreshToken !== expected.refreshToken) return undefined;
     const normalized = normalizeSecret(nextSecret, 'chatgpt-session');
     if (!normalized?.accessToken) return undefined;
@@ -192,16 +234,16 @@ export class AccountPool {
     return toAccountView(account);
   }
 
-  markHealthy(id: string): AccountView | undefined {
+  markHealthy(id: string, expectedIncarnation?: number): AccountView | undefined {
     const account = this.accounts.find((item) => item.id === id);
-    if (!account) return undefined;
+    if (!account || (expectedIncarnation !== undefined && account.incarnation !== expectedIncarnation)) return undefined;
     this.markHealthyAccount(account);
     return toAccountView(account);
   }
 
-  markError(id: string, error: unknown): AccountView | undefined {
+  markError(id: string, error: unknown, expectedIncarnation?: number): AccountView | undefined {
     const account = this.accounts.find((item) => item.id === id);
-    if (!account) return undefined;
+    if (!account || (expectedIncarnation !== undefined && account.incarnation !== expectedIncarnation)) return undefined;
     this.applyReleaseResult(account, error);
     return toAccountView(account);
   }
@@ -283,12 +325,13 @@ function isStaleCredentialError(account: Account, error: unknown): boolean {
   return owner.accessToken !== account.secret.accessToken || owner.refreshToken !== account.secret.refreshToken;
 }
 
-function createAccount(input: AccountCreateInput, now: () => Date = () => new Date()): Account {
+function createAccount(input: AccountCreateInput, now: () => Date, incarnation: number): Account {
   const createdAt = now().toISOString();
   const provider = normalizeProvider(input.provider, 'mock');
   const enabled = typeof input.enabled === 'boolean' ? input.enabled : true;
   return {
     id: normalizeId(input.id),
+    incarnation,
     label: normalizeString(input.label, provider === 'mock' ? 'Mock ChatGPT Account' : 'ChatGPT Session Account'),
     provider,
     status: enabled ? 'available' : 'disabled',
@@ -316,8 +359,17 @@ function cloneAccount(account: Account): Account {
   return { ...account, capabilities: [...account.capabilities], secret: account.secret ? { ...account.secret } : undefined };
 }
 
+function toPersistedAccount(account: Account): PersistedAccount {
+  const { currentConcurrency: _currentConcurrency, incarnation: _incarnation, ...persisted } = cloneAccount(account);
+  return persisted;
+}
+
+function fromPersistedAccount(account: PersistedAccount, incarnation: number): Account {
+  return { ...account, incarnation, currentConcurrency: 0, capabilities: [...account.capabilities], secret: account.secret ? { ...account.secret } : undefined };
+}
+
 function toAccountView(account: Account): AccountView {
-  const { secret: _secret, ...view } = account;
+  const { secret: _secret, incarnation: _incarnation, ...view } = account;
   return { ...view, capabilities: [...account.capabilities], hasSecret: Boolean(_secret) };
 }
 

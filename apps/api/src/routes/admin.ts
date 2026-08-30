@@ -7,6 +7,7 @@ import type { ModelRegistry } from '../services/model-registry.js';
 import { DEV_API_KEY_PREFIX, type RuntimeApiKeys } from '../services/runtime-api-keys.js';
 import { ChatGptAuthFlowService } from '../services/chatgpt-auth-flow.js';
 import { SetupProvisioner, type ProvisionResult } from '../services/setup-provisioner.js';
+import type { DurableRuntimeState } from '../services/durable-runtime-state.js';
 
 export interface AdminRouteOptions {
   accountPool: AccountPool;
@@ -14,6 +15,7 @@ export interface AdminRouteOptions {
   backend: ChatGptBackendClient;
   ready?: Promise<unknown>;
   runtimeApiKeys: RuntimeApiKeys;
+  durableState?: DurableRuntimeState;
   envApiKeys: string[];
   defaultReasoningEffort: ReasoningEffort;
   defaultResponseSpeed: SpeedPreference;
@@ -38,10 +40,11 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
         error: { type: 'permission_error', message: 'Development API key initialization is disabled in production.' },
       }, 403);
     }
-    const key = options.runtimeApiKeys.create(DEV_API_KEY_PREFIX);
+    const createKey = () => options.runtimeApiKeys.create(DEV_API_KEY_PREFIX);
+    const key = options.durableState ? options.durableState.transaction(createKey) : createKey();
     return c.json({
       ok: true,
-      message: 'Development API key enabled in memory. Use the returned key for /v1/* until the process restarts.',
+      message: 'Development API key enabled. Use the returned key for /v1/*.',
       key,
       status: status(options),
     });
@@ -81,35 +84,59 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
   });
 
   app.get('/admin/api/accounts', (c) => c.json({ accounts: options.accountPool.list() }));
+  app.get('/admin/api/api-keys', (c) => c.json({ apiKeys: options.runtimeApiKeys.listSafe() }));
+  app.delete('/admin/api/api-keys/:id', (c) => {
+    const revoke = () => options.runtimeApiKeys.revoke(c.req.param('id'));
+    const apiKey = options.durableState ? options.durableState.transaction(revoke) : revoke();
+    return apiKey ? c.json({ ok: true, apiKey }) : c.json({ error: 'Runtime API key not found' }, 404);
+  });
   app.post('/admin/api/accounts', async (c) => {
     try {
-      const account = options.accountPool.add(await readJson(c.req));
+      const input = await readJson(c.req);
+      const addAccount = () => options.accountPool.add(input);
+      const account = options.durableState ? options.durableState.transaction(addAccount) : addAccount();
       return c.json({ account }, 201);
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : 'Invalid account' }, 400);
     }
   });
   app.patch('/admin/api/accounts/:id', async (c) => {
-    const account = options.accountPool.update(c.req.param('id'), await readJson(c.req));
-    return account ? c.json({ account }) : c.json({ error: 'Account not found' }, 404);
+    const id = c.req.param('id');
+    if (!options.accountPool.get(id)) return c.json({ error: 'Account not found' }, 404);
+    const patch = await readJson(c.req);
+    const updateAccount = () => options.accountPool.update(id, patch);
+    const account = options.durableState ? options.durableState.transaction(updateAccount) : updateAccount();
+    return c.json({ account });
+  });
+  app.delete('/admin/api/accounts/:id', (c) => {
+    const id = c.req.param('id');
+    const existing = options.accountPool.get(id);
+    if (!existing) return c.json({ error: 'Account not found' }, 404);
+    if (existing.currentConcurrency > 0) return c.json({ error: 'Account has active requests and cannot be deleted' }, 409);
+    const removeAccount = () => options.accountPool.remove(id);
+    const account = options.durableState ? options.durableState.transaction(removeAccount) : removeAccount();
+    return c.json({ ok: true, account });
   });
   app.post('/admin/api/accounts/:id/health-check', async (c) => {
     const id = c.req.param('id');
     const internalAccount = options.accountPool.get(id);
     if (!internalAccount) return c.json({ error: 'Account not found' }, 404);
     if (!options.backend.healthCheck) {
-      const account = options.accountPool.healthCheck(id);
+      const healthCheck = () => options.accountPool.healthCheck(id);
+      const account = options.durableState ? options.durableState.transaction(healthCheck) : healthCheck();
       return account ? c.json({ ok: true, account }) : c.json({ error: 'Account not found' }, 404);
     }
     try {
       const result = await options.backend.healthCheck({ account: internalAccount });
-      const account = result.ok ? options.accountPool.markHealthy(id) : options.accountPool.markError(id, result.message ?? 'Health check failed');
-      const view = result.ok && internalAccount.provider === 'chatgpt-session'
+      const updateHealth = () => result.ok ? options.accountPool.markHealthy(id, internalAccount.incarnation) : options.accountPool.markError(id, result.message ?? 'Health check failed', internalAccount.incarnation);
+      const account = options.durableState ? options.durableState.transaction(updateHealth) : updateHealth();
+      const view = result.ok && account && internalAccount.provider === 'chatgpt-session'
         ? await options.modelRegistry.refreshFromBackend(options.backend, { account: internalAccount })
         : undefined;
       return c.json({ ok: result.ok, message: result.message, account, view });
     } catch (error) {
-      const account = options.accountPool.markError(id, error);
+      const markError = () => options.accountPool.markError(id, error, internalAccount.incarnation);
+      const account = options.durableState ? options.durableState.transaction(markError) : markError();
       return c.json({ ok: false, error: error instanceof Error ? error.message : String(error), account }, 502);
     }
   });
@@ -256,6 +283,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       <section class="card full" id="api-config" hidden><h2>API 配置</h2><div class="stack"><p>Endpoint：<code id="endpoint"></code></p><p>API Key：<code id="api-key"></code></p><pre id="ready-curl"></pre></div></section>
       <section class="card full"><details id="advanced-import"><summary>高级：手动导入 accessToken / cookie</summary><p class="muted">OAuth 不可用或已有 session secret 时使用。表单会走同一套 provisioning，不会返回 token/cookie。</p><div class="row"><input id="session-access-token" placeholder="accessToken" /><input id="session-cookie" placeholder="cookie（可选）" /><input id="session-device-id" placeholder="deviceId（可选）" /><input id="session-user-agent" placeholder="userAgent（可选）" /><button id="manual-complete" class="secondary">导入并初始化</button></div></details></section>
       <section class="card full"><h2>个人账号池（高级）</h2><p class="muted">仅用于同一自托管操作者管理本人控制或获授权的账号，并进行故障隔离、冷却、并发控制和本地调度；禁止用于公开转售订阅流量或面向不特定第三方的大规模共享。</p><div class="row"><input id="account-label" placeholder="账号标识" value="Mock ChatGPT Account" /><input id="account-concurrency" type="number" min="1" value="1" aria-label="最大并发" /><button id="add-account" class="secondary">添加 mock 账号</button></div><div id="accounts"><div class="empty">正在读取个人账号池状态。</div></div></section>
+      <section class="card full"><h2>运行时 API Keys</h2><p class="muted">仅显示 ID、名称、创建时间和安全前缀；撤销后对应 key 会立即失效。</p><div class="row"><button id="refresh-api-keys" class="secondary" type="button">刷新 Key 列表</button></div><div id="api-keys"><div class="empty">正在读取运行时 API Key。</div></div></section>
       <section class="card full"><h2>模型映射（高级管理）</h2><p class="muted">后端模型来自 discovery；alias overlay 负责映射、启用状态与缺省 reasoning_effort / response_speed。</p><div class="row"><button id="reset-models" class="secondary">重置 alias overlay</button><button id="refresh-models" class="secondary">刷新 backend discovery</button></div><div id="models"><div class="empty">正在加载模型映射。</div></div></section>
       <section class="card"><h2>结果面板</h2><pre id="result">${escapeHtml(setupStatus.nextStep)}</pre></section>
       <section class="card"><h2>curl 示例</h2><p class="muted">示例地址由当前页面 origin 生成。</p><pre id="curl-example" data-template="${escapeHtml(curlTemplate)}">${escapeHtml(curlTemplate)}</pre></section>
@@ -318,7 +346,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       });
       renderResult(body);
       if (body.apiKey) showReady(body);
-      await loadAccounts(); await loadModels();
+      await loadAccounts(); await loadApiKeys(); await loadModels();
     });
 
     function schedulePoll(delay) { clearPoll(); pollTimer = setTimeout(pollAuth, delay); }
@@ -345,7 +373,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       document.getElementById('auth-message').textContent = body.message || body.state || '';
       renderResult(body);
       if (body.provisionResult?.apiKey) {
-        clearPoll(); document.getElementById('cancel-auth').disabled = true; showReady(body.provisionResult); await loadAccounts(); await loadModels(); return;
+        clearPoll(); document.getElementById('cancel-auth').disabled = true; showReady(body.provisionResult); await loadAccounts(); await loadApiKeys(); await loadModels(); return;
       }
       if (['expired','cancelled','error'].includes(body.state)) { clearPoll(); document.getElementById('cancel-auth').disabled = true; return; }
       schedulePoll(1800);
@@ -367,6 +395,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       const body = await postJson('/admin/api/accounts', { provider: 'mock', label: document.getElementById('account-label').value, maxConcurrency: Number(document.getElementById('account-concurrency').value || 1), capabilities: ['mock', 'messages'] });
       renderResult(body); await loadAccounts();
     });
+    document.getElementById('refresh-api-keys').addEventListener('click', loadApiKeys);
     document.getElementById('reset-models').addEventListener('click', async () => { const body = await postJson('/admin/api/models/reset'); renderResult(body); await loadModels(); });
     document.getElementById('refresh-models').addEventListener('click', async () => { const body = await postJson('/admin/api/models/refresh'); renderResult(body); await loadModels(); });
 
@@ -374,9 +403,24 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       const body = await getJson('/admin/api/accounts'); const accounts = body.accounts || [];
       if (!accounts.length) { document.getElementById('accounts').innerHTML = '<div class="empty">账号池为空。</div>'; return; }
       document.getElementById('accounts').innerHTML = '<div class="table-wrap"><table><thead><tr><th>ID</th><th>标识</th><th>Provider</th><th>状态</th><th>并发</th><th>Secret</th><th>最近使用</th><th>能力</th><th>操作</th></tr></thead><tbody>' + accounts.map((account) =>
-        '<tr><td><code>' + esc(account.id) + '</code></td><td>' + esc(account.label) + '</td><td>' + esc(account.provider || 'mock') + '</td><td><span class="pill">' + esc(account.status) + (account.enabled ? '' : ' / disabled') + '</span></td><td>' + account.currentConcurrency + '/' + account.maxConcurrency + '</td><td>' + (account.hasSecret ? '已导入' : '-') + '</td><td>' + esc(account.lastUsedAt || '-') + '</td><td>' + esc((account.capabilities || []).join(', ')) + '</td><td><button class="secondary" data-health="' + esc(account.id) + '">健康检查</button></td></tr>'
+        '<tr><td><code>' + esc(account.id) + '</code></td><td>' + esc(account.label) + '</td><td>' + esc(account.provider || 'mock') + '</td><td><span class="pill">' + esc(account.status) + (account.enabled ? '' : ' / disabled') + '</span></td><td>' + account.currentConcurrency + '/' + account.maxConcurrency + '</td><td>' + (account.hasSecret ? '已导入' : '-') + '</td><td>' + esc(account.lastUsedAt || '-') + '</td><td>' + esc((account.capabilities || []).join(', ')) + '</td><td><button class="secondary" data-health="' + esc(account.id) + '">健康检查</button> <button class="secondary" data-delete-account="' + esc(account.id) + '" ' + (account.currentConcurrency > 0 ? 'disabled title="账号有进行中的请求"' : '') + '>删除</button></td></tr>'
       ).join('') + '</tbody></table></div>';
       document.querySelectorAll('[data-health]').forEach((button) => button.addEventListener('click', async () => { const body = await postJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.health) + '/health-check'); renderResult(body); await loadAccounts(); }));
+      document.querySelectorAll('[data-delete-account]').forEach((button) => button.addEventListener('click', async () => {
+        if (!window.confirm('确认删除此账号？删除后无法恢复。')) return;
+        const body = await deleteJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.deleteAccount)); renderResult(body); await loadAccounts();
+      }));
+    }
+    async function loadApiKeys() {
+      const body = await getJson('/admin/api/api-keys'); const apiKeys = body.apiKeys || [];
+      if (!apiKeys.length) { document.getElementById('api-keys').innerHTML = '<div class="empty">没有运行时 API Key。</div>'; return; }
+      document.getElementById('api-keys').innerHTML = '<div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>安全前缀</th><th>创建时间</th><th>操作</th></tr></thead><tbody>' + apiKeys.map((apiKey) =>
+        '<tr><td><code>' + esc(apiKey.id) + '</code></td><td>' + esc(apiKey.name || '-') + '</td><td><code>' + esc(apiKey.prefix) + '</code></td><td>' + esc(apiKey.createdAt) + '</td><td><button class="secondary" data-revoke-key="' + esc(apiKey.id) + '">撤销</button></td></tr>'
+      ).join('') + '</tbody></table></div>';
+      document.querySelectorAll('[data-revoke-key]').forEach((button) => button.addEventListener('click', async () => {
+        if (!window.confirm('确认撤销此运行时 API Key？撤销后立即失效。')) return;
+        const body = await deleteJson('/admin/api/api-keys/' + encodeURIComponent(button.dataset.revokeKey)); renderResult(body); await loadApiKeys();
+      }));
     }
     async function loadModels() {
       const body = await getJson('/admin/api/models'); const aliases = body.aliases || body.models || []; const discovered = body.discovered || [];
@@ -393,11 +437,12 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     function redactApiKeys(value) {
       if (Array.isArray(value)) return value.map(redactApiKeys);
       if (!value || typeof value !== 'object') return value;
-      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'apiKey' ? '<saved-in-browser>' : redactApiKeys(item)]));
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'apiKey' || key === 'key' ? '<saved-in-browser>' : redactApiKeys(item)]));
     }
     async function getJson(url) { return requestJson(url); }
     async function postJson(url, body) { return requestJson(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); }
     async function patchJson(url, body) { return requestJson(url, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); }
+    async function deleteJson(url) { return requestJson(url, { method: 'DELETE' }); }
     async function requestJson(url, init) {
       const response = await fetchWithAdminKey(url, init);
       if (response.status !== 401) return response.json();
@@ -429,7 +474,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       localStorage.removeItem('adminApiKey'); sessionStorage.removeItem('adminApiKey'); adminKeyInput.value = '';
     }
     function esc(value) { return String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])); }
-    loadAccounts(); loadModels();
+    loadAccounts(); loadApiKeys(); loadModels();
   </script>
 </body>
 </html>`;

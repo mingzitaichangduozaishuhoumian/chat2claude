@@ -68,6 +68,8 @@ const env = {
   chatGptRequestTimeoutMs: 60000,
   defaultReasoningEffort: 'medium' as const,
   defaultResponseSpeed: 'balanced' as const,
+  dataDir: '',
+  runtimeStatePath: '',
 };
 const jsonHeaders = { 'content-type': 'application/json', 'x-api-key': 'test-key' };
 const adminJsonHeaders = jsonHeaders;
@@ -1337,6 +1339,10 @@ class ThrowingStreamBackend extends InspectingBackend {
 }
 
 function createSessionAdminApp(backend: ChatGptBackendClient): Hono {
+  return createSessionAdminAppWithAccountPool(backend).app;
+}
+
+function createSessionAdminAppWithAccountPool(backend: ChatGptBackendClient): { app: Hono; accountPool: AccountPool } {
   const app = new Hono();
   const accountPool = new AccountPool();
   const modelRegistry = new ModelRegistry();
@@ -1351,7 +1357,7 @@ function createSessionAdminApp(backend: ChatGptBackendClient): Hono {
     defaultResponseSpeed: 'balanced',
     backendProvider: 'session',
   }));
-  return app;
+  return { app, accountPool };
 }
 
 function createProvisioningTestApp(options: { authFlow?: ChatGptAuthFlowService; protectModels?: boolean } = {}): Hono {
@@ -1540,7 +1546,7 @@ describe('/admin', () => {
     expect(html).toContain("saveAdminApiKey(entered.trim(), rememberAdminKeyInput.checked);");
     expect(html).toContain("else { sessionStorage.setItem('adminApiKey', key); localStorage.removeItem('adminApiKey'); }");
     expect(html).toContain("headers.set('x-api-key', key);");
-    expect(html).toContain("key === 'apiKey' ? '<saved-in-browser>'");
+    expect(html).toContain("key === 'apiKey' || key === 'key' ? '<saved-in-browser>'");
     expect(html).toContain("document.getElementById('api-key').textContent = result.apiKey ? 'API Key 已保存到当前会话' : '<your-api-key>';");
     expect(html).toContain("return sessionStorage.getItem('adminApiKey') || localStorage.getItem('adminApiKey') || '';");
     expect(html).not.toContain("document.getElementById('api-key').textContent = result.apiKey;");
@@ -1902,6 +1908,25 @@ describe('SessionChatGptBackend', () => {
 });
 
 describe('session admin model discovery', () => {
+  it('does not apply a stale health-check result or launch model discovery after delete/recreate', async () => {
+    const health = deferred<{ ok: boolean; message?: string }>();
+    const backend = new InspectingBackend();
+    backend.healthCheck = async () => health.promise;
+    const { app, accountPool } = createSessionAdminAppWithAccountPool(backend);
+    const credentials = { type: 'chatgpt-session' as const, accessToken: 'same-access', refreshToken: 'same-refresh' };
+    accountPool.add({ id: 'session-race', provider: 'chatgpt-session', secret: credentials });
+
+    const pending = app.request('/admin/api/accounts/session-race/health-check', { method: 'POST' });
+    await Promise.resolve();
+    expect((await app.request('/admin/api/accounts/session-race', { method: 'DELETE' })).status).toBe(200);
+    expect((await app.request('/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'session-race', provider: 'chatgpt-session', secret: credentials }) })).status).toBe(201);
+    health.resolve({ ok: true });
+
+    await expect(pending).resolves.toHaveProperty('status', 200);
+    expect(backend.listModelsContext).toBeUndefined();
+    expect(accountPool.get('session-race')).toMatchObject({ status: 'available', lastError: null, lastUsedAt: null, secret: credentials });
+  });
+
   it('refreshes models with the first available session account and exposes them through /v1/models', async () => {
     const backend = new InspectingBackend([{ id: 'backend-session-model' }]);
     const app = createSessionAdminApp(backend);
@@ -1994,3 +2019,10 @@ describe('/admin/api/models', () => {
     expect(resetHaiku?.defaults).not.toEqual({ reasoning_effort: 'minimal', speed: 'fastest' });
   });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
