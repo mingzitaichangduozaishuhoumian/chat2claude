@@ -32,24 +32,28 @@ export interface CreateAppOptions {
 export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {}): Chat2ClaudeApp {
   const app = new Hono() as Chat2ClaudeApp;
   const logger = createLogger(env.logLevel);
-  const accountPool = new AccountPool();
+  const accountPool = new AccountPool({ seedMockAccount: env.chatGptBackend === 'mock' });
   const runtimeApiKeys = new RuntimeApiKeys();
   const localAdminSession = new LocalAdminSession(env.allowAnonymousBootstrap);
+  const modelRegistry = new ModelRegistry();
   const runtimeStateStore = options.runtimeStateStore === undefined
     ? env.runtimeStatePath ? new RuntimeStateStore({ path: env.runtimeStatePath, encryptionKey: env.stateEncryptionKey }) : undefined
     : options.runtimeStateStore ?? undefined;
-  const durableState = runtimeStateStore ? new DurableRuntimeState({ accountPool, runtimeApiKeys, store: runtimeStateStore }) : undefined;
+  const durableState = runtimeStateStore ? new DurableRuntimeState({ accountPool, runtimeApiKeys, modelRegistry, store: runtimeStateStore, removeMockAccountsOnHydrate: env.chatGptBackend === 'session' }) : undefined;
   durableState?.hydrate();
   const backend = createChatGptBackend(env, accountPool, durableState);
   const requestLog = new RequestLog();
-  const modelRegistry = new ModelRegistry();
   const responsesStore = new ResponsesStore();
   const authFlow = options.authFlow ?? new ChatGptAuthFlowService({ oauthRequestTimeoutMs: env.chatGptRequestTimeoutMs });
   const restoredPrimaryAccount = accountPool.get(PRIMARY_CHATGPT_ACCOUNT_ID);
   const modelRegistryReady = restoredPrimaryAccount?.provider === 'chatgpt-session'
     ? backend.listModels({ account: restoredPrimaryAccount }).then((models) => {
-      const prepared = modelRegistry.prepareProvisioning(models, 'sonnet', chooseBestModel(models)?.id);
-      modelRegistry.commitPreparedProvisioning(prepared);
+      const prepared = modelRegistry.prepareProvisioning(models, 'sonnet', chooseBestModel(models)?.id, true);
+      const commit = () => modelRegistry.commitPreparedProvisioning(prepared);
+      // Persist an automatic first binding atomically; refreshes never replace a
+      // persisted/manual binding because prepareProvisioning preserves it.
+      if (Object.keys(prepared.boundAliases).length > 0 && durableState) durableState.transaction(commit);
+      else commit();
     })
     : modelRegistry.refreshFromBackend(backend);
   app.onError((error, c) => { logger.error('Unhandled API error', { error: error.message }); return c.json({ type: 'error', error: { type: 'internal_server_error', message: 'Internal server error' } }, 500); });

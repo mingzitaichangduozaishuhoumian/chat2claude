@@ -58,6 +58,8 @@ export interface AccountAcquireOptions {
 export interface AccountPoolOptions {
   now?: () => Date;
   rateLimitCooldownMs?: number;
+  /** Defaults to true to preserve direct AccountPool usage. */
+  seedMockAccount?: boolean;
 }
 
 export interface SessionSecretVersion {
@@ -101,7 +103,7 @@ export class AccountPool {
   constructor(options: AccountPoolOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.rateLimitCooldownMs = typeof options.rateLimitCooldownMs === 'number' && Number.isFinite(options.rateLimitCooldownMs) && options.rateLimitCooldownMs >= 0 ? options.rateLimitCooldownMs : 60_000;
-    this.accounts = [this.createAccount({ id: 'mock-account', label: 'Mock ChatGPT Account' })];
+    this.accounts = options.seedMockAccount === false ? [] : [this.createAccount({ id: 'mock-account', label: 'Mock ChatGPT Account' })];
   }
 
   private createAccount(input: AccountCreateInput): Account {
