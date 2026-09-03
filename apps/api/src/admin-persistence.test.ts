@@ -13,6 +13,7 @@ import { DurableRuntimeState } from './services/durable-runtime-state.js';
 import { ModelRegistry } from './services/model-registry.js';
 import { RuntimeApiKeys } from './services/runtime-api-keys.js';
 import { RuntimeStateStore } from './services/runtime-state-store.js';
+import { ChatGptAuthFlowService } from './services/chatgpt-auth-flow.js';
 
 const directories: string[] = [];
 
@@ -131,6 +132,41 @@ describe('durable administration', () => {
     const afterDeleteList = await afterDelete.request('/admin/api/models', { headers: { 'x-api-key': key } });
     expect((await afterDeleteList.json() as { aliases: Array<{ id: string }> }).aliases.some((model) => model.id === 'research')).toBe(false);
     await afterDelete.dispose();
+  });
+
+  it('validates the OAuth return origin against the actual request Host and Origin', async () => {
+    const authFlow = new ChatGptAuthFlowService({ enableCallbackListener: false });
+    const app = new Hono();
+    app.route('/', createAdminRoute({ accountPool: new AccountPool(), modelRegistry: new ModelRegistry(), backend: {} as ChatGptBackendClient, runtimeApiKeys: new RuntimeApiKeys(), envApiKeys: [], defaultReasoningEffort: 'medium', defaultResponseSpeed: 'balanced', backendProvider: 'mock', authFlow }));
+    const start = await app.request('http://localhost:3100/admin/api/auth/chatgpt/start', {
+      method: 'POST', headers: { origin: 'http://localhost:3100', 'content-type': 'application/json' }, body: JSON.stringify({ adminOrigin: 'http://localhost:3100' }),
+    });
+    expect(start.status).toBe(201);
+    const flow = await start.json() as { authorizeUrl: string };
+    const state = new URL(flow.authorizeUrl).searchParams.get('state')!;
+    const accepted = await authFlow.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code&state=${state}` });
+    expect(accepted).not.toHaveProperty('returnOrigin');
+
+    for (const adminOrigin of ['https://localhost:3100', 'http://localhost:3100/admin', 'http://localhost:3100?next=x', 'http://user@localhost:3100', 'http://attacker.test']) {
+      const response = await app.request('http://localhost:3100/admin/api/auth/chatgpt/start', {
+        method: 'POST', headers: { origin: 'http://localhost:3100', 'content-type': 'application/json' }, body: JSON.stringify({ adminOrigin }),
+      });
+      expect(response.status).toBe(400);
+    }
+    await authFlow.close();
+  });
+
+  it('contains OAuth session recovery and explicit 401 load-failure paths in the admin page', async () => {
+    const app = createApp(loadEnv({ DATA_DIR: temporaryDirectory(), NODE_ENV: 'test' }));
+    const html = await (await app.request('/admin')).text();
+    expect(html).toContain("sessionStorage.setItem(oauthFlowStorageKey, JSON.stringify({ flowId, origin: window.location.origin }))");
+    expect(html).toContain('saved.origin !== window.location.origin');
+    expect(html).toContain('clearOAuthFlow();');
+    expect(html).toContain('未认证/数据未加载');
+    expect(html).toContain('账号数据加载失败，未加载。');
+    expect(html).toContain('运行时 API Key 加载失败，未加载。');
+    expect(html).toContain('模型数据加载失败，未加载。');
+    await app.dispose();
   });
 
   it('returns 409 for an active account, 404 after deletion, and persists the deletion', async () => {

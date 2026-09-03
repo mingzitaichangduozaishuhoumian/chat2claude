@@ -56,7 +56,14 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     });
   });
 
-  app.post('/admin/api/auth/chatgpt/start', async (c) => c.json(await authFlow.start(), 201));
+  app.post('/admin/api/auth/chatgpt/start', async (c) => {
+    try {
+      const input = await readJson(c.req);
+      return c.json(await authFlow.start({ returnOrigin: validateAdminReturnOrigin(c.req.raw, input.adminOrigin) }), 201);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Invalid admin origin' }, 400);
+    }
+  });
   app.post('/admin/api/auth/chatgpt/callback', async (c) => {
     try {
       const snapshot = await authFlow.completeCallback(await readJson(c.req));
@@ -197,6 +204,30 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
 function sessionRefreshContext(accountPool: AccountPool) {
   const account = accountPool.firstAvailable({ provider: 'chatgpt-session' });
   return account ? { account } : undefined;
+}
+
+function validateAdminReturnOrigin(request: Request, value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') throw new Error('adminOrigin must be an exact HTTP(S) origin.');
+  const requested = parseExactHttpOrigin(value, 'adminOrigin');
+  const requestOrigin = parseExactHttpOrigin(new URL(request.url).origin, 'request origin');
+  const headerOrigin = request.headers.get('origin');
+  if (headerOrigin && parseExactHttpOrigin(headerOrigin, 'Origin') !== requestOrigin) {
+    throw new Error('Origin does not match the request host.');
+  }
+  if (requested !== requestOrigin || (headerOrigin && requested !== headerOrigin)) {
+    throw new Error('adminOrigin must match the request Host and Origin exactly.');
+  }
+  return requested;
+}
+
+function parseExactHttpOrigin(value: string, label: string): string {
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error(`${label} must be an exact HTTP(S) origin.`); }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password || url.pathname !== '/' || url.search || url.hash || value !== url.origin) {
+    throw new Error(`${label} must be an exact HTTP(S) origin without path, query, hash, or userinfo.`);
+  }
+  return url.origin;
 }
 
 async function readJson(req: { json: () => Promise<unknown> }): Promise<Record<string, unknown>> {
@@ -352,22 +383,25 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       if (key) { await loadAccounts(); await loadApiKeys(); await loadModels(); }
     });
 
+    const oauthFlowStorageKey = 'chat2claude.oauthFlow';
     document.getElementById('auth-chatgpt').addEventListener('click', async () => {
-      const body = await postJson('/admin/api/auth/chatgpt/start');
-      currentFlowId = body.id;
-      document.getElementById('cancel-auth').disabled = false;
-      document.getElementById('auth-message').textContent = authStartMessage(body);
-      showAuthLink(body.authorizeUrl);
-      renderResult(body);
-      schedulePoll(1200);
+      try {
+        const body = await postJson('/admin/api/auth/chatgpt/start', { adminOrigin: window.location.origin });
+        currentFlowId = body.id;
+        rememberOAuthFlow(body.id);
+        restoreAuthControls(body);
+        renderResult(body);
+        schedulePoll(1200);
+      } catch (error) { showAuthError(error); }
     });
     document.getElementById('cancel-auth').addEventListener('click', async () => {
       if (!currentFlowId) return;
-      const body = await postJson('/admin/api/auth/chatgpt/' + encodeURIComponent(currentFlowId) + '/cancel');
-      clearPoll();
-      document.getElementById('cancel-auth').disabled = true;
-      document.getElementById('auth-message').textContent = body.message || '已取消。';
-      renderResult(body);
+      try {
+        const body = await postJson('/admin/api/auth/chatgpt/' + encodeURIComponent(currentFlowId) + '/cancel');
+        clearOAuthFlow();
+        document.getElementById('auth-message').textContent = body.message || '已取消。';
+        renderResult(body);
+      } catch (error) { showAuthError(error); }
     });
     document.getElementById('copy-auth-link').addEventListener('click', async () => {
       const link = document.getElementById('auth-link').href;
@@ -384,11 +418,13 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     document.getElementById('submit-oauth-callback').addEventListener('click', async () => {
       const redirectUrl = document.getElementById('oauth-callback-url').value.trim();
       if (!redirectUrl) { document.getElementById('auth-message').textContent = '请粘贴完整 callback URL。'; return; }
-      const body = await postJson('/admin/api/auth/chatgpt/callback', { redirectUrl });
-      renderResult(body);
-      if (body.id) currentFlowId = body.id;
-      document.getElementById('auth-message').textContent = body.message || 'callback 已提交，正在轮询换取 token。';
-      schedulePoll(300);
+      try {
+        const body = await postJson('/admin/api/auth/chatgpt/callback', { redirectUrl });
+        renderResult(body);
+        if (body.id) { currentFlowId = body.id; rememberOAuthFlow(body.id); }
+        restoreAuthControls(body);
+        schedulePoll(300);
+      } catch (error) { showAuthError(error); }
     });
     document.getElementById('manual-complete').addEventListener('click', async () => {
       const body = await postJson('/admin/api/auth/chatgpt/complete', {
@@ -422,14 +458,51 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     }
     async function pollAuth() {
       if (!currentFlowId) return;
-      const body = await getJson('/admin/api/auth/chatgpt/' + encodeURIComponent(currentFlowId));
-      document.getElementById('auth-message').textContent = body.message || body.state || '';
-      renderResult(body);
-      if (body.provisionResult?.apiKey) {
-        clearPoll(); document.getElementById('cancel-auth').disabled = true; showReady(body.provisionResult); await loadAccounts(); await loadApiKeys(); await loadModels(); return;
+      try {
+        const body = await getJson('/admin/api/auth/chatgpt/' + encodeURIComponent(currentFlowId));
+        restoreAuthControls(body);
+        renderResult(body);
+        if (body.provisionResult?.apiKey) {
+          clearOAuthFlow(); showReady(body.provisionResult); await loadAccounts(); await loadApiKeys(); await loadModels(); return;
+        }
+        if (['expired', 'cancelled', 'error'].includes(body.state)) { clearOAuthFlow(); return; }
+        schedulePoll(1800);
+      } catch (error) {
+        clearOAuthFlow();
+        showAuthError(error);
       }
-      if (['expired','cancelled','error'].includes(body.state)) { clearPoll(); document.getElementById('cancel-auth').disabled = true; return; }
-      schedulePoll(1800);
+    }
+    function restoreAuthControls(body) {
+      document.getElementById('cancel-auth').disabled = !currentFlowId || ['expired', 'cancelled', 'error'].includes(body.state);
+      document.getElementById('auth-message').textContent = body.message || body.state || '';
+      showAuthLink(body.authorizeUrl);
+    }
+    function rememberOAuthFlow(flowId) {
+      sessionStorage.setItem(oauthFlowStorageKey, JSON.stringify({ flowId, origin: window.location.origin }));
+    }
+    function clearOAuthFlow() {
+      clearPoll(); currentFlowId = null; sessionStorage.removeItem(oauthFlowStorageKey);
+      document.getElementById('cancel-auth').disabled = true;
+      showAuthLink();
+    }
+    async function restoreOAuthFlow() {
+      let saved;
+      try { saved = JSON.parse(sessionStorage.getItem(oauthFlowStorageKey) || 'null'); } catch { sessionStorage.removeItem(oauthFlowStorageKey); return; }
+      if (!saved || typeof saved.flowId !== 'string' || saved.origin !== window.location.origin) { sessionStorage.removeItem(oauthFlowStorageKey); return; }
+      currentFlowId = saved.flowId;
+      try {
+        const body = await getJson('/admin/api/auth/chatgpt/' + encodeURIComponent(currentFlowId));
+        restoreAuthControls(body);
+        renderResult(body);
+        if (body.provisionResult?.apiKey) { clearOAuthFlow(); showReady(body.provisionResult); await loadAccounts(); await loadApiKeys(); await loadModels(); }
+        else if (['expired', 'cancelled', 'error'].includes(body.state)) clearOAuthFlow();
+        else schedulePoll(0);
+      } catch (error) { clearOAuthFlow(); showAuthError(error); }
+    }
+    function showAuthError(error) {
+      const message = error instanceof Error ? error.message : String(error);
+      document.getElementById('auth-message').textContent = 'OAuth 操作失败：' + message;
+      document.getElementById('result').textContent = 'OAuth 操作失败：' + message;
     }
     function showReady(result) {
       const endpoint = window.location.origin + '/v1/messages';
@@ -463,7 +536,9 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     document.getElementById('refresh-models').addEventListener('click', async () => { const body = await postJson('/admin/api/models/refresh'); renderResult(body); await loadModels(); });
 
     async function loadAccounts() {
-      const body = await getJson('/admin/api/accounts'); const accounts = body.accounts || [];
+      let body;
+      try { body = await getJson('/admin/api/accounts'); } catch (error) { document.getElementById('accounts').innerHTML = loadFailureHtml('账号数据加载失败，未加载。', error); return; }
+      const accounts = Array.isArray(body.accounts) ? body.accounts : [];
       if (!accounts.length) { document.getElementById('accounts').innerHTML = '<div class="empty">账号池为空。</div>'; return; }
       document.getElementById('accounts').innerHTML = '<div class="table-wrap"><table><thead><tr><th>ID</th><th>标识</th><th>Provider</th><th>状态</th><th>并发</th><th>Secret</th><th>最近使用</th><th>能力</th><th>操作</th></tr></thead><tbody>' + accounts.map((account) =>
         '<tr><td><code>' + esc(account.id) + '</code></td><td>' + esc(account.label) + '</td><td>' + esc(account.provider || 'mock') + '</td><td><span class="pill">' + esc(account.status) + (account.enabled ? '' : ' / disabled') + '</span></td><td>' + account.currentConcurrency + '/' + account.maxConcurrency + '</td><td>' + (account.hasSecret ? '已导入' : '-') + '</td><td>' + esc(account.lastUsedAt || '-') + '</td><td>' + esc((account.capabilities || []).join(', ')) + '</td><td><button class="secondary" data-health="' + esc(account.id) + '">健康检查</button> <button class="secondary" data-delete-account="' + esc(account.id) + '" ' + (account.currentConcurrency > 0 ? 'disabled title="账号有进行中的请求"' : '') + '>删除</button></td></tr>'
@@ -475,7 +550,9 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       }));
     }
     async function loadApiKeys() {
-      const body = await getJson('/admin/api/api-keys'); const apiKeys = body.apiKeys || [];
+      let body;
+      try { body = await getJson('/admin/api/api-keys'); } catch (error) { document.getElementById('api-keys-count').textContent = '-'; document.getElementById('api-keys').innerHTML = loadFailureHtml('运行时 API Key 加载失败，未加载。', error); return; }
+      const apiKeys = Array.isArray(body.apiKeys) ? body.apiKeys : [];
       document.getElementById('api-keys-count').textContent = String(apiKeys.length);
       if (!apiKeys.length) { document.getElementById('api-keys').innerHTML = '<div class="empty">没有运行时 API Key。</div>'; return; }
       document.getElementById('api-keys').innerHTML = '<div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>安全前缀</th><th>创建时间</th><th>操作</th></tr></thead><tbody>' + apiKeys.map((apiKey) =>
@@ -487,7 +564,10 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       }));
     }
     async function loadModels() {
-      const body = await getJson('/admin/api/models'); const aliases = body.aliases || body.models || []; const discovered = body.discovered || [];
+      let body;
+      try { body = await getJson('/admin/api/models'); } catch (error) { const failure = loadFailureHtml('模型数据加载失败，未加载。', error); document.getElementById('model-availability').innerHTML = failure; document.getElementById('models').innerHTML = failure; return; }
+      const aliases = Array.isArray(body.aliases) ? body.aliases : (Array.isArray(body.models) ? body.models : []);
+      const discovered = Array.isArray(body.discovered) ? body.discovered : [];
       const discoveryHtml = discovered.length ? '<div class="row">' + discovered.map((model) => '<span class="pill">' + esc(model.id) + '</span>').join('') + '</div>' : '<div class="empty">Backend discovery 暂无模型。</div>';
       const builtInAliases = aliases.filter((model) => model.builtIn);
       document.getElementById('model-availability').innerHTML = builtInAliases.length
@@ -517,12 +597,20 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     async function deleteJson(url) { return requestJson(url, { method: 'DELETE' }); }
     async function requestJson(url, init) {
       const response = await fetchWithAdminKey(url, init);
-      if (response.status !== 401) return response.json();
-      setAdminSessionState(false);
-      adminKeyFallback.open = true;
-      document.getElementById('result').textContent = '本地管理会话不可用或已失效。可在上方展开“远程访问或自动化”并显式启用 Admin API Key 后重试。';
-      return response.json();
+      let body;
+      try { body = await response.json(); } catch { body = {}; }
+      if (response.ok) return body;
+      const message = body?.error?.message || body?.error || body?.message || ('HTTP ' + response.status);
+      if (response.status === 401) {
+        setAdminSessionState(false);
+        adminKeyFallback.open = true;
+        document.getElementById('result').textContent = '未认证/数据未加载。请展开“远程访问或自动化”并显式启用 Admin API Key 后重试。';
+      }
+      const error = new Error(message);
+      error.status = response.status;
+      throw error;
     }
+    function loadFailureHtml(message, error) { return '<div class="empty">' + esc(message + ' ' + (error instanceof Error ? error.message : String(error))) + '</div>'; }
     async function fetchWithAdminKey(url, init) {
       const options = { ...(init || {}) };
       const headers = new Headers(options.headers || {});
@@ -558,7 +646,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       adminKeyInput.value = key;
     }
     function esc(value) { return String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])); }
-    verifyLocalAdminSession().then(() => Promise.all([loadAccounts(), loadApiKeys(), loadModels()]));
+    verifyLocalAdminSession().then(async () => { await Promise.all([loadAccounts(), loadApiKeys(), loadModels()]); await restoreOAuthFlow(); });
   </script>
 </body>
 </html>`;
