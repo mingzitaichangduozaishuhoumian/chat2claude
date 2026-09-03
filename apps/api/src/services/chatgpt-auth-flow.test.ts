@@ -293,6 +293,30 @@ describe('ChatGptAuthFlowService', () => {
       await service.close();
     }
   });
+
+  it.each(['http://localhost:3100/admin', 'http://localhost:3100?next=x', 'http://user@localhost:3100', 'ftp://localhost:3100'])('rejects an unsafe internal return origin: %s', async (returnOrigin) => {
+    const service = new ChatGptAuthFlowService({ enableCallbackListener: false });
+    await expect(service.start({ returnOrigin })).rejects.toThrow('exact HTTP(S) origin');
+  });
+
+  it('redirects successful listener callbacks to the flow-bound admin origin with the same defensive headers', async () => {
+    const port = await reservePort();
+    const service = new ChatGptAuthFlowService({ callbackPort: port });
+    try {
+      const started = await service.start({ returnOrigin: 'http://localhost:3100' });
+      const state = new URL(started.authorizeUrl).searchParams.get('state')!;
+      const response = await fetch(`http://127.0.0.1:${port}/auth/callback?code=code&state=${state}`, { redirect: 'manual' });
+      expect(response.status).toBe(303);
+      expect(response.headers.get('location')).toBe('http://localhost:3100/admin');
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      expect(response.headers.get('referrer-policy')).toBe('no-referrer');
+      expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+      expect(response.headers.get('content-security-policy')).toContain("default-src 'none'");
+      expect(response.headers.get('content-length')).toBe('0');
+    } finally {
+      await service.close();
+    }
+  });
 });
 
 function deferred<T>() {

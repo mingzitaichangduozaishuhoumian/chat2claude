@@ -29,6 +29,10 @@ export interface ChatGptAuthFlowServiceOptions {
   oauthRequestTimeoutMs?: number;
 }
 
+export interface StartChatGptAuthFlowInput {
+  returnOrigin?: string;
+}
+
 export interface CompleteCallbackInput {
   redirectUrl?: string;
   redirect_url?: string;
@@ -40,6 +44,7 @@ interface InternalFlow extends ChatGptAuthFlowSnapshot {
   oauthState: string;
   codeVerifier?: string;
   redirectUri: string;
+  returnOrigin?: string;
   code?: string;
   secret?: ChatGptSessionSecret;
   generation: number;
@@ -84,7 +89,8 @@ export class ChatGptAuthFlowService {
     this.callbackPort = this.preferredCallbackPort;
   }
 
-  async start(): Promise<ChatGptAuthFlowSnapshot> {
+  async start(input: StartChatGptAuthFlowInput = {}): Promise<ChatGptAuthFlowSnapshot> {
+    const returnOrigin = validateReturnOrigin(input.returnOrigin);
     if (this.options.enableCallbackListener !== false) await this.ensureCallbackListener();
     const id = randomBytes(24).toString('base64url');
     const createdAt = this.now();
@@ -104,6 +110,7 @@ export class ChatGptAuthFlowService {
       oauthState,
       codeVerifier,
       redirectUri,
+      returnOrigin,
       generation: 0,
     };
     this.flows.set(id, flow);
@@ -342,6 +349,11 @@ export class ChatGptAuthFlowService {
         sendCallbackResponse(res, 400, '授权失败，请回到 chat2claude 后台重新授权。', false);
         return;
       }
+      const returnOrigin = this.flows.get(snapshot.id)?.returnOrigin;
+      if (returnOrigin) {
+        sendCallbackRedirect(res, `${returnOrigin}/admin`);
+        return;
+      }
       sendCallbackResponse(res, 200, '授权已完成，请回到 chat2claude 后台。', true);
     } catch {
       sendCallbackResponse(res, 400, '无效的 OAuth callback。', false);
@@ -415,6 +427,16 @@ function callbackRedirectUri(port: number): string {
   return `http://localhost:${port}${CALLBACK_PATH}`;
 }
 
+function validateReturnOrigin(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error('OAuth return origin must be an exact HTTP(S) origin.'); }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password || url.pathname !== '/' || url.search || url.hash || value !== url.origin) {
+    throw new Error('OAuth return origin must be an exact HTTP(S) origin without path, query, hash, or userinfo.');
+  }
+  return url.origin;
+}
+
 interface CallbackParameters { code?: string; state?: string; error?: string }
 
 function readCallbackParameters(rawUrl: string): CallbackParameters {
@@ -453,7 +475,7 @@ function clean(value: unknown): string | undefined {
 }
 
 function publicSnapshot(flow: InternalFlow): ChatGptAuthFlowSnapshot {
-  const { oauthState: _oauthState, codeVerifier: _codeVerifier, redirectUri: _redirectUri, code: _code, secret: _secret, generation: _generation, operationController: _operationController, exchangePromise: _exchangePromise, provisionPromise: _provisionPromise, expiryTimer: _expiryTimer, ...snapshot } = flow;
+  const { oauthState: _oauthState, codeVerifier: _codeVerifier, redirectUri: _redirectUri, returnOrigin: _returnOrigin, code: _code, secret: _secret, generation: _generation, operationController: _operationController, exchangePromise: _exchangePromise, provisionPromise: _provisionPromise, expiryTimer: _expiryTimer, ...snapshot } = flow;
   return { ...snapshot };
 }
 
@@ -465,6 +487,11 @@ function clearFlowSecrets(flow: InternalFlow): void {
   flow.code = undefined;
   flow.codeVerifier = undefined;
   flow.secret = undefined;
+}
+
+function sendCallbackRedirect(res: ServerResponse, location: string): void {
+  res.writeHead(303, { ...CALLBACK_HEADERS, location, 'content-length': '0' });
+  res.end();
 }
 
 function sendCallbackResponse(res: ServerResponse, status: number, message: string, html: boolean): void {
