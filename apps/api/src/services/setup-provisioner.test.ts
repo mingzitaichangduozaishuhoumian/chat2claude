@@ -75,7 +75,7 @@ describe('SetupProvisioner', () => {
     const { accountPool, modelRegistry, runtimeApiKeys } = setup(backend);
     const store = new RuntimeStateStore({ path: 'unused-runtime-state.json' });
     store.save = () => { throw new Error('injected persist failure'); };
-    const durableState = new DurableRuntimeState({ accountPool, runtimeApiKeys, store });
+    const durableState = new DurableRuntimeState({ accountPool, runtimeApiKeys, modelRegistry, store });
     const provisioner = new SetupProvisioner({ accountPool, modelRegistry, runtimeApiKeys, backend, durableState });
 
     await expect(provisioner.provision({ type: 'chatgpt-session', accessToken: 'candidate-access' })).rejects.toThrow('injected persist failure');

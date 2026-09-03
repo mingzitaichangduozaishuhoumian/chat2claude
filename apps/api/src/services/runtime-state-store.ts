@@ -4,8 +4,9 @@ import { dirname } from 'node:path';
 import type { ChatGptBackendErrorCode, ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 import type { AccountProvider, AccountStatus, AccountPoolState, PersistedAccount } from './account-pool.js';
 import { legacyRuntimeApiKeyId, type RuntimeApiKeyRecord, type RuntimeApiKeysPersistedSnapshot, type RuntimeApiKeysSnapshot } from './runtime-api-keys.js';
+import type { AliasOverlay } from './model-registry.js';
 
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
 const ENCRYPTION_ALGORITHM = 'aes-256-gcm';
 
 export interface RuntimeStateV1 {
@@ -14,8 +15,17 @@ export interface RuntimeStateV1 {
   runtimeApiKeys: RuntimeApiKeysPersistedSnapshot;
 }
 
+export interface RuntimeStateV2 {
+  version: 2;
+  accounts: PersistedAccount[];
+  runtimeApiKeys: RuntimeApiKeysPersistedSnapshot;
+  modelAliases: AliasOverlay[];
+}
+
+export type RuntimeState = RuntimeStateV2;
+
 interface EncryptedRuntimeStateV1 {
-  version: 1;
+  version: 1 | 2;
   encryption: 'aes-256-gcm';
   iv: string;
   tag: string;
@@ -57,7 +67,7 @@ export class RuntimeStateStore {
     if (this.encryptionKey && this.encryptionKey.length !== 32) throw new RuntimeStateStoreError('Runtime state encryption key must contain exactly 32 bytes.');
   }
 
-  load(): RuntimeStateV1 | undefined {
+  load(): RuntimeState | undefined {
     let serialized: string;
     try {
       serialized = this.fs.readFileSync(this.options.path, 'utf8');
@@ -82,13 +92,13 @@ export class RuntimeStateStore {
     return validateState(document);
   }
 
-  save(state: RuntimeStateV1): void {
+  save(state: RuntimeState | RuntimeStateV1): void {
     const validated = validateState(state);
     const serialized = `${JSON.stringify(this.encryptionKey ? this.encrypt(validated) : validated, null, 2)}\n`;
     this.atomicWrite(Buffer.from(serialized, 'utf8'));
   }
 
-  private encrypt(state: RuntimeStateV1): EncryptedRuntimeStateV1 {
+  private encrypt(state: RuntimeState): EncryptedRuntimeStateV1 {
     const iv = randomBytes(12);
     const cipher = createCipheriv(ENCRYPTION_ALGORITHM, this.encryptionKey!, iv);
     const ciphertext = Buffer.concat([cipher.update(JSON.stringify(state), 'utf8'), cipher.final()]);
@@ -147,18 +157,49 @@ export class RuntimeStateStore {
   }
 }
 
-export function createRuntimeState(accounts: AccountPoolState, runtimeApiKeys: RuntimeApiKeysSnapshot): RuntimeStateV1 {
-  return validateState({ version: STATE_VERSION, accounts: accounts.accounts, runtimeApiKeys });
+export function createRuntimeState(accounts: AccountPoolState, runtimeApiKeys: RuntimeApiKeysSnapshot, modelAliases: AliasOverlay[]): RuntimeState {
+  return validateState({ version: STATE_VERSION, accounts: accounts.accounts, runtimeApiKeys, modelAliases });
 }
 
-function validateState(value: unknown): RuntimeStateV1 {
-  const root = strictObject(value, ['version', 'accounts', 'runtimeApiKeys'], 'runtime state');
-  if (root.version !== STATE_VERSION) throw new RuntimeStateStoreError('Unsupported runtime state version. Expected version 1.');
+function validateState(value: unknown): RuntimeState {
+  const preliminary = strictObject(value, undefined, 'runtime state');
+  if (preliminary.version === 1) {
+    const legacy = strictObject(preliminary, ['version', 'accounts', 'runtimeApiKeys'], 'runtime state');
+    return validateState({ version: STATE_VERSION, accounts: legacy.accounts, runtimeApiKeys: legacy.runtimeApiKeys, modelAliases: [] });
+  }
+  const root = strictObject(preliminary, ['version', 'accounts', 'runtimeApiKeys', 'modelAliases'], 'runtime state');
+  if (root.version !== STATE_VERSION) throw new RuntimeStateStoreError('Unsupported runtime state version. Expected version 1 or 2.');
   if (!Array.isArray(root.accounts)) throw invalid('accounts must be an array');
+  if (!Array.isArray(root.modelAliases)) throw invalid('modelAliases must be an array');
   const accounts = root.accounts.map((account, index) => validateAccount(account, index));
   if (new Set(accounts.map((account) => account.id)).size !== accounts.length) throw invalid('accounts contains duplicate ids');
   const runtimeApiKeys = validateRuntimeApiKeys(root.runtimeApiKeys);
-  return { version: STATE_VERSION, accounts, runtimeApiKeys };
+  const modelAliases = root.modelAliases.map((alias, index) => validateAlias(alias, index));
+  if (new Set(modelAliases.map((alias) => alias.id)).size !== modelAliases.length) throw invalid('modelAliases contains duplicate ids');
+  return { version: STATE_VERSION, accounts, runtimeApiKeys, modelAliases };
+}
+
+function validateAlias(value: unknown, index: number): AliasOverlay {
+  const label = `modelAliases[${index}]`;
+  const raw = strictObject(value, ['id', 'type', 'display_name', 'builtIn', 'enabled', 'backendModel', 'capabilities', 'defaults'], label, ['backendModel']);
+  const capabilities = strictObject(raw.capabilities, ['reasoning_effort', 'response_speed', 'thinking'], `${label}.capabilities`);
+  const defaults = strictObject(raw.defaults, ['reasoning_effort', 'speed'], `${label}.defaults`);
+  const reasoningEffort = enumValue(defaults.reasoning_effort, ['off', 'minimal', 'low', 'medium', 'high', 'max'] as const, `${label}.defaults.reasoning_effort`);
+  const speed = enumValue(defaults.speed, ['fastest', 'fast', 'balanced', 'quality'] as const, `${label}.defaults.speed`);
+  return {
+    id: nonEmptyString(raw.id, `${label}.id`),
+    type: enumValue(raw.type, ['model'] as const, `${label}.type`),
+    display_name: nonEmptyString(raw.display_name, `${label}.display_name`),
+    builtIn: booleanValue(raw.builtIn, `${label}.builtIn`),
+    enabled: booleanValue(raw.enabled, `${label}.enabled`),
+    ...(raw.backendModel === undefined ? {} : { backendModel: nonEmptyString(raw.backendModel, `${label}.backendModel`) }),
+    capabilities: {
+      reasoning_effort: enumArray(capabilities.reasoning_effort, ['off', 'minimal', 'low', 'medium', 'high', 'max'] as const, `${label}.capabilities.reasoning_effort`),
+      response_speed: enumArray(capabilities.response_speed, ['fastest', 'fast', 'balanced', 'quality'] as const, `${label}.capabilities.response_speed`),
+      thinking: booleanValue(capabilities.thinking, `${label}.capabilities.thinking`),
+    },
+    defaults: { reasoning_effort: reasoningEffort, speed },
+  };
 }
 
 function validateAccount(value: unknown, index: number): PersistedAccount {
@@ -242,10 +283,10 @@ function isEncryptedDocument(value: unknown): boolean {
 
 function validateEncryptedDocument(value: unknown): EncryptedRuntimeStateV1 {
   const raw = strictObject(value, ['version', 'encryption', 'iv', 'tag', 'ciphertext'], 'encrypted runtime state');
-  if (raw.version !== STATE_VERSION) throw new RuntimeStateStoreError('Unsupported encrypted runtime state version. Expected version 1.');
+  if (raw.version !== 1 && raw.version !== STATE_VERSION) throw new RuntimeStateStoreError('Unsupported encrypted runtime state version. Expected version 1 or 2.');
   if (raw.encryption !== ENCRYPTION_ALGORITHM) throw new RuntimeStateStoreError('Unsupported runtime state encryption algorithm.');
   return {
-    version: STATE_VERSION,
+    version: raw.version,
     encryption: ENCRYPTION_ALGORITHM,
     iv: nonEmptyString(raw.iv, 'encrypted runtime state iv'),
     tag: nonEmptyString(raw.tag, 'encrypted runtime state authentication tag'),
@@ -308,6 +349,13 @@ function enumValue<T extends string>(value: unknown, allowed: readonly T[], labe
 
 function nullableEnum<T extends string>(value: unknown, allowed: readonly T[], label: string): T | null {
   return value === null ? null : enumValue(value, allowed, label);
+}
+
+function enumArray<T extends string>(value: unknown, allowed: readonly T[], label: string): T[] {
+  if (!Array.isArray(value)) throw invalid(`${label} must be an array`);
+  const values = value.map((item, index) => enumValue(item, allowed, `${label}[${index}]`));
+  if (values.length === 0 || new Set(values).size !== values.length) throw invalid(`${label} must be a non-empty array without duplicates`);
+  return values;
 }
 
 function invalid(detail: string): RuntimeStateStoreError {

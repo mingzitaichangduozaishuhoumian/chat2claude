@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { AccountPool } from './account-pool.js';
 import { DurableRuntimeState } from './durable-runtime-state.js';
 import { RuntimeApiKeys } from './runtime-api-keys.js';
+import { ModelRegistry } from './model-registry.js';
 import { RuntimeStateStore, type RuntimeStateFileSystem } from './runtime-state-store.js';
 import * as nodeFs from 'node:fs';
 
@@ -33,7 +34,7 @@ describe('RuntimeStateStore', () => {
     expect(restored.accounts.get('session')?.secret).toMatchObject({ accessToken: 'access-secret', refreshToken: 'refresh-secret' });
     expect(restored.accounts.get('mock-account')?.currentConcurrency).toBe(0);
     expect(restored.keys.getOrCreate('primary')).toBe(key);
-    expect(readFileSync(path, 'utf8')).toContain('"version": 1');
+    expect(readFileSync(path, 'utf8')).toContain('"version": 2');
   });
 
   it('roundtrips an AES-256-GCM envelope without plaintext secrets', () => {
@@ -50,6 +51,13 @@ describe('RuntimeStateStore', () => {
     const restored = runtime(path, encryptionKey);
     restored.durable.hydrate();
     expect(restored.accounts.get('session')?.secret?.accessToken).toBe('never-plaintext');
+  });
+
+  it('migrates version 1 state without alias configuration to version 2', () => {
+    const path = statePath();
+    writeFileSync(path, JSON.stringify({ version: 1, accounts: [], runtimeApiKeys: { keys: ['legacy-key'], namedKeys: {} } }));
+    const migrated = new RuntimeStateStore({ path }).load();
+    expect(migrated).toMatchObject({ version: 2, runtimeApiKeys: { records: [expect.objectContaining({ key: 'legacy-key' })] }, modelAliases: [] });
   });
 
   it('honors a valid persisted empty account pool instead of recreating defaults', () => {
@@ -110,8 +118,9 @@ describe('RuntimeStateStore', () => {
     const path = statePath();
     const accounts = new AccountPool();
     const keys = new RuntimeApiKeys();
+    const modelRegistry = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
     accounts.add({ id: 'existing', provider: 'mock' });
-    new DurableRuntimeState({ accountPool: accounts, runtimeApiKeys: keys, store: new RuntimeStateStore({ path }) }).persist();
+    new DurableRuntimeState({ accountPool: accounts, runtimeApiKeys: keys, modelRegistry, store: new RuntimeStateStore({ path }) }).persist();
 
     let renamed = false;
     const failingFs: RuntimeStateFileSystem = {
@@ -135,15 +144,24 @@ describe('RuntimeStateStore', () => {
       },
       unlinkSync: nodeFs.unlinkSync,
     };
-    const durable = new DurableRuntimeState({ accountPool: accounts, runtimeApiKeys: keys, store: new RuntimeStateStore({ path, fs: failingFs }) });
+    const durable = new DurableRuntimeState({ accountPool: accounts, runtimeApiKeys: keys, modelRegistry, store: new RuntimeStateStore({ path, fs: failingFs }) });
 
-    expect(() => durable.transaction(() => accounts.add({ id: 'persisted', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'persisted-access-secret' } }))).toThrow(/atomically \(EIO\)/);
+    expect(() => durable.transaction(() => {
+      accounts.add({ id: 'persisted', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'persisted-access-secret' } });
+      keys.add('persisted-runtime-key');
+      modelRegistry.update('sonnet', { backendModel: 'persisted-backend-model' });
+    })).toThrow(/atomically \(EIO\)/);
     expect(accounts.get('persisted')?.secret?.accessToken).toBe('persisted-access-secret');
+    expect(keys.has('persisted-runtime-key')).toBe(true);
+    expect(modelRegistry.get('sonnet')?.backendModel).toBe('persisted-backend-model');
 
     const restoredAccounts = new AccountPool();
     const restoredKeys = new RuntimeApiKeys();
-    expect(new DurableRuntimeState({ accountPool: restoredAccounts, runtimeApiKeys: restoredKeys, store: new RuntimeStateStore({ path }) }).hydrate()).toBe(true);
+    const restoredModels = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+    expect(new DurableRuntimeState({ accountPool: restoredAccounts, runtimeApiKeys: restoredKeys, modelRegistry: restoredModels, store: new RuntimeStateStore({ path }) }).hydrate()).toBe(true);
     expect(restoredAccounts.get('persisted')?.secret?.accessToken).toBe('persisted-access-secret');
+    expect(restoredKeys.has('persisted-runtime-key')).toBe(true);
+    expect(restoredModels.get('sonnet')?.backendModel).toBe('persisted-backend-model');
   });
 });
 

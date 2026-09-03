@@ -81,10 +81,13 @@ export class SetupProvisioner {
         secret: prepared.account.secret,
       }, committedAt);
       const apiKey = this.options.runtimeApiKeys.commitPreparedNamedKey(prepared.runtimeKey);
+      this.options.modelRegistry.commitPreparedProvisioning(prepared.models);
       return { account, apiKey };
     };
+    // DurableRuntimeState owns all rollback decisions for durable commits. In
+    // particular, a failure after rename means the new snapshot is already live
+    // on disk, so memory must remain committed as well.
     const { account, apiKey } = this.options.durableState ? this.options.durableState.transaction(commitCoreState) : commitCoreState();
-    this.options.modelRegistry.commitPreparedProvisioning(prepared.models);
     return {
       ok: true,
       apiKey,
