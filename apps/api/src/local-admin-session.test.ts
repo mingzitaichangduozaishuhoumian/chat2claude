@@ -142,6 +142,9 @@ describe('local admin browser session', () => {
     const app = createApp(loadEnv({ DATA_DIR: temporaryDirectory() }));
     const page = await (await app.request('/admin')).text();
     expect(page).toContain('id="admin-api-key"');
+    expect(page).toContain('id="admin-session-state"');
+    expect(page).toContain('无需 Admin API Key');
+    expect(page).toContain('仅本页启用 Key');
     expect(page).not.toContain('window.prompt');
     await app.dispose();
   });

@@ -21,6 +21,18 @@ afterEach(() => {
 });
 
 describe('durable administration', () => {
+  it('renders simple/professional mode controls and custom alias management controls', async () => {
+    const app = createApp(loadEnv({ DATA_DIR: temporaryDirectory(), NODE_ENV: 'test' }));
+    const response = await app.request('/admin');
+    const html = await response.text();
+    expect(response.status).toBe(200);
+    expect(html).toContain('id="mode-simple"');
+    expect(html).toContain('id="mode-professional"');
+    expect(html).toContain('id="create-model-form"');
+    expect(html).toContain('data-delete-model=');
+    await app.dispose();
+  });
+
   it('lists only redacted runtime key metadata, revokes immediately, and restores anonymous bootstrap after final revoke', async () => {
     const dataDir = temporaryDirectory();
     const app = createApp(loadEnv({ DATA_DIR: dataDir, NODE_ENV: 'test' }));
@@ -84,6 +96,41 @@ describe('durable administration', () => {
       expect.objectContaining({ id: createHash('sha256').update(secondKey).digest('hex'), name: 'second' }),
     ]));
     expect(keys.listSafe()).toHaveLength(2);
+  });
+
+  it('creates, persists, and deletes custom aliases while protecting built-ins', async () => {
+    const dataDir = temporaryDirectory();
+    const env = loadEnv({ DATA_DIR: dataDir, NODE_ENV: 'test' });
+    const first = createApp(env);
+    const key = (await (await first.request('/admin/api/api-keys/dev-enable', { method: 'POST' })).json() as { key: string }).key;
+    const headers = { 'content-type': 'application/json', 'x-api-key': key };
+
+    const create = await first.request('/admin/api/models', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ id: 'research', display_name: 'Research alias', backendModel: 'backend-discovered-later', enabled: false, defaults: { reasoning_effort: 'max', speed: 'quality' } }),
+    });
+    expect(create.status).toBe(201);
+    expect(await create.json()).toMatchObject({ model: { id: 'research', builtIn: false, backendModel: 'backend-discovered-later', enabled: false, defaults: { reasoning_effort: 'max', speed: 'quality' } } });
+    const duplicate = await first.request('/admin/api/models', { method: 'POST', headers, body: JSON.stringify({ id: 'research' }) });
+    expect(duplicate.status).toBe(400);
+    expect(await duplicate.json()).toMatchObject({ error: expect.stringMatching(/already exists/) });
+    expect((await first.request('/admin/api/models/fable', { method: 'DELETE', headers: { 'x-api-key': key } })).status).toBe(400);
+    await first.dispose();
+
+    const restarted = createApp(env);
+    const list = await restarted.request('/admin/api/models', { headers: { 'x-api-key': key } });
+    expect(await list.json()).toMatchObject({ aliases: expect.arrayContaining([
+      expect.objectContaining({ id: 'fable', builtIn: true }),
+      expect.objectContaining({ id: 'research', builtIn: false, backendModel: 'backend-discovered-later', enabled: false }),
+    ]) });
+    expect((await restarted.request('/admin/api/models/research', { method: 'DELETE', headers: { 'x-api-key': key } })).status).toBe(200);
+    await restarted.dispose();
+
+    const afterDelete = createApp(env);
+    const afterDeleteList = await afterDelete.request('/admin/api/models', { headers: { 'x-api-key': key } });
+    expect((await afterDeleteList.json() as { aliases: Array<{ id: string }> }).aliases.some((model) => model.id === 'research')).toBe(false);
+    await afterDelete.dispose();
   });
 
   it('returns 409 for an active account, 404 after deletion, and persists the deletion', async () => {

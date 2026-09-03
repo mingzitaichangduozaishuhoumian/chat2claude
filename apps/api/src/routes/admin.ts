@@ -151,14 +151,39 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     if (options.ready) await options.ready;
     return c.json(options.modelRegistry.adminView());
   });
+  app.post('/admin/api/models', async (c) => {
+    if (options.ready) await options.ready;
+    try {
+      const input = await readJson(c.req);
+      const create = () => options.modelRegistry.create(input);
+      const model = options.durableState ? options.durableState.transaction(create) : create();
+      return c.json({ model, view: options.modelRegistry.adminView() }, 201);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Invalid model alias' }, 400);
+    }
+  });
   app.patch('/admin/api/models/:id', async (c) => {
     if (options.ready) await options.ready;
-    const model = options.modelRegistry.update(c.req.param('id'), await readJson(c.req));
+    const patch = await readJson(c.req);
+    const update = () => options.modelRegistry.update(c.req.param('id'), patch);
+    const model = options.durableState ? options.durableState.transaction(update) : update();
     return model ? c.json({ model, view: options.modelRegistry.adminView() }) : c.json({ error: 'Model alias not found' }, 404);
+  });
+  app.delete('/admin/api/models/:id', async (c) => {
+    if (options.ready) await options.ready;
+    try {
+      const remove = () => options.modelRegistry.remove(c.req.param('id'));
+      const model = options.durableState ? options.durableState.transaction(remove) : remove();
+      return model ? c.json({ ok: true, model, view: options.modelRegistry.adminView() }) : c.json({ error: 'Model alias not found' }, 404);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Invalid model alias deletion' }, 400);
+    }
   });
   app.post('/admin/api/models/reset', async (c) => {
     if (options.ready) await options.ready;
-    return c.json({ models: options.modelRegistry.reset(), view: options.modelRegistry.adminView() });
+    const reset = () => options.modelRegistry.reset();
+    const models = options.durableState ? options.durableState.transaction(reset) : reset();
+    return c.json({ models, view: options.modelRegistry.adminView() });
   });
   app.post('/admin/api/models/refresh', async (c) => {
     if (options.ready) await options.ready;
@@ -259,20 +284,20 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     :root { --ink:#07100f; --panel:rgba(12,24,24,.88); --line:rgba(126,154,146,.24); --text:#e6eee9; --muted:#8fa29b; --gold:#e6b451; --cyan:#42d6c6; --danger:#ff7d64; color-scheme:dark; }
     *{box-sizing:border-box} body{margin:0;min-height:100vh;color:var(--text);font-family:"Microsoft YaHei UI",system-ui,sans-serif;background:radial-gradient(circle at 20% -10%,rgba(230,180,81,.2),transparent 34rem),radial-gradient(circle at 78% 12%,rgba(66,214,198,.16),transparent 30rem),linear-gradient(90deg,#050908,#0a1413 45%,#080d0c)}
     main{width:min(1180px,calc(100% - 32px));margin:0 auto;padding:32px 0 56px}.shell{border:1px solid var(--line);border-radius:28px;background:linear-gradient(180deg,rgba(13,25,24,.9),rgba(8,14,14,.94));box-shadow:0 24px 90px rgba(0,0,0,.42);overflow:hidden}.hero{padding:34px clamp(22px,4vw,42px) 28px;border-bottom:1px solid var(--line);background:linear-gradient(120deg,rgba(230,180,81,.13),transparent 40%),linear-gradient(270deg,rgba(66,214,198,.11),transparent 36%)}
-    h1{margin:0 0 12px;font-size:clamp(32px,6vw,64px);line-height:.98;letter-spacing:-.06em}.hero p{max-width:800px;margin:0;color:#aec0ba;line-height:1.8}.content{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(320px,.92fr);gap:18px;padding:18px}.card{border:1px solid var(--line);border-radius:22px;background:linear-gradient(180deg,rgba(255,255,255,.038),transparent),var(--panel);padding:22px}.card.full{grid-column:1/-1}.muted{color:var(--muted)}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.stack{display:grid;gap:14px}.status{display:inline-flex;gap:8px;padding:7px 12px;border-radius:999px;font-size:13px;font-weight:800;border:1px solid var(--line);background:rgba(255,255,255,.045)}.status.ok{color:var(--cyan);border-color:rgba(66,214,198,.38);background:rgba(66,214,198,.14)}.status.warn{color:var(--gold);border-color:rgba(230,180,81,.38);background:rgba(230,180,81,.16)}
+    h1{margin:0 0 12px;font-size:clamp(32px,6vw,64px);line-height:.98;letter-spacing:-.06em}.hero-heading{justify-content:space-between;align-items:end}.hero-heading h1{margin-bottom:0}.mode-toggle{display:flex;gap:6px}.mode-toggle button[aria-pressed="true"]{color:#130f07;border-color:rgba(230,180,81,.44);background:linear-gradient(180deg,#f0c66b,#c8912f)}.hero p{max-width:800px;margin:0;color:#aec0ba;line-height:1.8}.content{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(320px,.92fr);gap:18px;padding:18px}.card{border:1px solid var(--line);border-radius:22px;background:linear-gradient(180deg,rgba(255,255,255,.038),transparent),var(--panel);padding:22px}.card.full{grid-column:1/-1}.muted{color:var(--muted)}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.stack{display:grid;gap:14px}.status{display:inline-flex;gap:8px;padding:7px 12px;border-radius:999px;font-size:13px;font-weight:800;border:1px solid var(--line);background:rgba(255,255,255,.045)}.status.ok{color:var(--cyan);border-color:rgba(66,214,198,.38);background:rgba(66,214,198,.14)}.status.warn{color:var(--gold);border-color:rgba(230,180,81,.38);background:rgba(230,180,81,.16)}
     .steps{display:grid;gap:12px;padding:0;margin:0;list-style:none;counter-reset:step}.steps li{counter-increment:step;display:grid;grid-template-columns:34px 1fr;gap:12px;padding:13px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.035)}.steps li:before{content:counter(step,decimal-leading-zero);display:grid;place-items:center;width:34px;height:34px;border-radius:11px;color:var(--gold);background:rgba(230,180,81,.16);font-size:12px;font-weight:900}.steps strong{display:block;margin-bottom:5px}
-    input,select{min-height:40px;border:1px solid rgba(143,162,155,.34);border-radius:12px;padding:9px 11px;color:var(--text);background:rgba(2,8,8,.58);outline:none}button{min-height:40px;border:1px solid rgba(230,180,81,.44);border-radius:12px;padding:9px 14px;color:#130f07;background:linear-gradient(180deg,#f0c66b,#c8912f);font-weight:900;cursor:pointer}button.secondary{color:var(--text);border-color:rgba(66,214,198,.36);background:linear-gradient(180deg,rgba(66,214,198,.2),rgba(66,214,198,.08))}button:disabled{opacity:.58;cursor:not-allowed}.table-wrap{margin-top:16px;border:1px solid var(--line);border-radius:18px;overflow:auto;background:rgba(0,0,0,.18)}table{width:100%;border-collapse:collapse;min-width:760px;font-size:13px}th,td{padding:12px;border-bottom:1px solid rgba(143,162,155,.16);text-align:left}th{color:#bfd0ca;background:rgba(255,255,255,.045);font-size:11px;letter-spacing:.12em;text-transform:uppercase}code,pre{font-family:"Cascadia Code",monospace;border-radius:9px;color:#cdeee9;background:rgba(66,214,198,.1)}code{padding:2px 6px}pre{margin:0;padding:16px;overflow:auto;white-space:pre-wrap;line-height:1.6;border:1px solid rgba(66,214,198,.16)}.empty{margin-top:16px;border:1px dashed rgba(230,180,81,.36);border-radius:18px;padding:18px;color:#c6b48c;background:rgba(230,180,81,.07)}.pill{display:inline-flex;min-height:26px;border:1px solid rgba(66,214,198,.24);border-radius:999px;padding:4px 9px;color:#bfe9e4;background:rgba(66,214,198,.08);font-size:12px}details{border:1px solid var(--line);border-radius:18px;padding:14px;background:rgba(255,255,255,.025)}summary{cursor:pointer;font-weight:900;color:#bfd0ca}@media(max-width:900px){.content{grid-template-columns:1fr}}@media(max-width:560px){button,input{width:100%}.content{padding:10px}.card{padding:16px}}
+    input,select{min-height:40px;border:1px solid rgba(143,162,155,.34);border-radius:12px;padding:9px 11px;color:var(--text);background:rgba(2,8,8,.58);outline:none}button{min-height:40px;border:1px solid rgba(230,180,81,.44);border-radius:12px;padding:9px 14px;color:#130f07;background:linear-gradient(180deg,#f0c66b,#c8912f);font-weight:900;cursor:pointer}button.secondary{color:var(--text);border-color:rgba(66,214,198,.36);background:linear-gradient(180deg,rgba(66,214,198,.2),rgba(66,214,198,.08))}button:disabled{opacity:.58;cursor:not-allowed}.table-wrap{margin-top:16px;border:1px solid var(--line);border-radius:18px;overflow:auto;background:rgba(0,0,0,.18)}table{width:100%;border-collapse:collapse;min-width:760px;font-size:13px}th,td{padding:12px;border-bottom:1px solid rgba(143,162,155,.16);text-align:left}th{color:#bfd0ca;background:rgba(255,255,255,.045);font-size:11px;letter-spacing:.12em;text-transform:uppercase}code,pre{font-family:"Cascadia Code",monospace;border-radius:9px;color:#cdeee9;background:rgba(66,214,198,.1)}code{padding:2px 6px}pre{margin:0;padding:16px;overflow:auto;white-space:pre-wrap;line-height:1.6;border:1px solid rgba(66,214,198,.16)}.empty{margin-top:16px;border:1px dashed rgba(230,180,81,.36);border-radius:18px;padding:18px;color:#c6b48c;background:rgba(230,180,81,.07)}.pill{display:inline-flex;min-height:26px;border:1px solid rgba(66,214,198,.24);border-radius:999px;padding:4px 9px;color:#bfe9e4;background:rgba(66,214,198,.08);font-size:12px}.session-strip{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;margin:14px 0;padding:13px 14px;border:1px solid rgba(66,214,198,.25);border-left:3px solid var(--cyan);border-radius:14px;background:linear-gradient(90deg,rgba(66,214,198,.12),rgba(66,214,198,.025))}.session-strip.warn{border-color:rgba(230,180,81,.34);border-left-color:var(--gold);background:linear-gradient(90deg,rgba(230,180,81,.13),rgba(230,180,81,.025))}.session-strip strong{display:block;margin-bottom:3px;font-size:13px}.session-strip .muted{font-size:13px;line-height:1.55}details{border:1px solid var(--line);border-radius:18px;padding:14px;background:rgba(255,255,255,.025)}summary{cursor:pointer;font-weight:900;color:#bfd0ca}.key-fallback{margin-top:14px}.key-fallback label{display:block;margin-top:9px;font-size:13px}@media(max-width:900px){.content{grid-template-columns:1fr}}@media(max-width:560px){button,input{width:100%}.content{padding:10px}.card{padding:16px}}
   </style>
 </head>
 <body>
   <main><div class="shell">
-    <header class="hero"><p class="muted">Personal Self-hosted Console</p><h1>chat2claude 个人自托管控制台</h1><p>这是 local-first 的个人开源兼容层。请只授权本人控制或已获明确授权的 ChatGPT/Codex 账号及其包含的用量；不得公开转售个人订阅流量、向不特定第三方重新提供或进行大规模共享。普通使用走“浏览器授权（Codex OAuth）”：后台只生成授权链接和监听本地 callback，不启动独立 Chrome/新 profile，也不会从已登录 chatgpt.com 页面抓 session。</p></header>
+    <header class="hero"><p class="muted">Personal Self-hosted Console</p><div class="row hero-heading"><h1>chat2claude 个人自托管控制台</h1><div class="mode-toggle" role="group" aria-label="管理界面模式"><button id="mode-simple" class="secondary" type="button" aria-pressed="true">简洁模式</button><button id="mode-professional" class="secondary" type="button" aria-pressed="false">专业模式</button></div></div><p>这是 local-first 的个人开源兼容层。请只授权本人控制或已获明确授权的 ChatGPT/Codex 账号及其包含的用量；不得公开转售个人订阅流量、向不特定第三方重新提供或进行大规模共享。普通使用走“浏览器授权（Codex OAuth）”：后台只生成授权链接和监听本地 callback，不启动独立 Chrome/新 profile，也不会从已登录 chatgpt.com 页面抓 session。</p></header>
     <div class="content">
       <section class="card">
         <h2>浏览器授权（Codex OAuth）</h2>
         <p>API Key：<span id="key-state" class="status ${keyTone}">${escapeHtml(keyState)}</span></p>
-        <div class="row"><input id="admin-api-key" type="password" placeholder="Admin API Key" autocomplete="off" /><button id="save-admin-api-key" class="secondary" type="button">保存 Admin API Key</button></div>
-        <label class="muted"><input id="remember-admin-api-key" type="checkbox" /> 记住到本机（长期保存到 localStorage；默认仅当前会话）</label>
+        <div id="admin-session-state" class="session-strip" role="status" aria-live="polite"><span class="status">检测中</span><div><strong>正在验证本地管理会话</strong><span class="muted">本机可信访问会自动使用 HttpOnly 浏览器会话；不会读取、展示或保存 Admin API Key。</span></div></div>
+        <details id="admin-key-fallback" class="key-fallback"><summary>远程访问或自动化：使用显式 Admin API Key</summary><p class="muted">仅在没有本地浏览器会话时使用。Key 默认只保留在当前页面，关闭或刷新后清除；勾选后才会保存到本机浏览器。</p><div class="row"><input id="admin-api-key" type="password" placeholder="Admin API Key" autocomplete="off" /><button id="save-admin-api-key" class="secondary" type="button">仅本页启用 Key</button></div><label class="muted"><input id="remember-admin-api-key" type="checkbox" /> 明确保存到此浏览器（localStorage）</label></details>
         <p class="muted">当前 backend：<code>${escapeHtml(setupStatus.backend.provider)}</code>。不会启动独立 Chrome/新 profile；点击下方按钮后只生成授权链接，你自行在当前浏览器打开。</p>
         <div class="row"><button id="auth-chatgpt">生成 Codex OAuth 授权链接</button><button id="cancel-auth" class="secondary" disabled>取消</button></div>
         <p id="auth-message" class="muted">${escapeHtml(setupStatus.nextStep)}</p>
@@ -288,9 +313,10 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       <aside class="card"><h2>3 步完成</h2><ol class="steps"><li><div><strong>浏览器授权</strong><span class="muted">生成 Codex OAuth 链接，在当前浏览器/已登录账号环境中打开授权。</span></div></li><li><div><strong>自动初始化</strong><span class="muted">服务自动创建 chatgpt-primary、health-check、刷新模型并绑定 sonnet。</span></div></li><li><div><strong>复制 API 配置</strong><span class="muted">ready 后复制 endpoint、key 和 curl 示例。</span></div></li></ol></aside>
       <section class="card full" id="api-config" hidden><h2>API 配置</h2><div class="stack"><p>Endpoint：<code id="endpoint"></code></p><p>新生成的 Runtime API Key（仅本次显示）：<code id="api-key"></code> <button id="copy-runtime-api-key" class="secondary" type="button">复制 Runtime API Key</button></p><p class="muted">请立即复制并保存。之后后台只会显示安全前缀；如遗失，可撤销后重新授权生成新 Key。</p><pre id="ready-curl"></pre></div></section>
       <section class="card full"><details id="advanced-import"><summary>高级：手动导入 accessToken / cookie</summary><p class="muted">OAuth 不可用或已有 session secret 时使用。表单会走同一套 provisioning，不会返回 token/cookie。</p><div class="row"><input id="session-access-token" placeholder="accessToken" /><input id="session-cookie" placeholder="cookie（可选）" /><input id="session-device-id" placeholder="deviceId（可选）" /><input id="session-user-agent" placeholder="userAgent（可选）" /><button id="manual-complete" class="secondary">导入并初始化</button></div></details></section>
-      <section class="card full"><h2>个人账号池（高级）</h2><p class="muted">仅用于同一自托管操作者管理本人控制或获授权的账号，并进行故障隔离、冷却、并发控制和本地调度；禁止用于公开转售订阅流量或面向不特定第三方的大规模共享。</p><div class="row"><input id="account-label" placeholder="账号标识" value="Mock ChatGPT Account" /><input id="account-concurrency" type="number" min="1" value="1" aria-label="最大并发" /><button id="add-account" class="secondary">添加 mock 账号</button></div><div id="accounts"><div class="empty">正在读取个人账号池状态。</div></div></section>
-      <section class="card full"><h2>运行时 API Keys</h2><p class="muted">仅显示 ID、名称、创建时间和安全前缀；撤销后对应 key 会立即失效。</p><div class="row"><button id="refresh-api-keys" class="secondary" type="button">刷新 Key 列表</button></div><div id="api-keys"><div class="empty">正在读取运行时 API Key。</div></div></section>
-      <section class="card full"><h2>模型映射（高级管理）</h2><p class="muted">后端模型来自 discovery；alias overlay 负责映射、启用状态与缺省 reasoning_effort / response_speed。</p><div class="row"><button id="reset-models" class="secondary">重置 alias overlay</button><button id="refresh-models" class="secondary">刷新 backend discovery</button></div><div id="models"><div class="empty">正在加载模型映射。</div></div></section>
+      <section class="card full"><h2>内置模型 Alias</h2><p class="muted">Sonnet 会在首次授权时自动选择后端。Haiku、Fable 和 Opus 如显示“未绑定”，需要切换到专业模式选择后端模型后才能调用。</p><div id="model-availability"><div class="empty">正在读取 alias 状态。</div></div></section>
+      <section class="card full professional-panel"><h2>个人账号池（高级）</h2><p class="muted">仅用于同一自托管操作者管理本人控制或获授权的账号，并进行故障隔离、冷却、并发控制和本地调度；禁止用于公开转售订阅流量或面向不特定第三方的大规模共享。</p><div class="row"><input id="account-label" placeholder="账号标识" value="Mock ChatGPT Account" /><input id="account-concurrency" type="number" min="1" value="1" aria-label="最大并发" /><button id="add-account" class="secondary">添加 mock 账号</button></div><div id="accounts"><div class="empty">正在读取个人账号池状态。</div></div></section>
+      <section class="card full"><h2>Runtime API Keys</h2><p class="muted">这是 Claude Code 等客户端调用 <code>/v1/*</code> 使用的 Key，不是 Admin API Key。当前 <strong id="api-keys-count">0</strong> 个；这里只显示安全前缀，原始 Key 仅会在创建后显示一次。</p><p class="muted">遗失 Key 时，在此撤销旧 Key，再重新授权生成新 Key 并立即复制保存。撤销会要求确认，且对应客户端会立即失去访问权限。</p><div class="row"><button id="refresh-api-keys" class="secondary" type="button">刷新 Key 列表</button></div><div id="api-keys"><div class="empty">正在读取运行时 API Key。</div></div></section>
+      <section class="card full professional-panel"><h2>模型映射（高级管理）</h2><p class="muted">后端模型来自 discovery；alias overlay 负责映射、启用状态与缺省 reasoning_effort / response_speed。</p><div class="row"><button id="reset-models" class="secondary">重置 alias overlay</button><button id="refresh-models" class="secondary">刷新 backend discovery</button></div><form id="create-model-form" class="row"><input id="model-alias-id" required pattern="[a-zA-Z0-9._-]+" placeholder="新 alias，例如 research" aria-label="新模型 alias" /><input id="model-display-name" placeholder="显示名称（可选）" aria-label="模型显示名称" /><input id="model-backend" placeholder="Backend model（可选）" aria-label="Backend model" /><button type="submit">创建自定义 alias</button></form><div id="models"><div class="empty">正在加载模型映射。</div></div></section>
       <section class="card"><h2>结果面板</h2><pre id="result">${escapeHtml(setupStatus.nextStep)}</pre></section>
       <section class="card"><h2>curl 示例</h2><p class="muted">示例地址由当前页面 origin 生成。</p><pre id="curl-example" data-template="${escapeHtml(curlTemplate)}">${escapeHtml(curlTemplate)}</pre></section>
     </div>
@@ -304,11 +330,26 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     curlExample.textContent = curlExample.dataset.template.replace('__ORIGIN__', window.location.origin);
     const adminKeyInput = document.getElementById('admin-api-key');
     const rememberAdminKeyInput = document.getElementById('remember-admin-api-key');
-    adminKeyInput.value = getStoredAdminApiKey();
-    rememberAdminKeyInput.checked = Boolean(localStorage.getItem('adminApiKey'));
-    document.getElementById('save-admin-api-key').addEventListener('click', () => {
+    const adminKeyFallback = document.getElementById('admin-key-fallback');
+    const adminSessionState = document.getElementById('admin-session-state');
+    let pageAdminApiKey = '';
+    let localAdminSessionActive = false;
+    const professionalPanels = document.querySelectorAll('.professional-panel');
+    const modeButtons = { simple: document.getElementById('mode-simple'), professional: document.getElementById('mode-professional') };
+    function setAdminMode(mode) {
+      const professional = mode === 'professional';
+      professionalPanels.forEach((panel) => { panel.hidden = !professional; });
+      Object.entries(modeButtons).forEach(([name, button]) => button.setAttribute('aria-pressed', String(name === mode)));
+      localStorage.setItem('adminViewMode', mode);
+    }
+    modeButtons.simple.addEventListener('click', () => setAdminMode('simple'));
+    modeButtons.professional.addEventListener('click', () => setAdminMode('professional'));
+    setAdminMode(localStorage.getItem('adminViewMode') === 'professional' ? 'professional' : 'simple');
+    document.getElementById('save-admin-api-key').addEventListener('click', async () => {
       saveAdminApiKey(adminKeyInput.value.trim(), rememberAdminKeyInput.checked);
-      document.getElementById('result').textContent = adminKeyInput.value.trim() ? (rememberAdminKeyInput.checked ? 'Admin API Key 已长期保存到本机。' : 'Admin API Key 已保存到当前会话。') : 'Admin API Key 已清除。';
+      const key = adminKeyInput.value.trim();
+      document.getElementById('result').textContent = key ? (rememberAdminKeyInput.checked ? 'Admin API Key 已明确保存到此浏览器。' : 'Admin API Key 仅在当前页面启用；刷新或关闭后不会保留。') : 'Admin API Key 已清除。';
+      if (key) { await loadAccounts(); await loadApiKeys(); await loadModels(); }
     });
 
     document.getElementById('auth-chatgpt').addEventListener('click', async () => {
@@ -409,6 +450,15 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       renderResult(body); await loadAccounts();
     });
     document.getElementById('refresh-api-keys').addEventListener('click', loadApiKeys);
+    document.getElementById('create-model-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const id = document.getElementById('model-alias-id').value.trim();
+      const displayName = document.getElementById('model-display-name').value.trim();
+      const backendModel = document.getElementById('model-backend').value.trim();
+      const body = await postJson('/admin/api/models', { id, display_name: displayName || id, backendModel: backendModel || undefined });
+      renderResult(body); await loadModels();
+      if (!body.error) document.getElementById('create-model-form').reset();
+    });
     document.getElementById('reset-models').addEventListener('click', async () => { const body = await postJson('/admin/api/models/reset'); renderResult(body); await loadModels(); });
     document.getElementById('refresh-models').addEventListener('click', async () => { const body = await postJson('/admin/api/models/refresh'); renderResult(body); await loadModels(); });
 
@@ -426,6 +476,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     }
     async function loadApiKeys() {
       const body = await getJson('/admin/api/api-keys'); const apiKeys = body.apiKeys || [];
+      document.getElementById('api-keys-count').textContent = String(apiKeys.length);
       if (!apiKeys.length) { document.getElementById('api-keys').innerHTML = '<div class="empty">没有运行时 API Key。</div>'; return; }
       document.getElementById('api-keys').innerHTML = '<div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>安全前缀</th><th>创建时间</th><th>操作</th></tr></thead><tbody>' + apiKeys.map((apiKey) =>
         '<tr><td><code>' + esc(apiKey.id) + '</code></td><td>' + esc(apiKey.name || '-') + '</td><td><code>' + esc(apiKey.prefix) + '</code></td><td>' + esc(apiKey.createdAt) + '</td><td><button class="secondary" data-revoke-key="' + esc(apiKey.id) + '">撤销</button></td></tr>'
@@ -438,11 +489,19 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     async function loadModels() {
       const body = await getJson('/admin/api/models'); const aliases = body.aliases || body.models || []; const discovered = body.discovered || [];
       const discoveryHtml = discovered.length ? '<div class="row">' + discovered.map((model) => '<span class="pill">' + esc(model.id) + '</span>').join('') + '</div>' : '<div class="empty">Backend discovery 暂无模型。</div>';
+      const builtInAliases = aliases.filter((model) => model.builtIn);
+      document.getElementById('model-availability').innerHTML = builtInAliases.length
+        ? '<div class="row">' + builtInAliases.map((model) => '<span class="pill"><code>' + esc(model.id) + '</code>：' + (model.status === 'unbound' ? '未绑定，需要专业模式选择后端模型' : esc(model.status || '-')) + '</span>').join('') + '</div>'
+        : '<div class="empty">暂无内置 alias。</div>';
       if (!aliases.length) { document.getElementById('models').innerHTML = discoveryHtml + '<div class="empty">暂无 alias overlay。</div>'; return; }
       document.getElementById('models').innerHTML = '<p class="muted">Backend discovery</p>' + discoveryHtml + '<div class="table-wrap"><table><thead><tr><th>Alias</th><th>Backend Model</th><th>状态</th><th>启用</th><th>默认参数</th><th>操作</th></tr></thead><tbody>' + aliases.map((model) =>
-        '<tr><td><code>' + esc(model.id) + '</code></td><td><input data-field="backendModel" data-id="' + esc(model.id) + '" value="' + esc(model.backendModel || '') + '" /></td><td><span class="pill">' + esc(model.status || '-') + '</span></td><td><input type="checkbox" data-field="enabled" data-id="' + esc(model.id) + '" ' + (model.enabled ? 'checked' : '') + ' /></td><td>' + selectHtml(model.id, 'reasoning_effort', effortOptions, model.defaults.reasoning_effort) + ' ' + selectHtml(model.id, 'speed', speedOptions, model.defaults.speed) + '</td><td><button data-save-model="' + esc(model.id) + '">保存</button></td></tr>'
+        '<tr><td><code>' + esc(model.id) + '</code>' + (model.builtIn ? ' <span class="muted">内置</span>' : '') + '</td><td><input data-field="backendModel" data-id="' + esc(model.id) + '" value="' + esc(model.backendModel || '') + '" /></td><td><span class="pill">' + esc(model.status || '-') + '</span></td><td><input type="checkbox" data-field="enabled" data-id="' + esc(model.id) + '" ' + (model.enabled ? 'checked' : '') + ' /></td><td>' + selectHtml(model.id, 'reasoning_effort', effortOptions, model.defaults.reasoning_effort) + ' ' + selectHtml(model.id, 'speed', speedOptions, model.defaults.speed) + '</td><td><button data-save-model="' + esc(model.id) + '">保存</button>' + (model.builtIn ? '' : ' <button class="secondary" data-delete-model="' + esc(model.id) + '">删除</button>') + '</td></tr>'
       ).join('') + '</tbody></table></div>';
       document.querySelectorAll('[data-save-model]').forEach((button) => button.addEventListener('click', async () => saveModel(button.dataset.saveModel)));
+      document.querySelectorAll('[data-delete-model]').forEach((button) => button.addEventListener('click', async () => {
+        if (!window.confirm('确认删除此自定义模型 alias？删除后无法恢复。')) return;
+        const body = await deleteJson('/admin/api/models/' + encodeURIComponent(button.dataset.deleteModel)); renderResult(body); await loadModels();
+      }));
     }
     async function saveModel(id) { const byField = (field) => document.querySelector('[data-id="' + CSS.escape(id) + '"][data-field="' + field + '"]'); const body = await patchJson('/admin/api/models/' + encodeURIComponent(id), { backendModel: byField('backendModel').value, enabled: byField('enabled').checked, defaults: { reasoning_effort: byField('reasoning_effort').value, speed: byField('speed').value } }); renderResult(body); await loadModels(); }
     function selectHtml(id, field, options, current) { return '<select data-field="' + field + '" data-id="' + esc(id) + '">' + options.map((option) => '<option value="' + option + '" ' + (option === current ? 'selected' : '') + '>' + option + '</option>').join('') + '</select>'; }
@@ -459,30 +518,47 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     async function requestJson(url, init) {
       const response = await fetchWithAdminKey(url, init);
       if (response.status !== 401) return response.json();
-      document.getElementById('result').textContent = '需要 Admin API Key 才能访问该接口。请在页面顶部输入并保存后重试。';
-      adminKeyInput.focus();
+      setAdminSessionState(false);
+      adminKeyFallback.open = true;
+      document.getElementById('result').textContent = '本地管理会话不可用或已失效。可在上方展开“远程访问或自动化”并显式启用 Admin API Key 后重试。';
       return response.json();
     }
     async function fetchWithAdminKey(url, init) {
       const options = { ...(init || {}) };
       const headers = new Headers(options.headers || {});
-      const key = getStoredAdminApiKey();
+      // A connected local HttpOnly session takes precedence over any legacy
+      // browser storage. Only remote/session-unavailable access sends a key.
+      const key = localAdminSessionActive ? '' : getStoredAdminApiKey();
       if (key) headers.set('x-api-key', key);
       options.headers = headers;
       return fetch(url, options);
     }
-    function getStoredAdminApiKey() { return sessionStorage.getItem('adminApiKey') || localStorage.getItem('adminApiKey') || ''; }
-    function saveAdminApiKey(key, persistent) {
-      if (key) {
-        if (persistent) { localStorage.setItem('adminApiKey', key); sessionStorage.setItem('adminApiKey', key); }
-        else { sessionStorage.setItem('adminApiKey', key); localStorage.removeItem('adminApiKey'); }
-        adminKeyInput.value = key;
-        return;
+    async function verifyLocalAdminSession() {
+      try {
+        const response = await fetch('/admin/api/accounts');
+        localAdminSessionActive = response.ok;
+      } catch {
+        localAdminSessionActive = false;
       }
-      localStorage.removeItem('adminApiKey'); sessionStorage.removeItem('adminApiKey'); adminKeyInput.value = '';
+      setAdminSessionState(localAdminSessionActive);
+      return localAdminSessionActive;
+    }
+    function setAdminSessionState(active) {
+      localAdminSessionActive = active;
+      adminSessionState.className = 'session-strip' + (active ? '' : ' warn');
+      adminSessionState.innerHTML = active
+        ? '<span class="status ok">本地会话已连接</span><div><strong>管理操作已通过 HttpOnly 浏览器会话完成</strong><span class="muted">此页面无需 Admin API Key。会话仅适用于本机可信访问，服务重启或会话失效后会自动回退到显式 Key。</span></div>'
+        : '<span class="status warn">需要显式 Key</span><div><strong>未检测到可用的本地管理会话</strong><span class="muted">远程访问、自动化或会话失效时，请展开上方 fallback 并手动提供 Admin API Key；系统不会弹窗索取，也不会默认保存。</span></div>';
+    }
+    function getStoredAdminApiKey() { return pageAdminApiKey || localStorage.getItem('adminApiKey') || ''; }
+    function saveAdminApiKey(key, persistent) {
+      pageAdminApiKey = key;
+      if (key && persistent) localStorage.setItem('adminApiKey', key);
+      else localStorage.removeItem('adminApiKey');
+      adminKeyInput.value = key;
     }
     function esc(value) { return String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])); }
-    loadAccounts(); loadApiKeys(); loadModels();
+    verifyLocalAdminSession().then(() => Promise.all([loadAccounts(), loadApiKeys(), loadModels()]));
   </script>
 </body>
 </html>`;
