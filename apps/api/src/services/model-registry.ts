@@ -24,6 +24,7 @@ export interface AliasOverlay {
   id: string;
   type: 'model';
   display_name: string;
+  builtIn: boolean;
   enabled: boolean;
   backendModel?: string;
   capabilities: ModelCapabilities;
@@ -94,15 +95,15 @@ export class ModelRegistry {
     return this.adminView();
   }
 
-  prepareProvisioning(models: ChatGptDiscoveredModel[], aliasId: string, backendModel?: string): PreparedModelProvisioning {
+  prepareProvisioning(models: ChatGptDiscoveredModel[], aliasId: string, backendModel?: string, preserveExistingBinding = false): PreparedModelProvisioning {
     const aliases = cloneAliases(this.aliases);
     const boundAliases: Record<string, string> = {};
-    if (backendModel) {
-      const index = aliases.findIndex((alias) => alias.id === aliasId);
-      if (index !== -1) {
-        aliases[index] = { ...aliases[index], backendModel, enabled: true };
-        boundAliases[aliasId] = backendModel;
-      }
+    const index = aliases.findIndex((alias) => alias.id === aliasId);
+    // Startup discovery chooses a default only for an unbound alias. A persisted
+    // or manually selected backend is an explicit user choice and survives refresh.
+    if (backendModel && index !== -1 && (!preserveExistingBinding || !aliases[index].backendModel)) {
+      aliases[index] = { ...aliases[index], backendModel, enabled: true };
+      boundAliases[aliasId] = backendModel;
     }
     return { aliases, discoveredModels: cloneDiscoveredModels(models), boundAliases };
   }
@@ -166,6 +167,47 @@ export class ModelRegistry {
     };
     this.aliases[index] = next;
     return this.toRuntimeAlias(next);
+  }
+
+  create(input: unknown): RuntimeModel {
+    const alias = normalizeAlias(input, 'custom alias', false);
+    if (alias.builtIn) throw new Error('Custom model aliases cannot be created as built-ins.');
+    if (this.aliases.some((item) => item.id === alias.id)) throw new Error(`Model alias already exists: ${alias.id}`);
+    this.aliases.push(alias);
+    return this.toRuntimeAlias(alias);
+  }
+
+  remove(id: string): RuntimeModel | undefined {
+    const index = this.aliases.findIndex((item) => item.id === id);
+    if (index === -1) return undefined;
+    if (this.aliases[index].builtIn) throw new Error(`Built-in model aliases cannot be deleted: ${id}`);
+    const [removed] = this.aliases.splice(index, 1);
+    return this.toRuntimeAlias(removed);
+  }
+
+  exportState(): AliasOverlay[] {
+    return cloneAliases(this.aliases);
+  }
+
+  importState(aliases: AliasOverlay[]): boolean {
+    const normalized = parseAliasConfig({ aliases }, 'runtime state');
+    const defaultIds = new Set(this.defaultAliases.map((alias) => alias.id));
+    if (normalized.some((alias) => alias.builtIn !== defaultIds.has(alias.id))) throw new Error('Invalid model alias runtime state: built-in aliases must match the configured registry.');
+    const persisted = new Map(normalized.map((alias) => [alias.id, alias]));
+    // New built-ins are appended during migration while retaining prior user overrides.
+    this.aliases = [
+      ...this.defaultAliases.map((alias) => persisted.get(alias.id) ?? alias),
+      ...normalized.filter((alias) => !alias.builtIn),
+    ];
+    return this.defaultAliases.some((alias) => !persisted.has(alias.id));
+  }
+
+  snapshot(): AliasOverlay[] {
+    return this.exportState();
+  }
+
+  restore(snapshot: AliasOverlay[]): void {
+    this.aliases = cloneAliases(snapshot);
   }
 
   reset(): RuntimeModel[] {
@@ -242,10 +284,12 @@ function parseAliasConfig(value: unknown, label: string): AliasOverlay[] {
   return aliases;
 }
 
-function normalizeAlias(value: unknown, label: string): AliasOverlay {
+function normalizeAlias(value: unknown, label: string, defaultBuiltIn = true): AliasOverlay {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid model alias overlay config at ${label}: expected an object.`);
   const raw = value as Record<string, unknown>;
   const id = readNonEmptyString(raw.id, `${label}.id`);
+  const builtIn = raw.builtIn === undefined ? defaultBuiltIn : raw.builtIn;
+  if (typeof builtIn !== 'boolean') throw new Error(`Invalid model alias overlay config at ${label}: builtIn must be a boolean.`);
   const displayName = readOptionalString(raw.display_name ?? raw.displayName) ?? id;
   const backendModel = readOptionalString(raw.backendModel);
   const capabilities = normalizeCapabilities(raw.capabilities);
@@ -254,6 +298,7 @@ function normalizeAlias(value: unknown, label: string): AliasOverlay {
     id,
     type: 'model',
     display_name: displayName,
+    builtIn,
     backendModel,
     enabled: typeof raw.enabled === 'boolean' ? raw.enabled : true,
     capabilities,
@@ -310,6 +355,7 @@ function discoveredToRuntimeModel(model: ChatGptDiscoveredModel): RuntimeModel {
     id: model.id,
     type: 'model',
     display_name: model.displayName ?? model.id,
+    builtIn: false,
     enabled: true,
     backendModel: model.id,
     capabilities: normalizeCapabilities(model.capabilities),

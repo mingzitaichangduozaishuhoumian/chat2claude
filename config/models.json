@@ -27,6 +27,19 @@
       "defaults": { "reasoning_effort": "medium", "speed": "balanced" }
     },
     {
+      "id": "fable",
+      "type": "model",
+      "display_name": "Fable alias",
+      "backendModel": null,
+      "enabled": true,
+      "capabilities": {
+        "reasoning_effort": ["off", "minimal", "low", "medium", "high", "max"],
+        "response_speed": ["fastest", "fast", "balanced", "quality"],
+        "thinking": true
+      },
+      "defaults": { "reasoning_effort": "high", "speed": "quality" }
+    },
+    {
       "id": "opus",
       "type": "model",
       "display_name": "Opus alias",
