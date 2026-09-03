@@ -55,9 +55,9 @@ corepack pnpm start
 ## 一键授权流程
 
 1. `POST /admin/api/auth/chatgpt/start` 创建授权 flow，使用密码学随机 flow ID、一次性 OAuth `state`、PKCE `code_verifier` / `code_challenge`，返回 `https://auth.openai.com/oauth/authorize` 授权链接。当前 scope 为 `openid profile email offline_access api.connectors.read api.connectors.invoke`，并诚实标记 `originator=chat2claude`。服务不会打开浏览器，不会启动独立 Chrome/新 profile。
-2. 服务优先在 `127.0.0.1:1455` 启动本地 callback listener；若默认端口不可用，会尝试已注册的 `1457` fallback，并用实际端口构造授权 URL。listener 的成功/失败页面返回真实 HTTP 状态并设置 no-store、no-referrer、CSP 和 nosniff 安全头。
-3. `POST /admin/api/auth/chatgpt/callback` 支持粘贴完整 `redirectUrl` / `redirect_url`，也支持结构化 `code` + `state`。粘贴 URL 必须与该 flow 的实际 `http://localhost:<1455|1457>/auth/callback` 完全匹配；错误协议、host、端口、path、userinfo、fragment、重复或冲突参数会被拒绝。state 成功接收后只能消费一次。
-4. 前端轮询 `GET /admin/api/auth/chatgpt/:id`。authorization-code exchange 与 provisioning 都按 flow single-flight；并发轮询不会重复换码、重复创建账号或生成多批 key。换码完成后清理 code/verifier，provisioning 完成后清理 flow secret 副本。`refresh_token` / `id_token` / `expiresAt` 仅保存在进程内账号 secret，不返回给前端、错误或日志。
+2. `POST /admin/api/auth/chatgpt/start` 接收页面提交的精确 `adminOrigin`。服务将它与实际请求的 Host 和 `Origin` 严格比对，只接受不含 path、query、hash、userinfo 的完整 HTTP(S) origin；通过后仅在服务端 flow 内关联为安全回跳目标。callback listener 优先在 `127.0.0.1:1455` 启动，默认端口不可用时使用已注册的 `1457` fallback，并用实际端口构造授权 URL。
+3. listener 成功收到 callback 后，已关联安全 origin 的 flow 返回 `303 <origin>/admin`；未关联 origin 时保持静态成功页。所有 listener 响应继续使用 no-store、no-referrer、CSP 和 nosniff 安全头。`POST /admin/api/auth/chatgpt/callback` 支持粘贴完整 `redirectUrl` / `redirect_url`。粘贴 URL 必须与该 flow 的实际 `http://localhost:<1455|1457>/auth/callback` 完全匹配；错误协议、host、端口、path、userinfo、fragment、重复或冲突参数会被拒绝。state 成功接收后只能消费一次。
+4. 前端只在 `sessionStorage` 保存 `{flowId, origin}`，刷新或回到同一 `/admin` 会先校验 origin，再恢复授权链接、状态、取消按钮并继续轮询；完成、取消、过期、错误或 404 时清理。绝不会在该存储中保存 OAuth code/state/verifier/token/cookie、Admin key 或 Runtime key。authorization-code exchange 与 provisioning 都按 flow single-flight；并发轮询不会重复换码、重复创建账号或生成多批 key。换码完成后清理 code/verifier，provisioning 完成后清理 flow secret 副本。`refresh_token` / `id_token` / `expiresAt` 仅保存在进程内账号 secret，不返回给前端、错误或日志。
 5. 拿到 OAuth access token 后自动 provisioning：
    - upsert 固定账号 `chatgpt-primary`，provider 为 `chatgpt-session`；
    - 调用 backend `healthCheck({ account })`；
