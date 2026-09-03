@@ -40,7 +40,7 @@ http://localhost:3000/admin
 
 一键启动脚本会自动启用 corepack；如果还没有 `node_modules`，会先安装依赖。面向普通用户的 `start.bat` / `start.sh` 在未设置 `CHATGPT_BACKEND` 时默认使用 `session`，并提示打开 `/admin` 授权。代码层 `loadEnv()` 默认仍保持 `mock`，用于保护测试与本地开发。
 
-生产默认 `config/models.json` 只定义 `haiku` / `sonnet` / `opus` alias 的能力与默认 effort/speed，不预绑定任何测试 backend model；`/v1/models` 只返回已经解析成功的 alias 与 backend discovery passthrough 模型。完成 OAuth/手动 session provisioning 后，服务会刷新 discovery，并把 `sonnet` 自动绑定到发现到的最佳后端模型。测试如需固定 `sonnet -> backend-test-model`，通过测试 fixture/env 显式注入 alias overlay。
+生产默认 `config/models.json` 定义四个内置 alias：`haiku`、`sonnet`、`fable`、`opus`，包含能力与默认 effort/speed，但不预绑定任何生产 backend model。`/v1/models` 只返回已经解析成功的 alias 与 backend discovery passthrough 模型。完成 OAuth/手动 session provisioning 后，服务会从 discovery 自动选择最佳后端；服务重启后的 discovery refresh 则只在 `sonnet` 尚未绑定时自动选择，已持久化或手动选择的 `sonnet.backendModel` 不会被覆盖。测试如需固定 `sonnet -> backend-test-model`，通过测试 fixture/env 显式注入 alias overlay。
 
 也可以手动运行：
 
@@ -62,7 +62,7 @@ corepack pnpm start
    - upsert 固定账号 `chatgpt-primary`，provider 为 `chatgpt-session`；
    - 调用 backend `healthCheck({ account })`；
    - `modelRegistry.refreshFromBackend(backend, { account })`；
-   - 从 discovery 中按关键词优先级选择最佳模型绑定到 `sonnet` alias（`gpt-5`、`codex`、`thinking`、`gpt-4`、第一个）；
+   - 从 discovery 中按关键词优先级选择最佳模型（`gpt-5`、`codex`、`thinking`、`gpt-4`、第一个）并原子持久化绑定；之后启动恢复中的 discovery refresh 会保留已有手动/持久化绑定；
    - 生成持久化 runtime API key。
 6. 页面只展示脱敏账号信息、API key、base URL 和 curl，不返回 accessToken/cookie/id_token/refresh_token。
 7. 运行时会在 token 到期前 60 秒主动 refresh，并原子写回 refresh-token rotation。同账号并发 refresh 合并为一次；首次 401 会使用最新凭据最多重试一次。流式请求只有在尚未输出任何事件时才允许 refresh/retry，避免重复内容。
@@ -104,7 +104,9 @@ curl -X POST http://localhost:3000/admin/api/auth/chatgpt/complete \
 - `DELETE /admin/api/accounts/:id`：删除持久账号；不存在返回 404，有进行中的请求（`currentConcurrency > 0`）返回 409
 - `POST /admin/api/accounts/:id/health-check`：执行健康检查；session 账号成功后会刷新模型 discovery
 - `GET /admin/api/models`：列出 alias overlay、backend discovery 与合并后的 runtime 模型视图
+- `POST /admin/api/models`：创建自定义 alias；创建、更新和删除均会原子持久化
 - `PATCH /admin/api/models/:id`：更新 alias 的 backendModel 映射、启用状态与默认 `reasoning_effort` / `speed`
+- `DELETE /admin/api/models/:id`：删除自定义 alias（内置 `haiku` / `sonnet` / `fable` / `opus` 不可删除）
 - `POST /admin/api/models/reset`：重置 alias overlay 为配置源默认值
 - `POST /admin/api/models/refresh`：重新从 backend discovery 获取可用后端模型
 - `GET /v1/models`：返回已启用且可解析的 alias 与 discovery passthrough 模型列表
@@ -117,7 +119,9 @@ OpenAI Responses 的 `store:true` 仅用于本地短期续接 `previous_response
 - `x-api-key: <key>`；或
 - `Authorization: Bearer <key>`
 
-默认 loopback 监听（或明确的 `LOCAL_CONTAINER_BOOTSTRAP=true`）下，访问 `/admin` 会签发仅进程有效的 HttpOnly、`SameSite=Strict` 管理 cookie；cookie 驱动的写操作必须有同源 `Origin`。它只用于个人本机管理，服务重启后自动失效，重新打开 `/admin` 会重新签发。Runtime API Key 持久化后，原始值不会在 Key 列表或之后的页面加载中重新展示；遗失时请在本地后台撤销旧 Key 后重新授权生成并立即复制。
+默认 loopback 监听（或明确的 `LOCAL_CONTAINER_BOOTSTRAP=true`）下，访问 `/admin` 会签发仅进程有效的 HttpOnly、`SameSite=Strict` 管理 cookie；cookie 驱动的写操作必须有同源 `Origin`。它只用于个人本机管理，服务重启后自动失效，重新打开 `/admin` 会重新签发。连接到本地会话时，页面不会读取或发送 `localStorage` 中旧的显式 Admin API Key；仅远程访问或本地会话不可用时才会回退到明确输入/保存的 Admin Key。
+
+管理页面默认是简洁模式：保留 OAuth、一次性 Runtime API Key 复制区、Runtime Key 的用途、数量/安全前缀列表和确认撤销入口。专业模式提供账号池和完整 alias/custom alias 管理。Runtime API Key 是客户端访问 `/v1/*` 的凭据；Admin API Key 仅用于远程或自动化管理 `/admin/api/*`，两者不可互换。Runtime API Key 持久化后，原始值不会在 Key 列表或之后的页面加载中重新展示；遗失时请在本地后台撤销旧 Key 后重新授权生成并立即复制。
 
 非 loopback 且未启用 `LOCAL_CONTAINER_BOOTSTRAP=true` 时，服务不会签发或接受此 cookie，并且仍要求显式 `API_KEYS`。未设置 `API_KEYS` 且尚未通过 `/admin` 授权生成 runtime key 时，`/v1/*` 会返回 401 并提示去 `/admin` 初始化。
 
@@ -148,7 +152,7 @@ alias overlay 启动时从外部配置源读取：
 1. 如果设置了 `MODEL_REGISTRY_JSON`，优先解析该环境变量中的 JSON；
 2. 否则读取根目录 `config/models.json`。
 
-`config/models.json` 只管理 alias 映射，不是真实后端模型表。管理后台的 reset 会恢复 alias overlay，refresh 会重新拉取 backend discovery。
+`config/models.json` 只管理 alias 映射，不是真实后端模型表。内置 alias 为 `haiku`、`sonnet`、`fable`、`opus`；其中未绑定的 alias 不可调用，需在专业模式选择 discovery 中的 backend model。`fable` 是可配置内置 alias，不硬编码生产 backend ID。专业模式支持自定义 alias 的创建、更新和删除，所有 alias overlay 变更都会保存到 `DATA_DIR/runtime-state.json` 并在重启后恢复。管理后台的 reset 会恢复 alias overlay，refresh 会重新拉取 backend discovery。
 
 ### 个人账号池
 
