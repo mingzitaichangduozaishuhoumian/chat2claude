@@ -8,6 +8,7 @@ import { DEV_API_KEY_PREFIX, type RuntimeApiKeys } from '../services/runtime-api
 import { ChatGptAuthFlowService } from '../services/chatgpt-auth-flow.js';
 import { SetupProvisioner, type ProvisionResult } from '../services/setup-provisioner.js';
 import type { DurableRuntimeState } from '../services/durable-runtime-state.js';
+import type { LocalAdminSession } from '../services/local-admin-session.js';
 
 export interface AdminRouteOptions {
   accountPool: AccountPool;
@@ -22,6 +23,7 @@ export interface AdminRouteOptions {
   backendProvider: ChatGptBackendProvider;
   authFlow?: ChatGptAuthFlowService;
   setupProvisioner?: SetupProvisioner;
+  localAdminSession?: LocalAdminSession;
 }
 
 export function createAdminRoute(options: AdminRouteOptions): Hono {
@@ -29,7 +31,11 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
   const authFlow = options.authFlow ?? new ChatGptAuthFlowService();
   const provisioner = options.setupProvisioner ?? new SetupProvisioner(options);
 
-  app.get('/admin', (c) => c.html(renderAdminPage(status(options))));
+  app.get('/admin', (c) => {
+    const cookie = options.localAdminSession?.issueCookie(c.req.header('host') ?? new URL(c.req.url).host, c.req.url);
+    if (cookie) c.header('set-cookie', cookie);
+    return c.html(renderAdminPage(status(options)));
+  });
   app.get('/admin/api/setup/status', (c) => c.json(status(options)));
   app.get('/admin/api/auth/status', (c) => c.json(authStatus(options)));
 
@@ -280,7 +286,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
         </div>
       </section>
       <aside class="card"><h2>3 步完成</h2><ol class="steps"><li><div><strong>浏览器授权</strong><span class="muted">生成 Codex OAuth 链接，在当前浏览器/已登录账号环境中打开授权。</span></div></li><li><div><strong>自动初始化</strong><span class="muted">服务自动创建 chatgpt-primary、health-check、刷新模型并绑定 sonnet。</span></div></li><li><div><strong>复制 API 配置</strong><span class="muted">ready 后复制 endpoint、key 和 curl 示例。</span></div></li></ol></aside>
-      <section class="card full" id="api-config" hidden><h2>API 配置</h2><div class="stack"><p>Endpoint：<code id="endpoint"></code></p><p>API Key：<code id="api-key"></code></p><pre id="ready-curl"></pre></div></section>
+      <section class="card full" id="api-config" hidden><h2>API 配置</h2><div class="stack"><p>Endpoint：<code id="endpoint"></code></p><p>新生成的 Runtime API Key（仅本次显示）：<code id="api-key"></code> <button id="copy-runtime-api-key" class="secondary" type="button">复制 Runtime API Key</button></p><p class="muted">请立即复制并保存。之后后台只会显示安全前缀；如遗失，可撤销后重新授权生成新 Key。</p><pre id="ready-curl"></pre></div></section>
       <section class="card full"><details id="advanced-import"><summary>高级：手动导入 accessToken / cookie</summary><p class="muted">OAuth 不可用或已有 session secret 时使用。表单会走同一套 provisioning，不会返回 token/cookie。</p><div class="row"><input id="session-access-token" placeholder="accessToken" /><input id="session-cookie" placeholder="cookie（可选）" /><input id="session-device-id" placeholder="deviceId（可选）" /><input id="session-user-agent" placeholder="userAgent（可选）" /><button id="manual-complete" class="secondary">导入并初始化</button></div></details></section>
       <section class="card full"><h2>个人账号池（高级）</h2><p class="muted">仅用于同一自托管操作者管理本人控制或获授权的账号，并进行故障隔离、冷却、并发控制和本地调度；禁止用于公开转售订阅流量或面向不特定第三方的大规模共享。</p><div class="row"><input id="account-label" placeholder="账号标识" value="Mock ChatGPT Account" /><input id="account-concurrency" type="number" min="1" value="1" aria-label="最大并发" /><button id="add-account" class="secondary">添加 mock 账号</button></div><div id="accounts"><div class="empty">正在读取个人账号池状态。</div></div></section>
       <section class="card full"><h2>运行时 API Keys</h2><p class="muted">仅显示 ID、名称、创建时间和安全前缀；撤销后对应 key 会立即失效。</p><div class="row"><button id="refresh-api-keys" class="secondary" type="button">刷新 Key 列表</button></div><div id="api-keys"><div class="empty">正在读取运行时 API Key。</div></div></section>
@@ -327,6 +333,12 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       if (!link) return;
       await navigator.clipboard.writeText(link);
       document.getElementById('auth-message').textContent = '授权链接已复制，请在当前浏览器中打开。';
+    });
+    document.getElementById('copy-runtime-api-key').addEventListener('click', async () => {
+      const key = document.getElementById('api-key').dataset.value;
+      if (!key) return;
+      await navigator.clipboard.writeText(key);
+      document.getElementById('result').textContent = 'Runtime API Key 已复制。请保存到 Claude Code 或其他客户端配置中；刷新页面后不会再次显示原始 Key。';
     });
     document.getElementById('submit-oauth-callback').addEventListener('click', async () => {
       const redirectUrl = document.getElementById('oauth-callback-url').value.trim();
@@ -379,16 +391,17 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       schedulePoll(1800);
     }
     function showReady(result) {
-      if (result.apiKey) saveAdminApiKey(result.apiKey, false);
       const endpoint = window.location.origin + '/v1/messages';
       document.getElementById('api-config').hidden = false;
       document.getElementById('endpoint').textContent = endpoint;
-      document.getElementById('api-key').textContent = result.apiKey ? 'API Key 已保存到当前会话' : '<your-api-key>';
+      const apiKey = document.getElementById('api-key');
+      apiKey.textContent = result.apiKey || '<your-api-key>';
+      apiKey.dataset.value = result.apiKey || '';
       const curl = curlExample.dataset.template.replace('__ORIGIN__', window.location.origin);
       document.getElementById('ready-curl').textContent = curl;
       curlExample.textContent = curl;
       const keyState = document.getElementById('key-state'); keyState.textContent = '已配置'; keyState.className = 'status ok';
-      document.getElementById('auth-message').textContent = '初始化完成：已创建账号、刷新模型、绑定 alias 并生成 API Key。';
+      document.getElementById('auth-message').textContent = '初始化完成：已创建账号、刷新模型、绑定 alias 并生成 Runtime API Key，请立即复制保存。';
     }
 
     document.getElementById('add-account').addEventListener('click', async () => {
@@ -437,7 +450,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     function redactApiKeys(value) {
       if (Array.isArray(value)) return value.map(redactApiKeys);
       if (!value || typeof value !== 'object') return value;
-      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'apiKey' || key === 'key' ? '<saved-in-browser>' : redactApiKeys(item)]));
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'apiKey' || key === 'key' ? '<one-time-key-hidden>' : redactApiKeys(item)]));
     }
     async function getJson(url) { return requestJson(url); }
     async function postJson(url, body) { return requestJson(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); }
@@ -446,13 +459,8 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     async function requestJson(url, init) {
       const response = await fetchWithAdminKey(url, init);
       if (response.status !== 401) return response.json();
-      const entered = window.prompt('请输入 Admin API Key');
-      if (entered && entered.trim()) {
-        saveAdminApiKey(entered.trim(), rememberAdminKeyInput.checked);
-        const retry = await fetchWithAdminKey(url, init);
-        return retry.json();
-      }
-      document.getElementById('result').textContent = '需要 Admin API Key 才能访问该接口。';
+      document.getElementById('result').textContent = '需要 Admin API Key 才能访问该接口。请在页面顶部输入并保存后重试。';
+      adminKeyInput.focus();
       return response.json();
     }
     async function fetchWithAdminKey(url, init) {

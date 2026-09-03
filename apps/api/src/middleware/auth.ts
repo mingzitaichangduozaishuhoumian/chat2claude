@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { MiddlewareHandler } from 'hono';
 import type { RuntimeApiKeys } from '../services/runtime-api-keys.js';
+import { isTrustedLocalHost, isTrustedLocalRequestHost, type LocalAdminSession } from '../services/local-admin-session.js';
 
 const PUBLIC_ADMIN_API_PATHS = new Set(['/admin/api/setup/status', '/admin/api/auth/status']);
 const BOOTSTRAP_ADMIN_API_PATTERNS = [
@@ -28,22 +29,32 @@ export function apiKeyAuth(apiKeys: string[], runtimeApiKeys: RuntimeApiKeys): M
   };
 }
 
-export function adminApiAuth(apiKeys: string[], runtimeApiKeys: RuntimeApiKeys, options: { allowAnonymousBootstrap: boolean }): MiddlewareHandler {
+export function adminApiAuth(apiKeys: string[], runtimeApiKeys: RuntimeApiKeys, options: { allowAnonymousBootstrap: boolean; localAdminSession?: LocalAdminSession }): MiddlewareHandler {
   const envKeys = new Set(apiKeys);
   return async (c, next) => {
     const path = new URL(c.req.url).pathname;
     if (PUBLIC_ADMIN_API_PATHS.has(path)) return next();
 
+    const requestHost = c.req.header('host') ?? new URL(c.req.url).host;
     const hasAnyKey = envKeys.size > 0 || runtimeApiKeys.hasAny();
-    if (!hasAnyKey && options.allowAnonymousBootstrap && isBootstrapAdminApiPath(path)) return next();
+    if (!hasAnyKey && options.allowAnonymousBootstrap && isTrustedLocalRequestHost(requestHost, c.req.url) && isBootstrapAdminApiPath(path)) return next();
 
     const apiKey = extractApiKey(c.req.header('x-api-key'), c.req.header('authorization'));
     const ownerId = ownerIdForApiKey(apiKey, envKeys, runtimeApiKeys);
-    if (!ownerId) {
-      return c.json({ type: 'error', error: { type: 'authentication_error', message: 'Invalid or missing admin API key' } }, 401);
+    if (ownerId) {
+      c.set('ownerId', ownerId);
+      return next();
     }
-    c.set('ownerId', ownerId);
-    return next();
+
+    if (options.localAdminSession?.matches(c.req.header('cookie'), requestHost, c.req.url)) {
+      if (isUnsafeMethod(c.req.method) && !hasSameOrigin(c.req.url, requestHost, c.req.header('origin'))) {
+        return c.json({ type: 'error', error: { type: 'permission_error', message: 'Admin browser session mutations require a same-origin Origin header' } }, 403);
+      }
+      c.set('ownerId', 'local_admin_session');
+      return next();
+    }
+
+    return c.json({ type: 'error', error: { type: 'authentication_error', message: 'Invalid or missing admin API key' } }, 401);
   };
 }
 
@@ -59,6 +70,23 @@ export function ownerIdFromKey(apiKey: string): string {
 
 function isBootstrapAdminApiPath(path: string): boolean {
   return BOOTSTRAP_ADMIN_API_PATTERNS.some((pattern) => pattern.test(path));
+}
+
+function isUnsafeMethod(method: string): boolean {
+  return !['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase());
+}
+
+function hasSameOrigin(requestUrl: string, requestHost: string | undefined, origin: string | undefined): boolean {
+  if (!origin || !isTrustedLocalRequestHost(requestHost, requestUrl)) return false;
+  try {
+    const request = new URL(requestUrl);
+    const originUrl = new URL(origin);
+    return ['http:', 'https:'].includes(originUrl.protocol)
+      && isTrustedLocalHost(originUrl.host)
+      && originUrl.origin === request.origin;
+  } catch {
+    return false;
+  }
 }
 
 function extractApiKey(xApiKey: string | undefined, authorization: string | undefined): string | undefined {

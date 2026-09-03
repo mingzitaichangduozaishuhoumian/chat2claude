@@ -19,6 +19,7 @@ import { createChatGptBackend } from './services/backend-factory.js';
 import { ChatGptAuthFlowService } from './services/chatgpt-auth-flow.js';
 import { RuntimeStateStore } from './services/runtime-state-store.js';
 import { DurableRuntimeState } from './services/durable-runtime-state.js';
+import { LocalAdminSession } from './services/local-admin-session.js';
 import { chooseBestModel, PRIMARY_CHATGPT_ACCOUNT_ID } from './services/setup-provisioner.js';
 
 export type Chat2ClaudeApp = Hono & { dispose: () => Promise<void> };
@@ -33,6 +34,7 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   const logger = createLogger(env.logLevel);
   const accountPool = new AccountPool();
   const runtimeApiKeys = new RuntimeApiKeys();
+  const localAdminSession = new LocalAdminSession(env.allowAnonymousBootstrap);
   const runtimeStateStore = options.runtimeStateStore === undefined
     ? env.runtimeStatePath ? new RuntimeStateStore({ path: env.runtimeStatePath, encryptionKey: env.stateEncryptionKey }) : undefined
     : options.runtimeStateStore ?? undefined;
@@ -61,8 +63,8 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   app.route('/', createOpenAiChatRoute({ backend, requestLog, modelRegistry, accountPool, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createOpenAiResponsesRoute({ backend, requestLog, modelRegistry, accountPool, responsesStore, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createMetricsRoute(requestLog));
-  app.use('/admin/api/*', adminApiAuth(env.apiKeys, runtimeApiKeys, { allowAnonymousBootstrap: env.allowAnonymousBootstrap }));
-  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, durableState, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow }));
+  app.use('/admin/api/*', adminApiAuth(env.apiKeys, runtimeApiKeys, { allowAnonymousBootstrap: env.allowAnonymousBootstrap, localAdminSession }));
+  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, durableState, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow, localAdminSession }));
   app.dispose = () => authFlow.close();
   return app;
 }

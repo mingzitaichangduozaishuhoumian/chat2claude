@@ -36,7 +36,7 @@ start.bat
 http://localhost:3000/admin
 ```
 
-点击页面主按钮“生成 Codex OAuth 授权链接”，把链接复制或在当前浏览器中打开完成授权；随后复制页面显示的 endpoint、API key 和 curl 示例即可调用 `/v1/messages`。
+本机打开 `/admin` 会自动建立仅当前进程有效的 HttpOnly 浏览器管理会话，无需先设置临时 `API_KEYS`，即使重启后浏览器没有保存 Runtime API Key 也可继续管理账号。点击页面主按钮“生成 Codex OAuth 授权链接”，把链接复制或在当前浏览器中打开完成授权；随后立即复制页面一次性显示的 Runtime API Key、endpoint 和 curl 示例即可调用 `/v1/messages`。
 
 一键启动脚本会自动启用 corepack；如果还没有 `node_modules`，会先安装依赖。面向普通用户的 `start.bat` / `start.sh` 在未设置 `CHATGPT_BACKEND` 时默认使用 `session`，并提示打开 `/admin` 授权。代码层 `loadEnv()` 默认仍保持 `mock`，用于保护测试与本地开发。
 
@@ -112,14 +112,14 @@ curl -X POST http://localhost:3000/admin/api/auth/chatgpt/complete \
 
 OpenAI Responses 的 `store:true` 仅用于本地短期续接 `previous_response_id`，不会请求 ChatGPT/Codex 上游持久保存。Responses built-in/hosted tools（如 `web_search_preview` / `file_search` / `code_interpreter`）会 best-effort 透传给 session backend；真实支持取决于 ChatGPT/Codex 上游。
 
-`/v1/*` 请求需要携带已配置或运行时启用的 API key。已配置 `API_KEYS` 后，admin API 请求也需要携带同一个 key：
+`/v1/*` 请求始终需要携带已配置或运行时启用的 API key。浏览器管理会话绝不会被 `/v1/*` 接受。自动化和远程管理继续使用：
 
 - `x-api-key: <key>`；或
 - `Authorization: Bearer <key>`
 
-未设置 `API_KEYS` 且尚未通过 `/admin` 授权生成 runtime key 时，`/v1/*` 会返回 401 并提示去 `/admin` 初始化。
+默认 loopback 监听（或明确的 `LOCAL_CONTAINER_BOOTSTRAP=true`）下，访问 `/admin` 会签发仅进程有效的 HttpOnly、`SameSite=Strict` 管理 cookie；cookie 驱动的写操作必须有同源 `Origin`。它只用于个人本机管理，服务重启后自动失效，重新打开 `/admin` 会重新签发。Runtime API Key 持久化后，原始值不会在 Key 列表或之后的页面加载中重新展示；遗失时请在本地后台撤销旧 Key 后重新授权生成并立即复制。
 
-管理后台默认只把 Admin API key 保存到浏览器 `sessionStorage`，关闭当前标签/会话后失效；只有显式勾选“记住到本机”时才会长期保存到 `localStorage`。旧版本已经保存在 `localStorage` 的 key 仍会兼容读取。
+非 loopback 且未启用 `LOCAL_CONTAINER_BOOTSTRAP=true` 时，服务不会签发或接受此 cookie，并且仍要求显式 `API_KEYS`。未设置 `API_KEYS` 且尚未通过 `/admin` 授权生成 runtime key 时，`/v1/*` 会返回 401 并提示去 `/admin` 初始化。
 
 ## 调用示例
 
