@@ -109,13 +109,18 @@ export class CodexOAuthClient {
     const accessToken = readString(payload?.access_token);
     if (!accessToken) throw new ChatGptBackendError('Codex OAuth token response was invalid.', 'invalid_response');
     const expiresIn = readFiniteNumber(payload?.expires_in);
+    const idToken = readString(payload?.id_token) ?? current?.idToken;
+    const claims = readIdTokenClaims(idToken);
     return {
       ...(current ?? {}),
       type: 'chatgpt-session',
       accessToken,
       refreshToken: readString(payload?.refresh_token) ?? current?.refreshToken,
-      idToken: readString(payload?.id_token) ?? current?.idToken,
+      idToken,
       expiresAt: expiresIn === undefined ? current?.expiresAt : new Date(this.now().getTime() + expiresIn * 1000).toISOString(),
+      ...(claims.email ? { email: claims.email } : {}),
+      ...(claims.accountId ? { accountId: claims.accountId } : {}),
+      ...(claims.planType ? { planType: claims.planType } : {}),
     };
   }
 }
@@ -170,4 +175,38 @@ function readString(value: unknown): string | undefined {
 
 function readFiniteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+interface IdTokenClaims {
+  email?: string;
+  accountId?: string;
+  planType?: string;
+}
+
+function readIdTokenClaims(idToken: string | undefined): IdTokenClaims {
+  const payload = decodeJwtPayload(idToken);
+  if (!payload) return {};
+  const profile = readObject(payload['https://api.openai.com/profile']);
+  const auth = readObject(payload['https://api.openai.com/auth']);
+  return {
+    email: readString(payload.email) ?? readString(profile?.email),
+    accountId: readString(auth?.chatgpt_account_id),
+    planType: readString(auth?.chatgpt_plan_type),
+  };
+}
+
+function decodeJwtPayload(token: string | undefined): Record<string, unknown> | undefined {
+  if (!token) return undefined;
+  const payload = token.split('.')[1];
+  if (!payload) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as unknown;
+    return readObject(parsed);
+  } catch {
+    return undefined;
+  }
+}
+
+function readObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }

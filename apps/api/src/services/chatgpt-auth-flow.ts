@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 import { CodexOAuthClient } from './codex-oauth-client.js';
 import type { ProvisionCommitBoundary } from './provision-commit.js';
+import { ChatGptProvisioningError } from './setup-provisioner.js';
 
 export type ChatGptAuthFlowState = 'idle' | 'starting' | 'link_ready' | 'waiting' | 'exchanging' | 'provisioning' | 'ready' | 'expired' | 'cancelled' | 'error';
 
@@ -202,12 +203,13 @@ export class ChatGptAuthFlowService {
         try {
           await provisioner(secret, controller.signal, commitBoundary);
           if (!committed) throw new Error('ChatGPT setup provisioning returned without committing.');
-        } catch {
+        } catch (error) {
           if (!this.operationIsCurrent(flow, generation, controller)) return publicSnapshot(flow);
           if (this.expireIfNeeded(flow)) return publicSnapshot(flow);
+          const failure = publicProvisioningFailure(error);
           flow.state = 'error';
-          flow.error = 'ChatGPT setup provisioning failed.';
-          flow.message = '自动初始化失败，可重新授权或使用高级手动导入。';
+          flow.error = failure.error;
+          flow.message = failure.message;
           flow.secret = undefined;
           this.clearExpiryDeadline(flow);
         } finally {
@@ -446,6 +448,35 @@ export class ChatGptAuthFlowService {
     flow.operationController?.abort();
     flow.operationController = undefined;
   }
+}
+
+function publicProvisioningFailure(error: unknown): { error: string; message: string } {
+  if (!(error instanceof ChatGptProvisioningError)) {
+    return {
+      error: 'ChatGPT setup provisioning failed.',
+      message: '自动初始化失败，可重新授权或使用高级手动导入。',
+    };
+  }
+  const { stage, code, status } = error.diagnostic;
+  const details = [code, status === undefined ? undefined : `HTTP ${status}`].filter(Boolean).join(', ');
+  const suffix = details ? `（${details}）` : '';
+  const action = stage === 'session_verification'
+    ? '请重新授权；如果仍失败，请确认账号可使用 Codex。'
+    : stage === 'model_preparation'
+      ? '请重新授权后重试模型准备。'
+      : '请重试；若持续失败，请检查本地运行状态。';
+  return {
+    error: `${error.diagnostic.message}${suffix}`,
+    message: `自动初始化在${provisioningStageLabel(stage)}阶段失败${suffix}。${action}`,
+  };
+}
+
+function provisioningStageLabel(stage: ChatGptProvisioningError['diagnostic']['stage']): string {
+  return stage === 'session_verification'
+    ? '会话验证/模型发现'
+    : stage === 'model_preparation'
+      ? '模型准备'
+      : '状态提交';
 }
 
 function isIpv6Unavailable(error: NodeJS.ErrnoException): boolean {

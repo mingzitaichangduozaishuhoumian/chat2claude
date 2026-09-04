@@ -1887,7 +1887,7 @@ describe('ChatGPT one-click auth admin flow', () => {
       },
     });
     expect(provisioningCalls).toBe(1);
-    expect(backend.healthCheckCalls).toBe(1);
+    expect(backend.healthCheckCalls).toBe(0);
     expect(backend.listModelsCalls).toBe(1);
     expect(commitCalls).toBe(1);
     expect(accountPool.list().filter((account) => account.id === 'chatgpt-primary')).toHaveLength(1);
@@ -1971,19 +1971,19 @@ describe('ChatGPT one-click auth admin flow', () => {
 
 describe('SessionChatGptBackend', () => {
   it('listModels fetches codex models with account context and parses model ids', async () => {
-    const calls: Array<{ url: string; authorization: string | null }> = [];
+    const calls: Array<{ url: string; authorization: string | null; accountId: string | null }> = [];
     const backend = new SessionChatGptBackend({
       baseUrl: 'https://chatgpt.test/',
       timeoutMs: 1000,
       fetch: async (url, init) => {
         const headers = new Headers(init?.headers);
-        calls.push({ url: String(url), authorization: headers.get('authorization') });
+        calls.push({ url: String(url), authorization: headers.get('authorization'), accountId: headers.get('chatgpt-account-id') });
         return Response.json({ models: [{ id: 'gpt-5-thinking', display_name: 'GPT 5 Thinking' }, { slug: 'codex-mini', title: 'Codex Mini' }] });
       },
     });
 
-    const models = await backend.listModels({ account: { id: 'session-1', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token-1' } } });
-    expect(calls).toEqual([{ url: 'https://chatgpt.test/backend-api/codex/models', authorization: 'Bearer token-1' }]);
+    const models = await backend.listModels({ account: { id: 'session-1', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token-1', accountId: 'acct-1' } } });
+    expect(calls).toEqual([{ url: 'https://chatgpt.test/backend-api/codex/models?client_version=0.1.0', authorization: 'Bearer token-1', accountId: 'acct-1' }]);
     expect(models.map((model) => model.id)).toEqual(['gpt-5-thinking', 'codex-mini']);
     expect(models[0].displayName).toBe('GPT 5 Thinking');
   });

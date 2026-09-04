@@ -6,8 +6,8 @@ import type { SessionCredentialManager } from './session-credential-manager.js';
 const CANDIDATE_CONTEXT = Symbol('candidateSessionContext');
 type InternalRequestContext = ChatGptBackendRequestContext & { [CANDIDATE_CONTEXT]?: true };
 
-export function candidateSessionContext(account: NonNullable<ChatGptBackendRequestContext['account']>): ChatGptBackendRequestContext {
-  return { account, [CANDIDATE_CONTEXT]: true } as InternalRequestContext;
+export function candidateSessionContext(account: NonNullable<ChatGptBackendRequestContext['account']>, signal?: AbortSignal): ChatGptBackendRequestContext {
+  return { account, signal, [CANDIDATE_CONTEXT]: true } as InternalRequestContext;
 }
 
 export class RefreshAwareChatGptBackend implements ChatGptBackendClient {

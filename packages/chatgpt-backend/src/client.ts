@@ -44,6 +44,7 @@ export interface ChatGptBackendAccountContext {
 
 export interface ChatGptBackendRequestContext {
   account?: ChatGptBackendAccountContext;
+  signal?: AbortSignal;
 }
 
 export interface ChatGptBackendHealthCheckResult { ok: boolean; message?: string; }

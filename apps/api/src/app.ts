@@ -20,7 +20,7 @@ import { ChatGptAuthFlowService } from './services/chatgpt-auth-flow.js';
 import { RuntimeStateStore } from './services/runtime-state-store.js';
 import { DurableRuntimeState } from './services/durable-runtime-state.js';
 import { LocalAdminSession } from './services/local-admin-session.js';
-import { chooseBestModel, PRIMARY_CHATGPT_ACCOUNT_ID } from './services/setup-provisioner.js';
+import { chooseBestModel, PRIMARY_CHATGPT_ACCOUNT_ID, SetupProvisioner } from './services/setup-provisioner.js';
 
 export type Chat2ClaudeApp = Hono & { dispose: () => Promise<void> };
 
@@ -46,7 +46,7 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   const responsesStore = new ResponsesStore();
   const authFlow = options.authFlow ?? new ChatGptAuthFlowService({ oauthRequestTimeoutMs: env.chatGptRequestTimeoutMs });
   const restoredPrimaryAccount = accountPool.get(PRIMARY_CHATGPT_ACCOUNT_ID);
-  const modelRegistryReady = restoredPrimaryAccount?.provider === 'chatgpt-session'
+  const modelRegistryReady = (restoredPrimaryAccount?.provider === 'chatgpt-session'
     ? backend.listModels({ account: restoredPrimaryAccount }).then((models) => {
       const prepared = modelRegistry.prepareProvisioning(models, 'sonnet', chooseBestModel(models)?.id, true);
       const commit = () => modelRegistry.commitPreparedProvisioning(prepared);
@@ -55,7 +55,20 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
       if (Object.keys(prepared.boundAliases).length > 0 && durableState) durableState.transaction(commit);
       else commit();
     })
-    : modelRegistry.refreshFromBackend(backend);
+    : modelRegistry.refreshFromBackend(backend)).catch(() => {
+      // Startup discovery is best effort. Provisioning waits for this attempt to
+      // settle, then performs its own authoritative single discovery request.
+      logger.warn('ChatGPT startup model discovery failed.');
+    });
+  const setupProvisioner = new SetupProvisioner({
+    accountPool,
+    modelRegistry,
+    backend,
+    runtimeApiKeys,
+    durableState,
+    startupReady: modelRegistryReady,
+    onDiagnostic: (diagnostic) => logger.warn(diagnostic.severity === 'warning' ? 'ChatGPT setup provisioning warning' : 'ChatGPT setup provisioning failed', diagnostic),
+  });
   app.onError((error, c) => { logger.error('Unhandled API error', { error: error.message }); return c.json({ type: 'error', error: { type: 'internal_server_error', message: 'Internal server error' } }, 500); });
   app.get('/', (c) => c.redirect('/admin'));
   app.get('/favicon.ico', (c) => c.body(null, 204));
@@ -68,7 +81,7 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   app.route('/', createOpenAiResponsesRoute({ backend, requestLog, modelRegistry, accountPool, responsesStore, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createMetricsRoute(requestLog));
   app.use('/admin/api/*', adminApiAuth(env.apiKeys, runtimeApiKeys, { allowAnonymousBootstrap: env.allowAnonymousBootstrap, localAdminSession }));
-  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, durableState, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow, localAdminSession }));
+  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, durableState, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow, setupProvisioner, localAdminSession }));
   app.dispose = () => authFlow.close();
   return app;
 }

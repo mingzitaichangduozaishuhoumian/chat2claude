@@ -1,3 +1,4 @@
+import packageJson from '../package.json' with { type: 'json' };
 import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputContentPart, ChatGptInputItem, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
 import { ChatGptBackendError, type ChatGptBackendErrorCode } from './errors.js';
@@ -5,29 +6,37 @@ import { ChatGptBackendError, type ChatGptBackendErrorCode } from './errors.js';
 export interface SessionChatGptBackendOptions {
   baseUrl: string;
   timeoutMs: number;
+  clientVersion?: string;
+  originator?: string;
   fetch?: typeof fetch;
 }
+
+const DEFAULT_CODEX_CLIENT_VERSION = packageJson.version;
 
 type JsonObject = Record<string, unknown>;
 
 export class SessionChatGptBackend implements ChatGptBackendClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  private readonly clientVersion: string;
+  private readonly originator: string | undefined;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: SessionChatGptBackendOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.timeoutMs = options.timeoutMs;
+    this.clientVersion = options.clientVersion?.trim() || DEFAULT_CODEX_CLIENT_VERSION;
+    this.originator = options.originator?.trim() || undefined;
     this.fetchImpl = options.fetch ?? fetch;
   }
 
   async listModels(context?: ChatGptBackendRequestContext): Promise<ChatGptDiscoveredModel[]> {
     if (!context?.account) return [];
     const secret = requireSessionSecret(context);
-    const response = await this.fetchWithTimeout(`${this.baseUrl}/backend-api/codex/models`, {
+    const response = await this.fetchWithTimeout(this.endpoint('/backend-api/codex/models', { client_version: this.clientVersion }), {
       method: 'GET',
       headers: this.headers(secret, false),
-    });
+    }, context.signal);
     if (!response.ok) throw httpBackendError('ChatGPT models discovery failed', response.status);
     return parseDiscoveredModels(await response.json());
   }
@@ -59,11 +68,11 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
 
   async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent> {
     const secret = requireSessionSecret(context);
-    const response = await this.fetchWithTimeout(`${this.baseUrl}/backend-api/codex/responses`, {
+    const response = await this.fetchWithTimeout(this.endpoint('/backend-api/codex/responses'), {
       method: 'POST',
       headers: this.headers(secret, true),
       body: JSON.stringify(buildResponsesBody(request)),
-    });
+    }, context?.signal);
     if (!response.ok) throw httpBackendError('ChatGPT responses request failed', response.status);
 
     let latestUsage: ChatGptUsage | undefined;
@@ -92,19 +101,36 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     if (secret.cookie) headers.set('cookie', secret.cookie);
     if (secret.userAgent) headers.set('user-agent', secret.userAgent);
     if (secret.deviceId) headers.set('oai-device-id', secret.deviceId);
+    if (secret.accountId) headers.set('chatgpt-account-id', secret.accountId);
+    if (this.originator) headers.set('originator', this.originator);
     return headers;
   }
 
-  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  private endpoint(path: string, query?: Record<string, string>): string {
+    const url = new URL(`${this.baseUrl}${path}`);
+    for (const [name, value] of Object.entries(query ?? {})) url.searchParams.set(name, value);
+    return url.toString();
+  }
+
+  private async fetchWithTimeout(url: string, init: RequestInit, callerSignal?: AbortSignal): Promise<Response> {
+    if (callerSignal?.aborted) throw abortError();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.timeoutMs);
+    const cancel = () => controller.abort();
+    callerSignal?.addEventListener('abort', cancel, { once: true });
     try {
       return await this.fetchImpl(url, { ...init, signal: controller.signal });
     } catch (error) {
-      if (isAbortError(error)) throw new ChatGptBackendError('ChatGPT session backend request timed out.', 'timeout', { status: 504, cause: error });
+      if (callerSignal?.aborted) throw abortError();
+      if (timedOut && isAbortError(error)) throw new ChatGptBackendError('ChatGPT session backend request timed out.', 'timeout', { status: 504, cause: error });
       throw new ChatGptBackendError('ChatGPT session backend network request failed.', 'network_error', { cause: error });
     } finally {
       clearTimeout(timeout);
+      callerSignal?.removeEventListener('abort', cancel);
     }
   }
 }
@@ -117,6 +143,12 @@ function backendErrorCodeForStatus(status: number): ChatGptBackendErrorCode {
   if (status === 401 || status === 403) return 'unauthorized';
   if (status === 429) return 'rate_limited';
   return 'upstream_error';
+}
+
+function abortError(): Error {
+  const error = new Error('ChatGPT session backend request was cancelled.');
+  error.name = 'AbortError';
+  return error;
 }
 
 function isAbortError(error: unknown): boolean {

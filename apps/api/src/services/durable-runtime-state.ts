@@ -12,6 +12,10 @@ export interface DurableRuntimeStateOptions {
   removeMockAccountsOnHydrate?: boolean;
 }
 
+export type DurableTransactionOutcome<T> =
+  | { value: T; durability: 'confirmed' }
+  | { value: T; durability: 'committed_unconfirmed'; warning: RuntimeStateStoreError };
+
 export class DurableRuntimeState {
   constructor(private readonly options: DurableRuntimeStateOptions) {}
 
@@ -33,21 +37,38 @@ export class DurableRuntimeState {
   }
 
   transaction<T>(mutation: () => T): T {
+    const outcome = this.transactionWithOutcome(mutation);
+    if (outcome.durability === 'committed_unconfirmed') throw outcome.warning;
+    return outcome.value;
+  }
+
+  transactionWithOutcome<T>(mutation: () => T): DurableTransactionOutcome<T> {
     const accounts = this.options.accountPool.snapshot();
     const runtimeApiKeys = this.options.runtimeApiKeys.snapshot();
     const modelAliases = this.options.modelRegistry?.snapshot();
+    let value: T;
     try {
-      const result = mutation();
-      this.persist();
-      return result;
+      value = mutation();
     } catch (error) {
-      if (!(error instanceof RuntimeStateStoreError && error.stateCommitted)) {
-        this.options.accountPool.restore(accounts);
-        this.options.runtimeApiKeys.restore(runtimeApiKeys);
-        if (modelAliases) this.options.modelRegistry?.restore(modelAliases);
-      }
+      this.restore(accounts, runtimeApiKeys, modelAliases);
       throw error;
     }
+    try {
+      this.persist();
+      return { value, durability: 'confirmed' };
+    } catch (error) {
+      if (error instanceof RuntimeStateStoreError && error.stateCommitted) {
+        return { value, durability: 'committed_unconfirmed', warning: error };
+      }
+      this.restore(accounts, runtimeApiKeys, modelAliases);
+      throw error;
+    }
+  }
+
+  private restore(accounts: ReturnType<AccountPool['snapshot']>, runtimeApiKeys: ReturnType<RuntimeApiKeys['snapshot']>, modelAliases: ReturnType<ModelRegistry['snapshot']> | undefined): void {
+    this.options.accountPool.restore(accounts);
+    this.options.runtimeApiKeys.restore(runtimeApiKeys);
+    if (modelAliases) this.options.modelRegistry?.restore(modelAliases);
   }
 
   compareAndSwapSessionSecret(accountId: string, expected: SessionSecretVersion, nextSecret: ChatGptSessionSecret, expectedIncarnation?: number): Account | undefined {

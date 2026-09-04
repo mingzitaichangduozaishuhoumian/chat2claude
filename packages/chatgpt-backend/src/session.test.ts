@@ -1,3 +1,4 @@
+import packageJson from '../package.json' with { type: 'json' };
 import { describe, expect, it } from 'vitest';
 import { ChatGptBackendError, SessionChatGptBackend, type ChatGptCompletionRequest } from './index.js';
 
@@ -17,6 +18,7 @@ const context = {
       cookie: 'cookie-1',
       deviceId: 'device-1',
       userAgent: 'ua-1',
+      accountId: 'acct-1',
     },
   },
 };
@@ -42,6 +44,7 @@ describe('SessionChatGptBackend', () => {
     expect(headers.get('cookie')).toBe('cookie-1');
     expect(headers.get('oai-device-id')).toBe('device-1');
     expect(headers.get('user-agent')).toBe('ua-1');
+    expect(headers.get('chatgpt-account-id')).toBe('acct-1');
     expect(headers.get('accept')).toBe('text/event-stream');
     expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ model: 'gpt-test', stream: true, store: false, instructions: '', max_output_tokens: 128 });
   });
@@ -296,9 +299,77 @@ describe('SessionChatGptBackend', () => {
     } });
 
     await expect(backend.healthCheck(context)).resolves.toEqual({ ok: true });
-    expect(calls[0].url).toBe('https://chatgpt.test/backend-api/codex/models');
+    expect(calls[0].url).toBe(`https://chatgpt.test/backend-api/codex/models?client_version=${packageJson.version}`);
     expect(calls[0].init.method).toBe('GET');
     expect((calls[0].init.headers as Headers).get('authorization')).toBe('Bearer token-1');
+    expect((calls[0].init.headers as Headers).get('chatgpt-account-id')).toBe('acct-1');
+  });
+
+  it('allows the Codex model client version to be configured', async () => {
+    const calls: string[] = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, clientVersion: '1.2.3', fetch: async (url) => {
+      calls.push(String(url));
+      return Response.json({ models: [] });
+    } });
+
+    await backend.listModels(context);
+
+    expect(calls).toEqual(['https://chatgpt.test/backend-api/codex/models?client_version=1.2.3']);
+  });
+
+  it('sends the configured originator on model and response requests', async () => {
+    const calls: Array<{ url: string; originator: string | null }> = [];
+    const backend = new SessionChatGptBackend({
+      baseUrl: 'https://chatgpt.test',
+      timeoutMs: 1000,
+      originator: 'chat2claude',
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), originator: new Headers(init?.headers).get('originator') });
+        return String(url).includes('/models') ? Response.json({ models: [] }) : sseResponse([{ type: 'response.completed' }]);
+      },
+    });
+
+    await backend.listModels(context);
+    await backend.complete(request, context);
+
+    expect(calls).toEqual([
+      { url: `https://chatgpt.test/backend-api/codex/models?client_version=${packageJson.version}`, originator: 'chat2claude' },
+      { url: 'https://chatgpt.test/backend-api/codex/responses', originator: 'chat2claude' },
+    ]);
+  });
+
+  it('propagates caller cancellation to the active models fetch without reporting a timeout', async () => {
+    const fetchStarted = deferred<void>();
+    let transportAborted = false;
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 60_000, fetch: async (_url, init) => {
+      fetchStarted.resolve();
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) return reject(new Error('missing transport signal'));
+        const abort = () => {
+          transportAborted = true;
+          reject(new DOMException('aborted', 'AbortError'));
+        };
+        if (signal.aborted) abort();
+        else signal.addEventListener('abort', abort, { once: true });
+      });
+    } });
+    const controller = new AbortController();
+    const pending = backend.listModels({ ...context, signal: controller.signal });
+    await fetchStarted.promise;
+
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(transportAborted).toBe(true);
+  });
+
+  it('retains timeout classification when no caller cancellation occurs', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 5, fetch: async (_url, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('timed out', 'AbortError')), { once: true });
+    }) });
+
+    await expect(backend.listModels(context)).rejects.toMatchObject({ code: 'timeout', status: 504 });
   });
 
   it('classifies model discovery 401 responses as unauthorized backend errors', async () => {
@@ -319,4 +390,11 @@ describe('SessionChatGptBackend', () => {
 function sseResponse(items: Array<Record<string, unknown> | string>): Response {
   const body = items.map((item) => `data: ${typeof item === 'string' ? item : JSON.stringify(item)}\n\n`).join('');
   return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
 }

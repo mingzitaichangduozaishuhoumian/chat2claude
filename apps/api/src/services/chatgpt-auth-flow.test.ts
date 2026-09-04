@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { describe, expect, it } from 'vitest';
 import { CodexOAuthClient, CODEX_OAUTH_SCOPE } from './codex-oauth-client.js';
 import { ChatGptAuthFlowService } from './chatgpt-auth-flow.js';
+import { ChatGptProvisioningError } from './setup-provisioner.js';
 
 describe('CodexOAuthClient', () => {
   it('builds the current official authorization request with an honest originator', () => {
@@ -118,6 +119,25 @@ describe('ChatGptAuthFlowService', () => {
     expect(calls).toBe(1);
     expect(first).toEqual(second);
     expect(first).toMatchObject({ state: 'ready', provisioned: true, provisionResult: { apiKey: 'key' } });
+  });
+
+  it('returns a stage-aware provisioning error without leaking secret or cause details', async () => {
+    const service = new ChatGptAuthFlowService({ enableCallbackListener: false, fetch: async () => Response.json({ access_token: 'access-secret' }) });
+    const started = await service.start();
+    const state = new URL(started.authorizeUrl).searchParams.get('state')!;
+    await service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code-secret&state=${state}` });
+
+    const result = await service.provision(started.id, async () => {
+      throw new ChatGptProvisioningError({ stage: 'model_preparation', code: 'unauthorized', status: 401, message: 'ChatGPT model preparation failed.' }, { cause: new Error('access-secret / C:\\private\\runtime-state.json') });
+    });
+
+    expect(result).toMatchObject({
+      state: 'error',
+      error: 'ChatGPT model preparation failed.（unauthorized, HTTP 401）',
+      message: '自动初始化在模型准备阶段失败（unauthorized, HTTP 401）。请重新授权后重试模型准备。',
+    });
+    expect(JSON.stringify(result)).not.toContain('access-secret');
+    expect(JSON.stringify(result)).not.toContain('runtime-state.json');
   });
 
   it('rejects raw code/state callback input', async () => {
