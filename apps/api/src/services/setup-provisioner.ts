@@ -84,7 +84,9 @@ export class SetupProvisioner {
     await waitForStartupReadiness(this.options.startupReady, signal);
     assertProvisioningNotCancelled(signal);
     const targetState = this.resolveTarget(target);
-    const candidateSecret = targetState.existing ? mergeReauthorizationSecret(targetState.existing.secret, secret) : { ...secret };
+    // Validate only the incoming credential (including discovery-enriched
+    // metadata). Existing metadata must never authenticate a reauthorization.
+    const candidateSecret = { ...secret };
     if (!candidateSecret.accessToken) throw this.provisioningError('session_verification', new Error('missing access token'));
     const candidate = createCandidateAccount(targetState.accountId, candidateSecret, targetState.existing);
     const context = candidateSessionContext(candidate, signal);
@@ -100,6 +102,12 @@ export class SetupProvisioner {
       if (error instanceof ChatGptProvisioningError) throw error;
       throw this.provisioningError('session_verification', error);
     }
+
+    // Preserve optional credential fields only after the incoming credential
+    // itself has passed identity validation.
+    candidate.secret = targetState.existing
+      ? mergeReauthorizationSecret(targetState.existing.secret, candidate.secret ?? candidateSecret)
+      : { ...(candidate.secret ?? candidateSecret) };
 
     let prepared: PreparedProvisioningCommit;
     try {
@@ -131,6 +139,13 @@ export class SetupProvisioner {
   private validateIdentity(target: InternalProvisioningTarget, existing: Account | undefined, secret: ChatGptSessionSecret): void {
     const upstreamAccountId = clean(secret.accountId);
     const existingUpstreamId = clean(existing?.secret?.accountId);
+    if (target.mode === 'reauthorize' && !upstreamAccountId) {
+      throw conflict(
+        'upstream_identity_required',
+        'ChatGPT account identity metadata is required before reauthorizing this session.',
+        400,
+      );
+    }
     if (target.mode !== 'add' && existingUpstreamId && upstreamAccountId && existingUpstreamId !== upstreamAccountId) {
       throw conflict('reauthorization_identity_mismatch', 'The signed-in ChatGPT identity does not match the selected account.', 409);
     }

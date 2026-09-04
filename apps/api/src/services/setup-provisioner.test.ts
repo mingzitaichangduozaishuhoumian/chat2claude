@@ -450,6 +450,62 @@ describe('SetupProvisioner', () => {
     expect(accountPool.get(result.account.id)?.secret?.accountId).toBe('discovered-upstream');
   });
 
+  it('rejects reauthorization without incoming authoritative identity before mutating state', async () => {
+    const backend = backendFrom({ listModels: async () => [{ id: 'catalog-new' }] });
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const modelRegistry = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+    const runtimeApiKeys = new RuntimeApiKeys();
+    const operationalState = new AdminOperationalState({ path: join(tmpdir(), 'chat2claude-reauthorization-identity-required-operational.json'), debounceMs: 60_000 });
+    const provisioner = new SetupProvisioner({ accountPool, modelRegistry, runtimeApiKeys, operationalState, backend });
+    const target = accountPool.add({ id: 'reauth-target', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'old-access', accountId: 'upstream-a' } });
+    const before = {
+      accounts: accountPool.exportState(),
+      catalog: modelRegistry.exportState(),
+      keys: runtimeApiKeys.exportState(),
+      operational: operationalState.snapshot(),
+    };
+
+    await expect(provisioner.provisionTarget(
+      { mode: 'reauthorize', accountId: target.id },
+      { type: 'chatgpt-session', accessToken: 'unidentified-new-access' },
+    )).rejects.toMatchObject({
+      diagnostic: { stage: 'session_verification', code: 'upstream_identity_required', status: 400 },
+    });
+
+    expect(accountPool.exportState()).toEqual(before.accounts);
+    expect(modelRegistry.exportState()).toEqual(before.catalog);
+    expect(runtimeApiKeys.exportState()).toEqual(before.keys);
+    expect(operationalState.snapshot()).toEqual(before.operational);
+  });
+
+  it('keeps the legacy single-account provisioning path backward-compatible without identity metadata', async () => {
+    const backend = backendFrom({ listModels: async () => [{ id: 'catalog-a' }] });
+    const { provisioner, accountPool } = setup(backend);
+
+    await expect(provisioner.provision({ type: 'chatgpt-session', accessToken: 'legacy-reauthorized-access' })).resolves.toMatchObject({
+      account: { id: 'chatgpt-primary' },
+    });
+    expect(accountPool.get('chatgpt-primary')?.secret?.accessToken).toBe('legacy-reauthorized-access');
+  });
+
+  it('reauthorizes an account when incoming authoritative identity matches', async () => {
+    const backend = backendFrom({ listModels: async () => [{ id: 'catalog-new' }] });
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const provisioner = new SetupProvisioner({
+      accountPool,
+      modelRegistry: new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] }),
+      runtimeApiKeys: new RuntimeApiKeys(),
+      backend,
+    });
+    const target = accountPool.add({ id: 'reauth-target', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'old-access', accountId: 'upstream-a' } });
+
+    await expect(provisioner.provisionTarget(
+      { mode: 'reauthorize', accountId: target.id },
+      { type: 'chatgpt-session', accessToken: 'new-access', accountId: 'upstream-a' },
+    )).resolves.toMatchObject({ account: { id: target.id, upstreamAccountId: 'upstream-a' } });
+    expect(accountPool.get(target.id)?.secret?.accessToken).toBe('new-access');
+  });
+
   it('rejects duplicate add and wrong-identity reauthorization without mutating state', async () => {
     const backend = backendFrom({ listModels: async () => [{ id: 'catalog-a' }] });
     const accountPool = new AccountPool({ seedMockAccount: false });

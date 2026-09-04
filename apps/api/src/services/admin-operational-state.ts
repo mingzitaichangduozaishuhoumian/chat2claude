@@ -15,6 +15,7 @@ export interface OperationalRequestStats {
   totalRequests: number;
   successfulRequests: number;
   failedRequests: number;
+  cancelledRequests: number;
   inputTokens: number;
   outputTokens: number;
   lastRequestAt: string | null;
@@ -140,14 +141,17 @@ export class AdminOperationalState {
     this.schedulePersist();
   }
 
-  recordRequestFinished(identity: OperationalAccountIdentity, result: { success: boolean; inputTokens?: number; outputTokens?: number; at?: string }): void {
+  recordRequestFinished(identity: OperationalAccountIdentity, result: { outcome?: 'success' | 'failure' | 'cancelled'; success?: boolean; inputTokens?: number; outputTokens?: number; at?: string }): void {
     const account = this.getOrCreate(identity);
+    const outcome = result.outcome ?? (result.success === true ? 'success' : 'failure');
+    if (outcome !== 'success' && outcome !== 'failure' && outcome !== 'cancelled') throw invalid('request outcome is invalid');
     account.requestStats.inFlight = Math.max(0, account.requestStats.inFlight - 1);
     account.requestStats.totalRequests += 1;
-    if (result.success) account.requestStats.successfulRequests += 1;
-    else account.requestStats.failedRequests += 1;
-    account.requestStats.inputTokens += optionalNonNegativeNumber(result.inputTokens, 'inputTokens') ?? 0;
-    account.requestStats.outputTokens += optionalNonNegativeNumber(result.outputTokens, 'outputTokens') ?? 0;
+    if (outcome === 'success') account.requestStats.successfulRequests += 1;
+    else if (outcome === 'failure') account.requestStats.failedRequests += 1;
+    else account.requestStats.cancelledRequests += 1;
+    account.requestStats.inputTokens += optionalNonNegativeInteger(result.inputTokens, 'inputTokens') ?? 0;
+    account.requestStats.outputTokens += optionalNonNegativeInteger(result.outputTokens, 'outputTokens') ?? 0;
     account.requestStats.lastRequestAt = result.at === undefined ? new Date().toISOString() : timestamp(result.at, 'at');
     this.schedulePersist();
   }
@@ -241,7 +245,7 @@ export class AdminOperationalState {
     if (!account) {
       account = {
         ...validated,
-        requestStats: { totalRequests: 0, successfulRequests: 0, failedRequests: 0, inputTokens: 0, outputTokens: 0, lastRequestAt: null, inFlight: 0 },
+        requestStats: { totalRequests: 0, successfulRequests: 0, failedRequests: 0, cancelledRequests: 0, inputTokens: 0, outputTokens: 0, lastRequestAt: null, inFlight: 0 },
         lastHealthCheck: null,
         discoveredModelIds: [],
         discoveredModels: [],
@@ -359,16 +363,17 @@ function validateAccount(value: unknown, index: number): PersistedOperationalAcc
   const label = `accounts[${index}]`;
   const raw = strictObject(value, ['accountId', 'createdAt', 'requestStats', 'lastHealthCheck', 'discoveredModelIds', 'discoveredModels', 'quotaCache'], label, ['discoveredModels']);
   const identity = validateIdentity(raw, label);
-  const stats = strictObject(raw.requestStats, ['totalRequests', 'successfulRequests', 'failedRequests', 'inputTokens', 'outputTokens', 'lastRequestAt'], `${label}.requestStats`);
+  const stats = strictObject(raw.requestStats, ['totalRequests', 'successfulRequests', 'failedRequests', 'cancelledRequests', 'inputTokens', 'outputTokens', 'lastRequestAt'], `${label}.requestStats`, ['cancelledRequests']);
   const requestStats: PersistedRequestStats = {
     totalRequests: nonNegativeInteger(stats.totalRequests, `${label}.requestStats.totalRequests`),
     successfulRequests: nonNegativeInteger(stats.successfulRequests, `${label}.requestStats.successfulRequests`),
     failedRequests: nonNegativeInteger(stats.failedRequests, `${label}.requestStats.failedRequests`),
-    inputTokens: nonNegativeNumber(stats.inputTokens, `${label}.requestStats.inputTokens`),
-    outputTokens: nonNegativeNumber(stats.outputTokens, `${label}.requestStats.outputTokens`),
+    cancelledRequests: stats.cancelledRequests === undefined ? 0 : nonNegativeInteger(stats.cancelledRequests, `${label}.requestStats.cancelledRequests`),
+    inputTokens: nonNegativeInteger(stats.inputTokens, `${label}.requestStats.inputTokens`),
+    outputTokens: nonNegativeInteger(stats.outputTokens, `${label}.requestStats.outputTokens`),
     lastRequestAt: nullableTimestamp(stats.lastRequestAt, `${label}.requestStats.lastRequestAt`),
   };
-  if (requestStats.successfulRequests + requestStats.failedRequests !== requestStats.totalRequests) throw invalid(`${label}.requestStats result counts must equal totalRequests`);
+  if (requestStats.successfulRequests + requestStats.failedRequests + requestStats.cancelledRequests !== requestStats.totalRequests) throw invalid(`${label}.requestStats result counts must equal totalRequests`);
   if (!Array.isArray(raw.discoveredModelIds)) throw invalid(`${label}.discoveredModelIds must be an array`);
   const discoveredModelIds = raw.discoveredModelIds.map((id, modelIndex) => nonEmptyString(id, `${label}.discoveredModelIds[${modelIndex}]`));
   if (new Set(discoveredModelIds).size !== discoveredModelIds.length) throw invalid(`${label}.discoveredModelIds contains duplicates`);
@@ -688,8 +693,8 @@ function nonNegativeNumber(value: unknown, label: string): number {
   return value;
 }
 
-function optionalNonNegativeNumber(value: unknown, label: string): number | undefined {
-  return value === undefined ? undefined : nonNegativeNumber(value, label);
+function optionalNonNegativeInteger(value: unknown, label: string): number | undefined {
+  return value === undefined ? undefined : nonNegativeInteger(value, label);
 }
 
 function enumValue<T extends string>(value: unknown, allowed: readonly T[], label: string): T {

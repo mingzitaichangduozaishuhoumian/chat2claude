@@ -7,8 +7,10 @@ import { ModelRegistryError, type ModelRegistry } from '../services/model-regist
 import type { AccountPool, AccountProvider } from '../services/account-pool.js';
 import { accountReleaseError } from './account-release-error.js';
 import { mapChatGptBackendError, mapErrorPayload } from './backend-errors.js';
+import { createAccountRequestTracker, trackStreamStatistics, usageFromBackend } from '../services/request-statistics.js';
+import type { AdminOperationalState } from '../services/admin-operational-state.js';
 
-export interface MessagesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; }
+export interface MessagesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; }
 
 export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
   const app = new Hono();
@@ -39,6 +41,7 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
       });
       if (!account) throw new ClaudeApiError(`No available ${accountProvider} account supports model ${globalResolution.backendModel} with the requested controls.`, 503, 'overloaded_error');
 
+      const tracker = createAccountRequestTracker(deps.operationalState, account);
       const backendContext = { account };
       let releaseError: unknown;
       let releaseDeferredToStream = false;
@@ -54,16 +57,19 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
         deps.requestLog.record({ route: '/v1/messages', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {
-          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToClaudeSse(request, deps.backend.stream(backendRequest, backendContext)), claudeStreamError);
+          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToClaudeSse(request, trackStreamStatistics(deps.backend.stream(backendRequest, backendContext), tracker)), claudeStreamError);
           const stream = readableStreamFromAsyncIterable(events);
           releaseDeferredToStream = true;
           return new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' } });
         }
 
         const backendResponse = await deps.backend.complete(backendRequest, backendContext);
-        return c.json(mapChatGptResponseToClaude(request, backendResponse));
+        const response = mapChatGptResponseToClaude(request, backendResponse);
+        tracker.finish('success', usageFromBackend(backendResponse.usage));
+        return c.json(response);
       } catch (error) {
         releaseError = error;
+        tracker.finish('failure');
         throw error;
       } finally {
         if (!releaseDeferredToStream) deps.accountPool.release(account.id, accountReleaseError(releaseError));

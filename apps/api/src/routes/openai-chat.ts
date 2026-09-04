@@ -7,8 +7,10 @@ import { ModelRegistryError, type ModelRegistry } from '../services/model-regist
 import type { AccountPool, AccountProvider } from '../services/account-pool.js';
 import { accountReleaseError } from './account-release-error.js';
 import { mapChatGptBackendError, mapErrorPayload } from './backend-errors.js';
+import { createAccountRequestTracker, trackStreamStatistics, usageFromBackend } from '../services/request-statistics.js';
+import type { AdminOperationalState } from '../services/admin-operational-state.js';
 
-export interface OpenAiChatRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; }
+export interface OpenAiChatRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; }
 
 export function createOpenAiChatRoute(deps: OpenAiChatRouteDeps): Hono {
   const app = new Hono();
@@ -39,6 +41,7 @@ export function createOpenAiChatRoute(deps: OpenAiChatRouteDeps): Hono {
       });
       if (!account) throw new ClaudeApiError(`No available ${accountProvider} account supports model ${globalResolution.backendModel} with the requested controls.`, 503, 'overloaded_error');
 
+      const tracker = createAccountRequestTracker(deps.operationalState, account);
       const backendContext = { account };
       let releaseError: unknown;
       let releaseDeferredToStream = false;
@@ -54,16 +57,19 @@ export function createOpenAiChatRoute(deps: OpenAiChatRouteDeps): Hono {
         deps.requestLog.record({ route: '/v1/chat/completions', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {
-          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToOpenAiChatSse(request, deps.backend.stream(backendRequest, backendContext)), openAiChatStreamError);
+          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToOpenAiChatSse(request, trackStreamStatistics(deps.backend.stream(backendRequest, backendContext), tracker)), openAiChatStreamError);
           const stream = readableStreamFromAsyncIterable(events);
           releaseDeferredToStream = true;
           return new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' } });
         }
 
         const backendResponse = await deps.backend.complete(backendRequest, backendContext);
-        return c.json(mapChatGptResponseToOpenAiChat(request, backendResponse));
+        const response = mapChatGptResponseToOpenAiChat(request, backendResponse);
+        tracker.finish('success', usageFromBackend(backendResponse.usage));
+        return c.json(response);
       } catch (error) {
         releaseError = error;
+        tracker.finish('failure');
         throw error;
       } finally {
         if (!releaseDeferredToStream) deps.accountPool.release(account.id, accountReleaseError(releaseError));

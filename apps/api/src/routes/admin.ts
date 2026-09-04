@@ -129,7 +129,7 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     }
   });
 
-  app.get('/admin/api/accounts', (c) => c.json({ accounts: options.accountPool.list() }));
+  app.get('/admin/api/accounts', (c) => c.json({ accounts: accountsWithRequestStats(options) }));
   app.get('/admin/api/api-keys', (c) => c.json({ apiKeys: options.runtimeApiKeys.listSafe() }));
   app.delete('/admin/api/api-keys/:id', (c) => {
     const revoke = () => options.runtimeApiKeys.revoke(c.req.param('id'));
@@ -345,6 +345,23 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     return c.json({ ...options.modelRegistry.adminView(), refreshedAccounts });
   });
   return app;
+}
+
+function accountsWithRequestStats(options: AdminRouteOptions) {
+  const statistics = new Map((options.operationalState?.snapshot().accounts ?? []).map((account) => [JSON.stringify([account.accountId, account.createdAt]), account.requestStats]));
+  return options.accountPool.list().map((account) => ({
+    ...account,
+    requestStats: statistics.get(JSON.stringify([account.id, account.createdAt])) ?? {
+      totalRequests: 0,
+      successfulRequests: 0,
+      failedRequests: 0,
+      cancelledRequests: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      lastRequestAt: null,
+      inFlight: 0,
+    },
+  }));
 }
 
 function quotaSummary(quotas: AccountQuotaResult[]): { total: number; fresh: number; stale: number; error: number; unknown: number } {
