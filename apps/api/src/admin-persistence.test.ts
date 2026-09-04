@@ -282,8 +282,15 @@ describe('durable administration', () => {
         expiresAt: '2026-09-04T12:00:00.000Z',
       },
     });
+    const account = accountPool.get('session-account')!;
+    const operationalState = new AdminOperationalState({ path: join(temporaryDirectory(), 'operational.json'), debounceMs: 60_000 });
+    operationalState.recordProvisioningSuccess(
+      { accountId: account.id, createdAt: account.createdAt },
+      [{ id: 'dynamic-model-from-safe-catalog', displayName: 'Dynamic model' }],
+      { checkedAt: '2026-09-04T00:00:00.000Z', result: 'healthy', message: null },
+    );
     const app = new Hono();
-    app.route('/', createAdminRoute({ accountPool, modelRegistry: new ModelRegistry(), backend: {} as ChatGptBackendClient, runtimeApiKeys: new RuntimeApiKeys(), envApiKeys: [], defaultReasoningEffort: 'medium', defaultResponseSpeed: 'balanced', backendProvider: 'mock' }));
+    app.route('/', createAdminRoute({ accountPool, modelRegistry: new ModelRegistry(), backend: {} as ChatGptBackendClient, runtimeApiKeys: new RuntimeApiKeys(), operationalState, envApiKeys: [], defaultReasoningEffort: 'medium', defaultResponseSpeed: 'balanced', backendProvider: 'mock' }));
 
     const body = await (await app.request('/admin/api/accounts')).json() as { accounts: Array<Record<string, unknown>> };
     expect(body.accounts[0]).toMatchObject({
@@ -293,6 +300,8 @@ describe('durable administration', () => {
       upstreamAccountId: 'upstream-account',
       planType: 'plus',
       credentialExpiresAt: '2026-09-04T12:00:00.000Z',
+      modelCount: 1,
+      discoveredModels: [{ id: 'dynamic-model-from-safe-catalog', displayName: 'Dynamic model' }],
     });
     expect(JSON.stringify(body)).not.toMatch(/access-secret|refresh-secret|id-secret|cookie-secret|device-secret|agent-secret/);
     for (const field of ['secret', 'accessToken', 'refreshToken', 'idToken', 'cookie', 'deviceId', 'userAgent']) {

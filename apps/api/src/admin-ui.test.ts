@@ -1,0 +1,270 @@
+import { describe, expect, it } from 'vitest';
+import { createApp } from './app.js';
+import { loadEnv } from './config/env.js';
+import { renderAccountCards, renderQuotaCards, type AdminAccountView } from './routes/admin-page-view.js';
+
+describe('Admin UI redesign contracts', () => {
+  it('renders distinct authentication and quota workspaces with independent data calls', async () => {
+    const app = createApp(loadEnv({ NODE_ENV: 'test' }));
+    const html = await (await app.request('/admin')).text();
+
+    expect(html).toContain('data-admin-module="authentication"');
+    expect(html).toContain('data-admin-module="quota"');
+    expect(html).toContain('id="authentication-module"');
+    expect(html).toContain('id="quota-module"');
+    expect(html).toContain('认证管理');
+    expect(html).toContain('配额管理');
+    expect(html).toContain("getJson('/admin/api/accounts')");
+    expect(html).toContain("getJson('/admin/api/quotas')");
+    expect(html).toContain("postJson('/admin/api/quotas/refresh')");
+    expect(html).toContain("'/admin/api/quotas/' + encodeURIComponent(accountId) + '/refresh'");
+    expect(html).toContain("localStorage.setItem('adminViewMode', mode)");
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toContain(':focus-visible');
+    expect(html).toContain('@media(max-width:420px)');
+    expect(html).not.toMatch(/gradient\s*\(/i);
+    expect(html).not.toMatch(/#[0-9a-f]*[89a-f][0-9a-f]*[5-9a-f][0-9a-f]*/i);
+    expect(html).not.toMatch(/[😀-🙏🌀-🫿]/u);
+    expect(html).not.toContain('1.5x');
+    expect(html).not.toContain('2x');
+    const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
+    expect(script).toBeTruthy();
+    expect(() => new Function(script!)).not.toThrow();
+    await app.dispose();
+  });
+
+  it('emits linked APG automatic-activation tabs without focusing panel headings', async () => {
+    const app = createApp(loadEnv({ NODE_ENV: 'test' }));
+    const html = await (await app.request('/admin')).text();
+    const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
+
+    expect(html.match(/id="authentication-tab"/g)).toHaveLength(1);
+    expect(html.match(/id="quota-tab"/g)).toHaveLength(1);
+    expect(html).toContain('aria-controls="authentication-module"');
+    expect(html).toContain('aria-controls="quota-module"');
+    expect(html).toContain('aria-labelledby="authentication-tab"');
+    expect(html).toContain('aria-labelledby="quota-tab"');
+    expect(html).toContain('data-admin-module="authentication" aria-controls="authentication-module" aria-selected="true" tabindex="0"');
+    expect(html).toContain('data-admin-module="quota" aria-controls="quota-module" aria-selected="false" tabindex="-1"');
+    expect(html).not.toMatch(/<h2\b[^>]*\btabindex=/);
+    expect(script).toBeTruthy();
+
+    const tabScript = script!.slice(
+      script!.indexOf('function selectModule(name)'),
+      script!.indexOf("document.getElementById('save-admin-api-key')"),
+    );
+    expect(tabScript).toContain("button.tabIndex = selected ? 0 : -1");
+    expect(tabScript).toContain("button.addEventListener('click', () => selectModule(button.dataset.adminModule));");
+    expect(tabScript).toMatch(/function focusModuleTab\(index\) \{[\s\S]*selectModule\(button\.dataset\.adminModule\);[\s\S]*button\.focus\(\);/);
+    expect(tabScript).toContain("event.key === 'ArrowRight'");
+    expect(tabScript).toContain("event.key === 'ArrowLeft'");
+    expect(tabScript).toContain("event.key === 'Home'");
+    expect(tabScript).toContain("event.key === 'End'");
+    expect(tabScript).toContain('event.preventDefault();');
+    expect(tabScript).toContain('focusModuleTab(targetIndex);');
+    expect(tabScript).toContain('index === lastIndex ? 0 : index + 1');
+    expect(tabScript).toContain('index === 0 ? lastIndex : index - 1');
+    expect(tabScript).not.toMatch(/focusHeading|module-title|querySelector\([^)]*h2[^)]*\)\.focus\(\)|getElementById\([^)]*module[^)]*\)\.focus\(\)/);
+    await app.dispose();
+  });
+
+  it('renders account fixtures for empty, healthy, disabled, error, multiple, and long-text states', () => {
+    expect(renderAccountCards([])).toContain('尚未添加 ChatGPT 账号');
+
+    const html = renderAccountCards([
+      account({
+        id: 'internal-account-id-with-a-very-long-value-that-must-wrap-safely',
+        label: 'Primary operator account with a deliberately long label',
+        email: 'operator-with-a-very-long-local-part@example-tenant-with-a-long-domain.test',
+        planType: 'plus',
+        status: 'available',
+        enabled: true,
+        modelCount: 3,
+        discoveredModels: [{ id: 'dynamic-model-alpha' }, { id: 'dynamic-model-beta-with-a-long-identifier' }, { id: 'dynamic-model-gamma' }],
+      }),
+      account({ id: 'disabled', label: 'Disabled', status: 'disabled', enabled: false, modelCount: 0, discoveredModels: [] }),
+      account({ id: 'error', label: 'Error', status: 'error', enabled: true, lastErrorCode: 'unauthorized', modelCount: 1, discoveredModels: [{ id: 'dynamic-only-model' }] }),
+    ]);
+
+    expect(html).toContain('Primary operator account');
+    expect(html).toContain('plus');
+    expect(html).toContain('健康');
+    expect(html).toContain('已停用');
+    expect(html).toContain('异常');
+    expect(html).toContain('成功 7');
+    expect(html).toContain('失败 2');
+    expect(html).toContain('取消 1');
+    expect(html).toContain('模型 3');
+    expect(html).toContain('data-professional-only');
+    expect(html).toContain('internal-account-id-with-a-very-long-value');
+    expect(html).toContain('dynamic-model-beta-with-a-long-identifier');
+    expect(html).toContain('data-account-settings');
+    expect(html).toContain('data-account-health');
+    expect(html).toContain('data-account-reauthorize');
+    expect(html).toContain('data-account-toggle');
+    expect(html).toContain('data-account-delete');
+  });
+
+  it('renders quota fixtures without inventing missing or unknown usage', () => {
+    const accounts = [account({ id: 'fresh' }), account({ id: 'stale' }), account({ id: 'unknown' }), account({ id: 'error' })];
+    const html = renderQuotaCards([
+      {
+        accountId: 'fresh', createdAt: accounts[0].createdAt, supported: true, status: 'fresh', fetchedAt: '2026-09-04T00:00:00.000Z',
+        quota: {
+          planType: 'plus', allowed: true, limitReached: false,
+          windows: [
+            { position: 'primary', descriptor: 'provider-primary', durationSeconds: 18_000, usedPercent: 25, resetAt: '2026-09-04T05:00:00.000Z' },
+            { position: 'secondary', descriptor: 'provider-secondary', durationSeconds: 604_800, usedPercent: 40, resetAfterSeconds: 3600 },
+          ],
+          additionalLimits: [
+            { meteredFeature: 'feature-a', limitName: 'Feature A', allowed: true, limitReached: false, windows: [{ position: 'primary', descriptor: 'extra-known', durationSeconds: 86_400, usedPercent: 55 }] },
+            { meteredFeature: 'feature-b', allowed: false, limitReached: true, windows: [{ position: 'secondary', descriptor: 'extra-unknown-duration' }] },
+          ],
+        },
+      },
+      { accountId: 'stale', createdAt: accounts[1].createdAt, supported: true, status: 'stale', fetchedAt: '2026-09-03T00:00:00.000Z', quota: { allowed: true, limitReached: false, windows: [], additionalLimits: [] }, error: { code: 'timeout', category: 'timeout', message: 'Quota provider request timed out.' } },
+      { accountId: 'unknown', createdAt: accounts[2].createdAt, supported: true, status: 'unknown' },
+      { accountId: 'error', createdAt: accounts[3].createdAt, supported: true, status: 'error', error: { code: 'unauthorized', status: 401, category: 'authentication', message: 'Quota provider rejected the account credentials.' } },
+    ], accounts);
+
+    expect(html).toContain('五小时窗口');
+    expect(html).toContain('每周窗口');
+    expect(html).toContain('已用 25%');
+    expect(html).toContain('剩余 75%');
+    expect(html).toContain('Feature A');
+    expect(html).toContain('extra-unknown-duration');
+    expect(html).toContain('时长未知');
+    expect(html).toContain('五小时窗口不可用');
+    expect(html).toContain('每周窗口不可用');
+    expect(html).toContain('数据陈旧');
+    expect(html).toContain('尚未获取');
+    expect(html).toContain('获取失败');
+    expect(html).toContain('aria-valuemin="0"');
+    expect(html).toContain('aria-valuemax="100"');
+    expect(html).not.toContain('五小时窗口</span><span>已用 0%');
+    expect(html).not.toContain('每周窗口</span><span>已用 0%');
+  });
+
+  it('renders quotas from quota results when account metadata is unavailable', () => {
+    const html = renderQuotaCards([{
+      accountId: 'quota-only', createdAt: '2026-09-01T00:00:00.000Z', supported: true, status: 'fresh',
+      quota: { planType: 'authoritative-provider-plan', allowed: true, limitReached: false, windows: [], additionalLimits: [] },
+    }], []);
+
+    expect(html).toContain('quota-only');
+    expect(html).toContain('authoritative-provider-plan');
+    expect(html).toContain('data-quota-refresh="quota-only"');
+  });
+
+  it('uses provider plan before account fallback and clearly handles unsupported quota lookup', () => {
+    const accountMetadata = account({ id: 'supported', label: 'Account fallback', planType: 'account-plan' });
+    const html = renderQuotaCards([
+      { accountId: 'supported', createdAt: accountMetadata.createdAt, supported: true, status: 'fresh', quota: { planType: 'provider-plan', allowed: true, limitReached: false, windows: [], additionalLimits: [] } },
+      { accountId: 'unsupported', createdAt: '2026-09-01T00:00:00.000Z', supported: false, status: 'unknown', error: { code: 'unsupported', category: 'unsupported', message: 'Account quota is not supported for this account.' } },
+    ], [accountMetadata]);
+
+    expect(html).toContain('provider-plan');
+    expect(html).not.toContain('account-plan');
+    expect(html).toContain('此账号不支持配额查询');
+    expect(html).not.toContain('data-quota-refresh="unsupported"');
+  });
+
+  it('keeps quota failures independent and marks stale refresh summaries incomplete', async () => {
+    const app = createApp(loadEnv({ NODE_ENV: 'test' }));
+    const html = await (await app.request('/admin')).text();
+
+    expect(html).toContain("let quotaRequestState = { status: 'idle', error: null };");
+    expect(html).toContain('quotaRequestErrorHtml()');
+    expect(html).toContain('data-retry-quotas');
+    expect(html).toContain("const incomplete = stale + error + unknown;");
+    expect(html).toContain('结果不完整。新鲜 ');
+    await app.dispose();
+  });
+
+  it('reports each single-account quota refresh outcome accurately', async () => {
+    const app = createApp(loadEnv({ NODE_ENV: 'test' }));
+    const html = await (await app.request('/admin')).text();
+
+    expect(html).toContain('function quotaRefreshFeedback(quota)');
+    expect(html).toContain("quota.status === 'fresh'");
+    expect(html).toContain('账号配额刷新成功，数据为新鲜状态。');
+    expect(html).toContain("quota.status === 'stale'");
+    expect(html).toContain('账号配额刷新完成，但返回的是陈旧数据。');
+    expect(html).toContain("quota.status === 'error'");
+    expect(html).toContain('账号配额刷新完成，但上游返回错误状态。');
+    expect(html).toContain("quota.status === 'unknown'");
+    expect(html).toContain('账号配额刷新完成，但上游未返回可用状态。');
+    expect(html).toContain("quota.error?.code === 'unsupported'");
+    expect(html).toContain('此账号不支持配额查询，无法刷新。');
+    expect(html).toContain('renderResult({ ...body, message: feedback }); announce(feedback);');
+    await app.dispose();
+  });
+
+  it('uses loaded accounts only to enrich quota cards without resetting quota request errors', async () => {
+    const app = createApp(loadEnv({ NODE_ENV: 'test' }));
+    const html = await (await app.request('/admin')).text();
+    const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
+    const accountLoad = script!.slice(script!.indexOf('async function loadAccounts()'), script!.indexOf('function bindAccountActions()'));
+
+    expect(accountLoad).toContain('accountsCache = Array.isArray(body.accounts) ? body.accounts : [];');
+    expect(accountLoad).toContain('bindAccountActions();');
+    expect(accountLoad).toContain('renderQuotaPanel();');
+    expect(accountLoad).not.toContain('quotaRequestState =');
+    expect(accountLoad).not.toContain('quotasCache =');
+    await app.dispose();
+  });
+
+  it('bounds long dynamic state badges without clipping or page-wide overflow suppression', async () => {
+    const app = createApp(loadEnv({ NODE_ENV: 'test' }));
+    const html = await (await app.request('/admin')).text();
+
+    expect(html).toContain('.state-badge { display: inline-flex; align-items: center; width: fit-content; min-width: 0; max-width: 100%;');
+    expect(html).toContain('white-space: normal; overflow-wrap: anywhere; word-break: break-word;');
+    expect(html).toContain("'<span class=\"state-badge neutral\" title=\"' + esc(capabilitySummary(model.capabilities)) + '\">' + esc(model.id) + '</span>'");
+    expect(html).not.toContain('.state-badge { display: inline-flex; align-items: center; width: max-content;');
+    expect(html).not.toMatch(/(?:html|body|\*)\s*\{[^}]*overflow-x\s*:\s*hidden/i);
+    await app.dispose();
+  });
+
+  it('applies professional mode dynamically and names model mapping controls by alias', async () => {
+    const app = createApp(loadEnv({ NODE_ENV: 'test' }));
+    const html = await (await app.request('/admin')).text();
+
+    expect(html).toContain('<html lang="zh-CN" data-admin-mode="simple">');
+    expect(html).toContain("document.documentElement.dataset.adminMode = professional ? 'professional' : 'simple';");
+    expect(html).toContain('[data-admin-mode="simple"] [data-professional-only]');
+    expect(html).not.toContain('data-professional-only hidden');
+    expect(html).not.toContain('const professionalPanels =');
+    expect(html).toContain("aria-label=\"Alias ' + esc(model.id) + ' 的 Backend Model\"");
+    expect(html).toContain("aria-label=\"Alias ' + esc(model.id) + ' 是否启用\"");
+    const token = html.match(/--ink-faint:\s*rgb\((\d+)\s+(\d+)\s+(\d+)\)/);
+    expect(token).toBeTruthy();
+    expect(contrastRatio(token!.slice(1).map(Number), [248, 247, 242])).toBeGreaterThanOrEqual(4.7);
+    await app.dispose();
+  });
+});
+
+function contrastRatio(foreground: number[], background: number[]): number {
+  const luminance = (color: number[]) => {
+    const [red, green, blue] = color.map((channel) => {
+      const normalized = channel / 255;
+      return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  };
+  const [lighter, darker] = [luminance(foreground), luminance(background)].sort((left, right) => right - left);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function account(overrides: Partial<AdminAccountView> = {}): AdminAccountView {
+  return {
+    id: 'account', label: 'Account', provider: 'chatgpt-session', status: 'available', enabled: true,
+    maxConcurrency: 2, currentConcurrency: 0, lastUsedAt: '2026-09-04T00:00:00.000Z', lastError: null,
+    lastErrorCode: null, cooldownUntil: null, capabilities: ['messages'], createdAt: '2026-09-01T00:00:00.000Z',
+    hasSecret: true, email: 'operator@example.test', upstreamAccountId: 'upstream-account', planType: 'plus',
+    credentialExpiresAt: '2026-10-01T00:00:00.000Z', modelCount: 2,
+    discoveredModels: [{ id: 'dynamic-model-one' }, { id: 'dynamic-model-two' }],
+    requestStats: { totalRequests: 10, successfulRequests: 7, failedRequests: 2, cancelledRequests: 1, inputTokens: 100, outputTokens: 50, lastRequestAt: '2026-09-04T00:00:00.000Z', inFlight: 0 },
+    ...overrides,
+  };
+}
