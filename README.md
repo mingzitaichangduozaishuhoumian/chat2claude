@@ -4,7 +4,7 @@
 
 本项目面向使用本人控制或已获明确授权的 ChatGPT/Codex 账号及其包含用量的个人自托管场景。不得将个人订阅流量公开转售、向不特定第三方重新提供或进行大规模共享；它不是订阅聚合、流量转售或多租户共享网关。
 
-普通用户路径是“浏览器授权（Codex OAuth）”：打开 `/admin` 后生成 OpenAI Codex OAuth PKCE 授权链接，服务不会启动独立 Chrome/新 profile，也不再依赖已登录 `chatgpt.com` 页面抓 token。用户在当前浏览器/已登录账号环境中打开链接授权；成功后自动创建 `chatgpt-primary` 账号、执行 health-check、刷新模型、绑定 `sonnet` alias、生成幂等的持久化 runtime API key，并在页面展示 endpoint/key/curl。手动 accessToken/cookie 导入仍保留在高级区域作为 fallback。
+普通用户路径是“浏览器授权（Codex OAuth）”：打开 `/admin` 后点击主按钮，页面会立即预开一个新标签页，再生成 OpenAI Codex OAuth PKCE 授权链接并导航到授权页。服务不会启动独立 Chrome/新 profile，也不再依赖已登录 `chatgpt.com` 页面抓 token。成功后自动创建 `chatgpt-primary` 账号、执行 health-check、刷新模型、绑定 `sonnet` alias、生成幂等的持久化 runtime API key，并在页面展示 endpoint/key/curl。若弹窗被拦截，仍可点击普通授权链接或复制完整 URL；手动 accessToken/cookie 导入保留在高级区域作为 fallback。
 
 ## 技术栈
 
@@ -36,7 +36,7 @@ start.bat
 http://localhost:3000/admin
 ```
 
-本机打开 `/admin` 会自动建立仅当前进程有效的 HttpOnly 浏览器管理会话，无需先设置临时 `API_KEYS`，即使重启后浏览器没有保存 Runtime API Key 也可继续管理账号。点击页面主按钮“生成 Codex OAuth 授权链接”，把链接复制或在当前浏览器中打开完成授权；随后立即复制页面一次性显示的 Runtime API Key、endpoint 和 curl 示例即可调用 `/v1/messages`。
+本机打开 `/admin` 会自动建立仅当前进程有效的 HttpOnly 浏览器管理会话，无需先设置临时 `API_KEYS`，即使重启后浏览器没有保存 Runtime API Key 也可继续管理账号。点击页面主按钮“打开 Codex OAuth 授权页”会直接打开新标签页；若浏览器拦截弹窗，可点击保留的普通链接或复制完整授权 URL。授权完成后，新标签页会回到同一 Admin flow 并继续自动初始化；随后立即复制页面一次性显示的 Runtime API Key、endpoint 和 curl 示例即可调用 `/v1/messages`。
 
 一键启动脚本会自动启用 corepack；如果还没有 `node_modules`，会先安装依赖。面向普通用户的 `start.bat` / `start.sh` 在未设置 `CHATGPT_BACKEND` 时默认使用 `session`，并提示打开 `/admin` 授权。代码层 `loadEnv()` 默认仍保持 `mock`，用于保护测试与本地开发。
 
@@ -54,10 +54,10 @@ corepack pnpm start
 
 ## 一键授权流程
 
-1. `POST /admin/api/auth/chatgpt/start` 创建授权 flow，使用密码学随机 flow ID、一次性 OAuth `state`、PKCE `code_verifier` / `code_challenge`，返回 `https://auth.openai.com/oauth/authorize` 授权链接。当前 scope 为 `openid profile email offline_access api.connectors.read api.connectors.invoke`，并诚实标记 `originator=chat2claude`。服务不会打开浏览器，不会启动独立 Chrome/新 profile。
-2. `POST /admin/api/auth/chatgpt/start` 接收页面提交的精确 `adminOrigin`。服务将它与实际请求的 Host 和 `Origin` 严格比对，只接受不含 path、query、hash、userinfo 的完整 HTTP(S) origin；通过后仅在服务端 flow 内关联为安全回跳目标。callback listener 优先在 `127.0.0.1:1455` 启动，默认端口不可用时使用已注册的 `1457` fallback，并用实际端口构造授权 URL。
-3. listener 成功收到 callback 后，已关联安全 origin 的 flow 返回 `303 <origin>/admin`；未关联 origin 时保持静态成功页。所有 listener 响应继续使用 no-store、no-referrer、CSP 和 nosniff 安全头。`POST /admin/api/auth/chatgpt/callback` 支持粘贴完整 `redirectUrl` / `redirect_url`。粘贴 URL 必须与该 flow 的实际 `http://localhost:<1455|1457>/auth/callback` 完全匹配；错误协议、host、端口、path、userinfo、fragment、重复或冲突参数会被拒绝。state 成功接收后只能消费一次。
-4. 前端只在 `sessionStorage` 保存 `{flowId, origin}`，刷新或回到同一 `/admin` 会先校验 origin，再恢复授权链接、状态、取消按钮并继续轮询；完成、取消、过期、错误或 404 时清理。绝不会在该存储中保存 OAuth code/state/verifier/token/cookie、Admin key 或 Runtime key。authorization-code exchange 与 provisioning 都按 flow single-flight；并发轮询不会重复换码、重复创建账号或生成多批 key。换码完成后清理 code/verifier，provisioning 完成后清理 flow secret 副本。`refresh_token` / `id_token` / `expiresAt` 仅保存在进程内账号 secret，不返回给前端、错误或日志。
+1. `POST /admin/api/auth/chatgpt/start` 创建授权 flow，使用密码学随机 flow ID、一次性 OAuth `state`、PKCE `code_verifier` / `code_challenge`，返回 `https://auth.openai.com/oauth/authorize` 授权链接。当前 scope 为 `openid profile email offline_access api.connectors.read api.connectors.invoke`，并诚实标记 `originator=chat2claude`。Admin 点击处理器会在任何网络等待前同步 `window.open('about:blank', '_blank')`，start 成功后导航并聚焦该标签；服务端本身不会启动独立 Chrome/新 profile。
+2. `POST /admin/api/auth/chatgpt/start` 接收页面提交的精确 `adminOrigin`。服务将它与实际请求的 Host 和 `Origin` 严格比对，只接受不含 path、query、hash、userinfo 的完整 HTTP(S) origin；通过后仅在服务端 flow 内关联为安全回跳目标。redirect URI 始终为 `http://localhost:<port>/auth/callback`。listener 会在同一端口仅绑定 Windows/Linux 可用的 loopback：优先尝试 `::1`（`ipv6Only`）并同时绑定 `127.0.0.1`；若某个可用地址族的端口已占用，会关闭本轮已打开的 socket，并从 1455 整体切换到已注册的 1457 fallback。系统不支持 IPv6 时可只使用 IPv4，绝不绑定 wildcard 或 LAN 地址。
+3. listener 或手动 callback API 收到 code 后会立即以 single-flight 完成 authorization-code exchange，不再等待原 Admin 标签页下一次 status polling 才换 token。成功 listener callback 返回 `303 <origin>/admin?oauth_flow=<flow-id>`；query 只含非敏感高熵 flow locator，不含 code、state、verifier 或 token。未关联 origin 时保持静态成功页。所有 listener 响应继续使用 no-store、no-referrer、CSP 和 nosniff 安全头。`POST /admin/api/auth/chatgpt/callback` 支持粘贴完整 `redirectUrl` / `redirect_url`；URL 必须与该 flow 的实际 `http://localhost:<1455|1457>/auth/callback` 完全匹配，错误协议、host、端口、path、userinfo、fragment、重复或冲突参数会被拒绝，state 成功接收后只能消费一次。
+4. callback 打开的 Admin 页面会先校验 `oauth_flow` 格式，只把 `{flowId, origin}` 写入 `sessionStorage`，随即用 `history.replaceState` 从地址栏移除 query，再恢复同一 flow 并继续轮询/provisioning。刷新恢复也会校验 origin；完成、取消、过期、错误或 404 时清理，404 会明确提示服务重启或流程过期。绝不会在 URL 或该存储中保存 OAuth code/state/verifier/token/cookie、Admin key 或 Runtime key。authorization-code exchange 与 provisioning 都按 flow single-flight；并发请求不会重复换码、重复创建账号或生成多批 key。换码完成后清理 code/verifier，provisioning 完成后清理 flow secret 副本。`refresh_token` / `id_token` / `expiresAt` 仅保存在进程内账号 secret，不返回给前端、错误或日志。
 5. 拿到 OAuth access token 后自动 provisioning：
    - upsert 固定账号 `chatgpt-primary`，provider 为 `chatgpt-session`；
    - 调用 backend `healthCheck({ account })`；
@@ -75,6 +75,8 @@ OAuth 凭据、账号池和 runtime key 会持久保存到本机 `DATA_DIR/runti
 
 OAuth 授权不可用或你已有可用 session secret 时，在 `/admin` 展开“高级：手动导入 accessToken / cookie”，填入 session 后会走同一套 provisioning。主流程不要依赖 `chatgpt.com` 已登录页面抓 token；高级导入只是 fallback。
 
+Docker、远程服务器或浏览器不在运行 chat2claude 的同一台机器时，授权提供方访问的 `localhost` 指向浏览器所在机器，callback 可能无法到达服务容器/远端主机；本修复不声称自动解决这种网络拓扑。此时请从浏览器地址栏复制包含 `code` 和 `state` 的完整 `http://localhost:<port>/auth/callback?...` URL，并粘贴到 Admin 的“提交 callback URL”输入框，由服务端校验后继续 exchange/provisioning。
+
 对应 API：
 
 ```bash
@@ -91,9 +93,9 @@ curl -X POST http://localhost:3000/admin/api/auth/chatgpt/complete \
 - `GET /admin`：原生 JS 管理后台，一键授权、API 配置、账号池和模型映射
 - `GET /admin/api/setup/status`：查看 API key、默认 effort/speed、backend provider 状态
 - `GET /admin/api/auth/status`：查看整体授权 ready 状态
-- `POST /admin/api/auth/chatgpt/start`：开始 Codex OAuth PKCE 授权，返回授权链接但不打开浏览器
-- `POST /admin/api/auth/chatgpt/callback`：提交 OAuth callback URL 或 `code`/`state`
-- `GET /admin/api/auth/chatgpt/:id`：轮询授权；收到 code 后 exchange token，拿到 secret 后自动 provisioning（只执行一次）
+- `POST /admin/api/auth/chatgpt/start`：开始 Codex OAuth PKCE 授权并返回授权链接；Admin 页面会同步预开新标签后导航，API 本身不启动浏览器
+- `POST /admin/api/auth/chatgpt/callback`：提交完整 OAuth callback URL，并立即推进 single-flight token exchange
+- `GET /admin/api/auth/chatgpt/:id`：恢复/轮询授权；拿到 exchanged secret 后自动 provisioning（只执行一次）
 - `POST /admin/api/auth/chatgpt/:id/cancel`：取消授权 flow
 - `POST /admin/api/auth/chatgpt/complete`：高级手动导入 session，并走同一套 provisioning
 - `POST /admin/api/api-keys/dev-enable`：开发阶段生成随机持久 runtime key；`NODE_ENV=production` 时禁用
