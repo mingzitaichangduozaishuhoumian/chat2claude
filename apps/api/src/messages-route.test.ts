@@ -1282,14 +1282,18 @@ class InspectingBackend implements ChatGptBackendClient {
   lastRequest: ChatGptCompletionRequest | undefined;
   lastContext: ChatGptBackendRequestContext | undefined;
   listModelsContext: ChatGptBackendRequestContext | undefined;
+  listModelsCalls = 0;
+  healthCheckCalls = 0;
   constructor(private readonly models: ChatGptDiscoveredModel[] = []) {}
 
   async listModels(context?: ChatGptBackendRequestContext): Promise<ChatGptDiscoveredModel[]> {
+    this.listModelsCalls += 1;
     this.listModelsContext = context;
     return this.models;
   }
 
   async healthCheck(_context?: ChatGptBackendRequestContext): Promise<{ ok: boolean }> {
+    this.healthCheckCalls += 1;
     return { ok: true };
   }
 
@@ -1516,9 +1520,11 @@ describe('/admin', () => {
     const app = createApp(env, { authFlow });
     const started = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST', headers: adminKeyHeaders });
     expect(started.status).toBe(201);
-    expect((await fetch(`http://127.0.0.1:${port}/wrong`)).status).toBe(404);
+    const redirectUri = new URL((await started.json() as { authorizeUrl: string }).authorizeUrl).searchParams.get('redirect_uri')!;
+    const wrongUrl = new URL('/wrong', redirectUri);
+    expect((await fetch(wrongUrl)).status).toBe(404);
     await app.dispose();
-    await expect(fetch(`http://127.0.0.1:${port}/wrong`)).rejects.toThrow();
+    await expect(fetch(wrongUrl)).rejects.toThrow();
   });
 
   it('returns the server-rendered admin HTML page', async () => {
@@ -1794,7 +1800,7 @@ describe('ChatGPT one-click auth admin flow', () => {
     expect(callbackRes.status).toBe(200);
     const callbackBody = await callbackRes.json() as { id: string; state: string };
     expect(callbackBody.id).toBe(startBody.id);
-    expect(callbackBody.state).toBe('waiting');
+    expect(callbackBody.state).toBe('ready');
     expect(JSON.stringify(callbackBody)).not.toContain('token-ready');
     expect(JSON.stringify(callbackBody)).not.toContain('refresh-ready');
 
@@ -1818,6 +1824,76 @@ describe('ChatGPT one-click auth admin flow', () => {
     const thirdRes = await app.request(`/admin/api/auth/chatgpt/${startBody.id}`);
     const thirdBody = await thirdRes.json() as { provisionResult: { apiKey: string } };
     expect(thirdBody.provisionResult.apiKey).toBe(readyBody.provisionResult.apiKey);
+  });
+
+  it('single-flights two concurrent Admin status GETs after callback through one provisioning commit', async () => {
+    const authFlow = createOAuthTestFlow();
+    const accountPool = new AccountPool();
+    const modelRegistry = new ModelRegistry();
+    const runtimeApiKeys = new RuntimeApiKeys();
+    const backend = new InspectingBackend([{ id: 'plain-model' }, { id: 'gpt-5-thinking' }]);
+    const provisioner = new SetupProvisioner({ accountPool, modelRegistry, backend, runtimeApiKeys });
+    const originalProvision = provisioner.provision.bind(provisioner);
+    let provisioningCalls = 0;
+    let commitCalls = 0;
+    provisioner.provision = (secret, signal, commitBoundary) => {
+      provisioningCalls += 1;
+      if (!commitBoundary) throw new Error('Expected auth flow commit boundary');
+      return originalProvision(secret, signal, (commit) => commitBoundary((committedAt) => {
+        commitCalls += 1;
+        return commit(committedAt);
+      }));
+    };
+    const app = new Hono();
+    app.route('/', createAdminRoute({
+      accountPool,
+      modelRegistry,
+      backend,
+      runtimeApiKeys,
+      envApiKeys: [],
+      defaultReasoningEffort: 'medium',
+      defaultResponseSpeed: 'balanced',
+      backendProvider: 'session',
+      authFlow,
+      setupProvisioner: provisioner,
+    }));
+
+    const start = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST' });
+    const started = await start.json() as { id: string; authorizeUrl: string };
+    const state = new URL(started.authorizeUrl).searchParams.get('state');
+    const callback = await app.request('/admin/api/auth/chatgpt/callback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ redirectUrl: `http://localhost:1455/auth/callback?code=code-ready&state=${state}` }),
+    });
+    expect(callback.status).toBe(200);
+
+    const [firstResponse, secondResponse] = await Promise.all([
+      app.request(`/admin/api/auth/chatgpt/${started.id}`),
+      app.request(`/admin/api/auth/chatgpt/${started.id}`),
+    ]);
+    const [first, second] = await Promise.all([firstResponse.json(), secondResponse.json()]);
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(first).toEqual(second);
+    expect(first).toMatchObject({
+      state: 'ready',
+      provisioned: true,
+      provisionResult: {
+        account: { id: 'chatgpt-primary', provider: 'chatgpt-session', hasSecret: true },
+        modelsDiscovered: ['plain-model', 'gpt-5-thinking'],
+        boundAliases: { sonnet: 'gpt-5-thinking' },
+      },
+    });
+    expect(provisioningCalls).toBe(1);
+    expect(backend.healthCheckCalls).toBe(1);
+    expect(backend.listModelsCalls).toBe(1);
+    expect(commitCalls).toBe(1);
+    expect(accountPool.list().filter((account) => account.id === 'chatgpt-primary')).toHaveLength(1);
+    expect(runtimeApiKeys.listSafe()).toHaveLength(1);
+    expect(runtimeApiKeys.listSafe()[0].name).toBe('chatgpt-primary');
+    await authFlow.close();
   });
 
   it('provisioning keeps OAuth token metadata internally and returns a redacted account', async () => {

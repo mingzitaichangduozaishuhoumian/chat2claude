@@ -256,7 +256,7 @@ function status(options: AdminRouteOptions) {
     defaultEndpoint: 'POST /v1/messages',
     nextStep: sessionAccounts.length > 0
       ? 'ChatGPT session 已导入。请复制 API 配置调用 /v1/messages。'
-      : '打开 /admin 点击“浏览器授权（Codex OAuth）”，复制授权链接到当前浏览器完成授权后，系统会自动初始化账号、模型和 API Key。',
+      : '打开 /admin 点击“浏览器授权（Codex OAuth）”，新标签页会直接打开授权页；若被拦截可点击链接或复制 URL，完成后系统会自动初始化账号、模型和 API Key。',
   };
 }
 
@@ -317,38 +317,39 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     main{width:min(1180px,calc(100% - 32px));margin:0 auto;padding:32px 0 56px}.shell{border:1px solid var(--line);border-radius:28px;background:linear-gradient(180deg,rgba(13,25,24,.9),rgba(8,14,14,.94));box-shadow:0 24px 90px rgba(0,0,0,.42);overflow:hidden}.hero{padding:34px clamp(22px,4vw,42px) 28px;border-bottom:1px solid var(--line);background:linear-gradient(120deg,rgba(230,180,81,.13),transparent 40%),linear-gradient(270deg,rgba(66,214,198,.11),transparent 36%)}
     h1{margin:0 0 12px;font-size:clamp(32px,6vw,64px);line-height:.98;letter-spacing:-.06em}.hero-heading{justify-content:space-between;align-items:end}.hero-heading h1{margin-bottom:0}.mode-toggle{display:flex;gap:6px}.mode-toggle button[aria-pressed="true"]{color:#130f07;border-color:rgba(230,180,81,.44);background:linear-gradient(180deg,#f0c66b,#c8912f)}.hero p{max-width:800px;margin:0;color:#aec0ba;line-height:1.8}.content{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(320px,.92fr);gap:18px;padding:18px}.card{border:1px solid var(--line);border-radius:22px;background:linear-gradient(180deg,rgba(255,255,255,.038),transparent),var(--panel);padding:22px}.card.full{grid-column:1/-1}.muted{color:var(--muted)}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.stack{display:grid;gap:14px}.status{display:inline-flex;gap:8px;padding:7px 12px;border-radius:999px;font-size:13px;font-weight:800;border:1px solid var(--line);background:rgba(255,255,255,.045)}.status.ok{color:var(--cyan);border-color:rgba(66,214,198,.38);background:rgba(66,214,198,.14)}.status.warn{color:var(--gold);border-color:rgba(230,180,81,.38);background:rgba(230,180,81,.16)}
     .steps{display:grid;gap:12px;padding:0;margin:0;list-style:none;counter-reset:step}.steps li{counter-increment:step;display:grid;grid-template-columns:34px 1fr;gap:12px;padding:13px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.035)}.steps li:before{content:counter(step,decimal-leading-zero);display:grid;place-items:center;width:34px;height:34px;border-radius:11px;color:var(--gold);background:rgba(230,180,81,.16);font-size:12px;font-weight:900}.steps strong{display:block;margin-bottom:5px}
-    input,select{min-height:40px;border:1px solid rgba(143,162,155,.34);border-radius:12px;padding:9px 11px;color:var(--text);background:rgba(2,8,8,.58);outline:none}button{min-height:40px;border:1px solid rgba(230,180,81,.44);border-radius:12px;padding:9px 14px;color:#130f07;background:linear-gradient(180deg,#f0c66b,#c8912f);font-weight:900;cursor:pointer}button.secondary{color:var(--text);border-color:rgba(66,214,198,.36);background:linear-gradient(180deg,rgba(66,214,198,.2),rgba(66,214,198,.08))}button:disabled{opacity:.58;cursor:not-allowed}.table-wrap{margin-top:16px;border:1px solid var(--line);border-radius:18px;overflow:auto;background:rgba(0,0,0,.18)}table{width:100%;border-collapse:collapse;min-width:760px;font-size:13px}th,td{padding:12px;border-bottom:1px solid rgba(143,162,155,.16);text-align:left}th{color:#bfd0ca;background:rgba(255,255,255,.045);font-size:11px;letter-spacing:.12em;text-transform:uppercase}code,pre{font-family:"Cascadia Code",monospace;border-radius:9px;color:#cdeee9;background:rgba(66,214,198,.1)}code{padding:2px 6px}pre{margin:0;padding:16px;overflow:auto;white-space:pre-wrap;line-height:1.6;border:1px solid rgba(66,214,198,.16)}.empty{margin-top:16px;border:1px dashed rgba(230,180,81,.36);border-radius:18px;padding:18px;color:#c6b48c;background:rgba(230,180,81,.07)}.pill{display:inline-flex;min-height:26px;border:1px solid rgba(66,214,198,.24);border-radius:999px;padding:4px 9px;color:#bfe9e4;background:rgba(66,214,198,.08);font-size:12px}.session-strip{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;margin:14px 0;padding:13px 14px;border:1px solid rgba(66,214,198,.25);border-left:3px solid var(--cyan);border-radius:14px;background:linear-gradient(90deg,rgba(66,214,198,.12),rgba(66,214,198,.025))}.session-strip.warn{border-color:rgba(230,180,81,.34);border-left-color:var(--gold);background:linear-gradient(90deg,rgba(230,180,81,.13),rgba(230,180,81,.025))}.session-strip strong{display:block;margin-bottom:3px;font-size:13px}.session-strip .muted{font-size:13px;line-height:1.55}details{border:1px solid var(--line);border-radius:18px;padding:14px;background:rgba(255,255,255,.025)}summary{cursor:pointer;font-weight:900;color:#bfd0ca}.key-fallback{margin-top:14px}.key-fallback label{display:block;margin-top:9px;font-size:13px}@media(max-width:900px){.content{grid-template-columns:1fr}}@media(max-width:560px){button,input{width:100%}.content{padding:10px}.card{padding:16px}}
+    .oauth-actions{display:flex;gap:10px;flex-wrap:wrap;min-width:0}.auth-link-area{display:grid;gap:10px;min-width:0;max-width:100%;margin-top:14px}.auth-link-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;min-width:0}.auth-url-display{display:block;min-width:0;max-width:100%;padding:10px 12px;border:1px solid rgba(66,214,198,.16);border-radius:12px;overflow-wrap:anywhere;word-break:break-word;white-space:normal}.oauth-callback-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;min-width:0;max-width:100%}.oauth-callback-row input{min-width:0;max-width:100%}
+    input,select{min-height:40px;border:1px solid rgba(143,162,155,.34);border-radius:12px;padding:9px 11px;color:var(--text);background:rgba(2,8,8,.58);outline:none}button{min-height:40px;border:1px solid rgba(230,180,81,.44);border-radius:12px;padding:9px 14px;color:#130f07;background:linear-gradient(180deg,#f0c66b,#c8912f);font-weight:900;cursor:pointer}button.secondary{color:var(--text);border-color:rgba(66,214,198,.36);background:linear-gradient(180deg,rgba(66,214,198,.2),rgba(66,214,198,.08))}button:disabled{opacity:.58;cursor:not-allowed}.table-wrap{margin-top:16px;border:1px solid var(--line);border-radius:18px;overflow:auto;background:rgba(0,0,0,.18)}table{width:100%;border-collapse:collapse;min-width:760px;font-size:13px}th,td{padding:12px;border-bottom:1px solid rgba(143,162,155,.16);text-align:left}th{color:#bfd0ca;background:rgba(255,255,255,.045);font-size:11px;letter-spacing:.12em;text-transform:uppercase}code,pre{font-family:"Cascadia Code",monospace;border-radius:9px;color:#cdeee9;background:rgba(66,214,198,.1)}code{padding:2px 6px}pre{margin:0;padding:16px;overflow:auto;white-space:pre-wrap;line-height:1.6;border:1px solid rgba(66,214,198,.16)}.empty{margin-top:16px;border:1px dashed rgba(230,180,81,.36);border-radius:18px;padding:18px;color:#c6b48c;background:rgba(230,180,81,.07)}.pill{display:inline-flex;min-height:26px;border:1px solid rgba(66,214,198,.24);border-radius:999px;padding:4px 9px;color:#bfe9e4;background:rgba(66,214,198,.08);font-size:12px}.session-strip{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;margin:14px 0;padding:13px 14px;border:1px solid rgba(66,214,198,.25);border-left:3px solid var(--cyan);border-radius:14px;background:linear-gradient(90deg,rgba(66,214,198,.12),rgba(66,214,198,.025))}.session-strip.warn{border-color:rgba(230,180,81,.34);border-left-color:var(--gold);background:linear-gradient(90deg,rgba(230,180,81,.13),rgba(230,180,81,.025))}.session-strip strong{display:block;margin-bottom:3px;font-size:13px}.session-strip .muted{font-size:13px;line-height:1.55}details{border:1px solid var(--line);border-radius:18px;padding:14px;background:rgba(255,255,255,.025)}summary{cursor:pointer;font-weight:900;color:#bfd0ca}.key-fallback{margin-top:14px}.key-fallback label{display:block;margin-top:9px;font-size:13px}@media(max-width:900px){.content{grid-template-columns:1fr}}@media(max-width:560px){button,input{width:100%}.content{padding:10px}.card{padding:16px}.oauth-callback-row{grid-template-columns:minmax(0,1fr)}.auth-link-row>*{width:100%}}
   </style>
 </head>
 <body>
   <main><div class="shell">
-    <header class="hero"><p class="muted">Personal Self-hosted Console</p><div class="row hero-heading"><h1>chat2claude 个人自托管控制台</h1><div class="mode-toggle" role="group" aria-label="管理界面模式"><button id="mode-simple" class="secondary" type="button" aria-pressed="true">简洁模式</button><button id="mode-professional" class="secondary" type="button" aria-pressed="false">专业模式</button></div></div><p>这是 local-first 的个人开源兼容层。请只授权本人控制或已获明确授权的 ChatGPT/Codex 账号及其包含的用量；不得公开转售个人订阅流量、向不特定第三方重新提供或进行大规模共享。普通使用走“浏览器授权（Codex OAuth）”：后台只生成授权链接和监听本地 callback，不启动独立 Chrome/新 profile，也不会从已登录 chatgpt.com 页面抓 session。</p></header>
+    <header class="hero"><p class="muted">Personal Self-hosted Console</p><div class="row hero-heading"><h1>chat2claude 个人自托管控制台</h1><div class="mode-toggle" role="group" aria-label="管理界面模式"><button id="mode-simple" class="secondary" type="button" aria-pressed="true">简洁模式</button><button id="mode-professional" class="secondary" type="button" aria-pressed="false">专业模式</button></div></div><p>这是 local-first 的个人开源兼容层。请只授权本人控制或已获明确授权的 ChatGPT/Codex 账号及其包含的用量；不得公开转售个人订阅流量、向不特定第三方重新提供或进行大规模共享。普通使用走“浏览器授权（Codex OAuth）”：点击主按钮会直接打开新授权标签页，后台监听本地 callback；不会启动独立 Chrome/新 profile，也不会从已登录 chatgpt.com 页面抓 session。</p></header>
     <div class="content">
       <section class="card">
         <h2>浏览器授权（Codex OAuth）</h2>
         <p>API Key：<span id="key-state" class="status ${keyTone}">${escapeHtml(keyState)}</span></p>
         <div id="admin-session-state" class="session-strip" role="status" aria-live="polite"><span class="status">检测中</span><div><strong>正在验证本地管理会话</strong><span class="muted">本机可信访问会自动使用 HttpOnly 浏览器会话；不会读取、展示或保存 Admin API Key。</span></div></div>
         <details id="admin-key-fallback" class="key-fallback"><summary>远程访问或自动化：使用显式 Admin API Key</summary><p class="muted">仅在没有本地浏览器会话时使用。Key 默认只保留在当前页面，关闭或刷新后清除；勾选后才会保存到本机浏览器。</p><div class="row"><input id="admin-api-key" type="password" placeholder="Admin API Key" autocomplete="off" /><button id="save-admin-api-key" class="secondary" type="button">仅本页启用 Key</button></div><label class="muted"><input id="remember-admin-api-key" type="checkbox" /> 明确保存到此浏览器（localStorage）</label></details>
-        <p class="muted">当前 backend：<code>${escapeHtml(setupStatus.backend.provider)}</code>。不会启动独立 Chrome/新 profile；点击下方按钮后只生成授权链接，你自行在当前浏览器打开。</p>
-        <div class="row"><button id="auth-chatgpt">生成 Codex OAuth 授权链接</button><button id="cancel-auth" class="secondary" disabled>取消</button></div>
-        <p id="auth-message" class="muted">${escapeHtml(setupStatus.nextStep)}</p>
-        <div id="auth-link-area" class="stack" hidden>
-          <a id="auth-link" class="pill" hidden>在当前标签打开 Codex OAuth 授权链接</a>
-          <button id="copy-auth-link" class="secondary" type="button" hidden>复制授权链接</button>
+        <p class="muted">当前 backend：<code>${escapeHtml(setupStatus.backend.provider)}</code>。不会启动独立 Chrome/新 profile；点击主按钮会直接打开新的授权标签页。</p>
+        <div class="oauth-actions"><button id="auth-chatgpt">打开 Codex OAuth 授权页</button><button id="cancel-auth" class="secondary" disabled>取消</button></div>
+        <p id="auth-message" class="muted" role="status" aria-live="polite">${escapeHtml(setupStatus.nextStep)}</p>
+        <div id="auth-link-area" class="auth-link-area" hidden>
+          <div class="auth-link-row"><a id="auth-link" class="pill" target="_blank" rel="noopener noreferrer" hidden>打开 Codex OAuth 授权页</a><button id="copy-auth-link" class="secondary" type="button" hidden>复制授权链接</button></div>
+          <code id="auth-url-display" class="auth-url-display" hidden></code>
         </div>
         <div class="stack">
           <p class="muted">如果授权完成后浏览器显示无法连接本地 callback（默认 1455，必要时自动使用 1457），请原样复制地址栏里的完整 URL。后台会严格校验协议、host、端口和路径。</p>
-          <div class="row"><input id="oauth-callback-url" placeholder="粘贴授权链接对应的完整 localhost callback URL" /><button id="submit-oauth-callback" class="secondary" type="button">提交 callback URL</button></div>
+          <div class="oauth-callback-row"><input id="oauth-callback-url" aria-label="OAuth callback URL（请粘贴完整 callback URL）" placeholder="粘贴授权链接对应的完整 localhost callback URL" /><button id="submit-oauth-callback" class="secondary" type="button">提交 callback URL</button></div>
         </div>
       </section>
-      <aside class="card"><h2>3 步完成</h2><ol class="steps"><li><div><strong>浏览器授权</strong><span class="muted">生成 Codex OAuth 链接，在当前浏览器/已登录账号环境中打开授权。</span></div></li><li><div><strong>自动初始化</strong><span class="muted">服务自动创建 chatgpt-primary、health-check、刷新模型并绑定 sonnet。</span></div></li><li><div><strong>复制 API 配置</strong><span class="muted">ready 后复制 endpoint、key 和 curl 示例。</span></div></li></ol></aside>
+      <aside class="card"><h2>3 步完成</h2><ol class="steps"><li><div><strong>浏览器授权</strong><span class="muted">点击后在新标签页打开 Codex OAuth；若被拦截可使用链接或复制 fallback。</span></div></li><li><div><strong>自动初始化</strong><span class="muted">服务自动创建 chatgpt-primary、health-check、刷新模型并绑定 sonnet。</span></div></li><li><div><strong>复制 API 配置</strong><span class="muted">ready 后复制 endpoint、key 和 curl 示例。</span></div></li></ol></aside>
       <section class="card full" id="api-config" hidden><h2>API 配置</h2><div class="stack"><p>Endpoint：<code id="endpoint"></code></p><p>新生成的 Runtime API Key（仅本次显示）：<code id="api-key"></code> <button id="copy-runtime-api-key" class="secondary" type="button">复制 Runtime API Key</button></p><p class="muted">请立即复制并保存。之后后台只会显示安全前缀；如遗失，可撤销后重新授权生成新 Key。</p><pre id="ready-curl"></pre></div></section>
       <section class="card full"><details id="advanced-import"><summary>高级：手动导入 accessToken / cookie</summary><p class="muted">OAuth 不可用或已有 session secret 时使用。表单会走同一套 provisioning，不会返回 token/cookie。</p><div class="row"><input id="session-access-token" placeholder="accessToken" /><input id="session-cookie" placeholder="cookie（可选）" /><input id="session-device-id" placeholder="deviceId（可选）" /><input id="session-user-agent" placeholder="userAgent（可选）" /><button id="manual-complete" class="secondary">导入并初始化</button></div></details></section>
       <section class="card full"><h2>内置模型 Alias</h2><p class="muted">Sonnet 会在首次授权时自动选择后端。Haiku、Fable 和 Opus 如显示“未绑定”，需要切换到专业模式选择后端模型后才能调用。</p><div id="model-availability"><div class="empty">正在读取 alias 状态。</div></div></section>
       <section class="card full professional-panel"><h2>个人账号池（高级）</h2><p class="muted">仅用于同一自托管操作者管理本人控制或获授权的账号，并进行故障隔离、冷却、并发控制和本地调度；禁止用于公开转售订阅流量或面向不特定第三方的大规模共享。</p><div class="row"><input id="account-label" placeholder="账号标识" value="Mock ChatGPT Account" /><input id="account-concurrency" type="number" min="1" value="1" aria-label="最大并发" /><button id="add-account" class="secondary">添加 mock 账号</button></div><div id="accounts"><div class="empty">正在读取个人账号池状态。</div></div></section>
       <section class="card full"><h2>Runtime API Keys</h2><p class="muted">这是 Claude Code 等客户端调用 <code>/v1/*</code> 使用的 Key，不是 Admin API Key。当前 <strong id="api-keys-count">0</strong> 个；这里只显示安全前缀，原始 Key 仅会在创建后显示一次。</p><p class="muted">遗失 Key 时，在此撤销旧 Key，再重新授权生成新 Key 并立即复制保存。撤销会要求确认，且对应客户端会立即失去访问权限。</p><div class="row"><button id="refresh-api-keys" class="secondary" type="button">刷新 Key 列表</button></div><div id="api-keys"><div class="empty">正在读取运行时 API Key。</div></div></section>
       <section class="card full professional-panel"><h2>模型映射（高级管理）</h2><p class="muted">后端模型来自 discovery；alias overlay 负责映射、启用状态与缺省 reasoning_effort / response_speed。</p><div class="row"><button id="reset-models" class="secondary">重置 alias overlay</button><button id="refresh-models" class="secondary">刷新 backend discovery</button></div><form id="create-model-form" class="row"><input id="model-alias-id" required pattern="[a-zA-Z0-9._-]+" placeholder="新 alias，例如 research" aria-label="新模型 alias" /><input id="model-display-name" placeholder="显示名称（可选）" aria-label="模型显示名称" /><input id="model-backend" placeholder="Backend model（可选）" aria-label="Backend model" /><button type="submit">创建自定义 alias</button></form><div id="models"><div class="empty">正在加载模型映射。</div></div></section>
-      <section class="card"><h2>结果面板</h2><pre id="result">${escapeHtml(setupStatus.nextStep)}</pre></section>
+      <section class="card"><h2>结果面板</h2><pre id="result" role="status" aria-live="polite">${escapeHtml(setupStatus.nextStep)}</pre></section>
       <section class="card"><h2>curl 示例</h2><p class="muted">示例地址由当前页面 origin 生成。</p><pre id="curl-example" data-template="${escapeHtml(curlTemplate)}">${escapeHtml(curlTemplate)}</pre></section>
     </div>
   </div></main>
@@ -384,15 +385,27 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     });
 
     const oauthFlowStorageKey = 'chat2claude.oauthFlow';
+    captureOAuthFlowFromQuery();
     document.getElementById('auth-chatgpt').addEventListener('click', async () => {
+      const popup = window.open('about:blank', '_blank');
       try {
         const body = await postJson('/admin/api/auth/chatgpt/start', { adminOrigin: window.location.origin });
         currentFlowId = body.id;
         rememberOAuthFlow(body.id);
         restoreAuthControls(body);
         renderResult(body);
+        if (popup) {
+          popup.opener = null;
+          popup.location.href = body.authorizeUrl;
+          popup.focus();
+        } else {
+          document.getElementById('auth-message').textContent = '浏览器拦截了授权窗口，请点击下方“打开 Codex OAuth 授权页”或复制授权链接。';
+        }
         schedulePoll(1200);
-      } catch (error) { showAuthError(error); }
+      } catch (error) {
+        if (popup) popup.close();
+        showAuthError(error);
+      }
     });
     document.getElementById('cancel-auth').addEventListener('click', async () => {
       if (!currentFlowId) return;
@@ -406,14 +419,22 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     document.getElementById('copy-auth-link').addEventListener('click', async () => {
       const link = document.getElementById('auth-link').href;
       if (!link) return;
-      await navigator.clipboard.writeText(link);
-      document.getElementById('auth-message').textContent = '授权链接已复制，请在当前浏览器中打开。';
+      try {
+        await navigator.clipboard.writeText(link);
+        document.getElementById('auth-message').textContent = '授权链接已复制，请在当前浏览器中打开。';
+      } catch {
+        document.getElementById('auth-message').textContent = '复制失败，请手动选中下方完整授权 URL 复制。';
+      }
     });
     document.getElementById('copy-runtime-api-key').addEventListener('click', async () => {
       const key = document.getElementById('api-key').dataset.value;
       if (!key) return;
-      await navigator.clipboard.writeText(key);
-      document.getElementById('result').textContent = 'Runtime API Key 已复制。请保存到 Claude Code 或其他客户端配置中；刷新页面后不会再次显示原始 Key。';
+      try {
+        await navigator.clipboard.writeText(key);
+        document.getElementById('result').textContent = 'Runtime API Key 已复制。请保存到 Claude Code 或其他客户端配置中；刷新页面后不会再次显示原始 Key。';
+      } catch {
+        document.getElementById('result').textContent = 'Runtime API Key 复制失败，请手动选中并立即保存。';
+      }
     });
     document.getElementById('submit-oauth-callback').addEventListener('click', async () => {
       const redirectUrl = document.getElementById('oauth-callback-url').value.trim();
@@ -440,21 +461,20 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
 
     function schedulePoll(delay) { clearPoll(); pollTimer = setTimeout(pollAuth, delay); }
     function clearPoll() { if (pollTimer) clearTimeout(pollTimer); pollTimer = null; }
-    function authStartMessage(body) {
-      if (body.authorizeUrl) return body.message || '授权链接已生成；后台不会自动打开窗口，请在当前浏览器中打开链接完成 Codex OAuth。';
-      return body.message || '请完成 Codex OAuth 授权。';
-    }
     function showAuthLink(authorizeUrl) {
       const area = document.getElementById('auth-link-area');
       const link = document.getElementById('auth-link');
       const copyButton = document.getElementById('copy-auth-link');
+      const urlDisplay = document.getElementById('auth-url-display');
       const hasUrl = typeof authorizeUrl === 'string' && authorizeUrl.length > 0;
       area.hidden = !hasUrl;
       link.hidden = !hasUrl;
       copyButton.hidden = !hasUrl;
-      if (!hasUrl) return;
+      urlDisplay.hidden = !hasUrl;
+      if (!hasUrl) { link.removeAttribute('href'); urlDisplay.textContent = ''; return; }
       link.href = authorizeUrl;
-      link.textContent = authorizeUrl;
+      link.textContent = '打开 Codex OAuth 授权页';
+      urlDisplay.textContent = authorizeUrl;
     }
     async function pollAuth() {
       if (!currentFlowId) return;
@@ -468,14 +488,22 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
         if (['expired', 'cancelled', 'error'].includes(body.state)) { clearOAuthFlow(); return; }
         schedulePoll(1800);
       } catch (error) {
-        clearOAuthFlow();
-        showAuthError(error);
+        handleOAuthFlowFailure(error);
       }
     }
     function restoreAuthControls(body) {
       document.getElementById('cancel-auth').disabled = !currentFlowId || ['expired', 'cancelled', 'error'].includes(body.state);
       document.getElementById('auth-message').textContent = body.message || body.state || '';
       showAuthLink(body.authorizeUrl);
+    }
+    function captureOAuthFlowFromQuery() {
+      const url = new URL(window.location.href);
+      const flowId = url.searchParams.get('oauth_flow');
+      if (flowId && /^[A-Za-z0-9_-]{32}$/.test(flowId)) rememberOAuthFlow(flowId);
+      if (flowId !== null) {
+        url.searchParams.delete('oauth_flow');
+        history.replaceState(history.state, '', url.pathname + url.search + url.hash);
+      }
     }
     function rememberOAuthFlow(flowId) {
       sessionStorage.setItem(oauthFlowStorageKey, JSON.stringify({ flowId, origin: window.location.origin }));
@@ -488,7 +516,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
     async function restoreOAuthFlow() {
       let saved;
       try { saved = JSON.parse(sessionStorage.getItem(oauthFlowStorageKey) || 'null'); } catch { sessionStorage.removeItem(oauthFlowStorageKey); return; }
-      if (!saved || typeof saved.flowId !== 'string' || saved.origin !== window.location.origin) { sessionStorage.removeItem(oauthFlowStorageKey); return; }
+      if (!saved || typeof saved.flowId !== 'string' || !/^[A-Za-z0-9_-]{32}$/.test(saved.flowId) || saved.origin !== window.location.origin) { sessionStorage.removeItem(oauthFlowStorageKey); return; }
       currentFlowId = saved.flowId;
       try {
         const body = await getJson('/admin/api/auth/chatgpt/' + encodeURIComponent(currentFlowId));
@@ -497,7 +525,17 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
         if (body.provisionResult?.apiKey) { clearOAuthFlow(); showReady(body.provisionResult); await loadAccounts(); await loadApiKeys(); await loadModels(); }
         else if (['expired', 'cancelled', 'error'].includes(body.state)) clearOAuthFlow();
         else schedulePoll(0);
-      } catch (error) { clearOAuthFlow(); showAuthError(error); }
+      } catch (error) { handleOAuthFlowFailure(error); }
+    }
+    function handleOAuthFlowFailure(error) {
+      clearOAuthFlow();
+      if (error && error.status === 404) {
+        const message = '服务重启或流程过期，请重新授权。';
+        document.getElementById('auth-message').textContent = message;
+        document.getElementById('result').textContent = message;
+        return;
+      }
+      showAuthError(error);
     }
     function showAuthError(error) {
       const message = error instanceof Error ? error.message : String(error);

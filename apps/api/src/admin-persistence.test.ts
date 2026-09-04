@@ -30,6 +30,8 @@ describe('durable administration', () => {
     expect(html).toContain('id="mode-simple"');
     expect(html).toContain('id="mode-professional"');
     expect(html).toContain('id="create-model-form"');
+    expect(html).toContain('id="oauth-callback-url" aria-label="OAuth callback URL（请粘贴完整 callback URL）"');
+    expect(html).toContain('id="result" role="status" aria-live="polite"');
     expect(html).toContain('data-delete-model=');
     await app.dispose();
   });
@@ -156,11 +158,32 @@ describe('durable administration', () => {
     await authFlow.close();
   });
 
-  it('contains OAuth session recovery and explicit 401 load-failure paths in the admin page', async () => {
+  it('contains popup-first OAuth UX, cross-tab recovery, wrapping, and explicit failure paths', async () => {
     const app = createApp(loadEnv({ DATA_DIR: temporaryDirectory(), NODE_ENV: 'test' }));
     const html = await (await app.request('/admin')).text();
+    const popupIndex = html.indexOf("const popup = window.open('about:blank', '_blank');");
+    const startAwaitIndex = html.indexOf("await postJson('/admin/api/auth/chatgpt/start'", popupIndex);
+    expect(popupIndex).toBeGreaterThan(-1);
+    expect(startAwaitIndex).toBeGreaterThan(popupIndex);
+    expect(html).toContain('popup.location.href = body.authorizeUrl;');
+    expect(html).toContain('popup.focus();');
+    expect(html).toContain('if (popup) popup.close();');
+    expect(html).toContain('浏览器拦截了授权窗口');
+    expect(html).toContain('id="auth-link" class="pill" target="_blank" rel="noopener noreferrer"');
+    expect(html).toContain("link.textContent = '打开 Codex OAuth 授权页';");
+    expect(html).not.toContain('link.textContent = authorizeUrl;');
+    expect(html).toContain('id="auth-url-display"');
+    expect(html).toContain('overflow-wrap:anywhere');
+    expect(html).toContain('word-break:break-word');
+    expect(html).toContain('min-width:0;max-width:100%');
+    expect(html).toContain('id="auth-message" class="muted" role="status" aria-live="polite"');
+    expect(html).toContain('复制失败，请手动选中下方完整授权 URL 复制。');
     expect(html).toContain("sessionStorage.setItem(oauthFlowStorageKey, JSON.stringify({ flowId, origin: window.location.origin }))");
+    expect(html).toContain("url.searchParams.get('oauth_flow')");
+    expect(html).toContain("/^[A-Za-z0-9_-]{32}$/.test(flowId)");
+    expect(html).toContain("history.replaceState(history.state, '', url.pathname + url.search + url.hash)");
     expect(html).toContain('saved.origin !== window.location.origin');
+    expect(html).toContain('服务重启或流程过期，请重新授权。');
     expect(html).toContain('clearOAuthFlow();');
     expect(html).toContain('未认证/数据未加载');
     expect(html).toContain('账号数据加载失败，未加载。');
