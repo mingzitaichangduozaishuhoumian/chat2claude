@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ChatGptBackendError, SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
 import { AccountPool } from './account-pool.js';
 import { ModelRegistry } from './model-registry.js';
 import { RuntimeApiKeys } from './runtime-api-keys.js';
@@ -10,6 +10,7 @@ import { SetupProvisioner } from './setup-provisioner.js';
 import { ChatGptAuthFlowService } from './chatgpt-auth-flow.js';
 import { DurableRuntimeState } from './durable-runtime-state.js';
 import { RuntimeStateStore, RuntimeStateStoreError } from './runtime-state-store.js';
+import { AdminOperationalState } from './admin-operational-state.js';
 
 function setup(backend: ChatGptBackendClient) {
   const accountPool = new AccountPool();
@@ -60,8 +61,11 @@ describe('SetupProvisioner', () => {
 
   it('commits the account, discovery, alias and stable key only after validation succeeds', async () => {
     const backend = backendFrom({ listModels: async (context) => {
-      expect(['candidate-access', 'candidate-access-2']).toContain(context?.account?.secret?.accessToken);
-      return [{ id: 'gpt-5-codex', displayName: 'GPT-5 Codex' }];
+      const accessToken = context?.account?.secret?.accessToken;
+      expect(['candidate-access', 'candidate-access-2']).toContain(accessToken);
+      return accessToken === 'candidate-access-2'
+        ? [{ id: 'gpt-5-codex-reauthorized', displayName: 'GPT-5 Codex Reauthorized' }]
+        : [{ id: 'gpt-5-codex', displayName: 'GPT-5 Codex' }];
     } });
     const { provisioner, accountPool, modelRegistry, runtimeApiKeys } = setup(backend);
     const result = await provisioner.provision({ type: 'chatgpt-session', accessToken: 'candidate-access', refreshToken: 'candidate-refresh' });
@@ -70,8 +74,15 @@ describe('SetupProvisioner', () => {
     expect(result.modelsDiscovered).toEqual(['gpt-5-codex']);
     expect(runtimeApiKeys.size).toBe(1);
     const reauthorized = await provisioner.provision({ type: 'chatgpt-session', accessToken: 'candidate-access-2' });
-    expect(reauthorized.apiKey).toBe(result.apiKey);
+    expect(result.runtimeKeyCreated).toBe(true);
+    expect(result.apiKey).toBeDefined();
+    expect(reauthorized.runtimeKeyCreated).toBe(false);
+    expect(reauthorized.apiKey).toBeUndefined();
+    expect(reauthorized.modelsDiscovered).toEqual(['gpt-5-codex-reauthorized']);
     expect(accountPool.get('chatgpt-primary')?.secret?.accessToken).toBe('candidate-access-2');
+    expect(modelRegistry.get('gpt-5-codex')).toBeUndefined();
+    expect(modelRegistry.get('gpt-5-codex-reauthorized')).toMatchObject({ status: 'passthrough' });
+    expect(modelRegistry.get('sonnet')).toMatchObject({ backendModel: 'gpt-5-codex', status: 'stale' });
   });
 
   it('preserves a manual Sonnet binding across reauthorization and persists it with stable credentials', async () => {
@@ -92,7 +103,10 @@ describe('SetupProvisioner', () => {
       durableState.transaction(() => modelRegistry.update('sonnet', { backendModel: 'catalog-b' }));
       const reauthorized = await provisioner.provision({ type: 'chatgpt-session', accessToken: 'second-access' });
 
-      expect(reauthorized.apiKey).toBe(first.apiKey);
+      expect(first.runtimeKeyCreated).toBe(true);
+      expect(first.apiKey).toBeDefined();
+      expect(reauthorized.runtimeKeyCreated).toBe(false);
+      expect(reauthorized.apiKey).toBeUndefined();
       expect(reauthorized.boundAliases).toEqual({});
       expect(accountPool.get('chatgpt-primary')?.secret?.accessToken).toBe('second-access');
       expect(modelRegistry.get('sonnet')?.backendModel).toBe('catalog-b');
@@ -102,7 +116,7 @@ describe('SetupProvisioner', () => {
       const restoredModels = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
       new DurableRuntimeState({ accountPool: restoredAccounts, runtimeApiKeys: restoredKeys, modelRegistry: restoredModels, store }).hydrate();
       expect(restoredAccounts.get('chatgpt-primary')?.secret?.accessToken).toBe('second-access');
-      expect(restoredKeys.has(first.apiKey)).toBe(true);
+      expect(restoredKeys.has(first.apiKey!)).toBe(true);
       expect(restoredModels.get('sonnet')?.backendModel).toBe('catalog-b');
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -184,7 +198,7 @@ describe('SetupProvisioner', () => {
       const result = await provisioner.provision({ type: 'chatgpt-session', accessToken: 'durable-access' });
 
       expect(result).toMatchObject({ ok: true, apiKey: expect.any(String), modelsDiscovered: ['gpt-5-codex'] });
-      expect(runtimeApiKeys.has(result.apiKey)).toBe(true);
+      expect(runtimeApiKeys.has(result.apiKey!)).toBe(true);
       expect(diagnostics).toEqual([{ stage: 'state_commit', severity: 'warning', code: 'durability_confirmation_failed', message: 'ChatGPT setup was committed, but filesystem durability confirmation failed.' }]);
       expect(JSON.stringify(diagnostics)).not.toContain('durable-access');
       expect(JSON.stringify(diagnostics)).not.toContain('post-rename failure');
@@ -194,7 +208,7 @@ describe('SetupProvisioner', () => {
       const restoredModels = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
       new DurableRuntimeState({ accountPool: restoredAccounts, runtimeApiKeys: restoredKeys, modelRegistry: restoredModels, store: new RuntimeStateStore({ path: join(directory, 'runtime-state.json') }) }).hydrate();
       expect(restoredAccounts.get('chatgpt-primary')?.secret?.accessToken).toBe('durable-access');
-      expect(restoredKeys.has(result.apiKey)).toBe(true);
+      expect(restoredKeys.has(result.apiKey!)).toBe(true);
       expect(restoredModels.get('sonnet')?.backendModel).toBe('gpt-5-codex');
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -269,7 +283,7 @@ describe('SetupProvisioner', () => {
     const state = new URL(started.authorizeUrl).searchParams.get('state')!;
     await flow.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code&state=${state}` });
     await flow.status(started.id);
-    const pending = flow.provision(started.id, (secret, signal, commitBoundary) => provisioner.provision(secret, signal, commitBoundary));
+    const pending = flow.provision(started.id, (secret, _target, signal, commitBoundary) => provisioner.provision(secret, signal, commitBoundary));
     await enteredDiscovery.promise;
     now = new Date('2026-08-22T00:01:01.000Z');
     models.resolve([{ id: 'gpt-5-codex' }]);
@@ -292,14 +306,15 @@ describe('SetupProvisioner', () => {
     expect(runtimeApiKeys.size).toBe(0);
   });
 
-  it('waits for delayed startup discovery before committing newer provisioning discovery', async () => {
+  it('waits for delayed startup discovery and preserves another account catalog when provisioning', async () => {
     const startupGate = deferred<void>();
     const accountPool = new AccountPool();
+    const startupAccount = accountPool.add({ id: 'startup-account', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'startup-access' } });
     const modelRegistry = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
     const runtimeApiKeys = new RuntimeApiKeys();
     let provisioningDiscoveries = 0;
     const startupReady = startupGate.promise.then(() => {
-      modelRegistry.replaceDiscoveredModels([{ id: 'startup-model' }]);
+      modelRegistry.replaceAccountModels({ accountId: startupAccount.id, createdAt: startupAccount.createdAt }, [{ id: 'startup-model' }]);
     });
     const backend = backendFrom({ listModels: async () => {
       provisioningDiscoveries += 1;
@@ -315,7 +330,7 @@ describe('SetupProvisioner', () => {
     await expect(pending).resolves.toMatchObject({ modelsDiscovered: ['newer-provisioned-model'] });
     expect(provisioningDiscoveries).toBe(1);
     expect(modelRegistry.get('sonnet')).toMatchObject({ backendModel: 'newer-provisioned-model', status: 'bound' });
-    expect(modelRegistry.get('startup-model')).toBeUndefined();
+    expect(modelRegistry.get('startup-model')).toMatchObject({ status: 'passthrough' });
     expect(modelRegistry.get('newer-provisioned-model')).toMatchObject({ status: 'passthrough' });
   });
 
@@ -347,13 +362,230 @@ describe('SetupProvisioner', () => {
     await flow.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code&state=${state}` });
     await flow.status(started.id);
 
-    const completed = await flow.provision(started.id, (secret, signal, commitBoundary) => provisioner.provision(secret, signal, commitBoundary));
+    const completed = await flow.provision(started.id, (secret, _target, signal, commitBoundary) => provisioner.provision(secret, signal, commitBoundary));
 
     expect(completed).toMatchObject({ state: 'ready', provisioned: true });
     expect(accountPool.get('chatgpt-primary')?.secret?.accessToken).toBe('candidate-access');
     expect(modelRegistry.get('sonnet')).toMatchObject({ backendModel: 'gpt-5-codex', status: 'bound' });
     expect(runtimeApiKeys.size).toBe(1);
     expect(commitClockReads).toBe(1);
+  });
+
+  it('adds distinct opaque accounts, persists them, schedules both, and discloses the runtime key only once', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'chat2claude-multi-account-'));
+    try {
+      const backend = backendFrom({ listModels: async () => [{ id: 'catalog-a' }] });
+      const accountPool = new AccountPool({ seedMockAccount: false });
+      const modelRegistry = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+      const runtimeApiKeys = new RuntimeApiKeys();
+      const store = new RuntimeStateStore({ path: join(directory, 'runtime-state.json') });
+      const durableState = new DurableRuntimeState({ accountPool, runtimeApiKeys, modelRegistry, store });
+      const provisioner = new SetupProvisioner({ accountPool, modelRegistry, runtimeApiKeys, backend, durableState });
+
+      const first = await provisioner.provisionTarget({ mode: 'add' }, { type: 'chatgpt-session', accessToken: 'access-a', accountId: 'upstream-a' });
+      const second = await provisioner.provisionTarget({ mode: 'add' }, { type: 'chatgpt-session', accessToken: 'access-b', accountId: 'upstream-b' });
+
+      expect(first.account.id).not.toBe('chatgpt-primary');
+      expect(second.account.id).not.toBe(first.account.id);
+      expect(first.account.id).toMatch(/^chatgpt-[A-Za-z0-9_-]{24}$/);
+      expect(first).toMatchObject({ runtimeKeyCreated: true, apiKey: expect.stringMatching(/^sk-runtime-/) });
+      expect(second).toMatchObject({ runtimeKeyCreated: false });
+      expect(second).not.toHaveProperty('apiKey');
+      expect(accountPool.acquire({ provider: 'chatgpt-session' })?.id).toBe(first.account.id);
+      expect(accountPool.acquire({ provider: 'chatgpt-session' })?.id).toBe(second.account.id);
+
+      const restoredAccounts = new AccountPool({ seedMockAccount: false });
+      const restoredKeys = new RuntimeApiKeys();
+      const restoredModels = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+      new DurableRuntimeState({ accountPool: restoredAccounts, runtimeApiKeys: restoredKeys, modelRegistry: restoredModels, store }).hydrate();
+      expect(restoredAccounts.list().map((account) => account.id)).toEqual([first.account.id, second.account.id]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects repeated explicit additions without authoritative upstream identity and commits no state', async () => {
+    const backend = backendFrom({ listModels: async () => [{ id: 'catalog-a' }] });
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const modelRegistry = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+    const runtimeApiKeys = new RuntimeApiKeys();
+    const provisioner = new SetupProvisioner({ accountPool, modelRegistry, runtimeApiKeys, backend });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(provisioner.provisionTarget(
+        { mode: 'add' },
+        { type: 'chatgpt-session', accessToken: 'same-access-token' },
+      )).rejects.toMatchObject({
+        diagnostic: { stage: 'session_verification', code: 'upstream_identity_required', status: 400 },
+      });
+    }
+
+    expect(accountPool.exportState().accounts).toEqual([]);
+    expect(modelRegistry.get('sonnet')?.backendModel).toBeUndefined();
+    expect(runtimeApiKeys.size).toBe(0);
+  });
+
+  it('accepts an authoritative identity enriched during explicit add discovery', async () => {
+    const backend = backendFrom({ listModels: async (context) => {
+      if (context?.account?.secret) context.account.secret.accountId = 'discovered-upstream';
+      return [{ id: 'catalog-a' }];
+    } });
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const provisioner = new SetupProvisioner({
+      accountPool,
+      modelRegistry: new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] }),
+      runtimeApiKeys: new RuntimeApiKeys(),
+      backend,
+    });
+
+    const result = await provisioner.provisionTarget(
+      { mode: 'add' },
+      { type: 'chatgpt-session', accessToken: 'access-with-discovered-identity' },
+    );
+
+    expect(result.account.upstreamAccountId).toBe('discovered-upstream');
+    expect(accountPool.get(result.account.id)?.secret?.accountId).toBe('discovered-upstream');
+  });
+
+  it('rejects duplicate add and wrong-identity reauthorization without mutating state', async () => {
+    const backend = backendFrom({ listModels: async () => [{ id: 'catalog-a' }] });
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const modelRegistry = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+    const runtimeApiKeys = new RuntimeApiKeys();
+    const provisioner = new SetupProvisioner({ accountPool, modelRegistry, runtimeApiKeys, backend });
+    const first = await provisioner.provisionTarget({ mode: 'add' }, { type: 'chatgpt-session', accessToken: 'access-a', accountId: 'upstream-a' });
+    const before = { accounts: accountPool.exportState(), aliases: modelRegistry.exportState(), keys: runtimeApiKeys.exportState() };
+
+    await expect(provisioner.provisionTarget({ mode: 'add' }, { type: 'chatgpt-session', accessToken: 'duplicate', accountId: 'upstream-a' })).rejects.toMatchObject({
+      diagnostic: { stage: 'session_verification', code: 'duplicate_upstream_identity', status: 409 },
+    });
+    await expect(provisioner.provisionTarget({ mode: 'reauthorize', accountId: first.account.id }, { type: 'chatgpt-session', accessToken: 'wrong-user', accountId: 'upstream-b' })).rejects.toMatchObject({
+      diagnostic: { stage: 'session_verification', code: 'reauthorization_identity_mismatch', status: 409 },
+    });
+    expect(accountPool.exportState()).toEqual(before.accounts);
+    expect(modelRegistry.exportState()).toEqual(before.aliases);
+    expect(runtimeApiKeys.exportState()).toEqual(before.keys);
+  });
+
+  it('rejects identity adoption when another session account already owns the upstream identity', async () => {
+    const backend = backendFrom({ listModels: async () => [{ id: 'catalog-a' }] });
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const modelRegistry = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+    const runtimeApiKeys = new RuntimeApiKeys();
+    const provisioner = new SetupProvisioner({ accountPool, modelRegistry, runtimeApiKeys, backend });
+    await provisioner.provisionTarget({ mode: 'add' }, { type: 'chatgpt-session', accessToken: 'owner-access', accountId: 'upstream-x' });
+    const incomplete = accountPool.add({ id: 'legacy-incomplete', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'old-incomplete' } });
+    const before = { accounts: accountPool.exportState(), aliases: modelRegistry.exportState(), keys: runtimeApiKeys.exportState() };
+
+    await expect(provisioner.provisionTarget(
+      { mode: 'reauthorize', accountId: incomplete.id },
+      { type: 'chatgpt-session', accessToken: 'collision-access', accountId: 'upstream-x' },
+    )).rejects.toMatchObject({
+      diagnostic: { stage: 'session_verification', code: 'duplicate_upstream_identity', status: 409 },
+    });
+    expect(accountPool.exportState()).toEqual(before.accounts);
+    expect(modelRegistry.exportState()).toEqual(before.aliases);
+    expect(runtimeApiKeys.exportState()).toEqual(before.keys);
+  });
+
+  it.each(['delete', 'recreate', 'settings'] as const)('rejects reauthorization when the target changes during discovery: %s', async (scenario) => {
+    const entered = deferred<void>();
+    const discovery = deferred<ChatGptDiscoveredModel[]>();
+    const backend = backendFrom({ listModels: async () => { entered.resolve(); return discovery.promise; } });
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const modelRegistry = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+    const runtimeApiKeys = new RuntimeApiKeys();
+    const provisioner = new SetupProvisioner({ accountPool, modelRegistry, runtimeApiKeys, backend });
+    const target = accountPool.add({ id: 'reauth-target', provider: 'chatgpt-session', label: 'Original', secret: { type: 'chatgpt-session', accessToken: 'old-access', accountId: 'upstream-target' } });
+    const beforeAliases = modelRegistry.exportState();
+    const beforeKeys = runtimeApiKeys.exportState();
+
+    const attempt = provisioner.provisionTarget(
+      { mode: 'reauthorize', accountId: target.id },
+      { type: 'chatgpt-session', accessToken: 'new-access', accountId: 'upstream-target' },
+    );
+    await entered.promise;
+    if (scenario === 'delete') accountPool.remove(target.id);
+    if (scenario === 'recreate') {
+      accountPool.remove(target.id);
+      accountPool.add({ id: target.id, provider: 'chatgpt-session', label: 'Recreated', secret: { type: 'chatgpt-session', accessToken: 'recreated-access', accountId: 'upstream-recreated' } });
+    }
+    if (scenario === 'settings') accountPool.update(target.id, { label: 'Changed during discovery', maxConcurrency: 3 });
+    discovery.resolve([{ id: 'catalog-new' }]);
+
+    await expect(attempt).rejects.toMatchObject({ diagnostic: { stage: 'state_commit', code: 'reauthorization_target_changed', status: 409 } });
+    expect(modelRegistry.exportState()).toEqual(beforeAliases);
+    expect(runtimeApiKeys.exportState()).toEqual(beforeKeys);
+    if (scenario === 'delete') expect(accountPool.get(target.id)).toBeUndefined();
+    if (scenario === 'recreate') expect(accountPool.get(target.id)).toMatchObject({ label: 'Recreated', secret: { accessToken: 'recreated-access', accountId: 'upstream-recreated' } });
+    if (scenario === 'settings') expect(accountPool.get(target.id)).toMatchObject({ label: 'Changed during discovery', maxConcurrency: 3, secret: { accessToken: 'old-access' } });
+  });
+
+  it('does not invalidate reauthorization for ordinary in-flight concurrency changes', async () => {
+    const entered = deferred<void>();
+    const discovery = deferred<ChatGptDiscoveredModel[]>();
+    const backend = backendFrom({ listModels: async () => { entered.resolve(); return discovery.promise; } });
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const target = accountPool.add({ id: 'reauth-target', provider: 'chatgpt-session', maxConcurrency: 2, secret: { type: 'chatgpt-session', accessToken: 'old-access', accountId: 'upstream-target' } });
+    const provisioner = new SetupProvisioner({ accountPool, modelRegistry: new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] }), runtimeApiKeys: new RuntimeApiKeys(), backend });
+
+    const attempt = provisioner.provisionTarget(
+      { mode: 'reauthorize', accountId: target.id },
+      { type: 'chatgpt-session', accessToken: 'new-access', accountId: 'upstream-target' },
+    );
+    await entered.promise;
+    expect(accountPool.acquire({ provider: 'chatgpt-session' })?.id).toBe(target.id);
+    discovery.resolve([{ id: 'catalog-new' }]);
+
+    await expect(attempt).resolves.toMatchObject({ account: { id: target.id, currentConcurrency: 1 }, runtimeKeyCreated: true });
+    expect(accountPool.get(target.id)?.secret?.accessToken).toBe('new-access');
+    accountPool.release(target.id);
+  });
+
+  it('reauthorizes only the target, adopts identity for incomplete accounts, preserves settings and aliases', async () => {
+    const backend = backendFrom({ listModels: async () => [{ id: 'catalog-a' }, { id: 'catalog-b' }] });
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const modelRegistry = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+    const runtimeApiKeys = new RuntimeApiKeys();
+    const provisioner = new SetupProvisioner({ accountPool, modelRegistry, runtimeApiKeys, backend });
+    const first = await provisioner.provisionTarget({ mode: 'add' }, { type: 'chatgpt-session', accessToken: 'first', accountId: 'upstream-a' });
+    const incomplete = accountPool.add({ id: 'legacy-incomplete', provider: 'chatgpt-session', label: 'Keep me', enabled: false, maxConcurrency: 3, secret: { type: 'chatgpt-session', accessToken: 'old' } });
+    modelRegistry.update('sonnet', { backendModel: 'catalog-b' });
+
+    const result = await provisioner.provisionTarget({ mode: 'reauthorize', accountId: incomplete.id }, { type: 'chatgpt-session', accessToken: 'new', accountId: 'upstream-new' });
+
+    expect(result).toMatchObject({ account: { id: incomplete.id, label: 'Keep me', enabled: false, maxConcurrency: 3, upstreamAccountId: 'upstream-new' }, runtimeKeyCreated: false, boundAliases: {} });
+    expect(accountPool.get(first.account.id)?.secret?.accessToken).toBe('first');
+    expect(accountPool.get(incomplete.id)?.secret?.accessToken).toBe('new');
+    expect(modelRegistry.get('sonnet')?.backendModel).toBe('catalog-b');
+  });
+
+  it('records operational health and discovered models only after credential commit and treats state failure as a warning', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'chat2claude-operational-provision-'));
+    try {
+      const diagnostics: unknown[] = [];
+      const operationalState = new AdminOperationalState({ path: join(directory, 'operational.json'), debounceMs: 0 });
+      const accountPool = new AccountPool({ seedMockAccount: false });
+      const provisioner = new SetupProvisioner({
+        accountPool,
+        modelRegistry: new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] }),
+        runtimeApiKeys: new RuntimeApiKeys(),
+        backend: backendFrom({ listModels: async () => [{ id: 'model-b' }, { id: 'model-a' }] }),
+        operationalState,
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+      });
+      const result = await provisioner.provisionTarget({ mode: 'add' }, { type: 'chatgpt-session', accessToken: 'access', accountId: 'upstream' });
+      expect(operationalState.snapshot().accounts).toEqual([expect.objectContaining({
+        accountId: result.account.id,
+        createdAt: result.account.createdAt,
+        discoveredModelIds: ['model-a', 'model-b'],
+        lastHealthCheck: expect.objectContaining({ result: 'healthy', message: null }),
+      })]);
+      expect(diagnostics).toEqual([]);
+      await operationalState.dispose();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 

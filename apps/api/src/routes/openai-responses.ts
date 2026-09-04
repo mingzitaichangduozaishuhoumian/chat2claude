@@ -20,20 +20,37 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
       const request = parseOpenAiResponsesRequest(await c.req.json());
       const ownerId = String((c as { get: (key: string) => unknown }).get('ownerId') ?? 'anonymous');
       const downstreamRequest = withPreviousResponseContext(ownerId, request, responsesStore);
+      const explicitControls = {
+        reasoningEffort: request.reasoning?.effort ?? request.reasoning_effort,
+        serviceTier: request.service_tier ?? request.speed ?? request.response_speed,
+      };
       const accountProvider = accountProviderForBackend(deps.backendProvider);
-      const account = deps.accountPool.acquire({ provider: accountProvider, capability: 'messages' });
-      if (!account) throw new ClaudeApiError(`No available ${accountProvider} account. Import and health-check a ChatGPT session account before calling /v1/responses.`, 503, 'overloaded_error');
+      if (deps.backendProvider === 'session' && !deps.accountPool.firstAvailable({ provider: accountProvider, capability: 'messages' })) {
+        throw new ClaudeApiError(`No available ${accountProvider} account.`, 503, 'overloaded_error');
+      }
+      const globalResolution = deps.modelRegistry.resolve(request.model);
+      const accountControls = deps.modelRegistry.accountControlRequirements(globalResolution, explicitControls);
+      const account = deps.accountPool.acquire({
+        provider: accountProvider,
+        capability: 'messages',
+        ...(deps.backendProvider === 'session' ? {
+          eligible: (candidate) => deps.modelRegistry.supportsAccountRequest(
+            request.model,
+            { accountId: candidate.id, createdAt: candidate.createdAt },
+            accountControls,
+          ),
+        } : {}),
+      });
+      if (!account) throw new ClaudeApiError(`No available ${accountProvider} account supports model ${globalResolution.backendModel} with the requested controls.`, 503, 'overloaded_error');
 
       const backendContext = { account };
       let releaseError: unknown;
       let releaseDeferredToStream = false;
       try {
-        if (deps.backendProvider === 'session') await deps.modelRegistry.refreshFromBackend(deps.backend, backendContext);
-        const resolution = deps.modelRegistry.resolve(request.model);
-        const controls = deps.modelRegistry.resolveControls(resolution, {
-          reasoningEffort: request.reasoning?.effort ?? request.reasoning_effort,
-          serviceTier: request.service_tier ?? request.speed ?? request.response_speed,
-        });
+        const resolution = deps.backendProvider === 'session'
+          ? deps.modelRegistry.resolveForAccount(request.model, { accountId: account.id, createdAt: account.createdAt })
+          : globalResolution;
+        const controls = deps.modelRegistry.resolveControls(resolution, accountControls);
         const backendRequest = mapOpenAiResponsesRequestToChatGpt(downstreamRequest, {}, {
           backendModel: resolution.backendModel,
           resolvedControls: controls,

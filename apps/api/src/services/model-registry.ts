@@ -110,12 +110,30 @@ export interface PreparedModelProvisioning {
   boundAliases: Record<string, string>;
 }
 
+export interface AccountModelIdentity {
+  accountId: string;
+  createdAt: string;
+}
+
+interface AccountModelCatalog {
+  identity: AccountModelIdentity;
+  active: boolean;
+  models: ChatGptDiscoveredModel[];
+}
+
+export interface ModelRegistrySnapshot {
+  aliases: AliasOverlay[];
+  discoveredModels: ChatGptDiscoveredModel[];
+  accountCatalogs: AccountModelCatalog[];
+}
+
 export type ProvisioningBindingMode = 'replace' | 'bind-if-unbound';
 
 export class ModelRegistry {
   private readonly defaultAliases: AliasOverlay[];
   private aliases: AliasOverlay[];
   private discoveredModels: ChatGptDiscoveredModel[];
+  private readonly accountCatalogs = new Map<string, AccountModelCatalog>();
 
   constructor(options: ModelRegistryOptions = {}) {
     this.defaultAliases = loadDefaultAliases(options);
@@ -132,6 +150,27 @@ export class ModelRegistry {
     return this.adminView();
   }
 
+  replaceAccountModels(identity: AccountModelIdentity, models: ChatGptDiscoveredModel[], active = true): AdminModelsView {
+    const normalizedIdentity = normalizeAccountIdentity(identity);
+    this.accountCatalogs.set(accountIdentityKey(normalizedIdentity), {
+      identity: normalizedIdentity,
+      active,
+      models: cloneDiscoveredModels(models),
+    });
+    return this.adminView();
+  }
+
+  setAccountActive(identity: AccountModelIdentity, active: boolean): boolean {
+    const catalog = this.accountCatalogs.get(accountIdentityKey(normalizeAccountIdentity(identity)));
+    if (!catalog) return false;
+    catalog.active = active;
+    return true;
+  }
+
+  removeAccountModels(identity: AccountModelIdentity): boolean {
+    return this.accountCatalogs.delete(accountIdentityKey(normalizeAccountIdentity(identity)));
+  }
+
   prepareProvisioning(models: ChatGptDiscoveredModel[], aliasId: string, backendModel?: string, bindingMode: ProvisioningBindingMode = 'replace'): PreparedModelProvisioning {
     const aliases = cloneAliases(this.aliases);
     const discoveredModels = cloneDiscoveredModels(models);
@@ -145,21 +184,24 @@ export class ModelRegistry {
     return { aliases, discoveredModels, boundAliases };
   }
 
-  commitPreparedProvisioning(prepared: PreparedModelProvisioning): void {
-    this.aliases = prepared.aliases;
-    this.discoveredModels = prepared.discoveredModels;
+  commitPreparedProvisioning(prepared: PreparedModelProvisioning, identity?: AccountModelIdentity, active = true): void {
+    this.aliases = cloneAliases(prepared.aliases);
+    if (identity) this.replaceAccountModels(identity, prepared.discoveredModels, active);
+    else this.discoveredModels = cloneDiscoveredModels(prepared.discoveredModels);
   }
 
   list(): RuntimeModel[] {
-    const aliases = this.aliases.map((alias) => this.toRuntimeAlias(alias));
+    const discoveredModels = this.effectiveDiscoveredModels();
+    const aliases = this.aliases.map((alias) => this.toRuntimeAlias(alias, discoveredModels));
     const aliasIds = new Set(this.aliases.map((alias) => alias.id));
-    const passthrough = this.discoveredModels.filter((model) => !aliasIds.has(model.id)).map((model) => discoveredToRuntimeModel(model));
+    const passthrough = discoveredModels.filter((model) => !aliasIds.has(model.id)).map((model) => discoveredToRuntimeModel(model));
     return [...aliases, ...passthrough].map(cloneRuntimeModel);
   }
 
   adminView(): AdminModelsView {
-    const aliases = this.aliases.map((alias) => this.toRuntimeAlias(alias)).map(cloneRuntimeModel);
-    const discovered = this.discoveredModels.map(discoveredToRuntimeModel).map(cloneRuntimeModel);
+    const discoveredModels = this.effectiveDiscoveredModels();
+    const aliases = this.aliases.map((alias) => this.toRuntimeAlias(alias, discoveredModels)).map(cloneRuntimeModel);
+    const discovered = discoveredModels.map(discoveredToRuntimeModel).map(cloneRuntimeModel);
     return { aliases, discovered, combined: this.list() };
   }
 
@@ -169,17 +211,24 @@ export class ModelRegistry {
   }
 
   resolve(id: string): ModelResolution {
-    const alias = this.aliases.find((item) => item.id === id);
-    if (alias) {
-      if (!alias.enabled) throw new ModelRegistryError(`Model is disabled: ${id}`, 'disabled', 400);
-      if (!alias.backendModel) throw new ModelRegistryError(`Model alias is not bound to a backend model: ${id}`, 'unbound', 400);
-      const target = this.discoveredModels.find((item) => item.id === alias.backendModel);
-      if (!target) throw new ModelRegistryError(`Model alias ${id} is bound to missing backend model: ${alias.backendModel}`, 'stale', 404);
-      return { model: this.toRuntimeAlias(alias), backendModel: alias.backendModel, target: cloneDiscoveredModel(target) };
+    const discoveredModels = this.effectiveDiscoveredModels();
+    return this.resolveAgainst(id, discoveredModels);
+  }
+
+  resolveForAccount(id: string, identity: AccountModelIdentity): ModelResolution {
+    const catalog = this.accountCatalogs.get(accountIdentityKey(normalizeAccountIdentity(identity)));
+    if (!catalog || !catalog.active) throw new ModelRegistryError(`No active discovered catalog for account: ${identity.accountId}`, 'unknown', 404);
+    return this.resolveAgainst(id, catalog.models);
+  }
+
+  supportsAccountRequest(id: string, identity: AccountModelIdentity, explicit: ExplicitModelControls = {}): boolean {
+    try {
+      const resolution = this.resolveForAccount(id, identity);
+      this.resolveControls(resolution, explicit);
+      return true;
+    } catch {
+      return false;
     }
-    const target = this.discoveredModels.find((item) => item.id === id);
-    if (target) return { model: discoveredToRuntimeModel(target), backendModel: target.id, target: cloneDiscoveredModel(target) };
-    throw new ModelRegistryError(`Unknown model: ${id}`, 'unknown', 404);
   }
 
   resolveControls(resolution: ModelResolution, explicit: ExplicitModelControls = {}): ResolvedModelControls {
@@ -191,6 +240,22 @@ export class ModelRegistry {
       ...(serviceTier.value ? { serviceTier: serviceTier.value } : {}),
       reasoningSource: reasoning.source,
       serviceTierSource: serviceTier.source,
+    };
+  }
+
+  accountControlRequirements(resolution: ModelResolution, explicit: ExplicitModelControls = {}): ExplicitModelControls {
+    const resolved = this.resolveControls(resolution, explicit);
+    return {
+      ...(explicit.reasoningEffort !== undefined
+        ? { reasoningEffort: explicit.reasoningEffort }
+        : resolved.reasoningSource === 'alias' && resolved.reasoningEffort
+          ? { reasoningEffort: resolved.reasoningEffort }
+          : {}),
+      ...(explicit.serviceTier !== undefined
+        ? { serviceTier: explicit.serviceTier }
+        : resolved.serviceTierSource === 'alias' && resolved.serviceTier
+          ? { serviceTier: resolved.serviceTier }
+          : {}),
     };
   }
 
@@ -240,8 +305,21 @@ export class ModelRegistry {
     return this.defaultAliases.some((alias) => !persisted.has(alias.id));
   }
 
-  snapshot(): AliasOverlay[] { return this.exportState(); }
-  restore(snapshot: AliasOverlay[]): void { this.aliases = cloneAliases(snapshot); }
+  snapshot(): ModelRegistrySnapshot {
+    return {
+      aliases: cloneAliases(this.aliases),
+      discoveredModels: cloneDiscoveredModels(this.discoveredModels),
+      accountCatalogs: [...this.accountCatalogs.values()].map(cloneAccountCatalog),
+    };
+  }
+
+  restore(snapshot: ModelRegistrySnapshot): void {
+    this.aliases = cloneAliases(snapshot.aliases);
+    this.discoveredModels = cloneDiscoveredModels(snapshot.discoveredModels);
+    this.accountCatalogs.clear();
+    for (const catalog of snapshot.accountCatalogs) this.accountCatalogs.set(accountIdentityKey(catalog.identity), cloneAccountCatalog(catalog));
+  }
+
   reset(): RuntimeModel[] { this.aliases = cloneAliases(this.defaultAliases); return this.list(); }
 
   reasoningSpeedDefaultsFor(modelId: string): { reasoningEffort?: ReasoningEffort; speedPreference?: SpeedPreference } | undefined {
@@ -250,8 +328,27 @@ export class ModelRegistry {
     return { reasoningEffort: model.defaults.reasoning_effort, speedPreference: model.defaults.speed };
   }
 
-  private toRuntimeAlias(alias: AliasOverlay): RuntimeModel {
-    const discovered = alias.backendModel ? this.discoveredModels.find((item) => item.id === alias.backendModel) : undefined;
+  private effectiveDiscoveredModels(): ChatGptDiscoveredModel[] {
+    const catalogs = [this.discoveredModels, ...[...this.accountCatalogs.values()].filter((catalog) => catalog.active).map((catalog) => catalog.models)];
+    return mergeDiscoveredCatalogs(catalogs);
+  }
+
+  private resolveAgainst(id: string, discoveredModels: ChatGptDiscoveredModel[]): ModelResolution {
+    const alias = this.aliases.find((item) => item.id === id);
+    if (alias) {
+      if (!alias.enabled) throw new ModelRegistryError(`Model is disabled: ${id}`, 'disabled', 400);
+      if (!alias.backendModel) throw new ModelRegistryError(`Model alias is not bound to a backend model: ${id}`, 'unbound', 400);
+      const target = discoveredModels.find((item) => item.id === alias.backendModel);
+      if (!target) throw new ModelRegistryError(`Model alias ${id} is bound to missing backend model: ${alias.backendModel}`, 'stale', 404);
+      return { model: this.toRuntimeAlias(alias, discoveredModels), backendModel: alias.backendModel, target: cloneDiscoveredModel(target) };
+    }
+    const target = discoveredModels.find((item) => item.id === id);
+    if (target) return { model: discoveredToRuntimeModel(target), backendModel: target.id, target: cloneDiscoveredModel(target) };
+    throw new ModelRegistryError(`Unknown model: ${id}`, 'unknown', 404);
+  }
+
+  private toRuntimeAlias(alias: AliasOverlay, discoveredModels = this.effectiveDiscoveredModels()): RuntimeModel {
+    const discovered = alias.backendModel ? discoveredModels.find((item) => item.id === alias.backendModel) : undefined;
     const capabilities = effectiveCapabilities(discovered);
     const effective = discovered ? effectiveDefaults(discovered, alias.defaults) : emptyEffectiveDefaults();
     return {
@@ -543,6 +640,98 @@ function discoveredToRuntimeModel(model: ChatGptDiscoveredModel): RuntimeModel {
     source: 'discovered',
     status: 'passthrough',
   };
+}
+
+function mergeDiscoveredCatalogs(catalogs: ChatGptDiscoveredModel[][]): ChatGptDiscoveredModel[] {
+  const grouped = new Map<string, ChatGptDiscoveredModel[]>();
+  for (const catalog of catalogs) {
+    for (const model of catalog) {
+      const existing = grouped.get(model.id);
+      if (existing) existing.push(model);
+      else grouped.set(model.id, [model]);
+    }
+  }
+  return [...grouped.values()].map(mergeDiscoveredModels);
+}
+
+function mergeDiscoveredModels(models: ChatGptDiscoveredModel[]): ChatGptDiscoveredModel {
+  const first = models[0];
+  const controls = models.map((model) => model.controls);
+  const knownControls = controls.filter((control): control is ChatGptModelControlCapabilities => control !== undefined);
+  const reasoningOptions = uniqueBy(
+    knownControls.flatMap((control) => control.reasoning.supported),
+    (option) => normalizeReasoningEffort(option.effort),
+  );
+  const serviceTierOptions = uniqueBy(
+    knownControls.flatMap((control) => control.serviceTier.supported),
+    (option) => option.id.toLowerCase(),
+  );
+  const reasoningDefaults = uniqueDefined(knownControls.map((control) => control.reasoning.defaultEffort));
+  const serviceTierDefaults = uniqueDefined(knownControls.map((control) => control.serviceTier.defaultTier));
+  const multiAgentValues = uniqueDefined(knownControls.map((control) => control.reasoning.multiAgent), stableValueKey);
+  return {
+    id: first.id,
+    ...(first.displayName ? { displayName: first.displayName } : {}),
+    ...(first.capabilities ? { capabilities: { ...first.capabilities } } : {}),
+    ...(knownControls.length > 0 ? {
+      controls: {
+        reasoning: {
+          metadataKnown: controls.every((control) => control?.reasoning.metadataKnown === true),
+          supported: reasoningOptions.map((option) => ({ ...option })),
+          ...(reasoningDefaults.length === 1 ? { defaultEffort: reasoningDefaults[0] } : {}),
+          ...(multiAgentValues.length === 1 ? { multiAgent: multiAgentValues[0] } : {}),
+        },
+        serviceTier: {
+          metadataKnown: controls.every((control) => control?.serviceTier.metadataKnown === true),
+          supported: serviceTierOptions.map((option) => ({ ...option })),
+          ...(serviceTierDefaults.length === 1 ? { defaultTier: serviceTierDefaults[0] } : {}),
+          fastMode: knownControls.some((control) => control.serviceTier.fastMode === true),
+        },
+      },
+    } : {}),
+  };
+}
+
+function uniqueBy<T>(values: T[], key: (value: T) => string): T[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const current = key(value);
+    if (seen.has(current)) return false;
+    seen.add(current);
+    return true;
+  });
+}
+
+function uniqueDefined<T>(values: Array<T | undefined>, key: (value: T) => string = (value) => String(value)): T[] {
+  const result: T[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (value === undefined) continue;
+    const current = key(value);
+    if (seen.has(current)) continue;
+    seen.add(current);
+    result.push(value);
+  }
+  return result;
+}
+
+function stableValueKey(value: unknown): string {
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+function normalizeAccountIdentity(identity: AccountModelIdentity): AccountModelIdentity {
+  const accountId = readNonEmptyString(identity.accountId, 'account identity.accountId');
+  const createdAt = readNonEmptyString(identity.createdAt, 'account identity.createdAt');
+  if (!Number.isFinite(Date.parse(createdAt))) throw new Error('Invalid account model identity: createdAt must be a timestamp.');
+  return { accountId, createdAt };
+}
+
+function accountIdentityKey(identity: AccountModelIdentity): string {
+  return JSON.stringify([identity.accountId, identity.createdAt]);
+}
+
+function cloneAccountCatalog(catalog: AccountModelCatalog): AccountModelCatalog {
+  return { identity: { ...catalog.identity }, active: catalog.active, models: cloneDiscoveredModels(catalog.models) };
 }
 
 function cloneAliases(aliases: AliasOverlay[]): AliasOverlay[] { return aliases.map(cloneAlias); }

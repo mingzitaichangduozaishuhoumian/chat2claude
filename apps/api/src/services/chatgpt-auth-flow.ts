@@ -7,9 +7,14 @@ import { ChatGptProvisioningError } from './setup-provisioner.js';
 
 export type ChatGptAuthFlowState = 'idle' | 'starting' | 'link_ready' | 'waiting' | 'exchanging' | 'provisioning' | 'ready' | 'expired' | 'cancelled' | 'error';
 
+export type ChatGptAuthFlowMode = 'add' | 'reauthorize';
+export type ChatGptAuthAccountIntent = { mode: 'add' } | { mode: 'reauthorize'; accountId: string };
+
 export interface ChatGptAuthFlowSnapshot {
   id: string;
   state: ChatGptAuthFlowState;
+  mode: ChatGptAuthFlowMode;
+  accountId?: string;
   authorizeUrl: string;
   message: string;
   createdAt: string;
@@ -18,6 +23,7 @@ export interface ChatGptAuthFlowSnapshot {
   error?: string;
   provisioned?: boolean;
   provisionResult?: unknown;
+  errorStatus?: number;
 }
 
 export interface ChatGptAuthFlowServiceOptions {
@@ -34,6 +40,8 @@ export interface ChatGptAuthFlowServiceOptions {
 
 export interface StartChatGptAuthFlowInput {
   returnOrigin?: string;
+  mode?: ChatGptAuthFlowMode;
+  accountId?: string;
 }
 
 export interface CompleteCallbackInput {
@@ -41,7 +49,7 @@ export interface CompleteCallbackInput {
   redirect_url?: string;
 }
 
-export type ChatGptProvisioner = (secret: ChatGptSessionSecret, signal: AbortSignal, commitBoundary: ProvisionCommitBoundary) => Promise<unknown>;
+export type ChatGptProvisioner = (secret: ChatGptSessionSecret, target: ChatGptAuthAccountIntent, signal: AbortSignal, commitBoundary: ProvisionCommitBoundary) => Promise<unknown>;
 
 interface InternalFlow extends ChatGptAuthFlowSnapshot {
   oauthState: string;
@@ -53,7 +61,8 @@ interface InternalFlow extends ChatGptAuthFlowSnapshot {
   generation: number;
   operationController?: AbortController;
   exchangePromise?: Promise<void>;
-  provisionPromise?: Promise<ChatGptAuthFlowSnapshot>;
+  provisionPromise?: Promise<void>;
+  oneTimeProvisionResult?: unknown;
   expiryTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -97,6 +106,7 @@ export class ChatGptAuthFlowService {
 
   async start(input: StartChatGptAuthFlowInput = {}): Promise<ChatGptAuthFlowSnapshot> {
     const returnOrigin = validateReturnOrigin(input.returnOrigin);
+    const target = normalizeAccountIntent(input);
     if (this.options.enableCallbackListener !== false) await this.ensureCallbackListener();
     const id = randomBytes(24).toString('base64url');
     const createdAt = this.now();
@@ -106,6 +116,7 @@ export class ChatGptAuthFlowService {
     const flow: InternalFlow = {
       id,
       state: 'link_ready',
+      ...target,
       authorizeUrl: this.oauthClient.buildAuthorizeUrl({ state: oauthState, codeVerifier, redirectUri }),
       message: this.callbackServerReady
         ? `请在新窗口完成 Codex OAuth 授权；本地 localhost:${this.callbackPort} callback listener 会通过可用的 IPv6/IPv4 loopback 接收回调。`
@@ -201,24 +212,25 @@ export class ChatGptAuthFlowService {
           return result;
         };
         try {
-          await provisioner(secret, controller.signal, commitBoundary);
+          await provisioner(secret, flow.mode === 'reauthorize' ? { mode: 'reauthorize', accountId: flow.accountId! } : { mode: 'add' }, controller.signal, commitBoundary);
           if (!committed) throw new Error('ChatGPT setup provisioning returned without committing.');
         } catch (error) {
-          if (!this.operationIsCurrent(flow, generation, controller)) return publicSnapshot(flow);
-          if (this.expireIfNeeded(flow)) return publicSnapshot(flow);
+          if (!this.operationIsCurrent(flow, generation, controller)) return;
+          if (this.expireIfNeeded(flow)) return;
           const failure = publicProvisioningFailure(error);
           flow.state = 'error';
           flow.error = failure.error;
           flow.message = failure.message;
+          flow.errorStatus = failure.status;
           flow.secret = undefined;
           this.clearExpiryDeadline(flow);
         } finally {
           if (flow.operationController === controller) flow.operationController = undefined;
         }
-        return publicSnapshot(flow);
       })();
     }
-    return flow.provisionPromise;
+    await flow.provisionPromise;
+    return this.consumeOneTimeProvisionResult(flow);
   }
 
   async cancel(id: string): Promise<ChatGptAuthFlowSnapshot | undefined> {
@@ -399,13 +411,23 @@ export class ChatGptAuthFlowService {
       throw new Error('ChatGPT setup provisioning expired.');
     }
     const result = commit(new Date(nowMs));
+    const separated = separateOneTimeProvisionResult(result);
     flow.state = 'ready';
     flow.provisioned = true;
-    flow.provisionResult = result;
+    flow.provisionResult = separated.safeResult;
+    flow.oneTimeProvisionResult = separated.oneTimeResult;
     flow.message = 'ChatGPT 授权和 API 初始化已完成。';
     flow.secret = undefined;
     this.clearExpiryDeadline(flow);
     return result;
+  }
+
+  private consumeOneTimeProvisionResult(flow: InternalFlow): ChatGptAuthFlowSnapshot {
+    const snapshot = publicSnapshot(flow);
+    if (flow.oneTimeProvisionResult === undefined) return snapshot;
+    const provisionResult = flow.oneTimeProvisionResult;
+    flow.oneTimeProvisionResult = undefined;
+    return { ...snapshot, provisionResult };
   }
 
   private expireIfNeeded(flow: InternalFlow): boolean {
@@ -447,10 +469,11 @@ export class ChatGptAuthFlowService {
     flow.generation += 1;
     flow.operationController?.abort();
     flow.operationController = undefined;
+    flow.oneTimeProvisionResult = undefined;
   }
 }
 
-function publicProvisioningFailure(error: unknown): { error: string; message: string } {
+function publicProvisioningFailure(error: unknown): { error: string; message: string; status?: number } {
   if (!(error instanceof ChatGptProvisioningError)) {
     return {
       error: 'ChatGPT setup provisioning failed.',
@@ -468,6 +491,7 @@ function publicProvisioningFailure(error: unknown): { error: string; message: st
   return {
     error: `${error.diagnostic.message}${suffix}`,
     message: `自动初始化在${provisioningStageLabel(stage)}阶段失败${suffix}。${action}`,
+    ...(error.diagnostic.status === undefined ? {} : { status: error.diagnostic.status }),
   };
 }
 
@@ -492,6 +516,20 @@ async function closeServers(servers: Server[]): Promise<void> {
 
 function callbackRedirectUri(port: number): string {
   return `http://localhost:${port}${CALLBACK_PATH}`;
+}
+
+function normalizeAccountIntent(input: StartChatGptAuthFlowInput): ChatGptAuthAccountIntent {
+  const mode = input.mode ?? 'add';
+  const accountId = clean(input.accountId);
+  if (mode === 'add') {
+    if (accountId) throw new Error('OAuth add mode must not include accountId.');
+    return { mode: 'add' };
+  }
+  if (mode === 'reauthorize') {
+    if (!accountId) throw new Error('OAuth reauthorize mode requires accountId.');
+    return { mode, accountId };
+  }
+  throw new Error('OAuth mode must be add or reauthorize.');
 }
 
 function validateReturnOrigin(value: string | undefined): string | undefined {
@@ -541,8 +579,15 @@ function clean(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+function separateOneTimeProvisionResult<T>(result: T): { safeResult: T | Record<string, unknown>; oneTimeResult?: Record<string, unknown> } {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return { safeResult: result };
+  const { apiKey, ...safeResult } = result as Record<string, unknown>;
+  if (typeof apiKey !== 'string' || !apiKey) return { safeResult };
+  return { safeResult, oneTimeResult: { ...safeResult, apiKey } };
+}
+
 function publicSnapshot(flow: InternalFlow): ChatGptAuthFlowSnapshot {
-  const { oauthState: _oauthState, codeVerifier: _codeVerifier, redirectUri: _redirectUri, returnOrigin: _returnOrigin, code: _code, secret: _secret, generation: _generation, operationController: _operationController, exchangePromise: _exchangePromise, provisionPromise: _provisionPromise, expiryTimer: _expiryTimer, ...snapshot } = flow;
+  const { oauthState: _oauthState, codeVerifier: _codeVerifier, redirectUri: _redirectUri, returnOrigin: _returnOrigin, code: _code, secret: _secret, generation: _generation, operationController: _operationController, exchangePromise: _exchangePromise, provisionPromise: _provisionPromise, oneTimeProvisionResult: _oneTimeProvisionResult, expiryTimer: _expiryTimer, ...snapshot } = flow;
   return { ...snapshot };
 }
 

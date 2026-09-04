@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import * as nodeFs from 'node:fs';
 import { dirname } from 'node:path';
+import type { ChatGptDiscoveredModel, ChatGptModelControlCapabilities, ChatGptReasoningLevelOption, ChatGptServiceTierOption } from '@chatgpt-to-claude/chatgpt-backend';
 
 const OPERATIONAL_STATE_VERSION = 1;
 const DEFAULT_DEBOUNCE_MS = 1_000;
@@ -45,6 +46,7 @@ export interface OperationalAccountSnapshot extends OperationalAccountIdentity {
   requestStats: OperationalRequestStats;
   lastHealthCheck: OperationalHealthCheck | null;
   discoveredModelIds: string[];
+  discoveredModels: ChatGptDiscoveredModel[];
   quotaCache: SanitizedQuotaCache;
 }
 
@@ -53,6 +55,7 @@ interface PersistedOperationalAccount extends OperationalAccountIdentity {
   requestStats: PersistedRequestStats;
   lastHealthCheck: OperationalHealthCheck | null;
   discoveredModelIds: string[];
+  discoveredModels: ChatGptDiscoveredModel[];
   quotaCache: SanitizedQuotaCache;
 }
 interface OperationalStateDocument {
@@ -160,9 +163,32 @@ export class AdminOperationalState {
   }
 
   setDiscoveredModelIds(identity: OperationalAccountIdentity, modelIds: string[]): void {
+    this.setDiscoveredModels(identity, normalizeModelIds(modelIds).map((id) => ({ id })));
+  }
+
+  setDiscoveredModels(identity: OperationalAccountIdentity, models: ChatGptDiscoveredModel[]): void {
     const account = this.getOrCreate(identity);
-    account.discoveredModelIds = [...new Set(modelIds.map((id, index) => nonEmptyString(id, `modelIds[${index}]`)))].sort();
+    account.discoveredModels = sanitizeDiscoveredModels(models);
+    account.discoveredModelIds = account.discoveredModels.map((model) => model.id);
     this.schedulePersist();
+  }
+
+  recordProvisioningSuccess(identity: OperationalAccountIdentity, models: ChatGptDiscoveredModel[], healthCheck: OperationalHealthCheck): void {
+    const validatedIdentity = validateIdentity(identity, 'account identity');
+    const validatedModels = sanitizeDiscoveredModels(models);
+    const validatedHealth = validateHealthCheck(healthCheck, 'health check');
+    const account = this.getOrCreate(validatedIdentity);
+    account.discoveredModels = validatedModels;
+    account.discoveredModelIds = validatedModels.map((model) => model.id);
+    account.lastHealthCheck = validatedHealth;
+    this.schedulePersist();
+  }
+
+  removeAccount(identity: OperationalAccountIdentity): boolean {
+    this.assertWritable();
+    const removed = this.accounts.delete(identityKey(validateIdentity(identity, 'account identity')));
+    if (removed) this.schedulePersist();
+    return removed;
   }
 
   setQuotaCache(identity: OperationalAccountIdentity, quotaCache: SanitizedQuotaCache): void {
@@ -213,6 +239,7 @@ export class AdminOperationalState {
         requestStats: { totalRequests: 0, successfulRequests: 0, failedRequests: 0, inputTokens: 0, outputTokens: 0, lastRequestAt: null, inFlight: 0 },
         lastHealthCheck: null,
         discoveredModelIds: [],
+        discoveredModels: [],
         quotaCache: { status: 'empty', fetchedAt: null, expiresAt: null, snapshots: [] },
       };
       this.accounts.set(key, account);
@@ -268,6 +295,7 @@ function toPersisted(account: OperationalAccountSnapshot): PersistedOperationalA
     requestStats: { ...requestStats },
     lastHealthCheck: account.lastHealthCheck ? { ...account.lastHealthCheck } : null,
     discoveredModelIds: [...account.discoveredModelIds],
+    discoveredModels: cloneDiscoveredModels(account.discoveredModels),
     quotaCache: cloneQuotaCache(account.quotaCache),
   };
 }
@@ -279,6 +307,7 @@ function fromPersisted(account: PersistedOperationalAccount): OperationalAccount
     requestStats: { ...account.requestStats, inFlight: 0 },
     lastHealthCheck: account.lastHealthCheck ? { ...account.lastHealthCheck } : null,
     discoveredModelIds: [...account.discoveredModelIds],
+    discoveredModels: cloneDiscoveredModels(account.discoveredModels),
     quotaCache: cloneQuotaCache(account.quotaCache),
   };
 }
@@ -289,6 +318,7 @@ function cloneAccount(account: OperationalAccountSnapshot): OperationalAccountSn
     requestStats: { ...account.requestStats },
     lastHealthCheck: account.lastHealthCheck ? { ...account.lastHealthCheck } : null,
     discoveredModelIds: [...account.discoveredModelIds],
+    discoveredModels: cloneDiscoveredModels(account.discoveredModels),
     quotaCache: cloneQuotaCache(account.quotaCache),
   };
 }
@@ -309,7 +339,7 @@ function validateDocument(value: unknown): OperationalStateDocument {
 
 function validateAccount(value: unknown, index: number): PersistedOperationalAccount {
   const label = `accounts[${index}]`;
-  const raw = strictObject(value, ['accountId', 'createdAt', 'requestStats', 'lastHealthCheck', 'discoveredModelIds', 'quotaCache'], label);
+  const raw = strictObject(value, ['accountId', 'createdAt', 'requestStats', 'lastHealthCheck', 'discoveredModelIds', 'discoveredModels', 'quotaCache'], label, ['discoveredModels']);
   const identity = validateIdentity(raw, label);
   const stats = strictObject(raw.requestStats, ['totalRequests', 'successfulRequests', 'failedRequests', 'inputTokens', 'outputTokens', 'lastRequestAt'], `${label}.requestStats`);
   const requestStats: PersistedRequestStats = {
@@ -324,11 +354,18 @@ function validateAccount(value: unknown, index: number): PersistedOperationalAcc
   if (!Array.isArray(raw.discoveredModelIds)) throw invalid(`${label}.discoveredModelIds must be an array`);
   const discoveredModelIds = raw.discoveredModelIds.map((id, modelIndex) => nonEmptyString(id, `${label}.discoveredModelIds[${modelIndex}]`));
   if (new Set(discoveredModelIds).size !== discoveredModelIds.length) throw invalid(`${label}.discoveredModelIds contains duplicates`);
+  const discoveredModels = raw.discoveredModels === undefined
+    ? discoveredModelIds.map((id) => ({ id }))
+    : validateDiscoveredModels(raw.discoveredModels, `${label}.discoveredModels`);
+  if (discoveredModels.length !== discoveredModelIds.length || discoveredModels.some((model, index) => model.id !== discoveredModelIds[index])) {
+    throw invalid(`${label}.discoveredModels must match discoveredModelIds in order`);
+  }
   return {
     ...identity,
     requestStats,
     lastHealthCheck: raw.lastHealthCheck === null ? null : validateHealthCheck(raw.lastHealthCheck, `${label}.lastHealthCheck`),
     discoveredModelIds,
+    discoveredModels,
     quotaCache: validateQuotaCache(raw.quotaCache, `${label}.quotaCache`),
   };
 }
@@ -337,6 +374,113 @@ function validateIdentity(value: unknown, label: string): OperationalAccountIden
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid(`${label} must be an object`);
   const raw = value as Record<string, unknown>;
   return { accountId: nonEmptyString(raw.accountId, `${label}.accountId`), createdAt: timestamp(raw.createdAt, `${label}.createdAt`) };
+}
+
+function normalizeModelIds(modelIds: string[]): string[] {
+  if (!Array.isArray(modelIds)) throw invalid('modelIds must be an array');
+  return [...new Set(modelIds.map((id, index) => nonEmptyString(id, `modelIds[${index}]`)))].sort();
+}
+
+function sanitizeDiscoveredModels(models: ChatGptDiscoveredModel[]): ChatGptDiscoveredModel[] {
+  if (!Array.isArray(models)) throw invalid('models must be an array');
+  const byId = new Map<string, ChatGptDiscoveredModel>();
+  models.forEach((model, index) => {
+    if (!model || typeof model !== 'object' || Array.isArray(model)) throw invalid(`models[${index}] must be an object`);
+    const id = nonEmptyString(model.id, `models[${index}].id`);
+    if (!byId.has(id)) byId.set(id, sanitizeDiscoveredModel(model, `models[${index}]`));
+  });
+  return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function validateDiscoveredModels(value: unknown, label: string): ChatGptDiscoveredModel[] {
+  if (!Array.isArray(value)) throw invalid(`${label} must be an array`);
+  const models = value.map((model, index) => {
+    const raw = strictObject(model, ['id', 'displayName', 'controls'], `${label}[${index}]`, ['displayName', 'controls']);
+    return sanitizeDiscoveredModel(raw as unknown as ChatGptDiscoveredModel, `${label}[${index}]`, true);
+  });
+  if (new Set(models.map((model) => model.id)).size !== models.length) throw invalid(`${label} contains duplicate ids`);
+  return models;
+}
+
+function sanitizeDiscoveredModel(model: ChatGptDiscoveredModel, label: string, persisted = false): ChatGptDiscoveredModel {
+  const id = nonEmptyString(model.id, `${label}.id`);
+  const displayName = model.displayName === undefined ? undefined : nonEmptyString(model.displayName, `${label}.displayName`);
+  const controls = model.controls === undefined ? undefined : sanitizeModelControls(model.controls, `${label}.controls`, persisted);
+  return { id, ...(displayName ? { displayName } : {}), ...(controls ? { controls } : {}) };
+}
+
+function sanitizeModelControls(value: ChatGptModelControlCapabilities, label: string, persisted: boolean): ChatGptModelControlCapabilities {
+  const raw = persisted
+    ? strictObject(value, ['reasoning', 'serviceTier'], label)
+    : value as unknown as Record<string, unknown>;
+  const reasoningRaw = persisted
+    ? strictObject(raw.reasoning, ['metadataKnown', 'supported', 'defaultEffort', 'multiAgent'], `${label}.reasoning`, ['defaultEffort', 'multiAgent'])
+    : raw.reasoning as Record<string, unknown>;
+  const serviceRaw = persisted
+    ? strictObject(raw.serviceTier, ['metadataKnown', 'supported', 'defaultTier', 'fastMode'], `${label}.serviceTier`, ['defaultTier'])
+    : raw.serviceTier as Record<string, unknown>;
+  if (!reasoningRaw || !serviceRaw) throw invalid(`${label} must include reasoning and serviceTier`);
+  if (!Array.isArray(reasoningRaw.supported)) throw invalid(`${label}.reasoning.supported must be an array`);
+  if (!Array.isArray(serviceRaw.supported)) throw invalid(`${label}.serviceTier.supported must be an array`);
+  const reasoningSupported = reasoningRaw.supported.map((option, index) => sanitizeReasoningOption(option, `${label}.reasoning.supported[${index}]`, persisted));
+  const serviceSupported = serviceRaw.supported.map((option, index) => sanitizeServiceTierOption(option, `${label}.serviceTier.supported[${index}]`, persisted));
+  return {
+    reasoning: {
+      metadataKnown: booleanValue(reasoningRaw.metadataKnown, `${label}.reasoning.metadataKnown`),
+      supported: reasoningSupported,
+      ...(reasoningRaw.defaultEffort === undefined ? {} : { defaultEffort: nonEmptyString(reasoningRaw.defaultEffort, `${label}.reasoning.defaultEffort`) }),
+      ...(reasoningRaw.multiAgent === undefined ? {} : { multiAgent: sanitizeMultiAgent(reasoningRaw.multiAgent, `${label}.reasoning.multiAgent`) }),
+    },
+    serviceTier: {
+      metadataKnown: booleanValue(serviceRaw.metadataKnown, `${label}.serviceTier.metadataKnown`),
+      supported: serviceSupported,
+      ...(serviceRaw.defaultTier === undefined ? {} : { defaultTier: nonEmptyString(serviceRaw.defaultTier, `${label}.serviceTier.defaultTier`) }),
+      fastMode: booleanValue(serviceRaw.fastMode, `${label}.serviceTier.fastMode`),
+    },
+  };
+}
+
+function sanitizeReasoningOption(value: unknown, label: string, persisted: boolean): ChatGptReasoningLevelOption {
+  const raw = persisted ? strictObject(value, ['effort', 'description'], label, ['description']) : objectValue(value, label);
+  return {
+    effort: nonEmptyString(raw.effort, `${label}.effort`),
+    ...(raw.description === undefined ? {} : { description: nonEmptyString(raw.description, `${label}.description`) }),
+  };
+}
+
+function sanitizeServiceTierOption(value: unknown, label: string, persisted: boolean): ChatGptServiceTierOption {
+  const raw = persisted ? strictObject(value, ['id', 'name', 'description'], label, ['name', 'description']) : objectValue(value, label);
+  return {
+    id: nonEmptyString(raw.id, `${label}.id`),
+    ...(raw.name === undefined ? {} : { name: nonEmptyString(raw.name, `${label}.name`) }),
+    ...(raw.description === undefined ? {} : { description: nonEmptyString(raw.description, `${label}.description`) }),
+  };
+}
+
+function sanitizeMultiAgent(value: unknown, label: string): unknown {
+  const raw = objectValue(value, label);
+  const result: Record<string, unknown> = {};
+  for (const key of ['effort', 'reasoning_effort', 'reasoningEffort', 'default_reasoning_level', 'defaultReasoningLevel'] as const) {
+    if (raw[key] !== undefined) result[key] = nonEmptyString(raw[key], `${label}.${key}`);
+  }
+  for (const key of ['supported_reasoning_levels', 'supportedReasoningLevels'] as const) {
+    const supported = raw[key];
+    if (supported === undefined) continue;
+    if (!Array.isArray(supported)) throw invalid(`${label}.${key} must be an array`);
+    result[key] = supported.map((item, index) => typeof item === 'string'
+      ? nonEmptyString(item, `${label}.${key}[${index}]`)
+      : { effort: nonEmptyString(objectValue(item, `${label}.${key}[${index}]`).effort, `${label}.${key}[${index}].effort`) });
+  }
+  return result;
+}
+
+function cloneDiscoveredModels(models: ChatGptDiscoveredModel[]): ChatGptDiscoveredModel[] {
+  return models.map((model) => sanitizeDiscoveredModel(model, 'discovered model'));
+}
+
+function objectValue(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid(`${label} must be an object`);
+  return value as Record<string, unknown>;
 }
 
 function validateHealthCheck(value: unknown, label: string): OperationalHealthCheck {
@@ -426,6 +570,11 @@ function timestamp(value: unknown, label: string): string {
 
 function nullableTimestamp(value: unknown, label: string): string | null {
   return value === null ? null : timestamp(value, label);
+}
+
+function booleanValue(value: unknown, label: string): boolean {
+  if (typeof value !== 'boolean') throw invalid(`${label} must be a boolean`);
+  return value;
 }
 
 function nonNegativeInteger(value: unknown, label: string): number {

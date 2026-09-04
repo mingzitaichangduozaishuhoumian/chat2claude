@@ -7,6 +7,10 @@ export interface Account {
   id: string;
   /** Runtime-only identity that distinguishes delete/recreate cycles for the same id. */
   incarnation: number;
+  /** Runtime-only generation for credentials and administrator-controlled settings. */
+  configurationRevision: number;
+  /** Runtime-only generation for transient health/status mutations. */
+  healthRevision: number;
   label: string;
   provider: AccountProvider;
   status: AccountStatus;
@@ -22,7 +26,7 @@ export interface Account {
   createdAt: string;
 }
 
-export interface AccountView extends Omit<Account, 'secret' | 'incarnation'> {
+export interface AccountView extends Omit<Account, 'secret' | 'incarnation' | 'configurationRevision' | 'healthRevision'> {
   hasSecret: boolean;
   email?: string;
   upstreamAccountId?: string;
@@ -57,6 +61,19 @@ export interface AccountPatchInput {
 export interface AccountAcquireOptions {
   provider?: AccountProvider;
   capability?: string;
+  eligible?: (account: Account) => boolean;
+}
+
+export interface AccountDiscoveryOperation {
+  id: number;
+}
+
+interface ActiveAccountDiscoveryOperation {
+  accountId: string;
+  incarnation: number;
+  createdAt: string;
+  acceptedConfigurationRevision: number;
+  healthRevision?: number;
 }
 
 export interface AccountPoolOptions {
@@ -71,8 +88,8 @@ export interface SessionSecretVersion {
   refreshToken?: string;
 }
 
-/** v1-compatible persisted form; incarnation exists only for this process lifetime. */
-export type PersistedAccount = Omit<Account, 'currentConcurrency' | 'incarnation'>;
+/** v1-compatible persisted form; runtime generations exist only for this process lifetime. */
+export type PersistedAccount = Omit<Account, 'currentConcurrency' | 'incarnation' | 'configurationRevision' | 'healthRevision'>;
 
 export interface AccountPoolState {
   accounts: PersistedAccount[];
@@ -102,7 +119,10 @@ export class AccountPool {
   private readonly accounts: Account[];
   private readonly now: () => Date;
   private readonly rateLimitCooldownMs: number;
+  private readonly discoveryOperations = new Map<number, ActiveAccountDiscoveryOperation>();
+  private readonly latestDiscoveryOperationIds = new Map<string, number>();
   private nextIncarnation = 1;
+  private nextDiscoveryOperationId = 1;
 
   constructor(options: AccountPoolOptions = {}) {
     this.now = options.now ?? (() => new Date());
@@ -158,6 +178,8 @@ export class AccountPool {
     const next: Account = {
       id: input.id,
       incarnation: existing?.incarnation ?? this.nextIncarnation++,
+      configurationRevision: existing ? existing.configurationRevision + 1 : 1,
+      healthRevision: existing ? existing.healthRevision + 1 : 1,
       label: normalizeString(input.label, 'ChatGPT Session Account'),
       provider: 'chatgpt-session',
       status: enabled ? 'available' : 'disabled',
@@ -183,12 +205,14 @@ export class AccountPool {
     const current = this.accounts[index];
     const provider = normalizeProvider(patch.provider, current.provider);
     const enabled = typeof patch.enabled === 'boolean' ? patch.enabled : current.enabled;
-    const status = normalizeStatus(patch.status, enabled ? current.status : 'disabled');
+    const enabledFallbackStatus = current.enabled ? current.status : 'available';
+    const status = normalizeStatus(patch.status, enabled ? enabledFallbackStatus : 'disabled');
     const nextStatus = enabled ? status : 'disabled';
     const patchedCooldownUntil = normalizeNullableString(patch.cooldownUntil, current.cooldownUntil);
     const shouldClearCooldown = nextStatus !== 'cooldown' && nextStatus !== 'error' && nextStatus !== 'unhealthy';
     const next: Account = {
       ...current,
+      configurationRevision: current.configurationRevision + 1,
       label: normalizeString(patch.label, current.label),
       provider,
       status: nextStatus,
@@ -201,6 +225,7 @@ export class AccountPool {
       capabilities: normalizeStringArray(patch.capabilities, current.capabilities),
       secret: patch.secret === undefined ? current.secret : normalizeSecret(patch.secret, provider),
     };
+    if (healthStateChanged(current, next)) next.healthRevision += 1;
     this.accounts[index] = next;
     return toAccountView(next);
   }
@@ -210,6 +235,53 @@ export class AccountPool {
     return account ? cloneAccount(account) : undefined;
   }
 
+  isCurrent(expected: Pick<Account, 'id' | 'incarnation' | 'configurationRevision' | 'createdAt'>): boolean {
+    const account = this.accounts.find((item) => item.id === expected.id);
+    return Boolean(account
+      && account.incarnation === expected.incarnation
+      && account.configurationRevision === expected.configurationRevision
+      && account.createdAt === expected.createdAt);
+  }
+
+  isCurrentHealth(expected: Pick<Account, 'id' | 'incarnation' | 'configurationRevision' | 'healthRevision' | 'createdAt'>): boolean {
+    const account = this.accounts.find((item) => item.id === expected.id);
+    return Boolean(this.isCurrent(expected) && account?.healthRevision === expected.healthRevision);
+  }
+
+  beginDiscovery(expected: Pick<Account, 'id' | 'incarnation' | 'configurationRevision' | 'createdAt'>, includeHealth = false): AccountDiscoveryOperation | undefined {
+    if (!this.isCurrent(expected)) return undefined;
+    const account = this.accounts.find((item) => item.id === expected.id)!;
+    const id = this.nextDiscoveryOperationId++;
+    const active = {
+      accountId: account.id,
+      incarnation: account.incarnation,
+      createdAt: account.createdAt,
+      acceptedConfigurationRevision: account.configurationRevision,
+      ...(includeHealth ? { healthRevision: account.healthRevision } : {}),
+    };
+    this.discoveryOperations.set(id, active);
+    this.latestDiscoveryOperationIds.set(discoveryAccountKey(active), id);
+    return { id };
+  }
+
+  isCurrentDiscovery(operation: AccountDiscoveryOperation): boolean {
+    const active = this.discoveryOperations.get(operation.id);
+    if (!active) return false;
+    const account = this.accounts.find((item) => item.id === active.accountId);
+    return Boolean(account
+      && this.latestDiscoveryOperationIds.get(discoveryAccountKey(active)) === operation.id
+      && account.incarnation === active.incarnation
+      && account.createdAt === active.createdAt
+      && account.configurationRevision === active.acceptedConfigurationRevision
+      && (active.healthRevision === undefined || account.healthRevision === active.healthRevision));
+  }
+
+  endDiscovery(operation: AccountDiscoveryOperation): void {
+    this.discoveryOperations.delete(operation.id);
+    // Retain the latest-operation marker so cleanup of a newer operation can
+    // never make an older still-running operation current again.
+  }
+
   remove(id: string): AccountView | undefined {
     const index = this.accounts.findIndex((item) => item.id === id);
     if (index === -1) return undefined;
@@ -217,13 +289,22 @@ export class AccountPool {
     return toAccountView(account);
   }
 
-  compareAndSwapSessionSecret(id: string, expected: SessionSecretVersion, nextSecret: ChatGptSessionSecret, expectedIncarnation?: number): Account | undefined {
+  compareAndSwapSessionSecret(id: string, expected: SessionSecretVersion, nextSecret: ChatGptSessionSecret, expectedIncarnation?: number, discoveryOperationId?: number): Account | undefined {
     const account = this.accounts.find((item) => item.id === id);
     if (!account || (expectedIncarnation !== undefined && account.incarnation !== expectedIncarnation) || account.provider !== 'chatgpt-session' || !account.secret) return undefined;
     if (account.secret.accessToken !== expected.accessToken || account.secret.refreshToken !== expected.refreshToken) return undefined;
     const normalized = normalizeSecret(nextSecret, 'chatgpt-session');
     if (!normalized?.accessToken) return undefined;
+    const discoveryOperation = discoveryOperationId === undefined ? undefined : this.discoveryOperations.get(discoveryOperationId);
+    const operationOwnsCurrentRevision = Boolean(discoveryOperation
+      && this.latestDiscoveryOperationIds.get(discoveryAccountKey(discoveryOperation)) === discoveryOperationId
+      && discoveryOperation.accountId === account.id
+      && discoveryOperation.incarnation === account.incarnation
+      && discoveryOperation.createdAt === account.createdAt
+      && discoveryOperation.acceptedConfigurationRevision === account.configurationRevision);
     account.secret = normalized;
+    account.configurationRevision += 1;
+    if (operationOwnsCurrentRevision && discoveryOperation) discoveryOperation.acceptedConfigurationRevision = account.configurationRevision;
     return cloneAccount(account);
   }
 
@@ -250,7 +331,7 @@ export class AccountPool {
   markError(id: string, error: unknown, expectedIncarnation?: number): AccountView | undefined {
     const account = this.accounts.find((item) => item.id === id);
     if (!account || (expectedIncarnation !== undefined && account.incarnation !== expectedIncarnation)) return undefined;
-    this.applyReleaseResult(account, error);
+    this.applyReleaseResult(account, error, true);
     return toAccountView(account);
   }
 
@@ -272,6 +353,7 @@ export class AccountPool {
   }
 
   private markHealthyAccount(account: Account): void {
+    account.healthRevision += 1;
     account.lastUsedAt = this.now().toISOString();
     account.lastError = null;
     account.lastErrorCode = null;
@@ -279,8 +361,9 @@ export class AccountPool {
     account.status = account.enabled ? 'available' : 'disabled';
   }
 
-  private applyReleaseResult(account: Account, error?: unknown): void {
+  private applyReleaseResult(account: Account, error?: unknown, forceHealthMutation = false): void {
     account.lastUsedAt = this.now().toISOString();
+    if (forceHealthMutation || error !== undefined) account.healthRevision += 1;
     if (error === undefined) {
       if (account.status === 'available' || account.status === 'disabled') {
         account.lastError = null;
@@ -315,6 +398,7 @@ export class AccountPool {
       if (account.status !== 'cooldown' || !account.cooldownUntil) continue;
       const cooldownUntilMs = Date.parse(account.cooldownUntil);
       if (Number.isFinite(cooldownUntilMs) && cooldownUntilMs <= nowMs) {
+        account.healthRevision += 1;
         account.lastError = null;
         account.lastErrorCode = null;
         account.cooldownUntil = null;
@@ -322,6 +406,10 @@ export class AccountPool {
       }
     }
   }
+}
+
+function discoveryAccountKey(operation: Pick<ActiveAccountDiscoveryOperation, 'accountId' | 'incarnation' | 'createdAt'>): string {
+  return `${operation.accountId}\0${operation.incarnation}\0${operation.createdAt}`;
 }
 
 function isStaleCredentialError(account: Account, error: unknown): boolean {
@@ -338,6 +426,8 @@ function createAccount(input: AccountCreateInput, now: () => Date, incarnation: 
   return {
     id: normalizeId(input.id),
     incarnation,
+    configurationRevision: 1,
+    healthRevision: 1,
     label: normalizeString(input.label, provider === 'mock' ? 'Mock ChatGPT Account' : 'ChatGPT Session Account'),
     provider,
     status: enabled ? 'available' : 'disabled',
@@ -354,10 +444,19 @@ function createAccount(input: AccountCreateInput, now: () => Date, incarnation: 
   };
 }
 
+function healthStateChanged(previous: Account, next: Account): boolean {
+  return previous.enabled !== next.enabled
+    || previous.status !== next.status
+    || previous.lastError !== next.lastError
+    || previous.lastErrorCode !== next.lastErrorCode
+    || previous.cooldownUntil !== next.cooldownUntil;
+}
+
 function canAcquire(account: Account, options: AccountAcquireOptions): boolean {
   if (!account.enabled || account.status !== 'available' || account.currentConcurrency >= account.maxConcurrency) return false;
   if (options.provider && account.provider !== options.provider) return false;
   if (options.capability && !account.capabilities.includes(options.capability)) return false;
+  if (options.eligible && !options.eligible(cloneAccount(account))) return false;
   return true;
 }
 
@@ -366,16 +465,16 @@ function cloneAccount(account: Account): Account {
 }
 
 function toPersistedAccount(account: Account): PersistedAccount {
-  const { currentConcurrency: _currentConcurrency, incarnation: _incarnation, ...persisted } = cloneAccount(account);
+  const { currentConcurrency: _currentConcurrency, incarnation: _incarnation, configurationRevision: _configurationRevision, healthRevision: _healthRevision, ...persisted } = cloneAccount(account);
   return persisted;
 }
 
 function fromPersistedAccount(account: PersistedAccount, incarnation: number): Account {
-  return { ...account, incarnation, currentConcurrency: 0, capabilities: [...account.capabilities], secret: account.secret ? { ...account.secret } : undefined };
+  return { ...account, incarnation, configurationRevision: 1, healthRevision: 1, currentConcurrency: 0, capabilities: [...account.capabilities], secret: account.secret ? { ...account.secret } : undefined };
 }
 
 function toAccountView(account: Account): AccountView {
-  const { secret, incarnation: _incarnation, ...view } = account;
+  const { secret, incarnation: _incarnation, configurationRevision: _configurationRevision, healthRevision: _healthRevision, ...view } = account;
   return {
     ...view,
     capabilities: [...account.capabilities],

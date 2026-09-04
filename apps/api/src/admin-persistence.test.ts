@@ -14,6 +14,7 @@ import { ModelRegistry } from './services/model-registry.js';
 import { RuntimeApiKeys } from './services/runtime-api-keys.js';
 import { RuntimeStateStore } from './services/runtime-state-store.js';
 import { ChatGptAuthFlowService } from './services/chatgpt-auth-flow.js';
+import { AdminOperationalState } from './services/admin-operational-state.js';
 
 const directories: string[] = [];
 
@@ -158,6 +159,27 @@ describe('durable administration', () => {
     await authFlow.close();
   });
 
+  it('validates OAuth add and reauthorize targets before creating flows', async () => {
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    accountPool.add({ id: 'session-existing', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'old', accountId: 'upstream' } });
+    accountPool.add({ id: 'mock-existing', provider: 'mock' });
+    const authFlow = new ChatGptAuthFlowService({ enableCallbackListener: false });
+    const app = new Hono();
+    app.route('/', createAdminRoute({ accountPool, modelRegistry: new ModelRegistry(), backend: {} as ChatGptBackendClient, runtimeApiKeys: new RuntimeApiKeys(), envApiKeys: [], defaultReasoningEffort: 'medium', defaultResponseSpeed: 'balanced', backendProvider: 'mock', authFlow }));
+
+    const add = await app.request('http://localhost/admin/api/auth/chatgpt/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'add' }) });
+    expect(add.status).toBe(201);
+    expect(await add.json()).toMatchObject({ mode: 'add' });
+    expect((await app.request('/admin/api/auth/chatgpt/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'add', accountId: 'session-existing' }) })).status).toBe(400);
+    expect((await app.request('/admin/api/auth/chatgpt/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'reauthorize' }) })).status).toBe(400);
+    expect((await app.request('/admin/api/auth/chatgpt/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'reauthorize', accountId: 'missing' }) })).status).toBe(404);
+    expect((await app.request('/admin/api/auth/chatgpt/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'reauthorize', accountId: 'mock-existing' }) })).status).toBe(409);
+    const reauthorize = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'reauthorize', accountId: 'session-existing' }) });
+    expect(reauthorize.status).toBe(201);
+    expect(await reauthorize.json()).toMatchObject({ mode: 'reauthorize', accountId: 'session-existing' });
+    await authFlow.close();
+  });
+
   it('contains popup-first OAuth UX, cross-tab recovery, wrapping, and explicit failure paths', async () => {
     const app = createApp(loadEnv({ DATA_DIR: temporaryDirectory(), NODE_ENV: 'test' }));
     const html = await (await app.request('/admin')).text();
@@ -165,6 +187,10 @@ describe('durable administration', () => {
     const startAwaitIndex = html.indexOf("await postJson('/admin/api/auth/chatgpt/start'", popupIndex);
     expect(popupIndex).toBeGreaterThan(-1);
     expect(startAwaitIndex).toBeGreaterThan(popupIndex);
+    expect(html).toContain("startOAuthFlow('add')");
+    expect(html).toContain("mode: mode, accountId: accountId");
+    expect(html).toContain('data-reauthorize-account=');
+    expect(html).toContain('重新授权');
     expect(html).toContain('popup.location.href = body.authorizeUrl;');
     expect(html).toContain('popup.focus();');
     expect(html).toContain('if (popup) popup.close();');
@@ -229,6 +255,67 @@ describe('durable administration', () => {
     }
   });
 
+  it('restricts generic account creation to mock accounts without session secrets', async () => {
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const app = new Hono();
+    app.route('/', createAdminRoute({ accountPool, modelRegistry: new ModelRegistry(), backend: {} as ChatGptBackendClient, runtimeApiKeys: new RuntimeApiKeys(), envApiKeys: [], defaultReasoningEffort: 'medium', defaultResponseSpeed: 'balanced', backendProvider: 'mock' }));
+
+    const sessionResponse = await app.request('/admin/api/accounts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'caller-session', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'injected', accountId: 'upstream-injected' } }),
+    });
+    expect(sessionResponse.status).toBe(400);
+    expect(await sessionResponse.json()).toEqual({ error: 'Session accounts must be added through ChatGPT authorization or manual provisioning.' });
+
+    const disguisedSecretResponse = await app.request('/admin/api/accounts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'caller-mock', provider: 'mock', secret: { type: 'chatgpt-session', accessToken: 'injected' } }),
+    });
+    expect(disguisedSecretResponse.status).toBe(400);
+    expect(accountPool.list()).toHaveLength(0);
+
+    const mockResponse = await app.request('/admin/api/accounts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'allowed-mock', provider: 'mock', label: 'Allowed mock' }),
+    });
+    expect(mockResponse.status).toBe(201);
+    expect(await mockResponse.json()).toMatchObject({ account: { id: 'allowed-mock', provider: 'mock', hasSecret: false } });
+  });
+
+  it('rejects repeated access-token-only manual additions without committing accounts', async () => {
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const app = new Hono();
+    app.route('/', createAdminRoute({
+      accountPool,
+      modelRegistry: new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] }),
+      backend: {
+        async listModels() { return [{ id: 'catalog-a' }]; },
+      } as ChatGptBackendClient,
+      runtimeApiKeys: new RuntimeApiKeys(),
+      envApiKeys: [],
+      defaultReasoningEffort: 'medium',
+      defaultResponseSpeed: 'balanced',
+      backendProvider: 'mock',
+    }));
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await app.request('/admin/api/auth/chatgpt/complete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'add', accessToken: 'same-access-token' }),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: 'ChatGPT account identity metadata is required before adding this session.',
+      });
+    }
+
+    expect(accountPool.list()).toEqual([]);
+  });
+
   it('allows only label, enabled, and maxConcurrency through the account PATCH route', async () => {
     const accountPool = new AccountPool();
     const app = new Hono();
@@ -268,13 +355,17 @@ describe('durable administration', () => {
     const runtimeApiKeys = new RuntimeApiKeys();
     const durableState = new DurableRuntimeState({ accountPool, runtimeApiKeys, store: new RuntimeStateStore({ path }) });
     durableState.persist();
+    const operationalState = new AdminOperationalState({ path: join(directory, 'operational.json'), debounceMs: 0 });
+    const identity = { accountId: 'mock-account', createdAt: accountPool.get('mock-account')!.createdAt };
+    operationalState.setDiscoveredModelIds(identity, ['model-a']);
     const app = new Hono();
-    app.route('/', createAdminRoute({ accountPool, modelRegistry: new ModelRegistry(), backend: {} as ChatGptBackendClient, runtimeApiKeys, durableState, envApiKeys: [], defaultReasoningEffort: 'medium', defaultResponseSpeed: 'balanced', backendProvider: 'mock' }));
+    app.route('/', createAdminRoute({ accountPool, modelRegistry: new ModelRegistry(), backend: {} as ChatGptBackendClient, runtimeApiKeys, durableState, operationalState, envApiKeys: [], defaultReasoningEffort: 'medium', defaultResponseSpeed: 'balanced', backendProvider: 'mock' }));
 
     expect(accountPool.acquire({ provider: 'mock' })).toBeTruthy();
     expect((await app.request('/admin/api/accounts/mock-account', { method: 'DELETE' })).status).toBe(409);
     accountPool.release('mock-account');
     expect((await app.request('/admin/api/accounts/mock-account', { method: 'DELETE' })).status).toBe(200);
+    expect(operationalState.snapshot().accounts).toHaveLength(0);
     expect((await app.request('/admin/api/accounts/mock-account', { method: 'DELETE' })).status).toBe(404);
 
     const restoredAccounts = new AccountPool();

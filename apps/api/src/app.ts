@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import { createLogger } from '@chatgpt-to-claude/shared';
 import { loadEnv, type AppEnv } from './config/env.js';
 import { adminApiAuth, apiKeyAuth } from './middleware/auth.js';
@@ -20,8 +21,9 @@ import { ChatGptAuthFlowService } from './services/chatgpt-auth-flow.js';
 import { RuntimeStateStore } from './services/runtime-state-store.js';
 import { DurableRuntimeState } from './services/durable-runtime-state.js';
 import { LocalAdminSession } from './services/local-admin-session.js';
-import { chooseBestModel, PRIMARY_CHATGPT_ACCOUNT_ID, SetupProvisioner } from './services/setup-provisioner.js';
+import { chooseBestModel, SetupProvisioner } from './services/setup-provisioner.js';
 import { AdminOperationalState } from './services/admin-operational-state.js';
+import { accountDiscoveryContext } from './services/refresh-aware-backend.js';
 
 export type Chat2ClaudeApp = Hono & { dispose: () => Promise<void> };
 
@@ -29,6 +31,8 @@ export interface CreateAppOptions {
   authFlow?: ChatGptAuthFlowService;
   runtimeStateStore?: RuntimeStateStore | null;
   operationalState?: AdminOperationalState | null;
+  backend?: ChatGptBackendClient;
+  backendFactory?: (accountPool: AccountPool, durableState: DurableRuntimeState | undefined) => ChatGptBackendClient;
 }
 
 export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {}): Chat2ClaudeApp {
@@ -48,23 +52,25 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
     : options.operationalState ?? undefined;
   operationalState?.hydrate();
   operationalState?.cleanupOrphans(accountPool.list().map((account) => ({ accountId: account.id, createdAt: account.createdAt })));
-  const backend = createChatGptBackend(env, accountPool, durableState);
+  const accountsByIdentity = new Map(accountPool.list().map((account) => [JSON.stringify([account.id, account.createdAt]), account]));
+  for (const snapshot of operationalState?.snapshot().accounts ?? []) {
+    const account = accountsByIdentity.get(JSON.stringify([snapshot.accountId, snapshot.createdAt]));
+    if (account?.provider !== 'chatgpt-session') continue;
+    modelRegistry.replaceAccountModels(
+      { accountId: snapshot.accountId, createdAt: snapshot.createdAt },
+      snapshot.discoveredModels,
+      account.enabled,
+    );
+  }
+  const backend = options.backend ?? options.backendFactory?.(accountPool, durableState) ?? createChatGptBackend(env, accountPool, durableState);
   const requestLog = new RequestLog();
   const responsesStore = new ResponsesStore();
   const authFlow = options.authFlow ?? new ChatGptAuthFlowService({ oauthRequestTimeoutMs: env.chatGptRequestTimeoutMs });
-  const restoredPrimaryAccount = accountPool.get(PRIMARY_CHATGPT_ACCOUNT_ID);
-  const modelRegistryReady = (restoredPrimaryAccount?.provider === 'chatgpt-session'
-    ? backend.listModels({ account: restoredPrimaryAccount }).then((models) => {
-      const prepared = modelRegistry.prepareProvisioning(models, 'sonnet', chooseBestModel(models)?.id, 'bind-if-unbound');
-      const commit = () => modelRegistry.commitPreparedProvisioning(prepared);
-      // Persist an automatic first binding atomically; refreshes never replace a
-      // persisted/manual binding because prepareProvisioning preserves it.
-      if (Object.keys(prepared.boundAliases).length > 0 && durableState) durableState.transaction(commit);
-      else commit();
-    })
+  const modelRegistryReady = (env.chatGptBackend === 'session'
+    ? refreshSessionAccountCatalogs(accountPool, modelRegistry, backend, durableState, operationalState, logger)
     : modelRegistry.refreshFromBackend(backend)).catch(() => {
-      // Startup discovery is best effort. Provisioning waits for this attempt to
-      // settle, then performs its own authoritative single discovery request.
+      // Startup discovery is best effort. Rehydrated per-account catalogs remain
+      // available, and provisioning performs its own authoritative discovery.
       logger.warn('ChatGPT startup model discovery failed.');
     });
   const setupProvisioner = new SetupProvisioner({
@@ -73,6 +79,7 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
     backend,
     runtimeApiKeys,
     durableState,
+    operationalState,
     startupReady: modelRegistryReady,
     onDiagnostic: (diagnostic) => logger.warn(diagnostic.severity === 'warning' ? 'ChatGPT setup provisioning warning' : 'ChatGPT setup provisioning failed', diagnostic),
   });
@@ -88,9 +95,53 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   app.route('/', createOpenAiResponsesRoute({ backend, requestLog, modelRegistry, accountPool, responsesStore, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createMetricsRoute(requestLog));
   app.use('/admin/api/*', adminApiAuth(env.apiKeys, runtimeApiKeys, { allowAnonymousBootstrap: env.allowAnonymousBootstrap, localAdminSession }));
-  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, durableState, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow, setupProvisioner, localAdminSession }));
+  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, durableState, operationalState, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow, setupProvisioner, localAdminSession }));
   app.dispose = async () => {
     await Promise.all([authFlow.close(), operationalState?.dispose()]);
   };
   return app;
+}
+
+async function refreshSessionAccountCatalogs(
+  accountPool: AccountPool,
+  modelRegistry: ModelRegistry,
+  backend: ChatGptBackendClient,
+  durableState: DurableRuntimeState | undefined,
+  operationalState: AdminOperationalState | undefined,
+  logger: ReturnType<typeof createLogger>,
+): Promise<void> {
+  const accounts = accountPool.snapshot().accounts.filter((account) =>
+    account.provider === 'chatgpt-session' && account.enabled && account.status === 'available');
+  for (const account of accounts) {
+    const discovery = accountPool.beginDiscovery(account);
+    if (!discovery) continue;
+    try {
+      const models = await backend.listModels(accountDiscoveryContext(account, discovery.id));
+      if (!accountPool.isCurrentDiscovery(discovery)) {
+        logger.warn('ChatGPT startup account changed during model discovery.', { accountId: account.id });
+        continue;
+      }
+      const prepared = modelRegistry.prepareProvisioning(models, 'sonnet', chooseBestModel(models)?.id, 'bind-if-unbound');
+      const commit = () => modelRegistry.commitPreparedProvisioning(
+        prepared,
+        { accountId: account.id, createdAt: account.createdAt },
+        account.enabled,
+      );
+      if (Object.keys(prepared.boundAliases).length > 0 && durableState) durableState.transaction(commit);
+      else commit();
+      try {
+        operationalState?.recordProvisioningSuccess(
+          { accountId: account.id, createdAt: account.createdAt },
+          models,
+          { checkedAt: new Date().toISOString(), result: 'healthy', message: null },
+        );
+      } catch {
+        logger.warn('ChatGPT startup operational metadata update failed.', { accountId: account.id });
+      }
+    } catch {
+      logger.warn('ChatGPT startup account model discovery failed.', { accountId: account.id });
+    } finally {
+      accountPool.endDiscovery(discovery);
+    }
+  }
 }

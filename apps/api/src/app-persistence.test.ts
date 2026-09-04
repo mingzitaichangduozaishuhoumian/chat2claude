@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { ChatGptBackendClient, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
 import { createApp } from './app.js';
 import { loadEnv } from './config/env.js';
 import { AccountPool } from './services/account-pool.js';
@@ -9,6 +10,10 @@ import { DurableRuntimeState } from './services/durable-runtime-state.js';
 import { RuntimeApiKeys } from './services/runtime-api-keys.js';
 import { RuntimeStateStore } from './services/runtime-state-store.js';
 import { AdminOperationalState } from './services/admin-operational-state.js';
+import { ModelRegistry } from './services/model-registry.js';
+import { RefreshAwareChatGptBackend } from './services/refresh-aware-backend.js';
+import { SessionCredentialManager } from './services/session-credential-manager.js';
+import { CodexOAuthClient } from './services/codex-oauth-client.js';
 
 const directories: string[] = [];
 
@@ -101,6 +106,142 @@ describe('createApp runtime state hydration', () => {
     await restored.dispose();
   });
 
+  it('keeps startup discovery when that operation rotates an expired OAuth credential', async () => {
+    const dataDir = temporaryDirectory();
+    const env = loadEnv({ DATA_DIR: dataDir, CHATGPT_BACKEND: 'session', API_KEYS: 'test-key' });
+    const accounts = new AccountPool({ seedMockAccount: false });
+    accounts.add({
+      id: 'rotating-startup',
+      provider: 'chatgpt-session',
+      secret: {
+        type: 'chatgpt-session', accessToken: 'expired-access', refreshToken: 'startup-refresh',
+        expiresAt: '2000-01-01T00:00:00.000Z',
+      },
+    });
+    new DurableRuntimeState({
+      accountPool: accounts,
+      runtimeApiKeys: new RuntimeApiKeys(),
+      modelRegistry: new ModelRegistry(),
+      store: new RuntimeStateStore({ path: env.runtimeStatePath }),
+    }).persist();
+    const transport = new AccountCatalogBackend({ 'rotating-startup': [{ id: 'rotated-startup-model' }] });
+
+    const app = createApp(env, {
+      backendFactory: (accountPool, durableState) => new RefreshAwareChatGptBackend(
+        transport,
+        new SessionCredentialManager({
+          accountPool,
+          durableState,
+          now: () => new Date('2026-09-04T00:00:00.000Z'),
+          oauthClient: new CodexOAuthClient({ fetch: async () => Response.json({
+            access_token: 'rotated-access', refresh_token: 'rotated-refresh', expires_in: 3600,
+          }) }),
+        }),
+      ),
+    });
+
+    const response = await app.request('/admin/api/models', { headers: { 'x-api-key': 'test-key' } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      discovered: expect.arrayContaining([expect.objectContaining({ id: 'rotated-startup-model' })]),
+    });
+    expect(transport.discoveryTokens).toEqual(['rotated-access']);
+    await app.dispose();
+  });
+
+  it('does not let older startup discovery overwrite a newer failed health discovery', async () => {
+    const dataDir = temporaryDirectory();
+    const env = loadEnv({ DATA_DIR: dataDir, CHATGPT_BACKEND: 'session', API_KEYS: 'test-key' });
+    const accounts = new AccountPool({ seedMockAccount: false });
+    accounts.add({ id: 'startup-health-order', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'access' } });
+    new DurableRuntimeState({
+      accountPool: accounts,
+      runtimeApiKeys: new RuntimeApiKeys(),
+      modelRegistry: new ModelRegistry(),
+      store: new RuntimeStateStore({ path: env.runtimeStatePath }),
+    }).persist();
+    const startupDiscovery = deferred<ChatGptDiscoveredModel[]>();
+    const healthDiscovery = deferred<ChatGptDiscoveredModel[]>();
+    let discoveryCall = 0;
+    const backend = Object.assign(new AccountCatalogBackend({}), {
+      healthCheck: async () => ({ ok: true as const }),
+    });
+    backend.listModels = async () => (++discoveryCall === 1 ? startupDiscovery.promise : healthDiscovery.promise);
+    const app = createApp(env, { backend });
+
+    await Promise.resolve();
+    const health = app.request('/admin/api/accounts/startup-health-order/health-check', {
+      method: 'POST',
+      headers: { 'x-api-key': 'test-key' },
+    });
+    await Promise.resolve();
+    healthDiscovery.reject(new Error('newer health failure'));
+    await expect(health).resolves.toHaveProperty('status', 502);
+    startupDiscovery.resolve([{ id: 'older-startup-model' }]);
+
+    const models = await app.request('/admin/api/models', { headers: { 'x-api-key': 'test-key' } });
+    expect(models.status).toBe(200);
+    expect((await models.json() as { discovered: Array<{ id: string }> }).discovered).toEqual([]);
+    const accountResponse = await app.request('/admin/api/accounts', { headers: { 'x-api-key': 'test-key' } });
+    expect(await accountResponse.json()).toMatchObject({
+      accounts: [expect.objectContaining({ id: 'startup-health-order', status: 'error', lastError: 'newer health failure' })],
+    });
+    await app.dispose();
+  });
+
+  it('rehydrates disjoint account catalogs safely when restart discovery is unavailable', async () => {
+    const dataDir = temporaryDirectory();
+    const env = loadEnv({ DATA_DIR: dataDir, CHATGPT_BACKEND: 'session', API_KEYS: 'test-key' });
+    const accounts = new AccountPool({ seedMockAccount: false });
+    accounts.add({ id: 'account-a', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'access-a' } });
+    accounts.add({ id: 'account-b', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'access-b' } });
+    const models = new ModelRegistry();
+    models.update('sonnet', { backendModel: 'model-a' });
+    new DurableRuntimeState({
+      accountPool: accounts,
+      runtimeApiKeys: new RuntimeApiKeys(),
+      modelRegistry: models,
+      store: new RuntimeStateStore({ path: env.runtimeStatePath }),
+    }).persist();
+
+    const discoveryBackend = new AccountCatalogBackend({ 'account-a': [{ id: 'model-a' }], 'account-b': [{ id: 'model-b' }] });
+    const initialApp = createApp(env, { backend: discoveryBackend });
+    const initialModels = await initialApp.request('/admin/api/models', { headers: { 'x-api-key': 'test-key' } });
+    expect(await initialModels.json()).toMatchObject({
+      aliases: expect.arrayContaining([expect.objectContaining({ id: 'sonnet', backendModel: 'model-a', status: 'bound' })]),
+      discovered: expect.arrayContaining([
+        expect.objectContaining({ id: 'model-a' }),
+        expect.objectContaining({ id: 'model-b' }),
+      ]),
+    });
+    await initialApp.dispose();
+
+    const offlineBackend = new AccountCatalogBackend({}, true);
+    const restartedApp = createApp(env, { backend: offlineBackend });
+    const restartedModels = await restartedApp.request('/admin/api/models', { headers: { 'x-api-key': 'test-key' } });
+    expect(await restartedModels.json()).toMatchObject({
+      aliases: expect.arrayContaining([expect.objectContaining({ id: 'sonnet', backendModel: 'model-a', status: 'bound' })]),
+      discovered: expect.arrayContaining([
+        expect.objectContaining({ id: 'model-a' }),
+        expect.objectContaining({ id: 'model-b' }),
+      ]),
+    });
+
+    const headers = { 'content-type': 'application/json', 'x-api-key': 'test-key' };
+    const aliasResponse = await restartedApp.request('/v1/messages', {
+      method: 'POST', headers,
+      body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'route a' }] }),
+    });
+    const directResponse = await restartedApp.request('/v1/messages', {
+      method: 'POST', headers,
+      body: JSON.stringify({ model: 'model-b', max_tokens: 64, messages: [{ role: 'user', content: 'route b' }] }),
+    });
+    expect(aliasResponse.status).toBe(200);
+    expect(directResponse.status).toBe(200);
+    expect(offlineBackend.completionAccounts).toEqual(['account-a', 'account-b']);
+    await restartedApp.dispose();
+  });
+
   it('preserves a custom sonnet binding to the second discovered model across restart and remains callable', async () => {
     const dataDir = temporaryDirectory();
     const env = loadEnv({
@@ -143,6 +284,38 @@ describe('createApp runtime state hydration', () => {
     await restartedApp.dispose();
   });
 });
+
+class AccountCatalogBackend implements ChatGptBackendClient {
+  readonly completionAccounts: string[] = [];
+  readonly discoveryTokens: string[] = [];
+
+  constructor(
+    private readonly catalogs: Record<string, ChatGptDiscoveredModel[]>,
+    private readonly failDiscovery = false,
+  ) {}
+
+  async listModels(context?: ChatGptBackendRequestContext): Promise<ChatGptDiscoveredModel[]> {
+    if (this.failDiscovery) throw new Error('discovery unavailable');
+    this.discoveryTokens.push(context?.account?.secret?.accessToken ?? '');
+    return this.catalogs[context?.account?.id ?? ''] ?? [];
+  }
+
+  async complete(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse> {
+    this.completionAccounts.push(context?.account?.id ?? '');
+    return { text: `${request.model}:${context?.account?.id ?? ''}`, finishReason: 'stop' };
+  }
+
+  async *stream(): AsyncIterable<never> {
+    throw new Error('not implemented');
+  }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
 
 function temporaryDirectory(): string {
   const directory = mkdtempSync(join(tmpdir(), 'chat2claude-app-state-'));

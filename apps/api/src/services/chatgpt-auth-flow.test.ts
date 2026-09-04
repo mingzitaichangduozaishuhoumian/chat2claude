@@ -51,6 +51,25 @@ describe('CodexOAuthClient', () => {
 });
 
 describe('ChatGptAuthFlowService', () => {
+  it('validates and exposes only safe OAuth account intent', async () => {
+    const service = new ChatGptAuthFlowService({ enableCallbackListener: false });
+    await expect(service.start({ mode: 'add', accountId: 'caller-selected' })).rejects.toThrow('must not include accountId');
+    await expect(service.start({ mode: 'reauthorize' })).rejects.toThrow('requires accountId');
+    await expect(service.start({ mode: 'unknown' as never })).rejects.toThrow('mode');
+    const added = await service.start({ mode: 'add' });
+    const reauthorized = await service.start({ mode: 'reauthorize', accountId: 'internal-account' });
+    expect(added).toMatchObject({ mode: 'add' });
+    expect(added).not.toHaveProperty('accountId');
+    expect(reauthorized).toMatchObject({ mode: 'reauthorize', accountId: 'internal-account' });
+    const serialized = JSON.stringify(reauthorized);
+    expect(serialized).not.toMatch(/oauthState|codeVerifier|redirectUri|returnOrigin|accessToken|refreshToken/);
+  });
+
+  it('defaults omitted mode to add without targeting a legacy account', async () => {
+    const service = new ChatGptAuthFlowService({ enableCallbackListener: false });
+    await expect(service.start()).resolves.toMatchObject({ mode: 'add' });
+  });
+
   it('uses cryptographic URL-safe IDs/state and exchanges a callback immediately only once', async () => {
     let exchanges = 0;
     const service = new ChatGptAuthFlowService({ enableCallbackListener: false, fetch: async () => {
@@ -103,22 +122,29 @@ describe('ChatGptAuthFlowService', () => {
     await expect(service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=valid&state=${state}` })).resolves.toMatchObject({ state: 'ready' });
   });
 
-  it('runs provisioning once and clears the flow secret copy', async () => {
+  it('runs provisioning once and atomically discloses a newly created key to only one concurrent caller', async () => {
     const service = new ChatGptAuthFlowService({ enableCallbackListener: false, fetch: async () => Response.json({ access_token: 'access-secret' }) });
     const started = await service.start();
     const state = new URL(started.authorizeUrl).searchParams.get('state')!;
     await service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code&state=${state}` });
     await service.status(started.id);
     let calls = 0;
-    const provision = async (_secret: unknown, _signal: AbortSignal, commit: <T>(apply: (committedAt: Date) => T) => T) => {
+    const provision = async (_secret: unknown, _target: unknown, _signal: AbortSignal, commit: <T>(apply: (committedAt: Date) => T) => T) => {
       calls += 1;
       await new Promise((resolve) => setTimeout(resolve, 10));
-      return commit(() => ({ apiKey: 'key' }));
+      return commit(() => ({ ok: true, runtimeKeyCreated: true, apiKey: 'one-time-key-secret', account: { id: 'account-a' } }));
     };
-    const [first, second] = await Promise.all([service.provision(started.id, provision), service.provision(started.id, provision)]);
+    const results = await Promise.all([service.provision(started.id, provision), service.provision(started.id, provision)]);
     expect(calls).toBe(1);
-    expect(first).toEqual(second);
-    expect(first).toMatchObject({ state: 'ready', provisioned: true, provisionResult: { apiKey: 'key' } });
+    expect(results.filter((result) => (result?.provisionResult as { apiKey?: string } | undefined)?.apiKey === 'one-time-key-secret')).toHaveLength(1);
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ state: 'ready', provisioned: true, provisionResult: expect.objectContaining({ apiKey: 'one-time-key-secret' }) }),
+      expect.objectContaining({ state: 'ready', provisioned: true, provisionResult: { ok: true, runtimeKeyCreated: true, account: { id: 'account-a' } } }),
+    ]));
+    const laterStatus = await service.status(started.id);
+    expect(laterStatus).toMatchObject({ state: 'ready', provisioned: true, provisionResult: { ok: true, runtimeKeyCreated: true, account: { id: 'account-a' } } });
+    expect(JSON.stringify(laterStatus)).not.toContain('one-time-key-secret');
+    expect(JSON.stringify(laterStatus)).not.toContain('access-secret');
   });
 
   it('returns a stage-aware provisioning error without leaking secret or cause details', async () => {
@@ -227,7 +253,7 @@ describe('ChatGptAuthFlowService', () => {
     const release = deferred<void>();
     let committed = false;
     let aborted = false;
-    const provisioning = service.provision(started.id, async (_secret, signal, commit) => {
+    const provisioning = service.provision(started.id, async (_secret, _target, signal, commit) => {
       entered.resolve();
       await release.promise;
       aborted = signal.aborted;
@@ -252,7 +278,7 @@ describe('ChatGptAuthFlowService', () => {
     const state = new URL(started.authorizeUrl).searchParams.get('state')!;
     await service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code&state=${state}` });
     await service.status(started.id);
-    const completed = await service.provision(started.id, async (_secret, _signal, commit) => commit(() => ({ ok: true })));
+    const completed = await service.provision(started.id, async (_secret, _target, _signal, commit) => commit(() => ({ ok: true })));
     expect(completed?.message).toBe('ChatGPT 授权和 API 初始化已完成。');
     await expect(service.status(started.id)).resolves.toMatchObject({ state: 'ready', provisioned: true, message: 'ChatGPT 授权和 API 初始化已完成。' });
   });

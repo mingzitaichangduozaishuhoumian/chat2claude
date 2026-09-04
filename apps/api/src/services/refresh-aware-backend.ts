@@ -4,10 +4,18 @@ import { markAccountCredentialError } from './account-pool.js';
 import type { SessionCredentialManager } from './session-credential-manager.js';
 
 const CANDIDATE_CONTEXT = Symbol('candidateSessionContext');
-type InternalRequestContext = ChatGptBackendRequestContext & { [CANDIDATE_CONTEXT]?: true };
+const DISCOVERY_OPERATION = Symbol('accountDiscoveryOperation');
+type InternalRequestContext = ChatGptBackendRequestContext & {
+  [CANDIDATE_CONTEXT]?: true;
+  [DISCOVERY_OPERATION]?: number;
+};
 
 export function candidateSessionContext(account: NonNullable<ChatGptBackendRequestContext['account']>, signal?: AbortSignal): ChatGptBackendRequestContext {
   return { account, signal, [CANDIDATE_CONTEXT]: true } as InternalRequestContext;
+}
+
+export function accountDiscoveryContext(account: NonNullable<ChatGptBackendRequestContext['account']>, operationId: number, signal?: AbortSignal): ChatGptBackendRequestContext {
+  return { account, signal, [DISCOVERY_OPERATION]: operationId } as InternalRequestContext;
 }
 
 export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
@@ -61,14 +69,15 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
 
   private async withOneUnauthorizedRetry<T>(context: ChatGptBackendRequestContext | undefined, request: (context: ChatGptBackendRequestContext | undefined) => Promise<T>): Promise<T> {
     if (!context?.account || isCandidateContext(context)) return request(context);
-    let account = await this.credentials.getFreshAccount(context.account);
+    const discoveryOperationId = getDiscoveryOperationId(context);
+    let account = await this.credentials.getFreshAccount(context.account, undefined, discoveryOperationId);
     try {
       return await request({ ...context, account });
     } catch (error) {
       if (!isUnauthorized(error)) throw markAccountCredentialError(error, account);
     }
     const failedAccessToken = account.secret?.accessToken;
-    account = await this.credentials.getFreshAccount(context.account, failedAccessToken);
+    account = await this.credentials.getFreshAccount(context.account, failedAccessToken, discoveryOperationId);
     try {
       return await request({ ...context, account });
     } catch (error) {
@@ -79,6 +88,10 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
 
 function isCandidateContext(context: ChatGptBackendRequestContext): boolean {
   return (context as InternalRequestContext)[CANDIDATE_CONTEXT] === true;
+}
+
+function getDiscoveryOperationId(context: ChatGptBackendRequestContext): number | undefined {
+  return (context as InternalRequestContext)[DISCOVERY_OPERATION];
 }
 
 function isUnauthorized(error: unknown): boolean {

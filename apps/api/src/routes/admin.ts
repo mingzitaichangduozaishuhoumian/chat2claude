@@ -1,13 +1,15 @@
 import { Hono } from 'hono';
-import type { ChatGptBackendClient, ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptBackendClient, ChatGptDiscoveredModel, ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ReasoningEffort, SpeedPreference } from '@chatgpt-to-claude/protocol-mapper';
 import type { ChatGptBackendProvider } from '../config/env.js';
 import type { AccountPool } from '../services/account-pool.js';
 import type { ModelRegistry } from '../services/model-registry.js';
 import { DEV_API_KEY_PREFIX, type RuntimeApiKeys } from '../services/runtime-api-keys.js';
 import { ChatGptAuthFlowService } from '../services/chatgpt-auth-flow.js';
-import { SetupProvisioner, type ProvisionResult } from '../services/setup-provisioner.js';
+import { ChatGptProvisioningError, SetupProvisioner, type ProvisionResult, type ProvisioningTarget } from '../services/setup-provisioner.js';
 import type { DurableRuntimeState } from '../services/durable-runtime-state.js';
+import { accountDiscoveryContext } from '../services/refresh-aware-backend.js';
+import type { AdminOperationalState } from '../services/admin-operational-state.js';
 import type { LocalAdminSession } from '../services/local-admin-session.js';
 
 export interface AdminRouteOptions {
@@ -17,6 +19,7 @@ export interface AdminRouteOptions {
   ready?: Promise<unknown>;
   runtimeApiKeys: RuntimeApiKeys;
   durableState?: DurableRuntimeState;
+  operationalState?: AdminOperationalState;
   envApiKeys: string[];
   defaultReasoningEffort: ReasoningEffort;
   defaultResponseSpeed: SpeedPreference;
@@ -59,9 +62,11 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
   app.post('/admin/api/auth/chatgpt/start', async (c) => {
     try {
       const input = await readJson(c.req);
-      return c.json(await authFlow.start({ returnOrigin: validateAdminReturnOrigin(c.req.raw, input.adminOrigin) }), 201);
+      const target = validateProvisioningTarget(options.accountPool, input, 'add');
+      return c.json(await authFlow.start({ ...target, returnOrigin: validateAdminReturnOrigin(c.req.raw, input.adminOrigin) }), 201);
     } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : 'Invalid admin origin' }, 400);
+      const failure = adminFailure(error, 'Invalid OAuth account intent');
+      return c.json({ error: failure.message }, failure.status);
     }
   });
   app.post('/admin/api/auth/chatgpt/callback', async (c) => {
@@ -77,9 +82,9 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     const snapshot = await authFlow.status(id);
     if (!snapshot) return c.json({ error: 'Auth flow not found' }, 404);
     if (snapshot.state !== 'ready' || snapshot.provisioned) return c.json(snapshot);
-    const provisioned = await authFlow.provision(id, async (secret, signal, commitBoundary) => sanitizeProvisionResult(await provisioner.provision(secret, signal, commitBoundary)));
+    const provisioned = await authFlow.provision(id, async (secret, target, signal, commitBoundary) => sanitizeProvisionResult(await provisioner.provisionTarget(target, secret, signal, commitBoundary)));
     if (!provisioned) return c.json({ error: 'Auth flow not found' }, 404);
-    return c.json(provisioned, provisioned.state === 'error' ? 502 : 200);
+    return c.json(provisioned, provisioned.state === 'error' ? normalizeHttpStatus(provisioned.errorStatus, 502) : 200);
   });
   app.post('/admin/api/auth/chatgpt/:id/cancel', async (c) => {
     const snapshot = await authFlow.cancel(c.req.param('id'));
@@ -87,12 +92,16 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
   });
   app.post('/admin/api/auth/chatgpt/complete', async (c) => {
     try {
-      const secret = normalizeManualSecret(await readJson(c.req));
+      const input = await readJson(c.req);
+      const secret = normalizeManualSecret(input);
       if (!secret.accessToken) return c.json({ error: 'accessToken is required' }, 400);
-      const result = await provisioner.provision(secret);
+      const result = input.mode === undefined
+        ? await provisioner.provision(secret)
+        : await provisioner.provisionTarget(validateProvisioningTarget(options.accountPool, input), secret);
       return c.json(sanitizeProvisionResult(result));
     } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : 'Invalid ChatGPT session' }, 400);
+      const failure = adminFailure(error, 'Invalid ChatGPT session');
+      return c.json({ error: failure.message }, failure.status);
     }
   });
 
@@ -105,7 +114,7 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
   });
   app.post('/admin/api/accounts', async (c) => {
     try {
-      const input = await readJson(c.req);
+      const input = validateMockAccountCreate(await readJson(c.req));
       const addAccount = () => options.accountPool.add(input);
       const account = options.durableState ? options.durableState.transaction(addAccount) : addAccount();
       return c.json({ account }, 201);
@@ -118,7 +127,14 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     if (!options.accountPool.get(id)) return c.json({ error: 'Account not found' }, 404);
     try {
       const patch = accountAdminPatch(await readJson(c.req));
-      const updateAccount = () => options.accountPool.update(id, patch);
+      const existing = options.accountPool.get(id)!;
+      const updateAccount = () => {
+        const account = options.accountPool.update(id, patch);
+        if (account && existing.provider === 'chatgpt-session') {
+          options.modelRegistry.setAccountActive({ accountId: existing.id, createdAt: existing.createdAt }, account.enabled);
+        }
+        return account;
+      };
       const account = options.durableState ? options.durableState.transaction(updateAccount) : updateAccount();
       return c.json({ account });
     } catch (error) {
@@ -130,9 +146,21 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     const existing = options.accountPool.get(id);
     if (!existing) return c.json({ error: 'Account not found' }, 404);
     if (existing.currentConcurrency > 0) return c.json({ error: 'Account has active requests and cannot be deleted' }, 409);
-    const removeAccount = () => options.accountPool.remove(id);
+    const removeAccount = () => {
+      const account = options.accountPool.remove(id);
+      if (account && existing.provider === 'chatgpt-session') {
+        options.modelRegistry.removeAccountModels({ accountId: existing.id, createdAt: existing.createdAt });
+      }
+      return account;
+    };
     const account = options.durableState ? options.durableState.transaction(removeAccount) : removeAccount();
-    return c.json({ ok: true, account });
+    let operationalWarning: string | undefined;
+    try {
+      options.operationalState?.removeAccount({ accountId: existing.id, createdAt: existing.createdAt });
+    } catch {
+      operationalWarning = 'Account credentials were deleted, but admin operational metadata cleanup could not be persisted.';
+    }
+    return c.json({ ok: true, account, ...(operationalWarning ? { warning: operationalWarning } : {}) });
   });
   app.post('/admin/api/accounts/:id/health-check', async (c) => {
     const id = c.req.param('id');
@@ -143,18 +171,77 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
       const account = options.durableState ? options.durableState.transaction(healthCheck) : healthCheck();
       return account ? c.json({ ok: true, account }) : c.json({ error: 'Account not found' }, 404);
     }
+    const discovery = internalAccount.provider === 'chatgpt-session'
+      ? options.accountPool.beginDiscovery(internalAccount, true)
+      : undefined;
+    if (internalAccount.provider === 'chatgpt-session' && !discovery) return c.json({ error: 'Account changed before health check started' }, 409);
     try {
-      const result = await options.backend.healthCheck({ account: internalAccount });
-      const updateHealth = () => result.ok ? options.accountPool.markHealthy(id, internalAccount.incarnation) : options.accountPool.markError(id, result.message ?? 'Health check failed', internalAccount.incarnation);
+      let discovered: ChatGptDiscoveredModel[] | undefined;
+      const result = internalAccount.provider === 'chatgpt-session'
+        ? await options.backend.listModels(accountDiscoveryContext(internalAccount, discovery!.id)).then((models) => {
+          discovered = models;
+          return { ok: true as const, message: undefined };
+        })
+        : await options.backend.healthCheck({ account: internalAccount });
+      const updateHealth = () => {
+        const current = discovery
+          ? options.accountPool.isCurrentDiscovery(discovery)
+          : options.accountPool.isCurrentHealth(internalAccount);
+        if (!current) return undefined;
+        const account = result.ok
+          ? options.accountPool.markHealthy(id, internalAccount.incarnation)
+          : options.accountPool.markError(id, result.message ?? 'Health check failed', internalAccount.incarnation);
+        if (account && discovered) {
+          options.modelRegistry.replaceAccountModels(
+            { accountId: internalAccount.id, createdAt: internalAccount.createdAt },
+            discovered,
+            account.enabled,
+          );
+        }
+        return account;
+      };
       const account = options.durableState ? options.durableState.transaction(updateHealth) : updateHealth();
-      const view = result.ok && account && internalAccount.provider === 'chatgpt-session'
-        ? await options.modelRegistry.refreshFromBackend(options.backend, { account: internalAccount })
-        : undefined;
-      return c.json({ ok: result.ok, message: result.message, account, view });
+      const view = discovered ? options.modelRegistry.adminView() : undefined;
+      let operationalWarning: string | undefined;
+      try {
+        if (result.ok && account && discovered) {
+          options.operationalState?.recordProvisioningSuccess(
+            { accountId: internalAccount.id, createdAt: internalAccount.createdAt },
+            discovered,
+            { checkedAt: new Date().toISOString(), result: 'healthy', message: null },
+          );
+        } else if (account) {
+          options.operationalState?.setHealthCheck(
+            { accountId: internalAccount.id, createdAt: internalAccount.createdAt },
+            { checkedAt: new Date().toISOString(), result: 'unhealthy', message: result.message ?? 'Health check failed' },
+          );
+        }
+      } catch {
+        operationalWarning = 'Health result was applied, but admin operational metadata could not be updated.';
+      }
+      return c.json({ ok: result.ok, message: result.message, account, view, ...(operationalWarning ? { warning: operationalWarning } : {}) });
     } catch (error) {
-      const markError = () => options.accountPool.markError(id, error, internalAccount.incarnation);
+      const markError = () => {
+        const current = discovery
+          ? options.accountPool.isCurrentDiscovery(discovery)
+          : options.accountPool.isCurrentHealth(internalAccount);
+        return current ? options.accountPool.markError(id, error, internalAccount.incarnation) : undefined;
+      };
       const account = options.durableState ? options.durableState.transaction(markError) : markError();
-      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error), account }, 502);
+      let operationalWarning: string | undefined;
+      try {
+        if (account) {
+          options.operationalState?.setHealthCheck(
+            { accountId: internalAccount.id, createdAt: internalAccount.createdAt },
+            { checkedAt: new Date().toISOString(), result: 'unhealthy', message: 'Health check request failed.' },
+          );
+        }
+      } catch {
+        operationalWarning = 'Health failure was applied, but admin operational metadata could not be updated.';
+      }
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error), account, ...(operationalWarning ? { warning: operationalWarning } : {}) }, 502);
+    } finally {
+      if (discovery) options.accountPool.endDiscovery(discovery);
     }
   });
 
@@ -198,16 +285,73 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
   });
   app.post('/admin/api/models/refresh', async (c) => {
     if (options.ready) await options.ready;
-    const context = options.backendProvider === 'session' ? sessionRefreshContext(options.accountPool) : undefined;
-    if (options.backendProvider === 'session' && !context) return c.json({ error: 'No available chatgpt-session account. Import and health-check a ChatGPT session account before refreshing models.' }, 409);
-    return c.json(await options.modelRegistry.refreshFromBackend(options.backend, context));
+    if (options.backendProvider !== 'session') return c.json(await options.modelRegistry.refreshFromBackend(options.backend));
+    const accounts = options.accountPool.snapshot().accounts.filter((account) =>
+      account.provider === 'chatgpt-session' && account.enabled && account.status === 'available');
+    if (accounts.length === 0) return c.json({ error: 'No available chatgpt-session account. Import and health-check a ChatGPT session account before refreshing models.' }, 409);
+    const refreshedAccounts: Array<{ accountId: string; ok: boolean; models?: string[]; error?: string }> = [];
+    for (const account of accounts) {
+      const discovery = options.accountPool.beginDiscovery(account);
+      if (!discovery) {
+        refreshedAccounts.push({ accountId: account.id, ok: false, error: 'Account changed before model discovery started.' });
+        continue;
+      }
+      try {
+        const models = await options.backend.listModels(accountDiscoveryContext(account, discovery.id));
+        if (!options.accountPool.isCurrentDiscovery(discovery)) {
+          refreshedAccounts.push({ accountId: account.id, ok: false, error: 'Account changed while model discovery was in progress.' });
+          continue;
+        }
+        options.modelRegistry.replaceAccountModels({ accountId: account.id, createdAt: account.createdAt }, models, account.enabled);
+        try {
+          options.operationalState?.recordProvisioningSuccess(
+            { accountId: account.id, createdAt: account.createdAt },
+            models,
+            { checkedAt: new Date().toISOString(), result: 'healthy', message: null },
+          );
+        } catch { /* discovery remains valid in memory; persistence warning is reported below */ }
+        refreshedAccounts.push({ accountId: account.id, ok: true, models: models.map((model) => model.id) });
+      } catch {
+        refreshedAccounts.push({ accountId: account.id, ok: false, error: 'Model discovery failed.' });
+      } finally {
+        options.accountPool.endDiscovery(discovery);
+      }
+    }
+    return c.json({ ...options.modelRegistry.adminView(), refreshedAccounts });
   });
   return app;
 }
 
-function sessionRefreshContext(accountPool: AccountPool) {
-  const account = accountPool.firstAvailable({ provider: 'chatgpt-session' });
-  return account ? { account } : undefined;
+class AdminRequestError extends Error {
+  constructor(message: string, readonly status: 400 | 404 | 409) {
+    super(message);
+    this.name = 'AdminRequestError';
+  }
+}
+
+function validateProvisioningTarget(accountPool: AccountPool, input: Record<string, unknown>, defaultMode?: 'add'): ProvisioningTarget {
+  const mode = input.mode ?? defaultMode;
+  const accountId = typeof input.accountId === 'string' && input.accountId.trim() ? input.accountId.trim() : undefined;
+  if (mode === 'add') {
+    if (accountId) throw new AdminRequestError('OAuth add mode must not include accountId.', 400);
+    return { mode: 'add' };
+  }
+  if (mode !== 'reauthorize') throw new AdminRequestError('OAuth mode must be add or reauthorize.', 400);
+  if (!accountId) throw new AdminRequestError('OAuth reauthorize mode requires accountId.', 400);
+  const account = accountPool.get(accountId);
+  if (!account) throw new AdminRequestError('Reauthorization account not found.', 404);
+  if (account.provider !== 'chatgpt-session') throw new AdminRequestError('Reauthorization target must be a chatgpt-session account.', 409);
+  return { mode: 'reauthorize', accountId };
+}
+
+function adminFailure(error: unknown, fallback: string): { message: string; status: 400 | 404 | 409 | 500 | 502 } {
+  if (error instanceof AdminRequestError) return { message: error.message, status: error.status };
+  if (error instanceof ChatGptProvisioningError) return { message: error.message, status: normalizeHttpStatus(error.diagnostic.status, 400) };
+  return { message: error instanceof Error ? error.message : fallback, status: 400 };
+}
+
+function normalizeHttpStatus(status: number | undefined, fallback: 400 | 502): 400 | 404 | 409 | 500 | 502 {
+  return status === 400 || status === 404 || status === 409 || status === 500 || status === 502 ? status : fallback;
 }
 
 function validateAdminReturnOrigin(request: Request, value: unknown): string | undefined {
@@ -232,6 +376,16 @@ function parseExactHttpOrigin(value: string, label: string): string {
     throw new Error(`${label} must be an exact HTTP(S) origin without path, query, hash, or userinfo.`);
   }
   return url.origin;
+}
+
+function validateMockAccountCreate(input: Record<string, unknown>): Record<string, unknown> {
+  if (input.provider !== undefined && input.provider !== 'mock') {
+    throw new Error('Session accounts must be added through ChatGPT authorization or manual provisioning.');
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'secret')) {
+    throw new Error('Generic mock account creation does not accept session secrets.');
+  }
+  return { ...input, provider: 'mock' };
 }
 
 function accountAdminPatch(input: Record<string, unknown>): { label?: unknown; enabled?: unknown; maxConcurrency?: unknown } {
@@ -306,7 +460,8 @@ function normalizeManualSecret(value: Record<string, unknown>): ChatGptSessionSe
 function sanitizeProvisionResult(result: ProvisionResult) {
   return {
     ok: result.ok,
-    apiKey: result.apiKey,
+    runtimeKeyCreated: result.runtimeKeyCreated,
+    ...(result.apiKey ? { apiKey: result.apiKey } : {}),
     account: result.account,
     modelsDiscovered: result.modelsDiscovered,
     boundAliases: result.boundAliases,
@@ -346,7 +501,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
         <div id="admin-session-state" class="session-strip" role="status" aria-live="polite"><span class="status">检测中</span><div><strong>正在验证本地管理会话</strong><span class="muted">本机可信访问会自动使用 HttpOnly 浏览器会话；不会读取、展示或保存 Admin API Key。</span></div></div>
         <details id="admin-key-fallback" class="key-fallback"><summary>远程访问或自动化：使用显式 Admin API Key</summary><p class="muted">仅在没有本地浏览器会话时使用。Key 默认只保留在当前页面，关闭或刷新后清除；勾选后才会保存到本机浏览器。</p><div class="row"><input id="admin-api-key" type="password" placeholder="Admin API Key" autocomplete="off" /><button id="save-admin-api-key" class="secondary" type="button">仅本页启用 Key</button></div><label class="muted"><input id="remember-admin-api-key" type="checkbox" /> 明确保存到此浏览器（localStorage）</label></details>
         <p class="muted">当前 backend：<code>${escapeHtml(setupStatus.backend.provider)}</code>。不会启动独立 Chrome/新 profile；点击主按钮会直接打开新的授权标签页。</p>
-        <div class="oauth-actions"><button id="auth-chatgpt">打开 Codex OAuth 授权页</button><button id="cancel-auth" class="secondary" disabled>取消</button></div>
+        <div class="oauth-actions"><button id="auth-chatgpt">授权 ChatGPT</button><button id="cancel-auth" class="secondary" disabled>取消</button></div>
         <p id="auth-message" class="muted" role="status" aria-live="polite">${escapeHtml(setupStatus.nextStep)}</p>
         <div id="auth-link-area" class="auth-link-area" hidden>
           <div class="auth-link-row"><a id="auth-link" class="pill" target="_blank" rel="noopener noreferrer" hidden>打开 Codex OAuth 授权页</a><button id="copy-auth-link" class="secondary" type="button" hidden>复制授权链接</button></div>
@@ -357,9 +512,9 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
           <div class="oauth-callback-row"><input id="oauth-callback-url" aria-label="OAuth callback URL（请粘贴完整 callback URL）" placeholder="粘贴授权链接对应的完整 localhost callback URL" /><button id="submit-oauth-callback" class="secondary" type="button">提交 callback URL</button></div>
         </div>
       </section>
-      <aside class="card"><h2>3 步完成</h2><ol class="steps"><li><div><strong>浏览器授权</strong><span class="muted">点击后在新标签页打开 Codex OAuth；若被拦截可使用链接或复制 fallback。</span></div></li><li><div><strong>自动初始化</strong><span class="muted">服务自动创建 chatgpt-primary、health-check、刷新模型并绑定 sonnet。</span></div></li><li><div><strong>复制 API 配置</strong><span class="muted">ready 后复制 endpoint、key 和 curl 示例。</span></div></li></ol></aside>
-      <section class="card full" id="api-config" hidden><h2>API 配置</h2><div class="stack"><p>Endpoint：<code id="endpoint"></code></p><p>新生成的 Runtime API Key（仅本次显示）：<code id="api-key"></code> <button id="copy-runtime-api-key" class="secondary" type="button">复制 Runtime API Key</button></p><p class="muted">请立即复制并保存。之后后台只会显示安全前缀；如遗失，可撤销后重新授权生成新 Key。</p><pre id="ready-curl"></pre></div></section>
-      <section class="card full"><details id="advanced-import"><summary>高级：手动导入 accessToken / cookie</summary><p class="muted">OAuth 不可用或已有 session secret 时使用。表单会走同一套 provisioning，不会返回 token/cookie。</p><div class="row"><input id="session-access-token" placeholder="accessToken" /><input id="session-cookie" placeholder="cookie（可选）" /><input id="session-device-id" placeholder="deviceId（可选）" /><input id="session-user-agent" placeholder="userAgent（可选）" /><button id="manual-complete" class="secondary">导入并初始化</button></div></details></section>
+      <aside class="card"><h2>3 步完成</h2><ol class="steps"><li><div><strong>浏览器授权</strong><span class="muted">点击后在新标签页打开 Codex OAuth；若被拦截可使用链接或复制 fallback。</span></div></li><li><div><strong>自动初始化</strong><span class="muted">服务创建独立内部账号、健康检查并刷新模型；仅首个账号可自动绑定未绑定的 sonnet。</span></div></li><li><div><strong>复制 API 配置</strong><span class="muted">首次创建 Runtime Key 时立即保存；后续授权保持现有 Key 有效。</span></div></li></ol></aside>
+      <section class="card full" id="api-config" hidden><h2>API 配置</h2><div class="stack"><p>Endpoint：<code id="endpoint"></code></p><div id="one-time-key-row" hidden><p>新生成的 Runtime API Key（仅本次显示）：<code id="api-key"></code> <button id="copy-runtime-api-key" class="secondary" type="button">复制 Runtime API Key</button></p><p class="muted">请立即复制并保存。之后后台只会显示安全前缀。</p></div><p id="existing-key-row" class="muted" hidden>现有 Runtime API Key 保持有效；本次不会再次显示原始值。</p><pre id="ready-curl"></pre></div></section>
+      <section class="card full"><details id="advanced-import"><summary>高级：手动导入 accessToken / cookie</summary><p class="muted">OAuth 不可用或已有 session secret 时使用。请选择新增账号或已存在的 session 账号重新授权；表单不会返回 token/cookie。</p><div class="row"><select id="manual-mode" aria-label="手动导入模式"><option value="add">新增账号</option><option value="reauthorize">重新授权已有账号</option></select><select id="manual-account-id" aria-label="重新授权目标账号" disabled><option value="">请选择 session 账号</option></select><input id="session-access-token" placeholder="accessToken" /><input id="session-cookie" placeholder="cookie（可选）" /><input id="session-device-id" placeholder="deviceId（可选）" /><input id="session-user-agent" placeholder="userAgent（可选）" /><button id="manual-complete" class="secondary">导入并初始化</button></div></details></section>
       <section class="card full"><h2>内置模型 Alias</h2><p class="muted">Sonnet 会在首次授权时自动选择后端。Haiku、Fable 和 Opus 如显示“未绑定”，需要切换到专业模式选择后端模型后才能调用。</p><div id="model-availability"><div class="empty">正在读取 alias 状态。</div></div></section>
       <section class="card full professional-panel"><h2>个人账号池（高级）</h2><p class="muted">仅用于同一自托管操作者管理本人控制或获授权的账号，并进行故障隔离、冷却、并发控制和本地调度；禁止用于公开转售订阅流量或面向不特定第三方的大规模共享。</p><div class="row"><input id="account-label" placeholder="账号标识" value="Mock ChatGPT Account" /><input id="account-concurrency" type="number" min="1" value="1" aria-label="最大并发" /><button id="add-account" class="secondary">添加 mock 账号</button></div><div id="accounts"><div class="empty">正在读取个人账号池状态。</div></div></section>
       <section class="card full"><h2>Runtime API Keys</h2><p class="muted">这是 Claude Code 等客户端调用 <code>/v1/*</code> 使用的 Key，不是 Admin API Key。当前 <strong id="api-keys-count">0</strong> 个；这里只显示安全前缀，原始 Key 仅会在创建后显示一次。</p><p class="muted">遗失 Key 时，在此撤销旧 Key，再重新授权生成新 Key 并立即复制保存。撤销会要求确认，且对应客户端会立即失去访问权限。</p><div class="row"><button id="refresh-api-keys" class="secondary" type="button">刷新 Key 列表</button></div><div id="api-keys"><div class="empty">正在读取运行时 API Key。</div></div></section>
@@ -399,10 +554,11 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
 
     const oauthFlowStorageKey = 'chat2claude.oauthFlow';
     captureOAuthFlowFromQuery();
-    document.getElementById('auth-chatgpt').addEventListener('click', async () => {
+    document.getElementById('auth-chatgpt').addEventListener('click', () => startOAuthFlow('add'));
+    async function startOAuthFlow(mode, accountId) {
       const popup = window.open('about:blank', '_blank');
       try {
-        const body = await postJson('/admin/api/auth/chatgpt/start', { adminOrigin: window.location.origin });
+        const body = await postJson('/admin/api/auth/chatgpt/start', { adminOrigin: window.location.origin, mode: mode, accountId: accountId });
         currentFlowId = body.id;
         rememberOAuthFlow(body.id);
         restoreAuthControls(body);
@@ -419,7 +575,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
         if (popup) popup.close();
         showAuthError(error);
       }
-    });
+    }
     document.getElementById('cancel-auth').addEventListener('click', async () => {
       if (!currentFlowId) return;
       try {
@@ -460,15 +616,28 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
         schedulePoll(300);
       } catch (error) { showAuthError(error); }
     });
+    const manualMode = document.getElementById('manual-mode');
+    const manualAccountId = document.getElementById('manual-account-id');
+    manualMode.addEventListener('change', () => {
+      manualAccountId.disabled = manualMode.value !== 'reauthorize';
+    });
     document.getElementById('manual-complete').addEventListener('click', async () => {
+      const mode = manualMode.value;
+      const accountId = manualAccountId.value;
+      if (mode === 'reauthorize' && !accountId) {
+        document.getElementById('result').textContent = '请选择需要重新授权的 session 账号。';
+        return;
+      }
       const body = await postJson('/admin/api/auth/chatgpt/complete', {
+        mode: mode,
+        accountId: mode === 'reauthorize' ? accountId : undefined,
         accessToken: document.getElementById('session-access-token').value,
         cookie: document.getElementById('session-cookie').value,
         deviceId: document.getElementById('session-device-id').value,
         userAgent: document.getElementById('session-user-agent').value,
       });
       renderResult(body);
-      if (body.apiKey) showReady(body);
+      showReady(body);
       await loadAccounts(); await loadApiKeys(); await loadModels();
     });
 
@@ -495,7 +664,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
         const body = await getJson('/admin/api/auth/chatgpt/' + encodeURIComponent(currentFlowId));
         restoreAuthControls(body);
         renderResult(body);
-        if (body.provisionResult?.apiKey) {
+        if (body.provisionResult) {
           clearOAuthFlow(); showReady(body.provisionResult); await loadAccounts(); await loadApiKeys(); await loadModels(); return;
         }
         if (['expired', 'cancelled', 'error'].includes(body.state)) { clearOAuthFlow(); return; }
@@ -535,7 +704,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
         const body = await getJson('/admin/api/auth/chatgpt/' + encodeURIComponent(currentFlowId));
         restoreAuthControls(body);
         renderResult(body);
-        if (body.provisionResult?.apiKey) { clearOAuthFlow(); showReady(body.provisionResult); await loadAccounts(); await loadApiKeys(); await loadModels(); }
+        if (body.provisionResult) { clearOAuthFlow(); showReady(body.provisionResult); await loadAccounts(); await loadApiKeys(); await loadModels(); }
         else if (['expired', 'cancelled', 'error'].includes(body.state)) clearOAuthFlow();
         else schedulePoll(0);
       } catch (error) { handleOAuthFlowFailure(error); }
@@ -560,13 +729,20 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       document.getElementById('api-config').hidden = false;
       document.getElementById('endpoint').textContent = endpoint;
       const apiKey = document.getElementById('api-key');
-      apiKey.textContent = result.apiKey || '<your-api-key>';
-      apiKey.dataset.value = result.apiKey || '';
+      const oneTimeKeyRow = document.getElementById('one-time-key-row');
+      const existingKeyRow = document.getElementById('existing-key-row');
+      const hasRawKey = typeof result.apiKey === 'string' && result.apiKey.length > 0;
+      apiKey.textContent = hasRawKey ? result.apiKey : '';
+      apiKey.dataset.value = hasRawKey ? result.apiKey : '';
+      oneTimeKeyRow.hidden = !hasRawKey;
+      existingKeyRow.hidden = hasRawKey;
       const curl = curlExample.dataset.template.replace('__ORIGIN__', window.location.origin);
       document.getElementById('ready-curl').textContent = curl;
       curlExample.textContent = curl;
       const keyState = document.getElementById('key-state'); keyState.textContent = '已配置'; keyState.className = 'status ok';
-      document.getElementById('auth-message').textContent = '初始化完成：已创建账号、刷新模型、绑定 alias 并生成 Runtime API Key，请立即复制保存。';
+      document.getElementById('auth-message').textContent = hasRawKey
+        ? '初始化完成：已创建账号并生成 Runtime API Key，请立即复制保存。'
+        : '授权完成：账号凭据已更新，现有 Runtime API Key 保持有效且不会再次显示原始值。';
     }
 
     document.getElementById('add-account').addEventListener('click', async () => {
@@ -590,15 +766,23 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       let body;
       try { body = await getJson('/admin/api/accounts'); } catch (error) { document.getElementById('accounts').innerHTML = loadFailureHtml('账号数据加载失败，未加载。', error); return; }
       const accounts = Array.isArray(body.accounts) ? body.accounts : [];
+      updateManualAccountOptions(accounts);
       if (!accounts.length) { document.getElementById('accounts').innerHTML = '<div class="empty">账号池为空。</div>'; return; }
       document.getElementById('accounts').innerHTML = '<div class="table-wrap"><table><thead><tr><th>ID</th><th>标识</th><th>Provider</th><th>状态</th><th>并发</th><th>Secret</th><th>最近使用</th><th>能力</th><th>操作</th></tr></thead><tbody>' + accounts.map((account) =>
-        '<tr><td><code>' + esc(account.id) + '</code></td><td>' + esc(account.label) + '</td><td>' + esc(account.provider || 'mock') + '</td><td><span class="pill">' + esc(account.status) + (account.enabled ? '' : ' / disabled') + '</span></td><td>' + account.currentConcurrency + '/' + account.maxConcurrency + '</td><td>' + (account.hasSecret ? '已导入' : '-') + '</td><td>' + esc(account.lastUsedAt || '-') + '</td><td>' + esc((account.capabilities || []).join(', ')) + '</td><td><button class="secondary" data-health="' + esc(account.id) + '">健康检查</button> <button class="secondary" data-delete-account="' + esc(account.id) + '" ' + (account.currentConcurrency > 0 ? 'disabled title="账号有进行中的请求"' : '') + '>删除</button></td></tr>'
+        '<tr><td><code>' + esc(account.id) + '</code></td><td>' + esc(account.label) + '</td><td>' + esc(account.provider || 'mock') + '</td><td><span class="pill">' + esc(account.status) + (account.enabled ? '' : ' / disabled') + '</span></td><td>' + account.currentConcurrency + '/' + account.maxConcurrency + '</td><td>' + (account.hasSecret ? '已导入' : '-') + '</td><td>' + esc(account.lastUsedAt || '-') + '</td><td>' + esc((account.capabilities || []).join(', ')) + '</td><td><button class="secondary" data-health="' + esc(account.id) + '">健康检查</button> ' + (account.provider === 'chatgpt-session' ? '<button class="secondary" data-reauthorize-account="' + esc(account.id) + '">重新授权</button> ' : '') + '<button class="secondary" data-delete-account="' + esc(account.id) + '" ' + (account.currentConcurrency > 0 ? 'disabled title="账号有进行中的请求"' : '') + '>删除</button></td></tr>'
       ).join('') + '</tbody></table></div>';
       document.querySelectorAll('[data-health]').forEach((button) => button.addEventListener('click', async () => { const body = await postJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.health) + '/health-check'); renderResult(body); await loadAccounts(); }));
+      document.querySelectorAll('[data-reauthorize-account]').forEach((button) => button.addEventListener('click', () => startOAuthFlow('reauthorize', button.dataset.reauthorizeAccount)));
       document.querySelectorAll('[data-delete-account]').forEach((button) => button.addEventListener('click', async () => {
         if (!window.confirm('确认删除此账号？删除后无法恢复。')) return;
         const body = await deleteJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.deleteAccount)); renderResult(body); await loadAccounts();
       }));
+    }
+    function updateManualAccountOptions(accounts) {
+      const selected = manualAccountId.value;
+      const sessionAccounts = accounts.filter((account) => account.provider === 'chatgpt-session');
+      manualAccountId.innerHTML = '<option value="">请选择 session 账号</option>' + sessionAccounts.map((account) => '<option value="' + esc(account.id) + '">' + esc(account.label || account.id) + ' (' + esc(account.id) + ')</option>').join('');
+      if (sessionAccounts.some((account) => account.id === selected)) manualAccountId.value = selected;
     }
     async function loadApiKeys() {
       let body;

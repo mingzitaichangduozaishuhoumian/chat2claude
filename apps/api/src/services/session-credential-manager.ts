@@ -24,7 +24,7 @@ export class SessionCredentialManager {
     this.refreshSkewMs = options.refreshSkewMs ?? 60_000;
   }
 
-  async getFreshAccount(account: ChatGptBackendAccountContext, failedAccessToken?: string): Promise<Account> {
+  async getFreshAccount(account: ChatGptBackendAccountContext, failedAccessToken?: string, discoveryOperationId?: number): Promise<Account> {
     const canonical = this.requireCanonicalAccount(account.id, (account as Account).incarnation);
     if (canonical.provider !== 'chatgpt-session') return canonical;
     const secret = canonical.secret;
@@ -33,19 +33,19 @@ export class SessionCredentialManager {
     if (failedAccessToken && secret.accessToken !== failedAccessToken) return canonical;
     const forceRefresh = Boolean(failedAccessToken && secret.accessToken === failedAccessToken);
     if (!forceRefresh && !expiresSoon(secret.expiresAt, this.now().getTime(), this.refreshSkewMs)) return canonical;
-    return this.refresh(canonical.id, canonical.incarnation, { accessToken: secret.accessToken, refreshToken: secret.refreshToken });
+    return this.refresh(canonical.id, canonical.incarnation, { accessToken: secret.accessToken, refreshToken: secret.refreshToken }, discoveryOperationId);
   }
 
-  private refresh(accountId: string, incarnation: number, version: SessionSecretVersion): Promise<Account> {
+  private refresh(accountId: string, incarnation: number, version: SessionSecretVersion, discoveryOperationId?: number): Promise<Account> {
     const key = credentialVersionKey(accountId, incarnation, version);
     const existing = this.refreshes.get(key);
     if (existing) return existing;
-    const refresh = this.performRefresh(accountId, incarnation, version).finally(() => this.refreshes.delete(key));
+    const refresh = this.performRefresh(accountId, incarnation, version, discoveryOperationId).finally(() => this.refreshes.delete(key));
     this.refreshes.set(key, refresh);
     return refresh;
   }
 
-  private async performRefresh(accountId: string, incarnation: number, version: SessionSecretVersion): Promise<Account> {
+  private async performRefresh(accountId: string, incarnation: number, version: SessionSecretVersion, discoveryOperationId?: number): Promise<Account> {
     const current = this.requireCanonicalAccount(accountId, incarnation);
     if (!sameCredentialVersion(current, version)) return current;
     const secret = current.secret;
@@ -59,8 +59,8 @@ export class SessionCredentialManager {
       throw markAccountCredentialError(error, current);
     }
     const updated = this.options.durableState
-      ? this.options.durableState.compareAndSwapSessionSecret(accountId, version, refreshed, incarnation)
-      : this.options.accountPool.compareAndSwapSessionSecret(accountId, version, refreshed, incarnation);
+      ? this.options.durableState.compareAndSwapSessionSecret(accountId, version, refreshed, incarnation, discoveryOperationId)
+      : this.options.accountPool.compareAndSwapSessionSecret(accountId, version, refreshed, incarnation, discoveryOperationId);
     return updated ?? this.requireCanonicalAccount(accountId, incarnation);
   }
 

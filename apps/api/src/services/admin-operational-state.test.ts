@@ -20,7 +20,19 @@ describe('AdminOperationalState', () => {
     source.recordRequestFinished(identity, { success: true, inputTokens: 12, outputTokens: 5, at: '2026-09-04T00:01:00.000Z' });
     source.recordRequestStarted(identity);
     source.setHealthCheck(identity, { checkedAt: '2026-09-04T00:02:00.000Z', result: 'healthy', message: null });
-    source.setDiscoveredModelIds(identity, ['model-b', 'model-a', 'model-a']);
+    source.setDiscoveredModels(identity, [
+      {
+        id: 'model-b',
+        displayName: 'Model B',
+        controls: {
+          reasoning: { metadataKnown: true, supported: [{ effort: 'low', description: 'Low' }], defaultEffort: 'low' },
+          serviceTier: { metadataKnown: true, supported: [{ id: 'priority', name: 'Priority' }], defaultTier: 'priority', fastMode: true },
+        },
+        raw: { accessToken: 'must-not-persist' },
+      },
+      { id: 'model-a' },
+      { id: 'model-a' },
+    ]);
     source.setQuotaCache(identity, {
       status: 'fresh',
       fetchedAt: '2026-09-04T00:03:00.000Z',
@@ -44,6 +56,17 @@ describe('AdminOperationalState', () => {
       requestStats: expect.objectContaining({ totalRequests: 1, successfulRequests: 1, failedRequests: 0, inputTokens: 12, outputTokens: 5, inFlight: 0 }),
       lastHealthCheck: { checkedAt: '2026-09-04T00:02:00.000Z', result: 'healthy', message: null },
       discoveredModelIds: ['model-a', 'model-b'],
+      discoveredModels: [
+        { id: 'model-a' },
+        {
+          id: 'model-b',
+          displayName: 'Model B',
+          controls: {
+            reasoning: { metadataKnown: true, supported: [{ effort: 'low', description: 'Low' }], defaultEffort: 'low' },
+            serviceTier: { metadataKnown: true, supported: [{ id: 'priority', name: 'Priority' }], defaultTier: 'priority', fastMode: true },
+          },
+        },
+      ],
       quotaCache: expect.objectContaining({ status: 'fresh', snapshots: [expect.objectContaining({ id: 'primary', remaining: 96 })] }),
     })]);
     await restored.dispose();
@@ -68,6 +91,25 @@ describe('AdminOperationalState', () => {
     await pending.dispose();
     expect(existsSync(secondPath)).toBe(true);
     await state.dispose();
+  });
+
+  it('rehydrates legacy id-only catalogs with unknown capabilities', () => {
+    const path = statePath();
+    writeFileSync(path, JSON.stringify({
+      version: 1,
+      accounts: [{
+        accountId: 'account-1', createdAt: '2026-09-04T00:00:00.000Z',
+        requestStats: { totalRequests: 0, successfulRequests: 0, failedRequests: 0, inputTokens: 0, outputTokens: 0, lastRequestAt: null },
+        lastHealthCheck: null, discoveredModelIds: ['legacy-model'], quotaCache: { status: 'empty', fetchedAt: null, expiresAt: null, snapshots: [] },
+      }],
+    }));
+
+    const state = new AdminOperationalState({ path });
+    expect(state.hydrate()).toBe(true);
+    expect(state.snapshot().accounts[0]).toMatchObject({
+      discoveredModelIds: ['legacy-model'],
+      discoveredModels: [{ id: 'legacy-model' }],
+    });
   });
 
   it('fails safely for corrupt or invalid files without exposing their contents', () => {

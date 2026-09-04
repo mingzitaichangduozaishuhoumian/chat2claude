@@ -192,4 +192,60 @@ describe('ModelRegistry dynamic Codex controls', () => {
     expect(runtime.effective_defaults.reasoning_source).toBe('omit');
     expect(models.resolveControls(models.resolve('sonnet'))).toEqual({ reasoningSource: 'omit', serviceTier: 'default', serviceTierSource: 'alias' });
   });
+
+  it('keeps account catalogs disjoint while exposing their safe union', () => {
+    const models = new ModelRegistry({
+      defaults: {
+        aliases: [{
+          id: 'sonnet', type: 'model', display_name: 'Sonnet', backendModel: 'model-a', enabled: true,
+          capabilities: {}, defaults: { reasoning_effort: 'none', speed: 'auto' },
+        }],
+      },
+    });
+    const accountA = { accountId: 'account-a', createdAt: '2026-09-04T01:00:00.000Z' };
+    const accountB = { accountId: 'account-b', createdAt: '2026-09-04T02:00:00.000Z' };
+    models.replaceAccountModels(accountA, [catalogModel({ id: 'model-a' })]);
+    models.replaceAccountModels(accountB, [catalogModel({
+      id: 'model-b',
+      controls: {
+        reasoning: { metadataKnown: true, supported: [{ effort: 'low' }], defaultEffort: 'low' },
+        serviceTier: { metadataKnown: true, supported: [], fastMode: false },
+      },
+    })]);
+
+    expect(models.adminView().discovered.map((model) => model.id)).toEqual(['model-a', 'model-b']);
+    expect(models.get('sonnet')?.status).toBe('bound');
+    expect(models.resolveForAccount('sonnet', accountA).backendModel).toBe('model-a');
+    expect(() => models.resolveForAccount('sonnet', accountB)).toThrow(/missing backend model/i);
+    expect(models.supportsAccountRequest('sonnet', accountA, { reasoningEffort: 'future-deep' })).toBe(true);
+    expect(models.supportsAccountRequest('sonnet', accountB, { reasoningEffort: 'future-deep' })).toBe(false);
+  });
+
+  it('updates effective availability when account catalogs are disabled, replaced, and removed', () => {
+    const models = new ModelRegistry({
+      defaults: {
+        aliases: [{
+          id: 'sonnet', type: 'model', display_name: 'Sonnet', backendModel: 'model-a', enabled: true,
+          capabilities: {}, defaults: { reasoning_effort: 'none', speed: 'auto' },
+        }],
+      },
+    });
+    const accountA = { accountId: 'account-a', createdAt: '2026-09-04T01:00:00.000Z' };
+    const accountB = { accountId: 'account-b', createdAt: '2026-09-04T02:00:00.000Z' };
+    models.replaceAccountModels(accountA, [{ id: 'model-a' }]);
+    models.replaceAccountModels(accountB, [{ id: 'model-b' }]);
+
+    models.setAccountActive(accountA, false);
+    expect(models.adminView().discovered.map((model) => model.id)).toEqual(['model-b']);
+    expect(models.get('sonnet')?.status).toBe('stale');
+
+    models.setAccountActive(accountA, true);
+    expect(models.get('sonnet')?.status).toBe('bound');
+    models.replaceAccountModels(accountA, [{ id: 'model-a-reauthorized' }]);
+    expect(models.adminView().discovered.map((model) => model.id)).toEqual(['model-a-reauthorized', 'model-b']);
+    expect(models.get('sonnet')?.status).toBe('stale');
+
+    models.removeAccountModels(accountB);
+    expect(models.adminView().discovered.map((model) => model.id)).toEqual(['model-a-reauthorized']);
+  });
 });

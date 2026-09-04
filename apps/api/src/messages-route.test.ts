@@ -16,6 +16,9 @@ import { RuntimeApiKeys } from './services/runtime-api-keys.js';
 import { ChatGptAuthFlowService } from './services/chatgpt-auth-flow.js';
 import { SetupProvisioner } from './services/setup-provisioner.js';
 import { ResponsesStore } from './services/responses-store.js';
+import { RefreshAwareChatGptBackend } from './services/refresh-aware-backend.js';
+import { SessionCredentialManager } from './services/session-credential-manager.js';
+import { CodexOAuthClient } from './services/codex-oauth-client.js';
 
 const discoveredModels: ChatGptDiscoveredModel[] = [{
   id: 'backend-test-model',
@@ -1297,15 +1300,18 @@ describe('/v1/messages', () => {
     expect(accountPool.list()[0].cooldownUntil).toEqual(expect.any(String));
   });
 
-  it('uses a chatgpt-session account instead of the default mock account in session mode', async () => {
+  it('uses a chatgpt-session account with a matching discovered catalog without per-request discovery', async () => {
     const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
     const accountPool = new AccountPool();
-    accountPool.add({ id: 'session-1', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token-1' }, capabilities: ['chatgpt-session', 'messages'] });
-    const app = createMessagesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry(), accountPool, backendProvider: 'session' });
+    const account = accountPool.add({ id: 'session-1', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token-1' }, capabilities: ['chatgpt-session', 'messages'] });
+    const modelRegistry = new ModelRegistry();
+    modelRegistry.replaceAccountModels({ accountId: account.id, createdAt: account.createdAt }, [{ id: 'backend-test-model' }]);
+    modelRegistry.update('sonnet', { backendModel: 'backend-test-model' });
+    const app = createMessagesRoute({ backend, requestLog: new RequestLog(), modelRegistry, accountPool, backendProvider: 'session' });
 
     const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(200);
-    expect(backend.listModelsContext?.account?.id).toBe('session-1');
+    expect(backend.listModelsContext).toBeUndefined();
     expect(backend.lastContext?.account?.id).toBe('session-1');
     expect(backend.lastContext?.account?.provider).toBe('chatgpt-session');
   });
@@ -1396,11 +1402,11 @@ function createSessionAdminApp(backend: ChatGptBackendClient): Hono {
   return createSessionAdminAppWithAccountPool(backend).app;
 }
 
-function createSessionAdminAppWithAccountPool(backend: ChatGptBackendClient): { app: Hono; accountPool: AccountPool } {
+function createSessionAdminAppWithAccountPool(backend: ChatGptBackendClient, accountPool = new AccountPool()): { app: Hono; accountPool: AccountPool; modelRegistry: ModelRegistry } {
   const app = new Hono();
-  const accountPool = new AccountPool();
   const modelRegistry = new ModelRegistry();
   app.route('/', createModelsRoute({ modelRegistry }));
+  app.route('/', createMessagesRoute({ backend, requestLog: new RequestLog(), modelRegistry, accountPool, backendProvider: 'session' }));
   app.route('/', createAdminRoute({
     accountPool,
     modelRegistry,
@@ -1411,7 +1417,7 @@ function createSessionAdminAppWithAccountPool(backend: ChatGptBackendClient): { 
     defaultResponseSpeed: 'balanced',
     backendProvider: 'session',
   }));
-  return { app, accountPool };
+  return { app, accountPool, modelRegistry };
 }
 
 function createProvisioningTestApp(options: { authFlow?: ChatGptAuthFlowService; protectModels?: boolean } = {}): Hono {
@@ -1437,7 +1443,12 @@ function createProvisioningTestApp(options: { authFlow?: ChatGptAuthFlowService;
   return app;
 }
 
-function createOAuthTestFlow(tokenResponse: Record<string, unknown> = { access_token: 'token-ready', refresh_token: 'refresh-ready', id_token: 'id-ready', expires_in: 3600 }): ChatGptAuthFlowService {
+function oauthIdentityToken(accountId: string): string {
+  const encode = (value: Record<string, unknown>) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  return `${encode({ alg: 'none', typ: 'JWT' })}.${encode({ 'https://api.openai.com/auth': { chatgpt_account_id: accountId } })}.signature`;
+}
+
+function createOAuthTestFlow(tokenResponse: Record<string, unknown> = { access_token: 'token-ready', refresh_token: 'refresh-ready', id_token: oauthIdentityToken('upstream-ready'), expires_in: 3600 }): ChatGptAuthFlowService {
   return new ChatGptAuthFlowService({
     enableCallbackListener: false,
     fetch: async (url, init) => {
@@ -1600,7 +1611,9 @@ describe('/admin', () => {
     expect(html).toContain('明确保存到此浏览器（localStorage）');
     expect(html).toContain("saveAdminApiKey(adminKeyInput.value.trim(), rememberAdminKeyInput.checked);");
     expect(html).toContain('id="copy-runtime-api-key"');
-    expect(html).toContain("apiKey.dataset.value = result.apiKey || '';");
+    expect(html).toContain("const hasRawKey = typeof result.apiKey === 'string' && result.apiKey.length > 0;");
+    expect(html).toContain('oneTimeKeyRow.hidden = !hasRawKey;');
+    expect(html).toContain('existingKeyRow.hidden = hasRawKey;');
     expect(html).toContain("await navigator.clipboard.writeText(key);");
     expect(html).toContain("if (key && persistent) localStorage.setItem('adminApiKey', key);");
     expect(html).toContain("const key = localAdminSessionActive ? '' : getStoredAdminApiKey();");
@@ -1751,12 +1764,13 @@ describe('/v1/models', () => {
 });
 
 describe('/admin/api/accounts', () => {
-  it('adds a chatgpt-session account and redacts secret from admin views', async () => {
+  it('adds a chatgpt-session account only through provisioning and redacts secret from admin views', async () => {
     const app = createApp(env);
-    const addRes = await app.request('/admin/api/accounts', { method: 'POST', headers: adminJsonHeaders, body: JSON.stringify({ id: 'session-1', provider: 'chatgpt-session', label: 'Session 1', secret: { type: 'chatgpt-session', accessToken: 'token-1', refreshToken: 'refresh-1', idToken: 'id-token-1', expiresAt: '2026-08-17T01:00:00.000Z', email: 'user@example.test', accountId: 'account-1', planType: 'plus', cookie: 'cookie-1', deviceId: 'device-1', userAgent: 'ua-1' }, capabilities: ['chatgpt-session', 'messages'] }) });
-    expect(addRes.status).toBe(201);
+    const addRes = await app.request('/admin/api/auth/chatgpt/complete', { method: 'POST', headers: adminJsonHeaders, body: JSON.stringify({ mode: 'add', secret: { accessToken: 'token-1', refreshToken: 'refresh-1', idToken: 'id-token-1', expiresAt: '2099-08-17T01:00:00.000Z', email: 'user@example.test', accountId: 'account-1', planType: 'plus', cookie: 'cookie-1', deviceId: 'device-1', userAgent: 'ua-1' } }) });
+    expect(addRes.status).toBe(200);
     const addBody = await addRes.json() as { account: Record<string, unknown> };
-    expect(addBody.account).toMatchObject({ id: 'session-1', provider: 'chatgpt-session', hasSecret: true });
+    expect(addBody.account).toMatchObject({ provider: 'chatgpt-session', hasSecret: true });
+    expect(addBody.account.id).toMatch(/^chatgpt-[A-Za-z0-9_-]{24}$/);
     expect(addBody.account).not.toHaveProperty('secret');
     expect(JSON.stringify(addBody)).not.toContain('token-1');
     expect(JSON.stringify(addBody)).not.toContain('refresh-1');
@@ -1768,7 +1782,7 @@ describe('/admin/api/accounts', () => {
     const listRes = await app.request('/admin/api/accounts', { headers: adminKeyHeaders });
     expect(listRes.status).toBe(200);
     const listBody = await listRes.json() as { accounts: Array<Record<string, unknown>> };
-    const session = listBody.accounts.find((account) => account.id === 'session-1');
+    const session = listBody.accounts.find((account) => account.id === addBody.account.id);
     expect(session).toMatchObject({ provider: 'chatgpt-session', hasSecret: true });
     expect(session).not.toHaveProperty('secret');
     expect(JSON.stringify(listBody)).not.toContain('token-1');
@@ -1861,7 +1875,8 @@ describe('ChatGPT one-click auth admin flow', () => {
     expect(readyBody.state).toBe('ready');
     expect(readyBody.provisioned).toBe(true);
     expect(readyBody.provisionResult.apiKey).toMatch(/^sk-runtime-/);
-    expect(readyBody.provisionResult.account).toMatchObject({ id: 'chatgpt-primary', provider: 'chatgpt-session', hasSecret: true });
+    expect(readyBody.provisionResult.account).toMatchObject({ provider: 'chatgpt-session', hasSecret: true });
+    expect(readyBody.provisionResult.account.id).toMatch(/^chatgpt-[A-Za-z0-9_-]{24}$/);
     expect(readyBody.provisionResult.account).not.toHaveProperty('secret');
     expect(readyBody.provisionResult.modelsDiscovered).toEqual(['plain-model', 'gpt-5-thinking']);
     expect(readyBody.provisionResult.boundAliases).toEqual({ sonnet: 'plain-model' });
@@ -1873,8 +1888,31 @@ describe('ChatGPT one-click auth admin flow', () => {
     expect(JSON.stringify(readyBody)).not.toContain('idToken');
 
     const thirdRes = await app.request(`/admin/api/auth/chatgpt/${startBody.id}`);
-    const thirdBody = await thirdRes.json() as { provisionResult: { apiKey: string } };
-    expect(thirdBody.provisionResult.apiKey).toBe(readyBody.provisionResult.apiKey);
+    const thirdBody = await thirdRes.json() as { provisionResult: { apiKey?: string } };
+    expect(thirdBody.provisionResult.apiKey).toBeUndefined();
+    expect(JSON.stringify(thirdBody)).not.toContain(readyBody.provisionResult.apiKey);
+  });
+
+  it('returns a safe 400 when OAuth add lacks authoritative account identity', async () => {
+    const app = createProvisioningTestApp({ authFlow: createOAuthTestFlow({ access_token: 'identity-less-oauth-token' }) });
+    const start = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST' });
+    const started = await start.json() as { id: string; authorizeUrl: string };
+    const state = new URL(started.authorizeUrl).searchParams.get('state');
+    await app.request('/admin/api/auth/chatgpt/callback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ redirectUrl: `http://localhost:1455/auth/callback?code=code-ready&state=${state}` }),
+    });
+
+    const response = await app.request(`/admin/api/auth/chatgpt/${started.id}`);
+    const body = await response.json() as { state: string; error: string; provisionResult?: unknown };
+
+    expect(response.status).toBe(400);
+    expect(body.state).toBe('error');
+    expect(body.error).toContain('ChatGPT account identity metadata is required before adding this session.');
+    expect(body.error).toContain('upstream_identity_required');
+    expect(body.provisionResult).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain('identity-less-oauth-token');
   });
 
   it('single-flights two concurrent Admin status GETs after callback through one provisioning commit', async () => {
@@ -1884,13 +1922,13 @@ describe('ChatGPT one-click auth admin flow', () => {
     const runtimeApiKeys = new RuntimeApiKeys();
     const backend = new InspectingBackend([{ id: 'plain-model' }, { id: 'gpt-5-thinking' }]);
     const provisioner = new SetupProvisioner({ accountPool, modelRegistry, backend, runtimeApiKeys });
-    const originalProvision = provisioner.provision.bind(provisioner);
+    const originalProvisionTarget = provisioner.provisionTarget.bind(provisioner);
     let provisioningCalls = 0;
     let commitCalls = 0;
-    provisioner.provision = (secret, signal, commitBoundary) => {
+    provisioner.provisionTarget = (target, secret, signal, commitBoundary) => {
       provisioningCalls += 1;
       if (!commitBoundary) throw new Error('Expected auth flow commit boundary');
-      return originalProvision(secret, signal, (commit) => commitBoundary((committedAt) => {
+      return originalProvisionTarget(target, secret, signal, (commit) => commitBoundary((committedAt) => {
         commitCalls += 1;
         return commit(committedAt);
       }));
@@ -1927,23 +1965,35 @@ describe('ChatGPT one-click auth admin flow', () => {
 
     expect(firstResponse.status).toBe(200);
     expect(secondResponse.status).toBe(200);
-    expect(first).toEqual(second);
-    expect(first).toMatchObject({
-      state: 'ready',
-      provisioned: true,
-      provisionResult: {
-        account: { id: 'chatgpt-primary', provider: 'chatgpt-session', hasSecret: true },
-        modelsDiscovered: ['plain-model', 'gpt-5-thinking'],
-        boundAliases: { sonnet: 'plain-model' },
-      },
-    });
+    const concurrentBodies = [first, second] as Array<{ state: string; provisioned: boolean; provisionResult: { apiKey?: string; account: { id: string; provider: string; hasSecret: boolean }; modelsDiscovered: string[]; boundAliases: Record<string, string> } }>;
+    expect(concurrentBodies.filter((body) => typeof body.provisionResult.apiKey === 'string')).toHaveLength(1);
+    for (const body of concurrentBodies) {
+      expect(body).toMatchObject({
+        state: 'ready',
+        provisioned: true,
+        provisionResult: {
+          account: { provider: 'chatgpt-session', hasSecret: true },
+          modelsDiscovered: ['plain-model', 'gpt-5-thinking'],
+          boundAliases: { sonnet: 'plain-model' },
+        },
+      });
+    }
+    const disclosedKey = concurrentBodies.find((body) => body.provisionResult.apiKey)?.provisionResult.apiKey;
+    expect(disclosedKey).toMatch(/^sk-runtime-/);
+    const provisionedAccountId = concurrentBodies[0].provisionResult.account.id;
+    expect(provisionedAccountId).toMatch(/^chatgpt-[A-Za-z0-9_-]{24}$/);
     expect(provisioningCalls).toBe(1);
     expect(backend.healthCheckCalls).toBe(0);
     expect(backend.listModelsCalls).toBe(1);
     expect(commitCalls).toBe(1);
-    expect(accountPool.list().filter((account) => account.id === 'chatgpt-primary')).toHaveLength(1);
+    expect(accountPool.list().filter((account) => account.id === provisionedAccountId)).toHaveLength(1);
     expect(runtimeApiKeys.listSafe()).toHaveLength(1);
     expect(runtimeApiKeys.listSafe()[0].name).toBe('chatgpt-primary');
+    const laterResponse = await app.request(`/admin/api/auth/chatgpt/${started.id}`);
+    const laterBody = await laterResponse.json() as { provisionResult: { apiKey?: string } };
+    expect(laterBody.provisionResult.apiKey).toBeUndefined();
+    expect(JSON.stringify(laterBody)).not.toContain(disclosedKey);
+    expect(JSON.stringify(laterBody)).not.toContain('access-secret');
     await authFlow.close();
   });
 
@@ -1984,7 +2034,7 @@ describe('ChatGPT one-click auth admin flow', () => {
   });
 
   it('allows the returned apiKey to access /v1/models', async () => {
-    const app = createProvisioningTestApp({ authFlow: createOAuthTestFlow({ access_token: 'token-ready' }), protectModels: true });
+    const app = createProvisioningTestApp({ authFlow: createOAuthTestFlow({ access_token: 'token-ready', id_token: oauthIdentityToken('upstream-model-access') }), protectModels: true });
     const startRes = await app.request('/admin/api/auth/chatgpt/start', { method: 'POST' });
     const { id, authorizeUrl } = await startRes.json() as { id: string; authorizeUrl: string };
     const oauthState = new URL(authorizeUrl).searchParams.get('state');
@@ -2005,14 +2055,16 @@ describe('ChatGPT one-click auth admin flow', () => {
     const app = createProvisioningTestApp();
     const firstRes = await app.request('/admin/api/auth/chatgpt/complete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accessToken: 'manual-token-1', cookie: 'a=b' }) });
     expect(firstRes.status).toBe(200);
-    const firstBody = await firstRes.json() as { account: Record<string, unknown>; apiKey: string };
+    const firstBody = await firstRes.json() as { account: Record<string, unknown>; runtimeKeyCreated: boolean; apiKey: string };
     expect(firstBody.account).toMatchObject({ id: 'chatgpt-primary', provider: 'chatgpt-session', hasSecret: true });
     expect(firstBody.account).not.toHaveProperty('secret');
 
     const secondRes = await app.request('/admin/api/auth/chatgpt/complete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ secret: { accessToken: 'manual-token-2' } }) });
     expect(secondRes.status).toBe(200);
-    const secondBody = await secondRes.json() as { apiKey: string };
-    expect(secondBody.apiKey).toBe(firstBody.apiKey);
+    const secondBody = await secondRes.json() as { runtimeKeyCreated: boolean; apiKey?: string };
+    expect(firstBody.runtimeKeyCreated).toBe(true);
+    expect(secondBody.runtimeKeyCreated).toBe(false);
+    expect(secondBody.apiKey).toBeUndefined();
     const accountsRes = await app.request('/admin/api/accounts');
     const accountsBody = await accountsRes.json() as { accounts: Array<Record<string, unknown>> };
     expect(accountsBody.accounts.filter((account) => account.id === 'chatgpt-primary')).toHaveLength(1);
@@ -2041,30 +2093,252 @@ describe('SessionChatGptBackend', () => {
 });
 
 describe('session admin model discovery', () => {
-  it('does not apply a stale health-check result or launch model discovery after delete/recreate', async () => {
-    const health = deferred<{ ok: boolean; message?: string }>();
+  it('keeps a reauthorized disabled account catalog inactive until the account is enabled', async () => {
+    const backend = new InspectingBackend([{ id: 'disabled-unique-model' }]);
+    const { app, accountPool, modelRegistry } = createSessionAdminAppWithAccountPool(backend);
+    const disabled = accountPool.add({
+      id: 'disabled-reauthorization',
+      provider: 'chatgpt-session',
+      enabled: false,
+      secret: { type: 'chatgpt-session', accessToken: 'old-access', accountId: 'upstream-disabled' },
+    });
+    const provisioner = new SetupProvisioner({ accountPool, modelRegistry, backend, runtimeApiKeys: new RuntimeApiKeys() });
+
+    await provisioner.provisionTarget(
+      { mode: 'reauthorize', accountId: disabled.id },
+      { type: 'chatgpt-session', accessToken: 'new-access', accountId: 'upstream-disabled' },
+    );
+
+    const disabledModels = await app.request('/v1/models');
+    expect((await disabledModels.json() as { data: Array<{ id: string }> }).data.map((model) => model.id)).not.toContain('disabled-unique-model');
+    expect(modelRegistry.get('disabled-unique-model')).toBeUndefined();
+    const unavailable = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'disabled-unique-model', max_tokens: 64, messages: [{ role: 'user', content: 'disabled' }] }),
+    });
+    expect(unavailable.status).toBe(503);
+
+    const enabled = await app.request(`/admin/api/accounts/${disabled.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(enabled.status).toBe(200);
+    const enabledModels = await app.request('/v1/models');
+    expect((await enabledModels.json() as { data: Array<{ id: string }> }).data.map((model) => model.id)).toContain('disabled-unique-model');
+    const available = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'disabled-unique-model', max_tokens: 64, messages: [{ role: 'user', content: 'enabled' }] }),
+    });
+    expect(available.status).toBe(200);
+    expect(backend.lastContext?.account?.id).toBe(disabled.id);
+  });
+
+  it('does not apply stale session discovery after delete/recreate', async () => {
+    const discovery = deferred<ChatGptDiscoveredModel[]>();
     const backend = new InspectingBackend();
-    backend.healthCheck = async () => health.promise;
-    const { app, accountPool } = createSessionAdminAppWithAccountPool(backend);
+    backend.listModels = async (context) => {
+      backend.listModelsCalls += 1;
+      backend.listModelsContext = context;
+      return discovery.promise;
+    };
+    const { app, accountPool, modelRegistry } = createSessionAdminAppWithAccountPool(backend);
     const credentials = { type: 'chatgpt-session' as const, accessToken: 'same-access', refreshToken: 'same-refresh' };
     accountPool.add({ id: 'session-race', provider: 'chatgpt-session', secret: credentials });
 
     const pending = app.request('/admin/api/accounts/session-race/health-check', { method: 'POST' });
     await Promise.resolve();
     expect((await app.request('/admin/api/accounts/session-race', { method: 'DELETE' })).status).toBe(200);
-    expect((await app.request('/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'session-race', provider: 'chatgpt-session', secret: credentials }) })).status).toBe(201);
-    health.resolve({ ok: true });
+    accountPool.add({ id: 'session-race', provider: 'chatgpt-session', secret: credentials });
+    discovery.resolve([{ id: 'stale-model' }]);
 
     await expect(pending).resolves.toHaveProperty('status', 200);
-    expect(backend.listModelsContext).toBeUndefined();
+    expect(backend.listModelsContext?.account?.id).toBe('session-race');
+    expect(modelRegistry.get('stale-model')).toBeUndefined();
     expect(accountPool.get('session-race')).toMatchObject({ status: 'available', lastError: null, lastUsedAt: null, secret: credentials });
+  });
+
+  it('keeps admin health and manual refresh discovery when each operation rotates OAuth credentials', async () => {
+    const seen: Array<{ accountId: string | undefined; accessToken: string | undefined }> = [];
+    const transport = new InspectingBackend();
+    transport.listModels = async (context) => {
+      seen.push({ accountId: context?.account?.id, accessToken: context?.account?.secret?.accessToken });
+      return [{ id: `model-${context?.account?.id}` }];
+    };
+    let refreshCount = 0;
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const backend = new RefreshAwareChatGptBackend(
+      transport,
+      new SessionCredentialManager({
+        accountPool,
+        now: () => new Date('2026-09-04T00:00:00.000Z'),
+        oauthClient: new CodexOAuthClient({ fetch: async () => {
+          refreshCount += 1;
+          return Response.json({ access_token: `rotated-${refreshCount}`, refresh_token: `refresh-${refreshCount}`, expires_in: 3600 });
+        } }),
+      }),
+    );
+    const { app, modelRegistry } = createSessionAdminAppWithAccountPool(backend, accountPool);
+    accountPool.add({
+      id: 'health-rotation', provider: 'chatgpt-session',
+      secret: { type: 'chatgpt-session', accessToken: 'expired-health', refreshToken: 'health-refresh', expiresAt: '2000-01-01T00:00:00.000Z' },
+    });
+    accountPool.add({
+      id: 'manual-rotation', provider: 'chatgpt-session',
+      secret: { type: 'chatgpt-session', accessToken: 'expired-manual', refreshToken: 'manual-refresh', expiresAt: '2000-01-01T00:00:00.000Z' },
+    });
+
+    const health = await app.request('/admin/api/accounts/health-rotation/health-check', { method: 'POST' });
+    expect(health.status).toBe(200);
+    expect(modelRegistry.get('model-health-rotation')).toMatchObject({ status: 'passthrough' });
+    expect(accountPool.get('health-rotation')?.secret?.accessToken).toBe('rotated-1');
+
+    const manual = await app.request('/admin/api/models/refresh', { method: 'POST' });
+    expect(manual.status).toBe(200);
+    expect(await manual.json()).toMatchObject({
+      refreshedAccounts: expect.arrayContaining([
+        expect.objectContaining({ accountId: 'health-rotation', ok: true }),
+        expect.objectContaining({ accountId: 'manual-rotation', ok: true, models: ['model-manual-rotation'] }),
+      ]),
+    });
+    expect(modelRegistry.get('model-manual-rotation')).toMatchObject({ status: 'passthrough' });
+    expect(accountPool.get('manual-rotation')?.secret?.accessToken).toBe('rotated-2');
+    expect(seen).toEqual([
+      { accountId: 'health-rotation', accessToken: 'rotated-1' },
+      { accountId: 'health-rotation', accessToken: 'rotated-1' },
+      { accountId: 'manual-rotation', accessToken: 'rotated-2' },
+    ]);
+  });
+
+  it.each([
+    { code: 'rate_limited' as const, status: 'cooldown', httpStatus: 429 },
+    { code: 'unauthorized' as const, status: 'unhealthy', httpStatus: 401 },
+  ])('does not let delayed health success clear a newer $code request result', async ({ code, status, httpStatus }) => {
+    const discovery = deferred<ChatGptDiscoveredModel[]>();
+    const backend = new InspectingBackend();
+    backend.listModels = async (context) => {
+      backend.listModelsCalls += 1;
+      backend.listModelsContext = context;
+      return discovery.promise;
+    };
+    backend.complete = async () => {
+      throw new ChatGptBackendError(`request ${code}`, code, { status: httpStatus });
+    };
+    const { app, accountPool, modelRegistry } = createSessionAdminAppWithAccountPool(backend);
+    const account = accountPool.add({ id: `session-${code}`, provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: `token-${code}` } });
+    modelRegistry.replaceAccountModels({ accountId: account.id, createdAt: account.createdAt }, [{ id: 'race-model' }]);
+    modelRegistry.update('sonnet', { backendModel: 'race-model' });
+
+    const pendingHealth = app.request(`/admin/api/accounts/${account.id}/health-check`, { method: 'POST' });
+    await Promise.resolve();
+    const request = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'race' }] }),
+    });
+    expect(request.status).toBe(httpStatus);
+    expect(accountPool.get(account.id)?.status).toBe(status);
+
+    discovery.resolve([{ id: 'stale-health-model' }]);
+    await expect(pendingHealth).resolves.toHaveProperty('status', 200);
+    expect(accountPool.get(account.id)?.status).toBe(status);
+    expect(modelRegistry.get('stale-health-model')).toBeUndefined();
+  });
+
+  it('keeps newer health success when an older health failure resolves afterward', async () => {
+    const first = deferred<ChatGptDiscoveredModel[]>();
+    const second = deferred<ChatGptDiscoveredModel[]>();
+    let discoveryCall = 0;
+    const backend = new InspectingBackend();
+    backend.listModels = async () => (++discoveryCall === 1 ? first.promise : second.promise);
+    const { app, accountPool, modelRegistry } = createSessionAdminAppWithAccountPool(backend);
+    const account = accountPool.add({ id: 'session-health-success-wins', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token' } });
+
+    const older = app.request(`/admin/api/accounts/${account.id}/health-check`, { method: 'POST' });
+    await Promise.resolve();
+    const newer = app.request(`/admin/api/accounts/${account.id}/health-check`, { method: 'POST' });
+    await Promise.resolve();
+    second.resolve([{ id: 'newer-success-model' }]);
+    await expect(newer).resolves.toHaveProperty('status', 200);
+    first.reject(new ChatGptBackendError('older unauthorized', 'unauthorized', { status: 401 }));
+    await expect(older).resolves.toHaveProperty('status', 502);
+
+    expect(accountPool.get(account.id)).toMatchObject({ status: 'available', lastError: null, lastErrorCode: null });
+    expect(modelRegistry.get('newer-success-model')).toMatchObject({ status: 'passthrough' });
+  });
+
+  it('keeps newer health failure when an older health success resolves afterward', async () => {
+    const first = deferred<ChatGptDiscoveredModel[]>();
+    const second = deferred<ChatGptDiscoveredModel[]>();
+    let discoveryCall = 0;
+    const backend = new InspectingBackend();
+    backend.listModels = async () => (++discoveryCall === 1 ? first.promise : second.promise);
+    const { app, accountPool, modelRegistry } = createSessionAdminAppWithAccountPool(backend);
+    const account = accountPool.add({ id: 'session-health-failure-wins', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token' } });
+
+    const older = app.request(`/admin/api/accounts/${account.id}/health-check`, { method: 'POST' });
+    await Promise.resolve();
+    const newer = app.request(`/admin/api/accounts/${account.id}/health-check`, { method: 'POST' });
+    await Promise.resolve();
+    second.reject(new ChatGptBackendError('newer unauthorized', 'unauthorized', { status: 401 }));
+    await expect(newer).resolves.toHaveProperty('status', 502);
+    first.resolve([{ id: 'older-success-model' }]);
+    await expect(older).resolves.toHaveProperty('status', 200);
+
+    expect(accountPool.get(account.id)).toMatchObject({ status: 'unhealthy', lastError: 'newer unauthorized', lastErrorCode: 'unauthorized' });
+    expect(modelRegistry.get('older-success-model')).toBeUndefined();
+  });
+
+  it('does not let a newer failed health discovery be overwritten by an older manual refresh', async () => {
+    const manualDiscovery = deferred<ChatGptDiscoveredModel[]>();
+    const healthDiscovery = deferred<ChatGptDiscoveredModel[]>();
+    let discoveryCall = 0;
+    const backend = new InspectingBackend();
+    backend.listModels = async () => (++discoveryCall === 1 ? manualDiscovery.promise : healthDiscovery.promise);
+    const { app, accountPool, modelRegistry } = createSessionAdminAppWithAccountPool(backend);
+    const account = accountPool.add({ id: 'session-manual-health-order', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token' } });
+
+    const olderManual = app.request('/admin/api/models/refresh', { method: 'POST' });
+    await Promise.resolve();
+    const newerHealth = app.request(`/admin/api/accounts/${account.id}/health-check`, { method: 'POST' });
+    await Promise.resolve();
+    healthDiscovery.reject(new ChatGptBackendError('newer health failure', 'unauthorized', { status: 401 }));
+    await expect(newerHealth).resolves.toHaveProperty('status', 502);
+    manualDiscovery.resolve([{ id: 'older-manual-model' }]);
+    await expect(olderManual).resolves.toHaveProperty('status', 200);
+
+    expect(accountPool.get(account.id)).toMatchObject({ status: 'unhealthy', lastError: 'newer health failure', lastErrorCode: 'unauthorized' });
+    expect(modelRegistry.get('older-manual-model')).toBeUndefined();
+  });
+
+  it('keeps the newer result when concurrent manual refreshes complete in reverse order', async () => {
+    const olderDiscovery = deferred<ChatGptDiscoveredModel[]>();
+    const newerDiscovery = deferred<ChatGptDiscoveredModel[]>();
+    let discoveryCall = 0;
+    const backend = new InspectingBackend();
+    backend.listModels = async () => (++discoveryCall === 1 ? olderDiscovery.promise : newerDiscovery.promise);
+    const { app, accountPool, modelRegistry } = createSessionAdminAppWithAccountPool(backend);
+    accountPool.add({ id: 'session-manual-order', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token' } });
+
+    const olderRefresh = app.request('/admin/api/models/refresh', { method: 'POST' });
+    await Promise.resolve();
+    const newerRefresh = app.request('/admin/api/models/refresh', { method: 'POST' });
+    await Promise.resolve();
+    newerDiscovery.resolve([{ id: 'newer-manual-model' }]);
+    await expect(newerRefresh).resolves.toHaveProperty('status', 200);
+    olderDiscovery.resolve([{ id: 'older-manual-model' }]);
+    await expect(olderRefresh).resolves.toHaveProperty('status', 200);
+
+    expect(modelRegistry.get('newer-manual-model')).toMatchObject({ status: 'passthrough' });
+    expect(modelRegistry.get('older-manual-model')).toBeUndefined();
   });
 
   it('refreshes models with the first available session account and exposes them through /v1/models', async () => {
     const backend = new InspectingBackend([{ id: 'backend-session-model' }]);
-    const app = createSessionAdminApp(backend);
-    const addRes = await app.request('/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'session-1', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token-1' }, capabilities: ['chatgpt-session', 'messages'] }) });
-    expect(addRes.status).toBe(201);
+    const { app, accountPool } = createSessionAdminAppWithAccountPool(backend);
+    accountPool.add({ id: 'session-1', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token-1' }, capabilities: ['chatgpt-session', 'messages'] });
     const healthRes = await app.request('/admin/api/accounts/session-1/health-check', { method: 'POST' });
     expect(healthRes.status).toBe(200);
     expect(backend.listModelsContext?.account?.id).toBe('session-1');
@@ -2076,6 +2350,37 @@ describe('session admin model discovery', () => {
     const publicModels = await publicModelsRes.json() as { data: Array<{ id: string; backendModel: string; status: string }> };
     expect(publicModels.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'sonnet', backendModel: 'backend-session-model', status: 'bound' })]));
     expect(publicModels.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'backend-session-model', backendModel: 'backend-session-model' })]));
+  });
+
+  it('refreshes every session account and updates union availability on disable, enable, and delete', async () => {
+    const backend = new InspectingBackend();
+    backend.listModels = async (context) => {
+      backend.listModelsCalls += 1;
+      backend.listModelsContext = context;
+      return [{ id: context?.account?.id === 'session-a' ? 'model-a' : 'model-b' }];
+    };
+    const { app, accountPool } = createSessionAdminAppWithAccountPool(backend);
+    accountPool.add({ id: 'session-a', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token-a' } });
+    accountPool.add({ id: 'session-b', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token-b' } });
+
+    const refreshRes = await app.request('/admin/api/models/refresh', { method: 'POST' });
+    expect(refreshRes.status).toBe(200);
+    expect(await refreshRes.json()).toMatchObject({
+      discovered: expect.arrayContaining([expect.objectContaining({ id: 'model-a' }), expect.objectContaining({ id: 'model-b' })]),
+      refreshedAccounts: expect.arrayContaining([
+        expect.objectContaining({ accountId: 'session-a', ok: true, models: ['model-a'] }),
+        expect.objectContaining({ accountId: 'session-b', ok: true, models: ['model-b'] }),
+      ]),
+    });
+
+    expect((await app.request('/admin/api/accounts/session-a', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: false }) })).status).toBe(200);
+    expect((await (await app.request('/admin/api/models')).json() as { discovered: Array<{ id: string }> }).discovered.map((model) => model.id)).toEqual(['model-b']);
+
+    expect((await app.request('/admin/api/accounts/session-a', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: true }) })).status).toBe(200);
+    expect((await (await app.request('/admin/api/models')).json() as { discovered: Array<{ id: string }> }).discovered.map((model) => model.id)).toEqual(['model-a', 'model-b']);
+
+    expect((await app.request('/admin/api/accounts/session-b', { method: 'DELETE' })).status).toBe(200);
+    expect((await (await app.request('/admin/api/models')).json() as { discovered: Array<{ id: string }> }).discovered.map((model) => model.id)).toEqual(['model-a']);
   });
 
   it('returns a clear error when session model refresh has no session account', async () => {

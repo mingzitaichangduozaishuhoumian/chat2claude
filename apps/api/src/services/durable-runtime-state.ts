@@ -71,10 +71,10 @@ export class DurableRuntimeState {
     if (modelAliases) this.options.modelRegistry?.restore(modelAliases);
   }
 
-  compareAndSwapSessionSecret(accountId: string, expected: SessionSecretVersion, nextSecret: ChatGptSessionSecret, expectedIncarnation?: number): Account | undefined {
+  compareAndSwapSessionSecret(accountId: string, expected: SessionSecretVersion, nextSecret: ChatGptSessionSecret, expectedIncarnation?: number, discoveryOperationId?: number): Account | undefined {
     const current = this.options.accountPool.get(accountId);
     if (!current || (expectedIncarnation !== undefined && current.incarnation !== expectedIncarnation) || current.provider !== 'chatgpt-session' || !current.secret) return undefined;
     if (current.secret.accessToken !== expected.accessToken || current.secret.refreshToken !== expected.refreshToken) return undefined;
-    return this.transaction(() => this.options.accountPool.compareAndSwapSessionSecret(accountId, expected, nextSecret, expectedIncarnation));
+    return this.transaction(() => this.options.accountPool.compareAndSwapSessionSecret(accountId, expected, nextSecret, expectedIncarnation, discoveryOperationId));
   }
 }
