@@ -21,6 +21,7 @@ export interface AppEnv {
   defaultResponseSpeed: SpeedPreference;
   dataDir: string;
   runtimeStatePath: string;
+  operationalStatePath: string;
   stateEncryptionKey?: Uint8Array;
 }
 
@@ -49,6 +50,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     defaultResponseSpeed: normalizeSpeedPreference(source.DEFAULT_RESPONSE_SPEED),
     dataDir,
     runtimeStatePath: resolve(dataDir, 'runtime-state.json'),
+    operationalStatePath: resolve(dataDir, 'admin-operational-state.json'),
     stateEncryptionKey: parseStateEncryptionKey(source.STATE_ENCRYPTION_KEY),
   };
 }

@@ -24,6 +24,10 @@ export interface Account {
 
 export interface AccountView extends Omit<Account, 'secret' | 'incarnation'> {
   hasSecret: boolean;
+  email?: string;
+  upstreamAccountId?: string;
+  planType?: string;
+  credentialExpiresAt?: string;
 }
 
 export interface AccountCreateInput {
@@ -371,8 +375,16 @@ function fromPersistedAccount(account: PersistedAccount, incarnation: number): A
 }
 
 function toAccountView(account: Account): AccountView {
-  const { secret: _secret, incarnation: _incarnation, ...view } = account;
-  return { ...view, capabilities: [...account.capabilities], hasSecret: Boolean(_secret) };
+  const { secret, incarnation: _incarnation, ...view } = account;
+  return {
+    ...view,
+    capabilities: [...account.capabilities],
+    hasSecret: Boolean(secret),
+    ...(secret?.email ? { email: secret.email } : {}),
+    ...(secret?.accountId ? { upstreamAccountId: secret.accountId } : {}),
+    ...(secret?.planType ? { planType: secret.planType } : {}),
+    ...(secret?.expiresAt ? { credentialExpiresAt: secret.expiresAt } : {}),
+  };
 }
 
 function normalizeId(value: unknown): string {

@@ -8,6 +8,7 @@ import { AccountPool } from './services/account-pool.js';
 import { DurableRuntimeState } from './services/durable-runtime-state.js';
 import { RuntimeApiKeys } from './services/runtime-api-keys.js';
 import { RuntimeStateStore } from './services/runtime-state-store.js';
+import { AdminOperationalState } from './services/admin-operational-state.js';
 
 const directories: string[] = [];
 
@@ -74,6 +75,30 @@ describe('createApp runtime state hydration', () => {
     expect((await store.load())?.accounts).toEqual([expect.objectContaining({ id: 'persisted-session', provider: 'chatgpt-session' })]);
     expect((await store.load())?.runtimeApiKeys).toEqual(runtimeApiKeys.exportState());
     await app.dispose();
+  });
+
+  it('hydrates operational state, cleans orphans by account identity, and flushes on dispose', async () => {
+    const dataDir = temporaryDirectory();
+    const env = loadEnv({ DATA_DIR: dataDir, API_KEYS: 'test-key' });
+    const accounts = new AccountPool({ seedMockAccount: false });
+    accounts.add({ id: 'keep', provider: 'mock' });
+    const keep = accounts.get('keep')!;
+    new DurableRuntimeState({ accountPool: accounts, runtimeApiKeys: new RuntimeApiKeys(), store: new RuntimeStateStore({ path: env.runtimeStatePath }) }).persist();
+
+    const operational = new AdminOperationalState({ path: env.operationalStatePath, debounceMs: 10 });
+    operational.setDiscoveredModelIds({ accountId: keep.id, createdAt: keep.createdAt }, ['keep-model']);
+    operational.setDiscoveredModelIds({ accountId: 'deleted', createdAt: '2026-09-03T00:00:00.000Z' }, ['orphan-model']);
+    await operational.dispose();
+
+    const app = createApp(env);
+    await app.dispose();
+
+    const restored = new AdminOperationalState({ path: env.operationalStatePath });
+    expect(restored.hydrate()).toBe(true);
+    expect(restored.snapshot().accounts).toEqual([
+      expect.objectContaining({ accountId: 'keep', createdAt: keep.createdAt, discoveredModelIds: ['keep-model'], requestStats: expect.objectContaining({ inFlight: 0 }) }),
+    ]);
+    await restored.dispose();
   });
 
   it('preserves a custom sonnet binding to the second discovered model across restart and remains callable', async () => {

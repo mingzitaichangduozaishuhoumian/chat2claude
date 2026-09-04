@@ -21,12 +21,14 @@ import { RuntimeStateStore } from './services/runtime-state-store.js';
 import { DurableRuntimeState } from './services/durable-runtime-state.js';
 import { LocalAdminSession } from './services/local-admin-session.js';
 import { chooseBestModel, PRIMARY_CHATGPT_ACCOUNT_ID, SetupProvisioner } from './services/setup-provisioner.js';
+import { AdminOperationalState } from './services/admin-operational-state.js';
 
 export type Chat2ClaudeApp = Hono & { dispose: () => Promise<void> };
 
 export interface CreateAppOptions {
   authFlow?: ChatGptAuthFlowService;
   runtimeStateStore?: RuntimeStateStore | null;
+  operationalState?: AdminOperationalState | null;
 }
 
 export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {}): Chat2ClaudeApp {
@@ -41,6 +43,11 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
     : options.runtimeStateStore ?? undefined;
   const durableState = runtimeStateStore ? new DurableRuntimeState({ accountPool, runtimeApiKeys, modelRegistry, store: runtimeStateStore, removeMockAccountsOnHydrate: env.chatGptBackend === 'session' }) : undefined;
   durableState?.hydrate();
+  const operationalState = options.operationalState === undefined
+    ? env.operationalStatePath ? new AdminOperationalState({ path: env.operationalStatePath }) : undefined
+    : options.operationalState ?? undefined;
+  operationalState?.hydrate();
+  operationalState?.cleanupOrphans(accountPool.list().map((account) => ({ accountId: account.id, createdAt: account.createdAt })));
   const backend = createChatGptBackend(env, accountPool, durableState);
   const requestLog = new RequestLog();
   const responsesStore = new ResponsesStore();
@@ -82,6 +89,8 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   app.route('/', createMetricsRoute(requestLog));
   app.use('/admin/api/*', adminApiAuth(env.apiKeys, runtimeApiKeys, { allowAnonymousBootstrap: env.allowAnonymousBootstrap, localAdminSession }));
   app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, durableState, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow, setupProvisioner, localAdminSession }));
-  app.dispose = () => authFlow.close();
+  app.dispose = async () => {
+    await Promise.all([authFlow.close(), operationalState?.dispose()]);
+  };
   return app;
 }

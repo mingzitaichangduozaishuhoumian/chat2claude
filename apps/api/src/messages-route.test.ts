@@ -70,6 +70,7 @@ const env = {
   defaultResponseSpeed: 'balanced' as const,
   dataDir: '',
   runtimeStatePath: '',
+  operationalStatePath: '',
 };
 const jsonHeaders = { 'content-type': 'application/json', 'x-api-key': 'test-key' };
 const adminJsonHeaders = jsonHeaders;
@@ -1740,10 +1741,10 @@ describe('/admin/api/accounts', () => {
     const listBody = await listRes.json() as { accounts: Array<{ id: string }> };
     expect(listBody.accounts.map((account) => account.id)).toContain('mock-2');
 
-    const patchRes = await app.request('/admin/api/accounts/mock-2', { method: 'PATCH', headers: adminJsonHeaders, body: JSON.stringify({ enabled: false, lastError: 'manual disable' }) });
+    const patchRes = await app.request('/admin/api/accounts/mock-2', { method: 'PATCH', headers: adminJsonHeaders, body: JSON.stringify({ enabled: false }) });
     expect(patchRes.status).toBe(200);
-    const patchBody = await patchRes.json() as { account: { status: string; enabled: boolean; lastError: string } };
-    expect(patchBody.account).toMatchObject({ status: 'disabled', enabled: false, lastError: 'manual disable' });
+    const patchBody = await patchRes.json() as { account: { status: string; enabled: boolean; lastError: string | null } };
+    expect(patchBody.account).toMatchObject({ status: 'disabled', enabled: false, lastError: null });
 
     const healthRes = await app.request('/admin/api/accounts/mock-2/health-check', { method: 'POST', headers: adminKeyHeaders });
     expect(healthRes.status).toBe(200);

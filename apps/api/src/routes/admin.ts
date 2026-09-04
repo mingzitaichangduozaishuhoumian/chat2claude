@@ -116,10 +116,14 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
   app.patch('/admin/api/accounts/:id', async (c) => {
     const id = c.req.param('id');
     if (!options.accountPool.get(id)) return c.json({ error: 'Account not found' }, 404);
-    const patch = await readJson(c.req);
-    const updateAccount = () => options.accountPool.update(id, patch);
-    const account = options.durableState ? options.durableState.transaction(updateAccount) : updateAccount();
-    return c.json({ account });
+    try {
+      const patch = accountAdminPatch(await readJson(c.req));
+      const updateAccount = () => options.accountPool.update(id, patch);
+      const account = options.durableState ? options.durableState.transaction(updateAccount) : updateAccount();
+      return c.json({ account });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'Invalid account patch' }, 400);
+    }
   });
   app.delete('/admin/api/accounts/:id', (c) => {
     const id = c.req.param('id');
@@ -228,6 +232,17 @@ function parseExactHttpOrigin(value: string, label: string): string {
     throw new Error(`${label} must be an exact HTTP(S) origin without path, query, hash, or userinfo.`);
   }
   return url.origin;
+}
+
+function accountAdminPatch(input: Record<string, unknown>): { label?: unknown; enabled?: unknown; maxConcurrency?: unknown } {
+  const allowed = ['label', 'enabled', 'maxConcurrency'] as const;
+  const unknown = Object.keys(input).filter((field) => !allowed.includes(field as typeof allowed[number]));
+  if (unknown.length > 0) throw new Error(`Account patch contains unsupported fields: ${unknown.join(', ')}`);
+  return {
+    ...(Object.prototype.hasOwnProperty.call(input, 'label') ? { label: input.label } : {}),
+    ...(Object.prototype.hasOwnProperty.call(input, 'enabled') ? { enabled: input.enabled } : {}),
+    ...(Object.prototype.hasOwnProperty.call(input, 'maxConcurrency') ? { maxConcurrency: input.maxConcurrency } : {}),
+  };
 }
 
 async function readJson(req: { json: () => Promise<unknown> }): Promise<Record<string, unknown>> {

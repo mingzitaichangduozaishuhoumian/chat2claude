@@ -192,6 +192,75 @@ describe('durable administration', () => {
     await app.dispose();
   });
 
+  it('projects only allowlisted ChatGPT account identity fields and redacts all credentials', async () => {
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    accountPool.add({
+      id: 'session-account',
+      provider: 'chatgpt-session',
+      secret: {
+        type: 'chatgpt-session',
+        accessToken: 'access-secret',
+        refreshToken: 'refresh-secret',
+        idToken: 'id-secret',
+        cookie: 'cookie-secret',
+        deviceId: 'device-secret',
+        userAgent: 'agent-secret',
+        email: 'owner@example.com',
+        accountId: 'upstream-account',
+        planType: 'plus',
+        expiresAt: '2026-09-04T12:00:00.000Z',
+      },
+    });
+    const app = new Hono();
+    app.route('/', createAdminRoute({ accountPool, modelRegistry: new ModelRegistry(), backend: {} as ChatGptBackendClient, runtimeApiKeys: new RuntimeApiKeys(), envApiKeys: [], defaultReasoningEffort: 'medium', defaultResponseSpeed: 'balanced', backendProvider: 'mock' }));
+
+    const body = await (await app.request('/admin/api/accounts')).json() as { accounts: Array<Record<string, unknown>> };
+    expect(body.accounts[0]).toMatchObject({
+      id: 'session-account',
+      hasSecret: true,
+      email: 'owner@example.com',
+      upstreamAccountId: 'upstream-account',
+      planType: 'plus',
+      credentialExpiresAt: '2026-09-04T12:00:00.000Z',
+    });
+    expect(JSON.stringify(body)).not.toMatch(/access-secret|refresh-secret|id-secret|cookie-secret|device-secret|agent-secret/);
+    for (const field of ['secret', 'accessToken', 'refreshToken', 'idToken', 'cookie', 'deviceId', 'userAgent']) {
+      expect(body.accounts[0]).not.toHaveProperty(field);
+    }
+  });
+
+  it('allows only label, enabled, and maxConcurrency through the account PATCH route', async () => {
+    const accountPool = new AccountPool();
+    const app = new Hono();
+    app.route('/', createAdminRoute({ accountPool, modelRegistry: new ModelRegistry(), backend: {} as ChatGptBackendClient, runtimeApiKeys: new RuntimeApiKeys(), envApiKeys: [], defaultReasoningEffort: 'medium', defaultResponseSpeed: 'balanced', backendProvider: 'mock' }));
+
+    const allowed = await app.request('/admin/api/accounts/mock-account', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: 'Renamed', enabled: false, maxConcurrency: 3 }),
+    });
+    expect(allowed.status).toBe(200);
+    expect(await allowed.json()).toMatchObject({ account: { label: 'Renamed', enabled: false, maxConcurrency: 3, status: 'disabled' } });
+
+    const before = accountPool.get('mock-account');
+    for (const forbidden of [
+      { status: 'available' },
+      { currentConcurrency: 9 },
+      { lastError: 'injected' },
+      { secret: { type: 'chatgpt-session', accessToken: 'injected' } },
+      { capabilities: ['admin'] },
+      { provider: 'chatgpt-session' },
+    ]) {
+      const response = await app.request('/admin/api/accounts/mock-account', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ label: 'must-not-apply', ...forbidden }),
+      });
+      expect(response.status).toBe(400);
+    }
+    expect(accountPool.get('mock-account')).toEqual(before);
+  });
+
   it('returns 409 for an active account, 404 after deletion, and persists the deletion', async () => {
     const directory = temporaryDirectory();
     const path = join(directory, 'runtime-state.json');

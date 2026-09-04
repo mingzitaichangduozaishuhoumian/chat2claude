@@ -7,6 +7,7 @@ describe('loadEnv', () => {
     const env = loadEnv({});
     expect(env).toMatchObject({ host: '127.0.0.1', allowAnonymousBootstrap: true, localContainerBootstrap: false });
     expect(env.runtimeStatePath.replaceAll('\\', '/')).toMatch(/\/apps\/api\/data\/runtime-state\.json$/);
+    expect(env.operationalStatePath.replaceAll('\\', '/')).toMatch(/\/apps\/api\/data\/admin-operational-state\.json$/);
   });
 
   it('fails closed for a non-loopback host without API keys', () => {
@@ -24,6 +25,7 @@ describe('loadEnv', () => {
   it('uses DATA_DIR for the runtime state path', () => {
     const env = loadEnv({ DATA_DIR: './custom-data' });
     expect(env.runtimeStatePath).toBe(resolve(env.dataDir, 'runtime-state.json'));
+    expect(env.operationalStatePath).toBe(resolve(env.dataDir, 'admin-operational-state.json'));
   });
 
   it('strictly validates STATE_ENCRYPTION_KEY without including its value in errors', () => {
