@@ -11,6 +11,7 @@ import type { DurableRuntimeState } from '../services/durable-runtime-state.js';
 import { accountDiscoveryContext } from '../services/refresh-aware-backend.js';
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
 import type { LocalAdminSession } from '../services/local-admin-session.js';
+import { AccountQuotaNotFoundError, AccountQuotaService, type AccountQuotaResult } from '../services/account-quota-service.js';
 
 export interface AdminRouteOptions {
   accountPool: AccountPool;
@@ -27,12 +28,21 @@ export interface AdminRouteOptions {
   authFlow?: ChatGptAuthFlowService;
   setupProvisioner?: SetupProvisioner;
   localAdminSession?: LocalAdminSession;
+  quotaService?: AccountQuotaService;
 }
 
 export function createAdminRoute(options: AdminRouteOptions): Hono {
   const app = new Hono();
   const authFlow = options.authFlow ?? new ChatGptAuthFlowService();
-  const provisioner = options.setupProvisioner ?? new SetupProvisioner(options);
+  const quotaService = options.quotaService ?? new AccountQuotaService({
+    accountPool: options.accountPool,
+    backend: options.backend,
+    operationalState: options.operationalState,
+  });
+  const provisioner = options.setupProvisioner ?? new SetupProvisioner({
+    ...options,
+    onAccountCredentialsReplaced: (account) => quotaService.invalidateAccount(account),
+  });
 
   app.get('/admin', (c) => {
     const cookie = options.localAdminSession?.issueCookie(c.req.header('host') ?? new URL(c.req.url).host, c.req.url);
@@ -105,6 +115,20 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     }
   });
 
+  app.get('/admin/api/quotas', (c) => c.json({ quotas: quotaService.getAll() }));
+  app.post('/admin/api/quotas/refresh', async (c) => {
+    const quotas = await quotaService.refreshAll();
+    return c.json({ quotas, summary: quotaSummary(quotas) });
+  });
+  app.post('/admin/api/quotas/:accountId/refresh', async (c) => {
+    try {
+      return c.json({ quota: await quotaService.refreshAccount(c.req.param('accountId')) });
+    } catch (error) {
+      if (error instanceof AccountQuotaNotFoundError) return c.json({ error: 'Account not found' }, 404);
+      throw error;
+    }
+  });
+
   app.get('/admin/api/accounts', (c) => c.json({ accounts: options.accountPool.list() }));
   app.get('/admin/api/api-keys', (c) => c.json({ apiKeys: options.runtimeApiKeys.listSafe() }));
   app.delete('/admin/api/api-keys/:id', (c) => {
@@ -154,6 +178,7 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
       return account;
     };
     const account = options.durableState ? options.durableState.transaction(removeAccount) : removeAccount();
+    quotaService.removeAccount(existing);
     let operationalWarning: string | undefined;
     try {
       options.operationalState?.removeAccount({ accountId: existing.id, createdAt: existing.createdAt });
@@ -320,6 +345,16 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     return c.json({ ...options.modelRegistry.adminView(), refreshedAccounts });
   });
   return app;
+}
+
+function quotaSummary(quotas: AccountQuotaResult[]): { total: number; fresh: number; stale: number; error: number; unknown: number } {
+  return {
+    total: quotas.length,
+    fresh: quotas.filter((quota) => quota.status === 'fresh').length,
+    stale: quotas.filter((quota) => quota.status === 'stale').length,
+    error: quotas.filter((quota) => quota.status === 'error').length,
+    unknown: quotas.filter((quota) => quota.status === 'unknown').length,
+  };
 }
 
 class AdminRequestError extends Error {

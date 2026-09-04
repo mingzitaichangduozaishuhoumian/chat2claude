@@ -67,9 +67,40 @@ export interface ChatGptBackendRequestContext {
 
 export interface ChatGptBackendHealthCheckResult { ok: boolean; message?: string; }
 
+export interface ChatGptQuotaWindow {
+  position: 'primary' | 'secondary';
+  descriptor: string;
+  usedPercent?: number;
+  durationSeconds?: number;
+  resetAfterSeconds?: number;
+  resetAt?: string;
+}
+
+export interface ChatGptAdditionalQuotaLimit {
+  meteredFeature?: string;
+  limitName?: string;
+  allowed?: boolean;
+  limitReached?: boolean;
+  rateLimitReachedType?: string;
+  windows: ChatGptQuotaWindow[];
+}
+
+export interface ChatGptAccountQuota {
+  providerAccountId?: string;
+  providerUserId?: string;
+  planType?: string;
+  allowed?: boolean;
+  limitReached?: boolean;
+  rateLimitReachedType?: string;
+  windows: ChatGptQuotaWindow[];
+  additionalLimits?: ChatGptAdditionalQuotaLimit[];
+  resetCredits?: { availableCount: number };
+}
+
 export interface ChatGptBackendClient {
   complete(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse>;
   stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent>;
   listModels(context?: ChatGptBackendRequestContext): Promise<ChatGptDiscoveredModel[]>;
   healthCheck?(context?: ChatGptBackendRequestContext): Promise<ChatGptBackendHealthCheckResult>;
+  getAccountQuota?(context?: ChatGptBackendRequestContext): Promise<ChatGptAccountQuota>;
 }

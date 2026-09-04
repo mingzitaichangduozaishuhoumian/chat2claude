@@ -173,11 +173,11 @@ describe('RuntimeStateStore', () => {
     };
     const durable = new DurableRuntimeState({ accountPool: accounts, runtimeApiKeys: keys, modelRegistry, store: new RuntimeStateStore({ path, fs: failingFs }) });
 
-    expect(() => durable.transaction(() => {
+    expect(durable.transaction(() => {
       accounts.add({ id: 'persisted', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'persisted-access-secret' } });
       keys.add('persisted-runtime-key');
-      modelRegistry.update('sonnet', { backendModel: 'persisted-backend-model' });
-    })).toThrow(/atomically \(EIO\)/);
+      return modelRegistry.update('sonnet', { backendModel: 'persisted-backend-model' });
+    })).toMatchObject({ id: 'sonnet', backendModel: 'persisted-backend-model' });
     expect(accounts.get('persisted')?.secret?.accessToken).toBe('persisted-access-secret');
     expect(keys.has('persisted-runtime-key')).toBe(true);
     expect(modelRegistry.get('sonnet')?.backendModel).toBe('persisted-backend-model');

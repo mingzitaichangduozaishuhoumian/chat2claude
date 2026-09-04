@@ -1,8 +1,9 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import * as nodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AdminOperationalState } from './admin-operational-state.js';
+import { AdminOperationalState, type OperationalStateFileSystem } from './admin-operational-state.js';
 
 const directories: string[] = [];
 
@@ -37,14 +38,19 @@ describe('AdminOperationalState', () => {
       status: 'fresh',
       fetchedAt: '2026-09-04T00:03:00.000Z',
       expiresAt: '2026-09-04T00:08:00.000Z',
-      snapshots: [{ id: 'primary', used: 4, limit: 100, remaining: 96, resetAt: '2026-09-05T00:00:00.000Z' }],
+      quota: {
+        allowed: true,
+        rateLimitReachedType: 'primary_window',
+        windows: [{ position: 'primary', descriptor: 'five-hour', usedPercent: 4, durationSeconds: 18_000, resetAt: '2026-09-05T00:00:00.000Z' }],
+        additionalLimits: [],
+      },
     });
     await source.flush();
 
     const serialized = readFileSync(path, 'utf8');
     expect(serialized).toContain('"version": 1');
     expect(serialized).not.toContain('inFlight');
-    for (const forbidden of ['"prompt"', '"output"', '"raw"', '"accessToken"', '"cookie"', '"stack"']) {
+    for (const forbidden of ['"prompt"', '"output"', '"raw"', '"accessToken"', '"cookie"', '"stack"', '"remaining"']) {
       expect(serialized).not.toContain(forbidden);
     }
 
@@ -67,7 +73,7 @@ describe('AdminOperationalState', () => {
           },
         },
       ],
-      quotaCache: expect.objectContaining({ status: 'fresh', snapshots: [expect.objectContaining({ id: 'primary', remaining: 96 })] }),
+      quotaCache: expect.objectContaining({ status: 'fresh', quota: expect.objectContaining({ rateLimitReachedType: 'primary_window', windows: [expect.objectContaining({ descriptor: 'five-hour', usedPercent: 4 })] }) }),
     })]);
     await restored.dispose();
   });
@@ -91,6 +97,25 @@ describe('AdminOperationalState', () => {
     await pending.dispose();
     expect(existsSync(secondPath)).toBe(true);
     await state.dispose();
+  });
+
+  it('remains writable after a debounced write was committed but directory fsync confirmation failed', async () => {
+    vi.useFakeTimers();
+    const path = statePath();
+    const identity = { accountId: 'account-1', createdAt: '2026-09-04T00:00:00.000Z' };
+    const state = new AdminOperationalState({ path, debounceMs: 10, fs: failFirstDirectoryFsyncFs() });
+
+    state.setDiscoveredModelIds(identity, ['model-a']);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(() => state.setDiscoveredModelIds(identity, ['model-a', 'model-b'])).not.toThrow();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(() => state.flushSync()).not.toThrow();
+
+    const restored = new AdminOperationalState({ path });
+    expect(restored.hydrate()).toBe(true);
+    expect(restored.snapshot().accounts[0].discoveredModelIds).toEqual(['model-a', 'model-b']);
+    await state.dispose();
+    await restored.dispose();
   });
 
   it('rehydrates legacy id-only catalogs with unknown capabilities', () => {
@@ -153,4 +178,35 @@ function statePath(): string {
   const directory = mkdtempSync(join(tmpdir(), 'chat2claude-operational-state-'));
   directories.push(directory);
   return join(directory, 'admin-operational-state.json');
+}
+
+function failFirstDirectoryFsyncFs(): OperationalStateFileSystem {
+  let renamed = false;
+  let failurePending = true;
+  return {
+    readFileSync: nodeFs.readFileSync,
+    mkdirSync: nodeFs.mkdirSync,
+    chmodSync: nodeFs.chmodSync,
+    openSync: nodeFs.openSync,
+    writeSync: nodeFs.writeSync,
+    fsyncSync(fd) {
+      if (renamed && failurePending) {
+        failurePending = false;
+        throw ioError();
+      }
+      nodeFs.fsyncSync(fd);
+    },
+    closeSync: nodeFs.closeSync,
+    renameSync(oldPath, newPath) {
+      nodeFs.renameSync(oldPath, newPath);
+      renamed = true;
+    },
+    unlinkSync: nodeFs.unlinkSync,
+  };
+}
+
+function ioError(): NodeJS.ErrnoException {
+  const error = new Error('injected persistence failure') as NodeJS.ErrnoException;
+  error.code = 'EIO';
+  return error;
 }

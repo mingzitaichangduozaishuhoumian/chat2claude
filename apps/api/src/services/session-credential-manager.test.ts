@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import * as nodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -7,7 +8,7 @@ import { CodexOAuthClient } from './codex-oauth-client.js';
 import { RuntimeApiKeys } from './runtime-api-keys.js';
 import { SessionCredentialManager } from './session-credential-manager.js';
 import { DurableRuntimeState } from './durable-runtime-state.js';
-import { RuntimeStateStore } from './runtime-state-store.js';
+import { RuntimeStateStore, type RuntimeStateFileSystem } from './runtime-state-store.js';
 
 function addSession(pool: AccountPool, id: string, expiresAt = '2026-08-22T02:00:00.000Z') {
   pool.add({ id, provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: `${id}-access-1`, refreshToken: `${id}-refresh-1`, expiresAt, email: `${id}@example.test`, cookie: `${id}=cookie` } });
@@ -23,14 +24,41 @@ describe('AccountPool credential CAS', () => {
     expect(pool.compareAndSwapSessionSecret('session', { accessToken: 'session-access-1', refreshToken: 'session-refresh-1' }, { type: 'chatgpt-session', accessToken: 'stale' })).toBeUndefined();
   });
 
-  it('does not write durable state for a credential version mismatch', () => {
+  it('rejects an obsolete configuration revision even when tokens are unchanged', () => {
     const pool = new AccountPool();
-    addSession(pool, 'session');
+    const original = addSession(pool, 'session');
+    pool.update('session', { secret: { ...original.secret!, cookie: 'new=cookie' } });
+
+    expect(pool.compareAndSwapSessionSecret(
+      'session',
+      { accessToken: 'session-access-1', refreshToken: 'session-refresh-1' },
+      { type: 'chatgpt-session', accessToken: 'stale' },
+      original.incarnation,
+      undefined,
+      undefined,
+      original.configurationRevision,
+    )).toBeUndefined();
+    expect(pool.get('session')?.secret?.cookie).toBe('new=cookie');
+  });
+
+  it('does not write durable state for a credential version or configuration mismatch', () => {
+    const pool = new AccountPool();
+    const original = addSession(pool, 'session');
     const store = new RuntimeStateStore({ path: 'unused-runtime-state.json' });
     let writes = 0;
     store.save = () => { writes += 1; };
     const durableState = new DurableRuntimeState({ accountPool: pool, runtimeApiKeys: new RuntimeApiKeys(), store });
     expect(durableState.compareAndSwapSessionSecret('session', { accessToken: 'wrong', refreshToken: 'session-refresh-1' }, { type: 'chatgpt-session', accessToken: 'stale' })).toBeUndefined();
+    pool.update('session', { secret: { ...original.secret!, cookie: 'new=cookie' } });
+    expect(durableState.compareAndSwapSessionSecret(
+      'session',
+      { accessToken: 'session-access-1', refreshToken: 'session-refresh-1' },
+      { type: 'chatgpt-session', accessToken: 'stale' },
+      original.incarnation,
+      undefined,
+      undefined,
+      original.configurationRevision,
+    )).toBeUndefined();
     expect(writes).toBe(0);
   });
 });
@@ -112,6 +140,41 @@ describe('SessionCredentialManager', () => {
     }
   });
 
+  it.each(['chmod', 'directory fsync'] as const)('returns rotated credentials after a post-rename %s failure without exposing token data', async (failurePoint) => {
+    const directory = mkdtempSync(join(tmpdir(), 'chat2claude-refresh-committed-'));
+    try {
+      const path = join(directory, 'runtime-state.json');
+      const pool = new AccountPool();
+      const account = addSession(pool, 'session', '2026-08-22T00:00:00.000Z');
+      const durableState = new DurableRuntimeState({ accountPool: pool, runtimeApiKeys: new RuntimeApiKeys(), store: new RuntimeStateStore({ path }) });
+      durableState.persist();
+      const diagnostics: unknown[] = [];
+      const manager = new SessionCredentialManager({
+        accountPool: pool,
+        durableState: new DurableRuntimeState({ accountPool: pool, runtimeApiKeys: new RuntimeApiKeys(), store: new RuntimeStateStore({ path, fs: postRenameFailureFs(failurePoint) }) }),
+        now: () => new Date('2026-08-22T00:00:00.000Z'),
+        oauthClient: new CodexOAuthClient({ fetch: async () => Response.json({ access_token: 'access-2', refresh_token: 'refresh-2' }) }),
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+      });
+
+      await expect(manager.getFreshAccount(account)).resolves.toMatchObject({ secret: { accessToken: 'access-2', refreshToken: 'refresh-2' } });
+      expect(pool.get('session')?.secret).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' });
+      expect(diagnostics).toEqual([{
+        severity: 'warning',
+        code: 'durability_confirmation_failed',
+        message: 'ChatGPT credential rotation was committed, but filesystem durability confirmation failed.',
+      }]);
+      expect(JSON.stringify(diagnostics)).not.toContain('access-2');
+      expect(JSON.stringify(diagnostics)).not.toContain('refresh-2');
+
+      const restored = new AccountPool();
+      new DurableRuntimeState({ accountPool: restored, runtimeApiKeys: new RuntimeApiKeys(), store: new RuntimeStateStore({ path }) }).hydrate();
+      expect(restored.get('session')?.secret).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('single-flights refresh per account while allowing different accounts independently', async () => {
     const pool = new AccountPool();
     const first = addSession(pool, 'first', '2026-08-22T00:00:00.000Z');
@@ -149,6 +212,46 @@ describe('SessionCredentialManager', () => {
     await expect(secondPending).resolves.toMatchObject({ secret: { accessToken: 'access-3' } });
     oldRefresh.resolve(Response.json({ access_token: 'stale-access' }));
     await expect(firstPending).resolves.toMatchObject({ secret: { accessToken: 'access-3' } });
+  });
+
+  it('does not overwrite newer same-token credential metadata with an in-flight refresh result', async () => {
+    const pool = new AccountPool();
+    const stale = addSession(pool, 'session', '2026-08-22T00:00:00.000Z');
+    const refresh = deferred<Response>();
+    const manager = new SessionCredentialManager({
+      accountPool: pool,
+      now: () => new Date('2026-08-22T00:00:00.000Z'),
+      oauthClient: new CodexOAuthClient({ fetch: async () => refresh.promise }),
+    });
+
+    const pending = manager.getFreshAccount(stale);
+    await Promise.resolve();
+    pool.update('session', { secret: {
+      type: 'chatgpt-session',
+      accessToken: 'session-access-1',
+      refreshToken: 'session-refresh-1',
+      expiresAt: '2026-08-22T03:00:00.000Z',
+      email: 'new@example.test',
+      accountId: 'new-upstream-account',
+      planType: 'team',
+      cookie: 'new=cookie',
+      deviceId: 'new-device',
+      userAgent: 'new-agent',
+    } });
+    refresh.resolve(Response.json({ access_token: 'stale-access', refresh_token: 'stale-refresh', expires_in: 3600 }));
+
+    await expect(pending).resolves.toMatchObject({ secret: {
+      accessToken: 'session-access-1',
+      refreshToken: 'session-refresh-1',
+      expiresAt: '2026-08-22T03:00:00.000Z',
+      email: 'new@example.test',
+      accountId: 'new-upstream-account',
+      planType: 'team',
+      cookie: 'new=cookie',
+      deviceId: 'new-device',
+      userAgent: 'new-agent',
+    } });
+    expect(pool.get('session')?.secret).toMatchObject({ accessToken: 'session-access-1', cookie: 'new=cookie', deviceId: 'new-device' });
   });
 
   it('does not write a stale refresh result after delete/recreate with identical credentials', async () => {
@@ -233,6 +336,36 @@ async function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<
     ),
     new Promise<{ status: 'timed_out' }>((resolve) => setTimeout(() => resolve({ status: 'timed_out' }), timeoutMs)),
   ]);
+}
+
+function postRenameFailureFs(failurePoint: 'chmod' | 'directory fsync'): RuntimeStateFileSystem {
+  let renamed = false;
+  return {
+    readFileSync: nodeFs.readFileSync,
+    mkdirSync: nodeFs.mkdirSync,
+    chmodSync(path, mode) {
+      if (renamed && failurePoint === 'chmod') throw ioError();
+      nodeFs.chmodSync(path, mode);
+    },
+    openSync: nodeFs.openSync,
+    writeSync: nodeFs.writeSync,
+    fsyncSync(fd) {
+      if (renamed && failurePoint === 'directory fsync') throw ioError();
+      nodeFs.fsyncSync(fd);
+    },
+    closeSync: nodeFs.closeSync,
+    renameSync(oldPath, newPath) {
+      nodeFs.renameSync(oldPath, newPath);
+      renamed = true;
+    },
+    unlinkSync: nodeFs.unlinkSync,
+  };
+}
+
+function ioError(): NodeJS.ErrnoException {
+  const error = new Error('injected post-rename failure') as NodeJS.ErrnoException;
+  error.code = 'EIO';
+  return error;
 }
 
 function deferred<T>() {

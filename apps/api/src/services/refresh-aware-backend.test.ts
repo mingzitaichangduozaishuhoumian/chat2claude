@@ -74,6 +74,32 @@ describe('RefreshAwareChatGptBackend', () => {
     expect(calls).toBe(1);
     expect(getRefreshes()).toBe(0);
   });
+
+  it('proactively refreshes canonical credentials before quota fetch', async () => {
+    const tokens: string[] = [];
+    const backend = backendFrom({ getAccountQuota: async (context) => {
+      tokens.push(context?.account?.secret?.accessToken ?? '');
+      return { windows: [] };
+    } });
+    const { wrapper, context, pool } = setup(backend);
+    pool.update('session', { secret: { ...pool.get('session')!.secret, expiresAt: '2026-08-22T00:00:30.000Z' } });
+
+    await expect(wrapper.getAccountQuota!(context)).resolves.toEqual({ windows: [] });
+    expect(tokens).toEqual(['access-2']);
+  });
+
+  it('retries quota exactly once after unauthorized and stops after a second unauthorized', async () => {
+    const tokens: string[] = [];
+    const backend = backendFrom({ getAccountQuota: async (context) => {
+      tokens.push(context?.account?.secret?.accessToken ?? '');
+      throw unauthorized();
+    } });
+    const { wrapper, context, getRefreshes } = setup(backend);
+
+    await expect(wrapper.getAccountQuota!(context)).rejects.toMatchObject({ code: 'unauthorized' });
+    expect(tokens).toEqual(['access-1', 'access-2']);
+    expect(getRefreshes()).toBe(1);
+  });
 });
 
 function unauthorized() {

@@ -478,6 +478,150 @@ describe('SessionChatGptBackend', () => {
     await expect(backend.complete(request, context)).rejects.toMatchObject({ code: 'rate_limited', status: 429 });
     await expect(backend.complete(request, context)).rejects.toBeInstanceOf(ChatGptBackendError);
   });
+
+  it('fetches authoritative account quota from /wham/usage with selected account headers', async () => {
+    const calls: Array<{ url: string; headers: Headers }> = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test/backend-api', timeoutMs: 1000, clientVersion: '9.8.7', originator: 'chat2claude', fetch: async (url, init) => {
+      calls.push({ url: String(url), headers: new Headers(init?.headers) });
+      return Response.json({
+        account_id: 'provider-account', user_id: 'provider-user', plan_type: 'plus',
+        rate_limit_reached_type: { type: 'primary_window' },
+        rate_limit: {
+          allowed: true, limit_reached: false, rate_limit_reached_type: 'must-not-use-nested-value',
+          primary_window: { used_percent: 25.5, limit_window_seconds: 18_000, reset_after_seconds: 900, reset_at: 1_800_000_000 },
+          secondary_window: { used_percent: 70, limit_window_seconds: 604_800, reset_after_seconds: 86_400, reset_at: 1_800_604_800 },
+        },
+        additional_rate_limits: [{
+          metered_feature: 'codex_other', limit_name: 'Other meter',
+          rate_limit: { allowed: false, limit_reached: true, primary_window: { used_percent: 100, limit_window_seconds: 3600 } },
+        }],
+        rate_limit_reset_credits: { available_count: 3 },
+        spend_control: { hard_limit_usd: '12.34' },
+        future_top_level: { secret: 'drop' },
+      });
+    } });
+
+    await expect(backend.getAccountQuota!(context)).resolves.toEqual({
+      providerAccountId: 'provider-account', providerUserId: 'provider-user', planType: 'plus',
+      allowed: true, limitReached: false, rateLimitReachedType: 'primary_window',
+      windows: [
+        { position: 'primary', descriptor: 'five-hour', usedPercent: 25.5, durationSeconds: 18_000, resetAfterSeconds: 900, resetAt: '2027-01-15T08:00:00.000Z' },
+        { position: 'secondary', descriptor: 'weekly', usedPercent: 70, durationSeconds: 604_800, resetAfterSeconds: 86_400, resetAt: '2027-01-22T08:00:00.000Z' },
+      ],
+      additionalLimits: [{
+        meteredFeature: 'codex_other', limitName: 'Other meter', allowed: false, limitReached: true,
+        windows: [{ position: 'primary', descriptor: 'primary-3600-seconds', usedPercent: 100, durationSeconds: 3600 }],
+      }],
+      resetCredits: { availableCount: 3 },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://chatgpt.test/backend-api/wham/usage');
+    expect(calls[0].headers.get('authorization')).toBe('Bearer token-1');
+    expect(calls[0].headers.get('chatgpt-account-id')).toBe('acct-1');
+    expect(calls[0].headers.get('originator')).toBe('chat2claude');
+    expect(calls[0].headers.get('accept')).toBe('application/json');
+  });
+
+  it('preserves a single positional window and keeps absent windows unavailable', async () => {
+    const payloads = [
+      { rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 18_000 } } },
+      { rate_limit: {} },
+    ];
+    const backend = new SessionChatGptBackend({
+      baseUrl: 'https://chatgpt.test/backend-api',
+      timeoutMs: 1000,
+      fetch: async () => Response.json(payloads.shift()),
+    });
+
+    await expect(backend.getAccountQuota!(context)).resolves.toEqual({
+      windows: [{ position: 'primary', descriptor: 'five-hour', usedPercent: 10, durationSeconds: 18_000 }],
+    });
+    await expect(backend.getAccountQuota!(context)).resolves.toEqual({ windows: [] });
+  });
+
+  it('keeps missing quota values unavailable and drops malformed provider numbers and nullable allowance', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test/backend-api', timeoutMs: 1000, fetch: async () => Response.json({
+      rate_limit: {
+        allowed: null,
+        limit_reached: true,
+        primary_window: { used_percent: -1, limit_window_seconds: 0, reset_after_seconds: Number.NaN, reset_at: -4 },
+        secondary_window: { used_percent: 101, limit_window_seconds: 7200, reset_after_seconds: 0, reset_at: 0 },
+        unknown: 'drop',
+      },
+      additional_rate_limits: [
+        { metered_feature: 'one', rate_limit: { allowed: true } },
+        { limit_name: 'two', rate_limit: { primary_window: { used_percent: 50 } } },
+        null,
+      ],
+      rate_limit_reset_credits: { available_count: -1 },
+    }) });
+
+    await expect(backend.getAccountQuota!(context)).resolves.toEqual({
+      limitReached: true,
+      windows: [
+        { position: 'primary', descriptor: 'primary' },
+        { position: 'secondary', descriptor: 'secondary-7200-seconds', durationSeconds: 7200, resetAfterSeconds: 0, resetAt: '1970-01-01T00:00:00.000Z' },
+      ],
+      additionalLimits: [
+        { meteredFeature: 'one', allowed: true, windows: [] },
+        { limitName: 'two', windows: [{ position: 'primary', descriptor: 'primary', usedPercent: 50 }] },
+      ],
+    });
+  });
+
+  it.each([
+    [401, 'unauthorized'], [403, 'unauthorized'], [429, 'rate_limited'], [500, 'upstream_error'],
+  ] as const)('classifies quota HTTP %s as %s', async (status, code) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test/backend-api', timeoutMs: 1000, fetch: async () => new Response('provider detail must not escape', { status }) });
+    await expect(backend.getAccountQuota!(context)).rejects.toMatchObject({ code, status });
+  });
+
+  it('keeps timeout active through quota response body parsing and allows the next refresh', async () => {
+    let calls = 0;
+    const backend = new SessionChatGptBackend({
+      baseUrl: 'https://chatgpt.test/backend-api',
+      timeoutMs: 10,
+      fetch: async () => {
+        calls += 1;
+        if (calls === 1) return new Response(new ReadableStream({ start() {} }), { status: 200 });
+        return Response.json({ rate_limit: { primary_window: { used_percent: 10 } } });
+      },
+    });
+
+    await expect(backend.getAccountQuota!(context)).rejects.toMatchObject({ code: 'timeout', status: 504 });
+    await expect(backend.getAccountQuota!(context)).resolves.toEqual({
+      windows: [{ position: 'primary', descriptor: 'primary', usedPercent: 10 }],
+    });
+    expect(calls).toBe(2);
+  }, 500);
+
+  it('applies caller cancellation while reading the quota response body', async () => {
+    const backend = new SessionChatGptBackend({
+      baseUrl: 'https://chatgpt.test/backend-api',
+      timeoutMs: 60_000,
+      fetch: async () => new Response(new ReadableStream({ start() {} }), { status: 200 }),
+    });
+    const controller = new AbortController();
+    const pending = backend.getAccountQuota!({ ...context, signal: controller.signal });
+    await Promise.resolve();
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  }, 500);
+
+  it('applies timeout and caller cancellation to quota fetches', async () => {
+    const hangingFetch: typeof fetch = async (_url, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+    });
+    const timeoutBackend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test/backend-api', timeoutMs: 5, fetch: hangingFetch });
+    await expect(timeoutBackend.getAccountQuota!(context)).rejects.toMatchObject({ code: 'timeout', status: 504 });
+
+    const controller = new AbortController();
+    const cancelBackend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test/backend-api', timeoutMs: 60_000, fetch: hangingFetch });
+    const pending = cancelBackend.getAccountQuota!({ ...context, signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  });
 });
 
 function sseResponse(items: Array<Record<string, unknown> | string>): Response {

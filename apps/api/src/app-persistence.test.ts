@@ -106,6 +106,44 @@ describe('createApp runtime state hydration', () => {
     await restored.dispose();
   });
 
+  it('durably flushes a provisioned account catalog before success so an immediate restart survives unavailable discovery', async () => {
+    const dataDir = temporaryDirectory();
+    const initialEnv = loadEnv({
+      DATA_DIR: dataDir,
+      CHATGPT_BACKEND: 'mock',
+      MOCK_BACKEND_MODELS_JSON: JSON.stringify([{ id: 'provisioned-catalog-model', displayName: 'Provisioned Catalog Model' }]),
+    });
+    const initialApp = createApp(initialEnv);
+    try {
+      const provisionResponse = await initialApp.request('/admin/api/auth/chatgpt/complete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accessToken: 'provisioned-access' }),
+      });
+      expect(provisionResponse.status).toBe(200);
+      const provisioned = await provisionResponse.json() as { apiKey: string };
+
+      // Deliberately restart before disposing the initial process. This exercises
+      // the provisioning completion boundary rather than disposal's best-effort flush.
+      const restartedEnv = loadEnv({ DATA_DIR: dataDir, CHATGPT_BACKEND: 'session' });
+      const restartedApp = createApp(restartedEnv, { backend: new AccountCatalogBackend({}, true) });
+      try {
+        const models = await restartedApp.request('/admin/api/models', { headers: { 'x-api-key': provisioned.apiKey } });
+        expect(models.status).toBe(200);
+        expect(await models.json()).toMatchObject({
+          discovered: expect.arrayContaining([expect.objectContaining({
+            id: 'provisioned-catalog-model',
+            discovered: { id: 'provisioned-catalog-model', displayName: 'Provisioned Catalog Model' },
+          })]),
+        });
+      } finally {
+        await restartedApp.dispose();
+      }
+    } finally {
+      await initialApp.dispose();
+    }
+  });
+
   it('keeps startup discovery when that operation rotates an expired OAuth credential', async () => {
     const dataDir = temporaryDirectory();
     const env = loadEnv({ DATA_DIR: dataDir, CHATGPT_BACKEND: 'session', API_KEYS: 'test-key' });

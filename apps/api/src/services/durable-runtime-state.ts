@@ -37,9 +37,7 @@ export class DurableRuntimeState {
   }
 
   transaction<T>(mutation: () => T): T {
-    const outcome = this.transactionWithOutcome(mutation);
-    if (outcome.durability === 'committed_unconfirmed') throw outcome.warning;
-    return outcome.value;
+    return this.transactionWithOutcome(mutation).value;
   }
 
   transactionWithOutcome<T>(mutation: () => T): DurableTransactionOutcome<T> {
@@ -71,10 +69,15 @@ export class DurableRuntimeState {
     if (modelAliases) this.options.modelRegistry?.restore(modelAliases);
   }
 
-  compareAndSwapSessionSecret(accountId: string, expected: SessionSecretVersion, nextSecret: ChatGptSessionSecret, expectedIncarnation?: number, discoveryOperationId?: number): Account | undefined {
+  compareAndSwapSessionSecret(accountId: string, expected: SessionSecretVersion, nextSecret: ChatGptSessionSecret, expectedIncarnation?: number, discoveryOperationIds?: number | readonly number[], quotaOperationIds?: number | readonly number[], expectedConfigurationRevision?: number): Account | undefined {
+    const outcome = this.compareAndSwapSessionSecretWithOutcome(accountId, expected, nextSecret, expectedIncarnation, discoveryOperationIds, quotaOperationIds, expectedConfigurationRevision);
+    return outcome?.value;
+  }
+
+  compareAndSwapSessionSecretWithOutcome(accountId: string, expected: SessionSecretVersion, nextSecret: ChatGptSessionSecret, expectedIncarnation?: number, discoveryOperationIds?: number | readonly number[], quotaOperationIds?: number | readonly number[], expectedConfigurationRevision?: number): DurableTransactionOutcome<Account | undefined> | undefined {
     const current = this.options.accountPool.get(accountId);
-    if (!current || (expectedIncarnation !== undefined && current.incarnation !== expectedIncarnation) || current.provider !== 'chatgpt-session' || !current.secret) return undefined;
+    if (!current || (expectedIncarnation !== undefined && current.incarnation !== expectedIncarnation) || (expectedConfigurationRevision !== undefined && current.configurationRevision !== expectedConfigurationRevision) || current.provider !== 'chatgpt-session' || !current.secret) return undefined;
     if (current.secret.accessToken !== expected.accessToken || current.secret.refreshToken !== expected.refreshToken) return undefined;
-    return this.transaction(() => this.options.accountPool.compareAndSwapSessionSecret(accountId, expected, nextSecret, expectedIncarnation, discoveryOperationId));
+    return this.transactionWithOutcome(() => this.options.accountPool.compareAndSwapSessionSecret(accountId, expected, nextSecret, expectedIncarnation, discoveryOperationIds, quotaOperationIds, expectedConfigurationRevision));
   }
 }

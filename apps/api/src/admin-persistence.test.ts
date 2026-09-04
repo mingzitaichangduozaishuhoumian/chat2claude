@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import * as nodeFs from 'node:fs';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,7 +13,7 @@ import { AccountPool } from './services/account-pool.js';
 import { DurableRuntimeState } from './services/durable-runtime-state.js';
 import { ModelRegistry } from './services/model-registry.js';
 import { RuntimeApiKeys } from './services/runtime-api-keys.js';
-import { RuntimeStateStore } from './services/runtime-state-store.js';
+import { RuntimeStateStore, type RuntimeStateFileSystem } from './services/runtime-state-store.js';
 import { ChatGptAuthFlowService } from './services/chatgpt-auth-flow.js';
 import { AdminOperationalState } from './services/admin-operational-state.js';
 
@@ -34,6 +35,50 @@ describe('durable administration', () => {
     expect(html).toContain('id="oauth-callback-url" aria-label="OAuth callback URL（请粘贴完整 callback URL）"');
     expect(html).toContain('id="result" role="status" aria-live="polite"');
     expect(html).toContain('data-delete-model=');
+    await app.dispose();
+  });
+
+  it('discloses and accepts a development key when persistence commits but confirmation fails', async () => {
+    const dataDir = temporaryDirectory();
+    const path = join(dataDir, 'runtime-state.json');
+    const env = loadEnv({ DATA_DIR: dataDir, NODE_ENV: 'test' });
+    const app = createApp(env, {
+      runtimeStateStore: new RuntimeStateStore({ path, fs: committedUnconfirmedFs() }),
+    });
+
+    const response = await app.request('/admin/api/api-keys/dev-enable', { method: 'POST' });
+    const body = await response.json() as { ok: boolean; key: string };
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({ ok: true, key: expect.any(String) });
+    expect((await app.request('/v1/models', { headers: { 'x-api-key': body.key } })).status).toBe(200);
+    await app.dispose();
+
+    const restarted = createApp(env, {
+      runtimeStateStore: new RuntimeStateStore({ path }),
+    });
+    expect((await restarted.request('/v1/models', { headers: { 'x-api-key': body.key } })).status).toBe(200);
+    await restarted.dispose();
+  });
+
+  it('reports a model mutation as successful when persistence commits but confirmation fails', async () => {
+    const path = join(temporaryDirectory(), 'runtime-state.json');
+    const app = createApp(loadEnv({ DATA_DIR: temporaryDirectory(), NODE_ENV: 'test' }), {
+      runtimeStateStore: new RuntimeStateStore({ path, fs: committedUnconfirmedFs() }),
+    });
+    const keyResponse = await app.request('/admin/api/api-keys/dev-enable', { method: 'POST' });
+    const { key } = await keyResponse.json() as { key: string };
+
+    const response = await app.request('/admin/api/models', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': key },
+      body: JSON.stringify({ id: 'durable-warning', backendModel: 'provider-model' }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({
+      model: { id: 'durable-warning', backendModel: 'provider-model' },
+    });
     await app.dispose();
   });
 
@@ -379,4 +424,30 @@ function temporaryDirectory(): string {
   const directory = mkdtempSync(join(tmpdir(), 'chat2claude-admin-persistence-'));
   directories.push(directory);
   return directory;
+}
+
+function committedUnconfirmedFs(): RuntimeStateFileSystem {
+  let renamed = false;
+  return {
+    readFileSync: nodeFs.readFileSync,
+    mkdirSync: nodeFs.mkdirSync,
+    chmodSync: nodeFs.chmodSync,
+    openSync: nodeFs.openSync,
+    writeSync: nodeFs.writeSync,
+    fsyncSync(fd) {
+      if (renamed) {
+        renamed = false;
+        const error = new Error('injected post-rename confirmation failure') as NodeJS.ErrnoException;
+        error.code = 'EIO';
+        throw error;
+      }
+      nodeFs.fsyncSync(fd);
+    },
+    closeSync: nodeFs.closeSync,
+    renameSync(oldPath, newPath) {
+      nodeFs.renameSync(oldPath, newPath);
+      renamed = true;
+    },
+    unlinkSync: nodeFs.unlinkSync,
+  };
 }

@@ -6,7 +6,7 @@ import { candidateSessionContext } from './refresh-aware-backend.js';
 import type { ProvisionCommitBoundary } from './provision-commit.js';
 import type { PreparedRuntimeApiKey, RuntimeApiKeys } from './runtime-api-keys.js';
 import type { DurableRuntimeState } from './durable-runtime-state.js';
-import type { AdminOperationalState } from './admin-operational-state.js';
+import { AdminOperationalStateError, type AdminOperationalState } from './admin-operational-state.js';
 
 export const PRIMARY_CHATGPT_ACCOUNT_ID = 'chatgpt-primary';
 const PRIMARY_RUNTIME_KEY_NAME = 'chatgpt-primary';
@@ -32,6 +32,7 @@ export interface SetupProvisionerOptions {
   operationalState?: AdminOperationalState;
   startupReady?: Promise<unknown>;
   onDiagnostic?: (diagnostic: ProvisioningDiagnostic) => void;
+  onAccountCredentialsReplaced?: (account: AccountView) => void;
 }
 
 export class ChatGptProvisioningError extends Error {
@@ -206,6 +207,7 @@ export class SetupProvisioner {
       committed = commitCoreState();
     }
 
+    if (prepared.expectedTarget) this.options.onAccountCredentialsReplaced?.(committed.account);
     this.recordOperationalSuccess(committed.account, prepared.discoveredModels, committedAt);
     return {
       ok: true,
@@ -244,13 +246,16 @@ export class SetupProvisioner {
         models,
         { checkedAt: committedAt.toISOString(), result: 'healthy', message: null },
       );
-    } catch {
-      this.options.onDiagnostic?.({
-        stage: 'state_commit',
-        severity: 'warning',
-        code: 'operational_state_update_failed',
-        message: 'ChatGPT credentials were committed, but admin operational metadata could not be updated.',
-      });
+      // Provisioning's successful response commits both credential state and its
+      // safe account catalog. Ordinary request telemetry remains debounced.
+      this.options.operationalState.flushSync();
+    } catch (error) {
+      if (error instanceof AdminOperationalStateError && error.stateCommitted) {
+        this.options.onDiagnostic?.(committedOperationalDurabilityWarning());
+        return;
+      }
+      this.options.onDiagnostic?.(operationalPersistencePendingRepairWarning());
+      return;
     }
   }
 }
@@ -267,6 +272,24 @@ function committedDurabilityWarning(): ProvisioningDiagnostic {
     severity: 'warning',
     code: 'durability_confirmation_failed',
     message: 'ChatGPT setup was committed, but filesystem durability confirmation failed.',
+  };
+}
+
+function committedOperationalDurabilityWarning(): ProvisioningDiagnostic {
+  return {
+    stage: 'state_commit',
+    severity: 'warning',
+    code: 'operational_durability_confirmation_failed',
+    message: 'ChatGPT setup and safe operational metadata were committed, but filesystem durability confirmation failed.',
+  };
+}
+
+function operationalPersistencePendingRepairWarning(): ProvisioningDiagnostic {
+  return {
+    stage: 'state_commit',
+    severity: 'warning',
+    code: 'operational_persistence_pending_repair',
+    message: 'ChatGPT setup was committed, but safe operational metadata persistence is pending repair.',
   };
 }
 

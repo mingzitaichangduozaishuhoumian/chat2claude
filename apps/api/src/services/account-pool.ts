@@ -68,6 +68,10 @@ export interface AccountDiscoveryOperation {
   id: number;
 }
 
+export interface AccountQuotaOperation {
+  id: number;
+}
+
 interface ActiveAccountDiscoveryOperation {
   accountId: string;
   incarnation: number;
@@ -75,6 +79,8 @@ interface ActiveAccountDiscoveryOperation {
   acceptedConfigurationRevision: number;
   healthRevision?: number;
 }
+
+type ActiveAccountQuotaOperation = Omit<ActiveAccountDiscoveryOperation, 'healthRevision'>;
 
 export interface AccountPoolOptions {
   now?: () => Date;
@@ -121,8 +127,11 @@ export class AccountPool {
   private readonly rateLimitCooldownMs: number;
   private readonly discoveryOperations = new Map<number, ActiveAccountDiscoveryOperation>();
   private readonly latestDiscoveryOperationIds = new Map<string, number>();
+  private readonly quotaOperations = new Map<number, ActiveAccountQuotaOperation>();
+  private readonly latestQuotaOperationIds = new Map<string, number>();
   private nextIncarnation = 1;
   private nextDiscoveryOperationId = 1;
+  private nextQuotaOperationId = 1;
 
   constructor(options: AccountPoolOptions = {}) {
     this.now = options.now ?? (() => new Date());
@@ -260,7 +269,7 @@ export class AccountPool {
       ...(includeHealth ? { healthRevision: account.healthRevision } : {}),
     };
     this.discoveryOperations.set(id, active);
-    this.latestDiscoveryOperationIds.set(discoveryAccountKey(active), id);
+    this.latestDiscoveryOperationIds.set(operationAccountKey(active), id);
     return { id };
   }
 
@@ -269,7 +278,7 @@ export class AccountPool {
     if (!active) return false;
     const account = this.accounts.find((item) => item.id === active.accountId);
     return Boolean(account
-      && this.latestDiscoveryOperationIds.get(discoveryAccountKey(active)) === operation.id
+      && this.latestDiscoveryOperationIds.get(operationAccountKey(active)) === operation.id
       && account.incarnation === active.incarnation
       && account.createdAt === active.createdAt
       && account.configurationRevision === active.acceptedConfigurationRevision
@@ -282,6 +291,36 @@ export class AccountPool {
     // never make an older still-running operation current again.
   }
 
+  beginQuota(expected: Pick<Account, 'id' | 'incarnation' | 'configurationRevision' | 'createdAt'>): AccountQuotaOperation | undefined {
+    if (!this.isCurrent(expected)) return undefined;
+    const account = this.accounts.find((item) => item.id === expected.id)!;
+    const id = this.nextQuotaOperationId++;
+    const active: ActiveAccountQuotaOperation = {
+      accountId: account.id,
+      incarnation: account.incarnation,
+      createdAt: account.createdAt,
+      acceptedConfigurationRevision: account.configurationRevision,
+    };
+    this.quotaOperations.set(id, active);
+    this.latestQuotaOperationIds.set(operationAccountKey(active), id);
+    return { id };
+  }
+
+  isCurrentQuota(operation: AccountQuotaOperation): boolean {
+    const active = this.quotaOperations.get(operation.id);
+    if (!active) return false;
+    const account = this.accounts.find((item) => item.id === active.accountId);
+    return Boolean(account
+      && this.latestQuotaOperationIds.get(operationAccountKey(active)) === operation.id
+      && account.incarnation === active.incarnation
+      && account.createdAt === active.createdAt
+      && account.configurationRevision === active.acceptedConfigurationRevision);
+  }
+
+  endQuota(operation: AccountQuotaOperation): void {
+    this.quotaOperations.delete(operation.id);
+  }
+
   remove(id: string): AccountView | undefined {
     const index = this.accounts.findIndex((item) => item.id === id);
     if (index === -1) return undefined;
@@ -289,22 +328,29 @@ export class AccountPool {
     return toAccountView(account);
   }
 
-  compareAndSwapSessionSecret(id: string, expected: SessionSecretVersion, nextSecret: ChatGptSessionSecret, expectedIncarnation?: number, discoveryOperationId?: number): Account | undefined {
+  compareAndSwapSessionSecret(id: string, expected: SessionSecretVersion, nextSecret: ChatGptSessionSecret, expectedIncarnation?: number, discoveryOperationIds?: number | readonly number[], quotaOperationIds?: number | readonly number[], expectedConfigurationRevision?: number): Account | undefined {
     const account = this.accounts.find((item) => item.id === id);
-    if (!account || (expectedIncarnation !== undefined && account.incarnation !== expectedIncarnation) || account.provider !== 'chatgpt-session' || !account.secret) return undefined;
+    if (!account || (expectedIncarnation !== undefined && account.incarnation !== expectedIncarnation) || (expectedConfigurationRevision !== undefined && account.configurationRevision !== expectedConfigurationRevision) || account.provider !== 'chatgpt-session' || !account.secret) return undefined;
     if (account.secret.accessToken !== expected.accessToken || account.secret.refreshToken !== expected.refreshToken) return undefined;
     const normalized = normalizeSecret(nextSecret, 'chatgpt-session');
     if (!normalized?.accessToken) return undefined;
-    const discoveryOperation = discoveryOperationId === undefined ? undefined : this.discoveryOperations.get(discoveryOperationId);
-    const operationOwnsCurrentRevision = Boolean(discoveryOperation
-      && this.latestDiscoveryOperationIds.get(discoveryAccountKey(discoveryOperation)) === discoveryOperationId
-      && discoveryOperation.accountId === account.id
-      && discoveryOperation.incarnation === account.incarnation
-      && discoveryOperation.createdAt === account.createdAt
-      && discoveryOperation.acceptedConfigurationRevision === account.configurationRevision);
+    const ownedDiscoveryOperations = ownedOperations(
+      account,
+      discoveryOperationIds,
+      this.discoveryOperations,
+      this.latestDiscoveryOperationIds,
+    );
+    const ownedQuotaOperations = ownedOperations(
+      account,
+      quotaOperationIds,
+      this.quotaOperations,
+      this.latestQuotaOperationIds,
+    );
     account.secret = normalized;
     account.configurationRevision += 1;
-    if (operationOwnsCurrentRevision && discoveryOperation) discoveryOperation.acceptedConfigurationRevision = account.configurationRevision;
+    for (const operation of [...ownedDiscoveryOperations, ...ownedQuotaOperations]) {
+      operation.acceptedConfigurationRevision = account.configurationRevision;
+    }
     return cloneAccount(account);
   }
 
@@ -408,8 +454,28 @@ export class AccountPool {
   }
 }
 
-function discoveryAccountKey(operation: Pick<ActiveAccountDiscoveryOperation, 'accountId' | 'incarnation' | 'createdAt'>): string {
+function operationAccountKey(operation: Pick<ActiveAccountDiscoveryOperation, 'accountId' | 'incarnation' | 'createdAt'>): string {
   return `${operation.accountId}\0${operation.incarnation}\0${operation.createdAt}`;
+}
+
+function ownedOperations<T extends ActiveAccountQuotaOperation | ActiveAccountDiscoveryOperation>(
+  account: Account,
+  operationIds: number | readonly number[] | undefined,
+  operations: Map<number, T>,
+  latestOperationIds: Map<string, number>,
+): T[] {
+  const ids = operationIds === undefined ? [] : typeof operationIds === 'number' ? [operationIds] : operationIds;
+  return ids.flatMap((operationId) => {
+    const operation = operations.get(operationId);
+    return operation
+      && latestOperationIds.get(operationAccountKey(operation)) === operationId
+      && operation.accountId === account.id
+      && operation.incarnation === account.incarnation
+      && operation.createdAt === account.createdAt
+      && operation.acceptedConfigurationRevision === account.configurationRevision
+      ? [operation]
+      : [];
+  });
 }
 
 function isStaleCredentialError(account: Account, error: unknown): boolean {

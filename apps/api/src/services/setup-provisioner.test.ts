@@ -1,8 +1,9 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import * as nodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ChatGptBackendError, SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, SessionChatGptBackend, type ChatGptAccountQuota, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
 import { AccountPool } from './account-pool.js';
 import { ModelRegistry } from './model-registry.js';
 import { RuntimeApiKeys } from './runtime-api-keys.js';
@@ -10,7 +11,9 @@ import { SetupProvisioner } from './setup-provisioner.js';
 import { ChatGptAuthFlowService } from './chatgpt-auth-flow.js';
 import { DurableRuntimeState } from './durable-runtime-state.js';
 import { RuntimeStateStore, RuntimeStateStoreError } from './runtime-state-store.js';
+import type { OperationalStateFileSystem } from './admin-operational-state.js';
 import { AdminOperationalState } from './admin-operational-state.js';
+import { AccountQuotaService } from './account-quota-service.js';
 
 function setup(backend: ChatGptBackendClient) {
   const accountPool = new AccountPool();
@@ -560,11 +563,57 @@ describe('SetupProvisioner', () => {
     expect(modelRegistry.get('sonnet')?.backendModel).toBe('catalog-b');
   });
 
-  it('records operational health and discovered models only after credential commit and treats state failure as a warning', async () => {
+  it('invalidates legacy quota when reauthorization adopts a new upstream identity and keeps it invalid after restart', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'chat2claude-reauthorize-quota-'));
+    try {
+      const operationalPath = join(directory, 'operational.json');
+      const operationalState = new AdminOperationalState({ path: operationalPath, debounceMs: 60_000 });
+      const accountPool = new AccountPool({ seedMockAccount: false, now: () => new Date('2026-09-04T00:00:00.000Z') });
+      const legacy = accountPool.add({ id: 'legacy-incomplete', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'user-a-access' } });
+      const quota: ChatGptAccountQuota = { providerAccountId: 'upstream-a', windows: [{ position: 'primary', descriptor: 'five-hour', usedPercent: 25 }] };
+      const backend = backendFrom({
+        async listModels() { return [{ id: 'catalog-a' }]; },
+        async getAccountQuota() { return quota; },
+      });
+      const quotaService = new AccountQuotaService({ accountPool, backend, operationalState });
+      const provisioner = new SetupProvisioner({
+        accountPool,
+        modelRegistry: new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] }),
+        runtimeApiKeys: new RuntimeApiKeys(),
+        backend,
+        operationalState,
+        onAccountCredentialsReplaced: (account) => quotaService.invalidateAccount(account),
+      });
+
+      await expect(quotaService.refreshAccount(legacy.id)).resolves.toMatchObject({ status: 'fresh', quota });
+      operationalState.flushSync();
+      await provisioner.provisionTarget(
+        { mode: 'reauthorize', accountId: legacy.id },
+        { type: 'chatgpt-session', accessToken: 'user-b-access', accountId: 'upstream-b' },
+      );
+
+      expect(quotaService.getAll()).toEqual([expect.objectContaining({ accountId: legacy.id, status: 'unknown' })]);
+      expect(quotaService.getAll()[0]).not.toHaveProperty('quota');
+      expect(operationalState.snapshot().accounts[0]?.quotaCache).toEqual({ status: 'unknown', fetchedAt: null, expiresAt: null });
+
+      const restartedOperationalState = new AdminOperationalState({ path: operationalPath });
+      expect(restartedOperationalState.hydrate()).toBe(true);
+      const restartedPool = new AccountPool({ seedMockAccount: false });
+      restartedPool.restore(accountPool.snapshot());
+      const restartedQuotaService = new AccountQuotaService({ accountPool: restartedPool, backend, operationalState: restartedOperationalState });
+      expect(restartedQuotaService.getAll()).toEqual([expect.objectContaining({ accountId: legacy.id, status: 'unknown' })]);
+      expect(restartedQuotaService.getAll()[0]).not.toHaveProperty('quota');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('flushes operational health and discovered models before returning provisioning success', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'chat2claude-operational-provision-'));
     try {
       const diagnostics: unknown[] = [];
-      const operationalState = new AdminOperationalState({ path: join(directory, 'operational.json'), debounceMs: 0 });
+      const operationalPath = join(directory, 'operational.json');
+      const operationalState = new AdminOperationalState({ path: operationalPath, debounceMs: 60_000 });
       const accountPool = new AccountPool({ seedMockAccount: false });
       const provisioner = new SetupProvisioner({
         accountPool,
@@ -575,6 +624,7 @@ describe('SetupProvisioner', () => {
         onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
       });
       const result = await provisioner.provisionTarget({ mode: 'add' }, { type: 'chatgpt-session', accessToken: 'access', accountId: 'upstream' });
+      expect(new AdminOperationalState({ path: operationalPath }).hydrate()).toBe(true);
       expect(operationalState.snapshot().accounts).toEqual([expect.objectContaining({
         accountId: result.account.id,
         createdAt: result.account.createdAt,
@@ -583,6 +633,106 @@ describe('SetupProvisioner', () => {
       })]);
       expect(diagnostics).toEqual([]);
       await operationalState.dispose();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('returns success and discloses the one-time key when operational persistence fails after authoritative durable commit', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'chat2claude-operational-failure-'));
+    try {
+      const diagnostics: unknown[] = [];
+      const runtimePath = join(directory, 'runtime-state.json');
+      const accountPool = new AccountPool({ seedMockAccount: false });
+      const modelRegistry = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+      const runtimeApiKeys = new RuntimeApiKeys();
+      const store = new RuntimeStateStore({ path: runtimePath });
+      const durableState = new DurableRuntimeState({ accountPool, runtimeApiKeys, modelRegistry, store });
+      const operationalState = new AdminOperationalState({ path: join(directory, 'operational.json'), fs: renameFailureFs() });
+      const provisioner = new SetupProvisioner({
+        accountPool,
+        modelRegistry,
+        runtimeApiKeys,
+        backend: backendFrom({ listModels: async () => [{ id: 'model-a' }] }),
+        durableState,
+        operationalState,
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+      });
+
+      const result = await provisioner.provisionTarget(
+        { mode: 'add' },
+        { type: 'chatgpt-session', accessToken: 'access', accountId: 'upstream' },
+      );
+      expect(result).toMatchObject({ ok: true, runtimeKeyCreated: true, apiKey: expect.any(String), modelsDiscovered: ['model-a'] });
+      expect(diagnostics).toEqual([{
+        stage: 'state_commit', severity: 'warning', code: 'operational_persistence_pending_repair',
+        message: 'ChatGPT setup was committed, but safe operational metadata persistence is pending repair.',
+      }]);
+
+      const restoredAccounts = new AccountPool({ seedMockAccount: false });
+      const restoredKeys = new RuntimeApiKeys();
+      const restoredModels = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+      expect(new DurableRuntimeState({ accountPool: restoredAccounts, runtimeApiKeys: restoredKeys, modelRegistry: restoredModels, store: new RuntimeStateStore({ path: runtimePath }) }).hydrate()).toBe(true);
+      expect(restoredAccounts.get(result.account.id)).toMatchObject({ provider: 'chatgpt-session', secret: { accessToken: 'access', accountId: 'upstream' } });
+      expect(restoredKeys.size).toBe(1);
+      expect(restoredKeys.has(result.apiKey!)).toBe(true);
+      expect(restoredModels.get('sonnet')?.backendModel).toBe('model-a');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('returns success and discloses the one-time key when non-durable operational persistence fails', async () => {
+    const diagnostics: unknown[] = [];
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const modelRegistry = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+    const runtimeApiKeys = new RuntimeApiKeys();
+    const provisioner = new SetupProvisioner({
+      accountPool,
+      modelRegistry,
+      runtimeApiKeys,
+      backend: backendFrom({ listModels: async () => [{ id: 'model-a' }] }),
+      operationalState: new AdminOperationalState({ path: 'unused-operational.json', fs: renameFailureFs() }),
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    const result = await provisioner.provisionTarget(
+      { mode: 'add' },
+      { type: 'chatgpt-session', accessToken: 'access', accountId: 'upstream' },
+    );
+
+    expect(result).toMatchObject({ ok: true, runtimeKeyCreated: true, apiKey: expect.any(String), modelsDiscovered: ['model-a'] });
+    expect(accountPool.get(result.account.id)).toMatchObject({ secret: { accessToken: 'access', accountId: 'upstream' } });
+    expect(runtimeApiKeys.has(result.apiKey!)).toBe(true);
+    expect(modelRegistry.get('sonnet')?.backendModel).toBe('model-a');
+    expect(diagnostics).toEqual([{
+      stage: 'state_commit', severity: 'warning', code: 'operational_persistence_pending_repair',
+      message: 'ChatGPT setup was committed, but safe operational metadata persistence is pending repair.',
+    }]);
+  });
+
+  it('returns provisioning success when operational state was committed but durability confirmation failed', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'chat2claude-operational-committed-'));
+    try {
+      const diagnostics: unknown[] = [];
+      const operationalPath = join(directory, 'operational.json');
+      const operationalState = new AdminOperationalState({ path: operationalPath, fs: postRenameOperationalFailureFs() });
+      const accountPool = new AccountPool({ seedMockAccount: false });
+      const provisioner = new SetupProvisioner({
+        accountPool,
+        modelRegistry: new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] }),
+        runtimeApiKeys: new RuntimeApiKeys(),
+        backend: backendFrom({ listModels: async () => [{ id: 'model-a' }] }),
+        operationalState,
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+      });
+
+      await expect(provisioner.provisionTarget({ mode: 'add' }, { type: 'chatgpt-session', accessToken: 'access', accountId: 'upstream' })).resolves.toMatchObject({ ok: true, modelsDiscovered: ['model-a'] });
+      expect(new AdminOperationalState({ path: operationalPath }).hydrate()).toBe(true);
+      expect(diagnostics).toEqual([{
+        stage: 'state_commit', severity: 'warning', code: 'operational_durability_confirmation_failed',
+        message: 'ChatGPT setup and safe operational metadata were committed, but filesystem durability confirmation failed.',
+      }]);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -596,6 +746,47 @@ function backendFrom(overrides: Partial<ChatGptBackendClient>): ChatGptBackendCl
     async *stream() { yield { type: 'done' as const }; },
     ...overrides,
   };
+}
+
+function renameFailureFs(): OperationalStateFileSystem {
+  return {
+    readFileSync: nodeFs.readFileSync,
+    mkdirSync: nodeFs.mkdirSync,
+    chmodSync: nodeFs.chmodSync,
+    openSync: nodeFs.openSync,
+    writeSync: nodeFs.writeSync,
+    fsyncSync: nodeFs.fsyncSync,
+    closeSync: nodeFs.closeSync,
+    renameSync() { throw ioError(); },
+    unlinkSync: nodeFs.unlinkSync,
+  };
+}
+
+function postRenameOperationalFailureFs(): OperationalStateFileSystem {
+  let renamed = false;
+  return {
+    readFileSync: nodeFs.readFileSync,
+    mkdirSync: nodeFs.mkdirSync,
+    chmodSync: nodeFs.chmodSync,
+    openSync: nodeFs.openSync,
+    writeSync: nodeFs.writeSync,
+    fsyncSync(fd) {
+      if (renamed) throw ioError();
+      nodeFs.fsyncSync(fd);
+    },
+    closeSync: nodeFs.closeSync,
+    renameSync(oldPath, newPath) {
+      nodeFs.renameSync(oldPath, newPath);
+      renamed = true;
+    },
+    unlinkSync: nodeFs.unlinkSync,
+  };
+}
+
+function ioError(): NodeJS.ErrnoException {
+  const error = new Error('injected persistence failure') as NodeJS.ErrnoException;
+  error.code = 'EIO';
+  return error;
 }
 
 function deferred<T>() {

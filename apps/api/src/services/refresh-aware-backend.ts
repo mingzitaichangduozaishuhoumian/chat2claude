@@ -1,13 +1,15 @@
-import { ChatGptBackendError, type ChatGptBackendClient, type ChatGptBackendHealthCheckResult, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, type ChatGptAccountQuota, type ChatGptBackendClient, type ChatGptBackendHealthCheckResult, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ChatGptStreamEvent } from '@chatgpt-to-claude/chatgpt-backend';
 import { markAccountCredentialError } from './account-pool.js';
 import type { SessionCredentialManager } from './session-credential-manager.js';
 
 const CANDIDATE_CONTEXT = Symbol('candidateSessionContext');
 const DISCOVERY_OPERATION = Symbol('accountDiscoveryOperation');
+const QUOTA_OPERATION = Symbol('accountQuotaOperation');
 type InternalRequestContext = ChatGptBackendRequestContext & {
   [CANDIDATE_CONTEXT]?: true;
   [DISCOVERY_OPERATION]?: number;
+  [QUOTA_OPERATION]?: number;
 };
 
 export function candidateSessionContext(account: NonNullable<ChatGptBackendRequestContext['account']>, signal?: AbortSignal): ChatGptBackendRequestContext {
@@ -18,6 +20,10 @@ export function accountDiscoveryContext(account: NonNullable<ChatGptBackendReque
   return { account, signal, [DISCOVERY_OPERATION]: operationId } as InternalRequestContext;
 }
 
+export function accountQuotaContext(account: NonNullable<ChatGptBackendRequestContext['account']>, operationId: number, signal?: AbortSignal): ChatGptBackendRequestContext {
+  return { account, signal, [QUOTA_OPERATION]: operationId } as InternalRequestContext;
+}
+
 export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
   constructor(
     private readonly transport: ChatGptBackendClient,
@@ -26,6 +32,11 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
 
   async listModels(context?: ChatGptBackendRequestContext): Promise<ChatGptDiscoveredModel[]> {
     return this.withOneUnauthorizedRetry(context, (freshContext) => this.transport.listModels(freshContext));
+  }
+
+  async getAccountQuota(context?: ChatGptBackendRequestContext): Promise<ChatGptAccountQuota> {
+    if (!this.transport.getAccountQuota) throw new ChatGptBackendError('Account quota is not supported by this backend.', 'invalid_request', { status: 501 });
+    return this.withOneUnauthorizedRetry(context, (freshContext) => this.transport.getAccountQuota!(freshContext));
   }
 
   async healthCheck(context?: ChatGptBackendRequestContext): Promise<ChatGptBackendHealthCheckResult> {
@@ -70,14 +81,15 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
   private async withOneUnauthorizedRetry<T>(context: ChatGptBackendRequestContext | undefined, request: (context: ChatGptBackendRequestContext | undefined) => Promise<T>): Promise<T> {
     if (!context?.account || isCandidateContext(context)) return request(context);
     const discoveryOperationId = getDiscoveryOperationId(context);
-    let account = await this.credentials.getFreshAccount(context.account, undefined, discoveryOperationId);
+    const quotaOperationId = getQuotaOperationId(context);
+    let account = await this.credentials.getFreshAccount(context.account, undefined, discoveryOperationId, quotaOperationId);
     try {
       return await request({ ...context, account });
     } catch (error) {
       if (!isUnauthorized(error)) throw markAccountCredentialError(error, account);
     }
     const failedAccessToken = account.secret?.accessToken;
-    account = await this.credentials.getFreshAccount(context.account, failedAccessToken, discoveryOperationId);
+    account = await this.credentials.getFreshAccount(context.account, failedAccessToken, discoveryOperationId, quotaOperationId);
     try {
       return await request({ ...context, account });
     } catch (error) {
@@ -92,6 +104,10 @@ function isCandidateContext(context: ChatGptBackendRequestContext): boolean {
 
 function getDiscoveryOperationId(context: ChatGptBackendRequestContext): number | undefined {
   return (context as InternalRequestContext)[DISCOVERY_OPERATION];
+}
+
+function getQuotaOperationId(context: ChatGptBackendRequestContext): number | undefined {
+  return (context as InternalRequestContext)[QUOTA_OPERATION];
 }
 
 function isUnauthorized(error: unknown): boolean {

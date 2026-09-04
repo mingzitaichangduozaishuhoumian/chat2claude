@@ -1,5 +1,5 @@
 import packageJson from '../package.json' with { type: 'json' };
-import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputContentPart, ChatGptInputItem, ChatGptModelControlCapabilities, ChatGptReasoningLevelOption, ChatGptServiceTierOption, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
+import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputContentPart, ChatGptInputItem, ChatGptModelControlCapabilities, ChatGptQuotaWindow, ChatGptReasoningLevelOption, ChatGptServiceTierOption, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
 import { ChatGptBackendError, type ChatGptBackendErrorCode } from './errors.js';
 
@@ -33,12 +33,14 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   async listModels(context?: ChatGptBackendRequestContext): Promise<ChatGptDiscoveredModel[]> {
     if (!context?.account) return [];
     const secret = requireSessionSecret(context);
-    const response = await this.fetchWithTimeout(this.endpoint('/backend-api/codex/models', { client_version: this.clientVersion }), {
-      method: 'GET',
-      headers: this.headers(secret, false),
-    }, context.signal);
+    const { response, payload } = await this.fetchJsonWithTimeout(
+      this.backendApiEndpoint('/codex/models', { client_version: this.clientVersion }),
+      { method: 'GET', headers: this.headers(secret, false) },
+      context.signal,
+      'ChatGPT models response was not valid JSON.',
+    );
     if (!response.ok) throw httpBackendError('ChatGPT models discovery failed', response.status);
-    return parseDiscoveredModels(await response.json());
+    return parseDiscoveredModels(payload);
   }
 
   async healthCheck(context?: ChatGptBackendRequestContext): Promise<ChatGptBackendHealthCheckResult> {
@@ -48,6 +50,18 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  async getAccountQuota(context?: ChatGptBackendRequestContext): Promise<ChatGptAccountQuota> {
+    const secret = requireSessionSecret(context);
+    const { response, payload } = await this.fetchJsonWithTimeout(
+      this.backendApiEndpoint('/wham/usage'),
+      { method: 'GET', headers: this.headers(secret, false, 'application/json') },
+      context?.signal,
+      'ChatGPT quota response was not valid JSON.',
+    );
+    if (!response.ok) throw httpBackendError('ChatGPT quota request failed', response.status);
+    return normalizeAccountQuota(payload);
   }
 
   async complete(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse> {
@@ -69,7 +83,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent> {
     validateSessionRequest(request);
     const secret = requireSessionSecret(context);
-    const response = await this.fetchWithTimeout(this.endpoint('/backend-api/codex/responses'), {
+    const response = await this.fetchWithTimeout(this.backendApiEndpoint('/codex/responses'), {
       method: 'POST',
       headers: this.headers(secret, true),
       body: JSON.stringify(buildResponsesBody(request)),
@@ -94,10 +108,10 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     yield { type: 'done', finishReason: 'stop', ...(latestUsage ? { usage: latestUsage } : {}) };
   }
 
-  private headers(secret: ChatGptSessionSecret, includeContentType: boolean): Headers {
+  private headers(secret: ChatGptSessionSecret, includeContentType: boolean, accept = 'text/event-stream'): Headers {
     const headers = new Headers();
     headers.set('authorization', `Bearer ${secret.accessToken}`);
-    headers.set('accept', 'text/event-stream');
+    headers.set('accept', accept);
     if (includeContentType) headers.set('content-type', 'application/json');
     if (secret.cookie) headers.set('cookie', secret.cookie);
     if (secret.userAgent) headers.set('user-agent', secret.userAgent);
@@ -107,14 +121,19 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     return headers;
   }
 
-  private endpoint(path: string, query?: Record<string, string>): string {
-    const url = new URL(`${this.baseUrl}${path}`);
+  private backendApiEndpoint(path: string, query?: Record<string, string>): string {
+    const backendApiBase = this.baseUrl.endsWith('/backend-api') ? this.baseUrl : `${this.baseUrl}/backend-api`;
+    const url = new URL(`${backendApiBase}${path}`);
     for (const [name, value] of Object.entries(query ?? {})) url.searchParams.set(name, value);
     return url.toString();
   }
 
-  private async fetchWithTimeout(url: string, init: RequestInit, callerSignal?: AbortSignal): Promise<Response> {
-    if (callerSignal?.aborted) throw abortError();
+  private fetchWithTimeout(url: string, init: RequestInit, callerSignal?: AbortSignal): Promise<Response> {
+    return this.runWithTimeout((signal) => this.fetchResponse(url, init, signal), callerSignal);
+  }
+
+  private runWithTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, callerSignal?: AbortSignal): Promise<T> {
+    if (callerSignal?.aborted) return Promise.reject(abortError());
     const controller = new AbortController();
     let timedOut = false;
     const timeout = setTimeout(() => {
@@ -123,17 +142,147 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     }, this.timeoutMs);
     const cancel = () => controller.abort();
     callerSignal?.addEventListener('abort', cancel, { once: true });
-    try {
-      return await this.fetchImpl(url, { ...init, signal: controller.signal });
-    } catch (error) {
+    const aborted = new Promise<never>((_resolve, reject) => {
+      controller.signal.addEventListener('abort', () => {
+        reject(callerSignal?.aborted
+          ? abortError()
+          : new ChatGptBackendError('ChatGPT session backend request timed out.', 'timeout', { status: 504 }));
+      }, { once: true });
+    });
+    return Promise.race([operation(controller.signal), aborted]).catch((error) => {
       if (callerSignal?.aborted) throw abortError();
-      if (timedOut && isAbortError(error)) throw new ChatGptBackendError('ChatGPT session backend request timed out.', 'timeout', { status: 504, cause: error });
-      throw new ChatGptBackendError('ChatGPT session backend network request failed.', 'network_error', { cause: error });
-    } finally {
+      if (timedOut) throw new ChatGptBackendError('ChatGPT session backend request timed out.', 'timeout', { status: 504, cause: error });
+      throw error;
+    }).finally(() => {
       clearTimeout(timeout);
       callerSignal?.removeEventListener('abort', cancel);
+    });
+  }
+
+  private async fetchResponse(url: string, init: RequestInit, signal: AbortSignal): Promise<Response> {
+    try {
+      return await this.fetchImpl(url, { ...init, signal });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      throw new ChatGptBackendError('ChatGPT session backend network request failed.', 'network_error', { cause: error });
     }
   }
+
+  private fetchJsonWithTimeout(url: string, init: RequestInit, callerSignal: AbortSignal | undefined, invalidResponseMessage: string): Promise<{ response: Response; payload?: unknown }> {
+    return this.runWithTimeout(async (signal) => {
+      const response = await this.fetchResponse(url, init, signal);
+      if (!response.ok) return { response };
+      try {
+        return { response, payload: await response.json() };
+      } catch (error) {
+        if (signal.aborted) throw error;
+        throw new ChatGptBackendError(invalidResponseMessage, 'invalid_response', { status: 502, cause: error });
+      }
+    }, callerSignal);
+  }
+}
+
+function normalizeAccountQuota(value: unknown): ChatGptAccountQuota {
+  const raw = isPlainObject(value) ? value : {};
+  const rateLimit = isPlainObject(raw.rate_limit) ? raw.rate_limit : {};
+  const quota: ChatGptAccountQuota = {
+    ...optionalString('providerAccountId', raw.account_id),
+    ...optionalString('providerUserId', raw.user_id),
+    ...optionalString('planType', raw.plan_type),
+    ...optionalBoolean('allowed', rateLimit.allowed),
+    ...optionalBoolean('limitReached', rateLimit.limit_reached),
+    ...optionalString('rateLimitReachedType', rateLimitReachedType(raw.rate_limit_reached_type)),
+    windows: normalizeQuotaWindows(rateLimit),
+  };
+
+  const additionalLimits = normalizeAdditionalQuotaLimits(raw.additional_rate_limits);
+  if (additionalLimits.length) quota.additionalLimits = additionalLimits;
+  const availableCount = nonNegativeNumber(isPlainObject(raw.rate_limit_reset_credits)
+    ? raw.rate_limit_reset_credits.available_count
+    : undefined);
+  if (availableCount !== undefined) quota.resetCredits = { availableCount };
+  return quota;
+}
+
+function normalizeAdditionalQuotaLimits(value: unknown): ChatGptAdditionalQuotaLimit[] {
+  if (!Array.isArray(value)) return [];
+  const limits: ChatGptAdditionalQuotaLimit[] = [];
+  for (const item of value) {
+    if (!isPlainObject(item)) continue;
+    const rateLimit = isPlainObject(item.rate_limit) ? item.rate_limit : {};
+    limits.push({
+      ...optionalString('meteredFeature', item.metered_feature),
+      ...optionalString('limitName', item.limit_name),
+      ...optionalBoolean('allowed', rateLimit.allowed),
+      ...optionalBoolean('limitReached', rateLimit.limit_reached),
+      ...optionalString('rateLimitReachedType', rateLimitReachedType(item.rate_limit_reached_type)),
+      windows: normalizeQuotaWindows(rateLimit),
+    });
+  }
+  return limits;
+}
+
+function normalizeQuotaWindows(rateLimit: JsonObject): ChatGptQuotaWindow[] {
+  const windows: ChatGptQuotaWindow[] = [];
+  for (const [position, value] of [
+    ['primary', rateLimit.primary_window],
+    ['secondary', rateLimit.secondary_window],
+  ] as const) {
+    if (!isPlainObject(value)) continue;
+    const durationSeconds = positiveNumber(value.limit_window_seconds);
+    const window: ChatGptQuotaWindow = {
+      position,
+      descriptor: quotaWindowDescriptor(position, durationSeconds),
+      ...optionalNumber('usedPercent', percentage(value.used_percent)),
+      ...optionalNumber('durationSeconds', durationSeconds),
+      ...optionalNumber('resetAfterSeconds', nonNegativeNumber(value.reset_after_seconds)),
+    };
+    const resetAt = unixSecondsToIso(value.reset_at);
+    if (resetAt !== undefined) window.resetAt = resetAt;
+    windows.push(window);
+  }
+  return windows;
+}
+
+function quotaWindowDescriptor(position: ChatGptQuotaWindow['position'], durationSeconds: number | undefined): string {
+  if (durationSeconds === 18_000) return 'five-hour';
+  if (durationSeconds === 604_800) return 'weekly';
+  return durationSeconds === undefined ? position : `${position}-${durationSeconds}-seconds`;
+}
+
+function rateLimitReachedType(value: unknown): unknown {
+  return isPlainObject(value) ? value.type : undefined;
+}
+
+function optionalString<Key extends string>(key: Key, value: unknown): Partial<Record<Key, string>> {
+  return typeof value === 'string' && value.length > 0 ? { [key]: value } as Record<Key, string> : {};
+}
+
+function optionalBoolean<Key extends string>(key: Key, value: unknown): Partial<Record<Key, boolean>> {
+  return typeof value === 'boolean' ? { [key]: value } as Record<Key, boolean> : {};
+}
+
+function optionalNumber<Key extends string>(key: Key, value: number | undefined): Partial<Record<Key, number>> {
+  return value === undefined ? {} : { [key]: value } as Record<Key, number>;
+}
+
+function percentage(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100 ? value : undefined;
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function nonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function unixSecondsToIso(value: unknown): string | undefined {
+  const seconds = nonNegativeNumber(value);
+  if (seconds === undefined) return undefined;
+  const date = new Date(seconds * 1000);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
 function validateSessionRequest(request: ChatGptCompletionRequest): void {
@@ -160,10 +309,6 @@ function abortError(): Error {
   const error = new Error('ChatGPT session backend request was cancelled.');
   error.name = 'AbortError';
   return error;
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError' || error instanceof Error && error.name === 'AbortError';
 }
 
 function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {

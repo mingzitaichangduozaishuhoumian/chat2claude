@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import * as nodeFs from 'node:fs';
 import { dirname } from 'node:path';
-import type { ChatGptDiscoveredModel, ChatGptModelControlCapabilities, ChatGptReasoningLevelOption, ChatGptServiceTierOption } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptDiscoveredModel, ChatGptModelControlCapabilities, ChatGptQuotaWindow, ChatGptReasoningLevelOption, ChatGptServiceTierOption } from '@chatgpt-to-claude/chatgpt-backend';
 
 const OPERATIONAL_STATE_VERSION = 1;
 const DEFAULT_DEBOUNCE_MS = 1_000;
@@ -27,19 +27,19 @@ export interface OperationalHealthCheck {
   message: string | null;
 }
 
-export interface SanitizedQuotaSnapshot {
-  id: string;
-  used?: number;
-  limit?: number;
-  remaining?: number;
-  resetAt?: string;
+export interface SanitizedQuotaError {
+  code: string;
+  status?: number;
+  category: 'authentication' | 'rate_limit' | 'timeout' | 'network' | 'provider' | 'unsupported' | 'account_changed' | 'unknown';
+  message: string;
 }
 
 export interface SanitizedQuotaCache {
-  status: 'empty' | 'fresh' | 'stale';
+  status: 'fresh' | 'stale' | 'unknown' | 'error';
   fetchedAt: string | null;
   expiresAt: string | null;
-  snapshots: SanitizedQuotaSnapshot[];
+  quota?: ChatGptAccountQuota;
+  error?: SanitizedQuotaError;
 }
 
 export interface OperationalAccountSnapshot extends OperationalAccountIdentity {
@@ -82,7 +82,7 @@ export interface AdminOperationalStateOptions {
 }
 
 export class AdminOperationalStateError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly stateCommitted = false) {
     super(message);
     this.name = 'AdminOperationalStateError';
   }
@@ -181,6 +181,7 @@ export class AdminOperationalState {
     account.discoveredModels = validatedModels;
     account.discoveredModelIds = validatedModels.map((model) => model.id);
     account.lastHealthCheck = validatedHealth;
+    account.quotaCache = { status: 'unknown', fetchedAt: null, expiresAt: null };
     this.schedulePersist();
   }
 
@@ -210,12 +211,16 @@ export class AdminOperationalState {
     return removed;
   }
 
-  async flush(): Promise<void> {
+  flushSync(): void {
     this.assertWritable();
     this.clearTimer();
     if (this.persistenceError) throw this.persistenceError;
     if (!this.dirty) return;
     this.persistNow();
+  }
+
+  async flush(): Promise<void> {
+    this.flushSync();
   }
 
   async dispose(): Promise<void> {
@@ -240,7 +245,7 @@ export class AdminOperationalState {
         lastHealthCheck: null,
         discoveredModelIds: [],
         discoveredModels: [],
-        quotaCache: { status: 'empty', fetchedAt: null, expiresAt: null, snapshots: [] },
+        quotaCache: { status: 'unknown', fetchedAt: null, expiresAt: null },
       };
       this.accounts.set(key, account);
     }
@@ -256,7 +261,8 @@ export class AdminOperationalState {
       try {
         this.persistNow();
       } catch (error) {
-        this.persistenceError = error instanceof AdminOperationalStateError ? error : new AdminOperationalStateError('Unable to persist admin operational state.');
+        const persistenceError = error instanceof AdminOperationalStateError ? error : new AdminOperationalStateError('Unable to persist admin operational state.');
+        if (!persistenceError.stateCommitted) this.persistenceError = persistenceError;
       }
     }, this.debounceMs);
   }
@@ -267,7 +273,15 @@ export class AdminOperationalState {
       accounts: [...this.accounts.values()].map(toPersisted),
     });
     const contents = Buffer.from(`${JSON.stringify(document, null, 2)}\n`, 'utf8');
-    atomicWrite(this.fs, this.options.path, contents);
+    try {
+      atomicWrite(this.fs, this.options.path, contents);
+    } catch (error) {
+      if (error instanceof AdminOperationalStateError && error.stateCommitted) {
+        this.dirty = false;
+        this.persistenceError = undefined;
+      }
+      throw error;
+    }
     this.dirty = false;
     this.persistenceError = undefined;
   }
@@ -324,7 +338,11 @@ function cloneAccount(account: OperationalAccountSnapshot): OperationalAccountSn
 }
 
 function cloneQuotaCache(cache: SanitizedQuotaCache): SanitizedQuotaCache {
-  return { ...cache, snapshots: cache.snapshots.map((snapshot) => ({ ...snapshot })) };
+  return {
+    ...cache,
+    ...(cache.quota ? { quota: cloneQuota(cache.quota) } : {}),
+    ...(cache.error ? { error: { ...cache.error } } : {}),
+  };
 }
 
 function validateDocument(value: unknown): OperationalStateDocument {
@@ -493,33 +511,115 @@ function validateHealthCheck(value: unknown, label: string): OperationalHealthCh
 }
 
 function validateQuotaCache(value: unknown, label: string): SanitizedQuotaCache {
-  const raw = strictObject(value, ['status', 'fetchedAt', 'expiresAt', 'snapshots'], label);
-  if (!Array.isArray(raw.snapshots)) throw invalid(`${label}.snapshots must be an array`);
-  const snapshots = raw.snapshots.map((snapshot, index) => validateQuotaSnapshot(snapshot, `${label}.snapshots[${index}]`));
-  if (new Set(snapshots.map((snapshot) => snapshot.id)).size !== snapshots.length) throw invalid(`${label}.snapshots contains duplicate ids`);
+  const object = objectValue(value, label);
+  if (Object.prototype.hasOwnProperty.call(object, 'snapshots')) {
+    strictObject(value, ['status', 'fetchedAt', 'expiresAt', 'snapshots'], label);
+    if (!Array.isArray(object.snapshots)) throw invalid(`${label}.snapshots must be an array`);
+    return { status: 'unknown', fetchedAt: null, expiresAt: null };
+  }
+  const raw = strictObject(value, ['status', 'fetchedAt', 'expiresAt', 'quota', 'error'], label, ['quota', 'error']);
+  const status = enumValue(raw.status, ['fresh', 'stale', 'unknown', 'error'] as const, `${label}.status`);
+  const quota = raw.quota === undefined ? undefined : validateQuota(raw.quota, `${label}.quota`);
+  const error = raw.error === undefined ? undefined : validateQuotaError(raw.error, `${label}.error`);
+  if ((status === 'fresh' || status === 'stale') && !quota) throw invalid(`${label}.quota is required for ${status} status`);
+  if (status === 'fresh' && error) throw invalid(`${label}.error is not allowed for fresh status`);
+  if (status === 'error' && !error) throw invalid(`${label}.error is required for error status`);
   return {
-    status: enumValue(raw.status, ['empty', 'fresh', 'stale'] as const, `${label}.status`),
+    status,
     fetchedAt: nullableTimestamp(raw.fetchedAt, `${label}.fetchedAt`),
     expiresAt: nullableTimestamp(raw.expiresAt, `${label}.expiresAt`),
-    snapshots,
+    ...(quota ? { quota } : {}),
+    ...(error ? { error } : {}),
   };
 }
 
-function validateQuotaSnapshot(value: unknown, label: string): SanitizedQuotaSnapshot {
-  const raw = strictObject(value, ['id', 'used', 'limit', 'remaining', 'resetAt'], label, ['used', 'limit', 'remaining', 'resetAt']);
+function validateQuota(value: unknown, label: string): ChatGptAccountQuota {
+  const raw = strictObject(value, ['providerAccountId', 'providerUserId', 'planType', 'allowed', 'limitReached', 'rateLimitReachedType', 'windows', 'additionalLimits', 'resetCredits'], label, ['providerAccountId', 'providerUserId', 'planType', 'allowed', 'limitReached', 'rateLimitReachedType', 'additionalLimits', 'resetCredits']);
+  if (!Array.isArray(raw.windows)) throw invalid(`${label}.windows must be an array`);
+  if (raw.additionalLimits !== undefined && !Array.isArray(raw.additionalLimits)) throw invalid(`${label}.additionalLimits must be an array`);
   return {
-    id: nonEmptyString(raw.id, `${label}.id`),
-    ...(raw.used === undefined ? {} : { used: nonNegativeNumber(raw.used, `${label}.used`) }),
-    ...(raw.limit === undefined ? {} : { limit: nonNegativeNumber(raw.limit, `${label}.limit`) }),
-    ...(raw.remaining === undefined ? {} : { remaining: nonNegativeNumber(raw.remaining, `${label}.remaining`) }),
+    ...optionalValidatedString('providerAccountId', raw.providerAccountId, label),
+    ...optionalValidatedString('providerUserId', raw.providerUserId, label),
+    ...optionalValidatedString('planType', raw.planType, label),
+    ...optionalValidatedBoolean('allowed', raw.allowed, label),
+    ...optionalValidatedBoolean('limitReached', raw.limitReached, label),
+    ...optionalValidatedString('rateLimitReachedType', raw.rateLimitReachedType, label),
+    windows: raw.windows.map((window, index) => validateQuotaWindow(window, `${label}.windows[${index}]`)),
+    ...(raw.additionalLimits === undefined ? {} : { additionalLimits: raw.additionalLimits.map((limit, index) => validateAdditionalQuotaLimit(limit, `${label}.additionalLimits[${index}]`)) }),
+    ...(raw.resetCredits === undefined ? {} : { resetCredits: validateResetCredits(raw.resetCredits, `${label}.resetCredits`) }),
+  };
+}
+
+function validateAdditionalQuotaLimit(value: unknown, label: string): ChatGptAdditionalQuotaLimit {
+  const raw = strictObject(value, ['meteredFeature', 'limitName', 'allowed', 'limitReached', 'rateLimitReachedType', 'windows'], label, ['meteredFeature', 'limitName', 'allowed', 'limitReached', 'rateLimitReachedType']);
+  if (!Array.isArray(raw.windows)) throw invalid(`${label}.windows must be an array`);
+  return {
+    ...optionalValidatedString('meteredFeature', raw.meteredFeature, label),
+    ...optionalValidatedString('limitName', raw.limitName, label),
+    ...optionalValidatedBoolean('allowed', raw.allowed, label),
+    ...optionalValidatedBoolean('limitReached', raw.limitReached, label),
+    ...optionalValidatedString('rateLimitReachedType', raw.rateLimitReachedType, label),
+    windows: raw.windows.map((window, index) => validateQuotaWindow(window, `${label}.windows[${index}]`)),
+  };
+}
+
+function validateQuotaWindow(value: unknown, label: string): ChatGptQuotaWindow {
+  const raw = strictObject(value, ['position', 'descriptor', 'usedPercent', 'durationSeconds', 'resetAfterSeconds', 'resetAt'], label, ['usedPercent', 'durationSeconds', 'resetAfterSeconds', 'resetAt']);
+  const usedPercent = raw.usedPercent === undefined ? undefined : boundedPercentage(raw.usedPercent, `${label}.usedPercent`);
+  const durationSeconds = raw.durationSeconds === undefined ? undefined : positiveNumber(raw.durationSeconds, `${label}.durationSeconds`);
+  return {
+    position: enumValue(raw.position, ['primary', 'secondary'] as const, `${label}.position`),
+    descriptor: nonEmptyString(raw.descriptor, `${label}.descriptor`),
+    ...(usedPercent === undefined ? {} : { usedPercent }),
+    ...(durationSeconds === undefined ? {} : { durationSeconds }),
+    ...(raw.resetAfterSeconds === undefined ? {} : { resetAfterSeconds: nonNegativeNumber(raw.resetAfterSeconds, `${label}.resetAfterSeconds`) }),
     ...(raw.resetAt === undefined ? {} : { resetAt: timestamp(raw.resetAt, `${label}.resetAt`) }),
   };
+}
+
+function validateResetCredits(value: unknown, label: string): { availableCount: number } {
+  const raw = strictObject(value, ['availableCount'], label);
+  return { availableCount: nonNegativeNumber(raw.availableCount, `${label}.availableCount`) };
+}
+
+function validateQuotaError(value: unknown, label: string): SanitizedQuotaError {
+  const raw = strictObject(value, ['code', 'status', 'category', 'message'], label, ['status']);
+  return {
+    code: nonEmptyString(raw.code, `${label}.code`),
+    ...(raw.status === undefined ? {} : { status: nonNegativeInteger(raw.status, `${label}.status`) }),
+    category: enumValue(raw.category, ['authentication', 'rate_limit', 'timeout', 'network', 'provider', 'unsupported', 'account_changed', 'unknown'] as const, `${label}.category`),
+    message: nonEmptyString(raw.message, `${label}.message`),
+  };
+}
+
+function optionalValidatedString<Key extends string>(key: Key, value: unknown, label: string): Partial<Record<Key, string>> {
+  return value === undefined ? {} : { [key]: nonEmptyString(value, `${label}.${key}`) } as Record<Key, string>;
+}
+
+function optionalValidatedBoolean<Key extends string>(key: Key, value: unknown, label: string): Partial<Record<Key, boolean>> {
+  return value === undefined ? {} : { [key]: booleanValue(value, `${label}.${key}`) } as Record<Key, boolean>;
+}
+
+function boundedPercentage(value: unknown, label: string): number {
+  const result = nonNegativeNumber(value, label);
+  if (result > 100) throw invalid(`${label} must not exceed 100`);
+  return result;
+}
+
+function positiveNumber(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) throw invalid(`${label} must be a positive finite number`);
+  return value;
+}
+
+function cloneQuota(quota: ChatGptAccountQuota): ChatGptAccountQuota {
+  return validateQuota(quota, 'quota');
 }
 
 function atomicWrite(fs: OperationalStateFileSystem, path: string, contents: Buffer): void {
   const parent = dirname(path);
   const temporaryPath = `${path}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`;
   let fd: number | undefined;
+  let stateCommitted = false;
   try {
     fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
     setModeIfSupported(fs, parent, 0o700);
@@ -534,12 +634,13 @@ function atomicWrite(fs: OperationalStateFileSystem, path: string, contents: Buf
     fs.closeSync(fd);
     fd = undefined;
     fs.renameSync(temporaryPath, path);
+    stateCommitted = true;
     setModeIfSupported(fs, path, 0o600);
     fsyncDirectoryIfSupported(fs, parent);
   } catch (error) {
     if (fd !== undefined) try { fs.closeSync(fd); } catch { /* best effort */ }
     try { fs.unlinkSync(temporaryPath); } catch { /* best effort */ }
-    throw new AdminOperationalStateError(`Unable to persist admin operational state atomically (${safeErrorCode(error)}).`);
+    throw new AdminOperationalStateError(`Unable to persist admin operational state atomically (${safeErrorCode(error)}).`, stateCommitted);
   }
 }
 
