@@ -116,6 +116,45 @@ describe('SessionChatGptBackend', () => {
     expect(calls[0].body).toMatchObject({ temperature: 0.25, top_p: 0.75, stop: 'END' });
   });
 
+  it('forwards canonical reasoning effort and service tier to the Codex responses body', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return sseResponse([{ type: 'response.completed' }]);
+    } });
+
+    await backend.complete({ ...request, reasoningEffort: 'xhigh', serviceTier: 'priority' }, context);
+    await backend.complete({ ...request, reasoningEffort: 'max', serviceTier: 'priority' }, context);
+    expect(calls[0].body).toMatchObject({ reasoning: { effort: 'xhigh' }, service_tier: 'priority' });
+    expect(calls[1].body).toMatchObject({ reasoning: { effort: 'max' }, service_tier: 'priority' });
+  });
+
+  it('rejects local-only ultra before performing a fetch', async () => {
+    let fetchCalls = 0;
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => {
+      fetchCalls += 1;
+      return sseResponse([{ type: 'response.completed' }]);
+    } });
+
+    await expect(backend.complete({ ...request, reasoningEffort: 'ultra' }, context)).rejects.toMatchObject({
+      name: 'ChatGptBackendError',
+      code: 'invalid_request',
+      status: 400,
+    });
+    expect(fetchCalls).toBe(0);
+  });
+
+  it('forwards explicit neutral reasoning and service-tier sentinels', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return sseResponse([{ type: 'response.completed' }]);
+    } });
+
+    await backend.complete({ ...request, reasoningEffort: 'none', serviceTier: 'default' }, context);
+    expect(calls[0].body).toMatchObject({ reasoning: { effort: 'none' }, service_tier: 'default' });
+  });
+
   it('omits generation controls from the Codex responses body when unset', async () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
@@ -303,6 +342,60 @@ describe('SessionChatGptBackend', () => {
     expect(calls[0].init.method).toBe('GET');
     expect((calls[0].init.headers as Headers).get('authorization')).toBe('Bearer token-1');
     expect((calls[0].init.headers as Headers).get('chatgpt-account-id')).toBe('acct-1');
+  });
+
+  it('normalizes ordered Codex catalog controls while retaining raw metadata', async () => {
+    const rawModel = {
+      id: 'gpt-codex',
+      display_name: 'Codex',
+      default_reasoning_level: 'future-deep',
+      supported_reasoning_levels: [
+        { effort: 'low', description: 'Fast' },
+        { effort: 'future-deep', description: 'Future' },
+        { effort: 'ultra', description: 'Client compatibility mode' },
+      ],
+      service_tiers: [{ id: 'economy', name: 'Economy', description: 'Queued' }],
+      additional_speed_tiers: [{ id: 'priority', name: 'Priority' }],
+      default_service_tier: 'economy',
+      features: { fast_mode: true },
+      multi_agent_reasoning: { effort: 'max' },
+      future_catalog_field: { retained: true },
+    };
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => Response.json({ models: [rawModel] }) });
+
+    const models = await backend.listModels(context);
+
+    expect(models[0].controls).toEqual({
+      reasoning: {
+        metadataKnown: true,
+        supported: [
+          { effort: 'low', description: 'Fast' },
+          { effort: 'future-deep', description: 'Future' },
+          { effort: 'ultra', description: 'Client compatibility mode' },
+        ],
+        defaultEffort: 'future-deep',
+        multiAgent: { effort: 'max' },
+      },
+      serviceTier: {
+        metadataKnown: true,
+        supported: [
+          { id: 'economy', name: 'Economy', description: 'Queued' },
+          { id: 'priority', name: 'Priority' },
+        ],
+        defaultTier: 'economy',
+        fastMode: true,
+      },
+    });
+    expect(models[0].raw).toEqual(rawModel);
+  });
+
+  it('marks absent model-control metadata unknown instead of fabricating support', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => Response.json({ models: [{ id: 'plain-model' }] }) });
+    const models = await backend.listModels(context);
+    expect(models[0].controls).toEqual({
+      reasoning: { metadataKnown: false, supported: [], defaultEffort: undefined },
+      serviceTier: { metadataKnown: false, supported: [], defaultTier: undefined, fastMode: false },
+    });
   });
 
   it('allows the Codex model client version to be configured', async () => {

@@ -7,11 +7,11 @@
       "backendModel": null,
       "enabled": true,
       "capabilities": {
-        "reasoning_effort": ["off", "minimal", "low", "medium", "high", "max"],
-        "response_speed": ["fastest", "fast", "balanced", "quality"],
-        "thinking": true
+        "reasoning_effort": [],
+        "response_speed": [],
+        "thinking": false
       },
-      "defaults": { "reasoning_effort": "low", "speed": "fast" }
+      "defaults": { "reasoning_effort": "low", "speed": "standard" }
     },
     {
       "id": "sonnet",
@@ -20,11 +20,11 @@
       "backendModel": null,
       "enabled": true,
       "capabilities": {
-        "reasoning_effort": ["off", "minimal", "low", "medium", "high", "max"],
-        "response_speed": ["fastest", "fast", "balanced", "quality"],
-        "thinking": true
+        "reasoning_effort": [],
+        "response_speed": [],
+        "thinking": false
       },
-      "defaults": { "reasoning_effort": "medium", "speed": "balanced" }
+      "defaults": { "reasoning_effort": "medium", "speed": "standard" }
     },
     {
       "id": "fable",
@@ -33,11 +33,11 @@
       "backendModel": null,
       "enabled": true,
       "capabilities": {
-        "reasoning_effort": ["off", "minimal", "low", "medium", "high", "max"],
-        "response_speed": ["fastest", "fast", "balanced", "quality"],
-        "thinking": true
+        "reasoning_effort": [],
+        "response_speed": [],
+        "thinking": false
       },
-      "defaults": { "reasoning_effort": "high", "speed": "quality" }
+      "defaults": { "reasoning_effort": "high", "speed": "standard" }
     },
     {
       "id": "opus",
@@ -46,11 +46,11 @@
       "backendModel": null,
       "enabled": true,
       "capabilities": {
-        "reasoning_effort": ["off", "minimal", "low", "medium", "high", "max"],
-        "response_speed": ["fastest", "fast", "balanced", "quality"],
-        "thinking": true
+        "reasoning_effort": [],
+        "response_speed": [],
+        "thinking": false
       },
-      "defaults": { "reasoning_effort": "high", "speed": "quality" }
+      "defaults": { "reasoning_effort": "high", "speed": "standard" }
     }
   ]
 }

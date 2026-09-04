@@ -30,10 +30,14 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
       try {
         if (deps.backendProvider === 'session') await deps.modelRegistry.refreshFromBackend(deps.backend, backendContext);
         const resolution = deps.modelRegistry.resolve(request.model);
-        const backendRequest = mapOpenAiResponsesRequestToChatGpt(downstreamRequest, {
-          ...deps.defaults,
-          modelDefaults: { ...deps.defaults?.modelDefaults, [request.model]: { reasoningEffort: resolution.model.defaults.reasoning_effort, speedPreference: resolution.model.defaults.speed } },
-        }, { backendModel: resolution.backendModel });
+        const controls = deps.modelRegistry.resolveControls(resolution, {
+          reasoningEffort: request.reasoning?.effort ?? request.reasoning_effort,
+          serviceTier: request.service_tier ?? request.speed ?? request.response_speed,
+        });
+        const backendRequest = mapOpenAiResponsesRequestToChatGpt(downstreamRequest, {}, {
+          backendModel: resolution.backendModel,
+          resolvedControls: controls,
+        });
         deps.requestLog.record({ route: '/v1/responses', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {
@@ -121,6 +125,7 @@ function parseOpenAiResponsesRequest(value: unknown): OpenAiResponsesRequest {
     if (body.reasoning.effort !== undefined && typeof body.reasoning.effort !== 'string') throw new ClaudeApiError('reasoning.effort must be a string');
   }
   if (body.reasoning_effort !== undefined && typeof body.reasoning_effort !== 'string') throw new ClaudeApiError('reasoning_effort must be a string');
+  if (body.service_tier !== undefined && typeof body.service_tier !== 'string') throw new ClaudeApiError('service_tier must be a string');
   if (body.speed !== undefined && typeof body.speed !== 'string') throw new ClaudeApiError('speed must be a string');
   if (body.response_speed !== undefined && typeof body.response_speed !== 'string') throw new ClaudeApiError('response_speed must be a string');
   if (body.tools !== undefined && !Array.isArray(body.tools)) throw new ClaudeApiError('tools must be an array');

@@ -17,7 +17,56 @@ import { ChatGptAuthFlowService } from './services/chatgpt-auth-flow.js';
 import { SetupProvisioner } from './services/setup-provisioner.js';
 import { ResponsesStore } from './services/responses-store.js';
 
-const discoveredModels = [{ id: 'backend-test-model', displayName: 'Backend Test Model' }];
+const discoveredModels: ChatGptDiscoveredModel[] = [{
+  id: 'backend-test-model',
+  displayName: 'Backend Test Model',
+  controls: {
+    reasoning: {
+      metadataKnown: true,
+      supported: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((effort) => ({ effort })),
+      defaultEffort: 'medium',
+    },
+    serviceTier: {
+      metadataKnown: true,
+      supported: [{ id: 'priority', name: 'Priority' }],
+      defaultTier: 'standard',
+      fastMode: true,
+    },
+  },
+}];
+const neutralControlModels: ChatGptDiscoveredModel[] = [{
+  id: 'neutral-control-model',
+  controls: {
+    reasoning: {
+      metadataKnown: true,
+      supported: [{ effort: 'none' }, { effort: 'low' }],
+      defaultEffort: 'low',
+    },
+    serviceTier: {
+      metadataKnown: true,
+      supported: [{ id: 'priority' }],
+      defaultTier: 'priority',
+      fastMode: true,
+    },
+  },
+}];
+const neutralControlAliases = {
+  aliases: [{
+    id: 'sonnet',
+    display_name: 'Sonnet',
+    backendModel: 'neutral-control-model',
+    enabled: true,
+    defaults: { reasoning_effort: 'low', speed: 'standard' },
+  }],
+};
+const unboundSonnetAliases = {
+  aliases: [{
+    id: 'sonnet',
+    display_name: 'Sonnet',
+    enabled: true,
+    defaults: { reasoning_effort: 'none', speed: 'standard' },
+  }],
+};
 const testModelRegistryJson = JSON.stringify({
   aliases: [
     {
@@ -251,7 +300,7 @@ describe('/v1/chat/completions', () => {
     expect(body.object).toBe('chat.completion');
     expect(body.model).toBe('sonnet');
     expect(body.choices[0].message.role).toBe('assistant');
-    expect(body.choices[0].message.content).toBe('Echo:[effort=low,speed=fast] hello');
+    expect(body.choices[0].message.content).toBe('Echo:[effort=low,speed=priority] hello');
     expect(body.choices[0].finish_reason).toBe('stop');
     expect(body.usage.total_tokens).toBe(body.usage.prompt_tokens + body.usage.completion_tokens);
   });
@@ -271,8 +320,8 @@ describe('/v1/chat/completions', () => {
     expect(text).toContain('"object":"chat.completion.chunk"');
     expect(text).toContain('"delta":{"role":"assistant"}');
     expect(text).toContain('Echo:[effort=med');
-    expect(text).toContain('ium,speed=balanc');
-    expect(text).toContain('ed] hello');
+    expect(text).toContain('ium,speed=defaul');
+    expect(text).toContain('t] hello');
     expect(text).toContain('"finish_reason":"stop"');
     expect(text).toContain('data: [DONE]');
   });
@@ -606,8 +655,8 @@ describe('/v1/responses', () => {
     expect(body.object).toBe('response');
     expect(body.model).toBe('sonnet');
     expect(body.status).toBe('completed');
-    expect(body.output).toEqual([{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Echo:[effort=low,speed=fast] hello' }] }]);
-    expect(body.output_text).toBe('Echo:[effort=low,speed=fast] hello');
+    expect(body.output).toEqual([{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Echo:[effort=low,speed=priority] hello' }] }]);
+    expect(body.output_text).toBe('Echo:[effort=low,speed=priority] hello');
     expect(body.usage.total_tokens).toBe(body.usage.input_tokens + body.usage.output_tokens);
   });
 
@@ -994,7 +1043,7 @@ describe('/v1/messages', () => {
     const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(200);
     const body = await res.json() as { content: Array<{ text: string }> };
-    expect(body.content[0].text).toBe('Echo:[effort=medium,speed=balanced] hello');
+    expect(body.content[0].text).toBe('Echo:[effort=medium,speed=default] hello');
   });
 
   it('rejects invalid Claude optional parameter types', async () => {
@@ -1015,7 +1064,7 @@ describe('/v1/messages', () => {
     const body = await res.json() as { type: string; role: string; content: Array<{ text: string }>; stop_reason: string };
     expect(body.type).toBe('message');
     expect(body.role).toBe('assistant');
-    expect(body.content[0].text).toBe('Echo:[effort=high,speed=fast] hello');
+    expect(body.content[0].text).toBe('Echo:[effort=high,speed=priority] hello');
     expect(body.stop_reason).toBe('end_turn');
   });
 
@@ -1024,7 +1073,7 @@ describe('/v1/messages', () => {
     const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(200);
     const body = await res.json() as { content: Array<{ text: string }> };
-    expect(body.content[0].text).toBe('Echo:[effort=medium,speed=balanced] hello');
+    expect(body.content[0].text).toBe('Echo:[effort=medium,speed=default] hello');
   });
 
   it('uses patched alias defaults in mock echo', async () => {
@@ -1035,7 +1084,7 @@ describe('/v1/messages', () => {
     const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(200);
     const body = await res.json() as { content: Array<{ text: string }> };
-    expect(body.content[0].text).toBe('Echo:[effort=max,speed=quality] hello');
+    expect(body.content[0].text).toBe('Echo:[effort=max,speed=default] hello');
   });
 
   it('returns Claude SSE stream events', async () => {
@@ -1047,7 +1096,7 @@ describe('/v1/messages', () => {
     expect(text).toContain('event: message_start');
     expect(text).toContain('event: content_block_delta');
     expect(text).toContain('Echo:[effort=low');
-    expect(text).toContain(',speed=quality] ');
+    expect(text).toContain(',speed=default]');
     expect(text).toContain('hello');
     expect(text).toContain('event: message_stop');
   });
@@ -1149,12 +1198,12 @@ describe('/v1/messages', () => {
     expect(body.error.message).toContain('Model alias sonnet is bound to missing backend model: missing-backend-model');
   });
 
-  it('passes through a directly discovered backend model', async () => {
+  it('passes through a directly discovered backend model without fabricating defaults', async () => {
     const app = createApp({ ...env, mockBackendModelsJson: JSON.stringify([{ id: 'backend-test-model' }, { id: 'direct-backend-model' }]) });
     const res = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'direct-backend-model', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] }) });
     expect(res.status).toBe(200);
     const body = await res.json() as { content: Array<{ text: string }> };
-    expect(body.content[0].text).toBe('Echo:[effort=medium,speed=balanced] hello');
+    expect(body.content[0].text).toBe('Echo:[effort=none,speed=standard] hello');
   });
 
   it('passes account context to backend complete', async () => {
@@ -1368,7 +1417,7 @@ function createSessionAdminAppWithAccountPool(backend: ChatGptBackendClient): { 
 function createProvisioningTestApp(options: { authFlow?: ChatGptAuthFlowService; protectModels?: boolean } = {}): Hono {
   const app = new Hono();
   const accountPool = new AccountPool();
-  const modelRegistry = new ModelRegistry();
+  const modelRegistry = new ModelRegistry({ defaults: unboundSonnetAliases });
   const runtimeApiKeys = new RuntimeApiKeys();
   const backend = new InspectingBackend([{ id: 'plain-model' }, { id: 'gpt-5-thinking' }]);
   if (options.protectModels) app.use('/v1/*', apiKeyAuth([], runtimeApiKeys));
@@ -1688,15 +1737,16 @@ describe('/v1/models', () => {
     const app = createApp({ ...env, mockBackendModelsJson: JSON.stringify([{ id: 'backend-test-model' }, { id: 'direct-backend-model' }]) });
     const res = await app.request('/v1/models', { headers: { 'x-api-key': 'test-key' } });
     expect(res.status).toBe(200);
-    const body = await res.json() as { data: Array<{ id: string; backendModel: string; enabled: boolean; source: string; status: string; capabilities: { reasoning_effort: string[]; response_speed: string[]; thinking: boolean }; defaults: { reasoning_effort: string; speed: string } }> };
+    const body = await res.json() as { data: Array<{ id: string; backendModel: string; enabled: boolean; source: string; status: string; capabilities: { reasoning_effort: string[]; response_speed: string[]; thinking: boolean; metadata_status: { reasoning: string; service_tier: string } }; defaults: { reasoning_effort: string; speed: string } }> };
     expect(body.data.map((model) => model.id)).toContain('sonnet');
     expect(body.data.map((model) => model.id)).toContain('direct-backend-model');
     expect(body.data.map((model) => model.id)).not.toContain('opus');
     const sonnet = body.data.find((model) => model.id === 'sonnet');
-    expect(sonnet).toMatchObject({ backendModel: 'backend-test-model', enabled: true, source: 'alias', status: 'bound', defaults: { reasoning_effort: 'medium', speed: 'balanced' } });
-    expect(sonnet?.capabilities.reasoning_effort).toContain('high');
-    expect(sonnet?.capabilities.response_speed).toContain('fast');
-    expect(sonnet?.capabilities.thinking).toBe(true);
+    expect(sonnet).toMatchObject({ backendModel: 'backend-test-model', enabled: true, source: 'alias', status: 'bound', defaults: { reasoning_effort: 'medium', speed: 'standard' } });
+    expect(sonnet?.capabilities.reasoning_effort).toEqual([]);
+    expect(sonnet?.capabilities.response_speed).toEqual([]);
+    expect(sonnet?.capabilities.thinking).toBe(false);
+    expect(sonnet?.capabilities.metadata_status).toEqual({ reasoning: 'unknown', service_tier: 'unknown' });
   });
 });
 
@@ -1814,7 +1864,7 @@ describe('ChatGPT one-click auth admin flow', () => {
     expect(readyBody.provisionResult.account).toMatchObject({ id: 'chatgpt-primary', provider: 'chatgpt-session', hasSecret: true });
     expect(readyBody.provisionResult.account).not.toHaveProperty('secret');
     expect(readyBody.provisionResult.modelsDiscovered).toEqual(['plain-model', 'gpt-5-thinking']);
-    expect(readyBody.provisionResult.boundAliases).toEqual({ sonnet: 'gpt-5-thinking' });
+    expect(readyBody.provisionResult.boundAliases).toEqual({ sonnet: 'plain-model' });
     expect(JSON.stringify(readyBody)).not.toContain('token-ready');
     expect(JSON.stringify(readyBody)).not.toContain('refresh-ready');
     expect(JSON.stringify(readyBody)).not.toContain('id-ready');
@@ -1830,7 +1880,7 @@ describe('ChatGPT one-click auth admin flow', () => {
   it('single-flights two concurrent Admin status GETs after callback through one provisioning commit', async () => {
     const authFlow = createOAuthTestFlow();
     const accountPool = new AccountPool();
-    const modelRegistry = new ModelRegistry();
+    const modelRegistry = new ModelRegistry({ defaults: unboundSonnetAliases });
     const runtimeApiKeys = new RuntimeApiKeys();
     const backend = new InspectingBackend([{ id: 'plain-model' }, { id: 'gpt-5-thinking' }]);
     const provisioner = new SetupProvisioner({ accountPool, modelRegistry, backend, runtimeApiKeys });
@@ -1884,7 +1934,7 @@ describe('ChatGPT one-click auth admin flow', () => {
       provisionResult: {
         account: { id: 'chatgpt-primary', provider: 'chatgpt-session', hasSecret: true },
         modelsDiscovered: ['plain-model', 'gpt-5-thinking'],
-        boundAliases: { sonnet: 'gpt-5-thinking' },
+        boundAliases: { sonnet: 'plain-model' },
       },
     });
     expect(provisioningCalls).toBe(1);
@@ -1901,7 +1951,7 @@ describe('ChatGPT one-click auth admin flow', () => {
     const accountPool = new AccountPool();
     const provisioner = new SetupProvisioner({
       accountPool,
-      modelRegistry: new ModelRegistry(),
+      modelRegistry: new ModelRegistry({ defaults: unboundSonnetAliases }),
       backend: new InspectingBackend([{ id: 'gpt-5-thinking' }]),
       runtimeApiKeys: new RuntimeApiKeys(),
     });
@@ -1948,7 +1998,7 @@ describe('ChatGPT one-click auth admin flow', () => {
     const modelsRes = await app.request('/v1/models', { headers: { 'x-api-key': pollBody.provisionResult.apiKey } });
     expect(modelsRes.status).toBe(200);
     const models = await modelsRes.json() as { data: Array<{ id: string; backendModel: string }> };
-    expect(models.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'sonnet', backendModel: 'gpt-5-thinking' })]));
+    expect(models.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'sonnet', backendModel: 'plain-model' })]));
   });
 
   it('manual complete creates/updates chatgpt-primary without leaking secret', async () => {
@@ -2068,7 +2118,7 @@ describe('/admin/api/models', () => {
     modelRegistry.update('custom', { backendModel: 'changed', defaults: { reasoning_effort: 'max', speed: 'quality' } });
     expect(modelRegistry.get('custom')?.backendModel).toBe('changed');
     const reset = modelRegistry.reset();
-    expect(reset[0]).toMatchObject({ id: 'custom', backendModel: 'backend-custom', defaults: { reasoning_effort: 'low', speed: 'fast' } });
+    expect(reset[0]).toMatchObject({ id: 'custom', backendModel: 'backend-custom', defaults: { reasoning_effort: 'low', speed: 'priority' } });
   });
 
   it('patches, lists, refreshes, and resets alias overlay models', async () => {
@@ -2076,7 +2126,7 @@ describe('/admin/api/models', () => {
     const patchRes = await app.request('/admin/api/models/haiku', { method: 'PATCH', headers: adminJsonHeaders, body: JSON.stringify({ backendModel: 'backend-test-model', enabled: false, defaults: { reasoning_effort: 'minimal', speed: 'fastest' } }) });
     expect(patchRes.status).toBe(200);
     const patchBody = await patchRes.json() as { model: { backendModel: string; enabled: boolean; defaults: { reasoning_effort: string; speed: string } } };
-    expect(patchBody.model).toMatchObject({ backendModel: 'backend-test-model', enabled: false, defaults: { reasoning_effort: 'minimal', speed: 'fastest' } });
+    expect(patchBody.model).toMatchObject({ backendModel: 'backend-test-model', enabled: false, defaults: { reasoning_effort: 'minimal', speed: 'priority' } });
 
     const adminListRes = await app.request('/admin/api/models', { headers: adminKeyHeaders });
     const adminListBody = await adminListRes.json() as { aliases: Array<{ id: string; enabled: boolean }>; discovered: Array<{ id: string }>; combined: Array<{ id: string }> };
@@ -2100,6 +2150,144 @@ describe('/admin/api/models', () => {
     expect(resetHaiku?.enabled).toBe(true);
     expect(resetHaiku?.backendModel).toBe('backend-test-model');
     expect(resetHaiku?.defaults).not.toEqual({ reasoning_effort: 'minimal', speed: 'fastest' });
+  });
+});
+
+describe('dynamic model controls across compatible routes', () => {
+  it('resolves aliases and service tiers uniformly for Claude, Chat Completions, and Responses', async () => {
+    const cases = [
+      {
+        route: createMessagesRoute,
+        path: '/v1/messages',
+        body: { model: 'sonnet', max_tokens: 32, reasoning_effort: 'extra-high', service_tier: 'priority', messages: [{ role: 'user', content: 'hello' }] },
+      },
+      {
+        route: createOpenAiChatRoute,
+        path: '/v1/chat/completions',
+        body: { model: 'sonnet', max_tokens: 32, reasoning_effort: 'extra-high', service_tier: 'priority', messages: [{ role: 'user', content: 'hello' }] },
+      },
+      {
+        route: createOpenAiResponsesRoute,
+        path: '/v1/responses',
+        body: { model: 'sonnet', max_output_tokens: 32, reasoning: { effort: 'extra-high' }, service_tier: 'priority', input: 'hello' },
+      },
+    ] as const;
+
+    for (const item of cases) {
+      const backend = new InspectingBackend(discoveredModels);
+      const deps = { backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() };
+      const route = item.route(deps as never);
+      const response = await route.request(item.path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(item.body) });
+      expect(response.status).toBe(200);
+      expect(backend.lastRequest).toMatchObject({ reasoningEffort: 'xhigh', serviceTier: 'priority' });
+      expect(backend.lastRequest).not.toHaveProperty('speedPreference');
+    }
+  });
+
+  it('sends explicit neutral controls in each protocol dialect despite non-neutral catalog defaults', async () => {
+    const cases = [
+      { route: createMessagesRoute, path: '/v1/messages', body: { model: 'sonnet', max_tokens: 32, reasoning_effort: 'off', service_tier: 'standard_only', messages: [{ role: 'user', content: 'hello' }] } },
+      { route: createOpenAiChatRoute, path: '/v1/chat/completions', body: { model: 'sonnet', reasoning_effort: 'none', service_tier: 'standard', messages: [{ role: 'user', content: 'hello' }] } },
+      { route: createOpenAiResponsesRoute, path: '/v1/responses', body: { model: 'sonnet', reasoning: { effort: 'none' }, service_tier: 'default', input: 'hello' } },
+    ] as const;
+
+    for (const item of cases) {
+      const backend = new InspectingBackend(neutralControlModels);
+      const modelRegistry = new ModelRegistry({ defaults: neutralControlAliases, discoveredModels: neutralControlModels });
+      const deps = { backend, requestLog: new RequestLog(), modelRegistry, accountPool: new AccountPool() };
+      const response = await item.route(deps as never).request(item.path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(item.body) });
+      expect(response.status).toBe(200);
+      expect(backend.lastRequest).toMatchObject({ reasoningEffort: 'none', serviceTier: 'default' });
+    }
+  });
+
+  it('treats explicit auto as omission without allowing a non-neutral catalog default to win', async () => {
+    const cases = [
+      { route: createMessagesRoute, path: '/v1/messages', body: { model: 'sonnet', max_tokens: 32, service_tier: 'auto', messages: [{ role: 'user', content: 'hello' }] } },
+      { route: createOpenAiChatRoute, path: '/v1/chat/completions', body: { model: 'sonnet', service_tier: 'auto', messages: [{ role: 'user', content: 'hello' }] } },
+      { route: createOpenAiResponsesRoute, path: '/v1/responses', body: { model: 'sonnet', service_tier: 'auto', input: 'hello' } },
+    ] as const;
+
+    for (const item of cases) {
+      const backend = new InspectingBackend(neutralControlModels);
+      const modelRegistry = new ModelRegistry({ defaults: neutralControlAliases, discoveredModels: neutralControlModels });
+      const deps = { backend, requestLog: new RequestLog(), modelRegistry, accountPool: new AccountPool() };
+      const response = await item.route(deps as never).request(item.path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(item.body) });
+      expect(response.status).toBe(200);
+      expect(backend.lastRequest?.reasoningEffort).toBe('low');
+      expect(backend.lastRequest).not.toHaveProperty('serviceTier');
+    }
+  });
+
+  it('sends the alias neutral service tier before a non-neutral catalog default on all routes', async () => {
+    const cases = [
+      { route: createMessagesRoute, path: '/v1/messages', body: { model: 'sonnet', max_tokens: 32, messages: [{ role: 'user', content: 'hello' }] } },
+      { route: createOpenAiChatRoute, path: '/v1/chat/completions', body: { model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] } },
+      { route: createOpenAiResponsesRoute, path: '/v1/responses', body: { model: 'sonnet', input: 'hello' } },
+    ] as const;
+
+    for (const item of cases) {
+      const backend = new InspectingBackend(neutralControlModels);
+      const modelRegistry = new ModelRegistry({ defaults: neutralControlAliases, discoveredModels: neutralControlModels });
+      const deps = { backend, requestLog: new RequestLog(), modelRegistry, accountPool: new AccountPool() };
+      const response = await item.route(deps as never).request(item.path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(item.body) });
+      expect(response.status).toBe(200);
+      expect(backend.lastRequest?.serviceTier).toBe('default');
+    }
+  });
+
+  it('returns a safe 400 for explicit none when the selected target does not advertise it', async () => {
+    const unsupportedModels: ChatGptDiscoveredModel[] = [{
+      ...neutralControlModels[0],
+      controls: {
+        ...neutralControlModels[0].controls!,
+        reasoning: { metadataKnown: true, supported: [{ effort: 'low' }], defaultEffort: 'low' },
+      },
+    }];
+    const cases = [
+      { route: createMessagesRoute, path: '/v1/messages', body: { model: 'sonnet', max_tokens: 32, reasoning_effort: 'off', messages: [{ role: 'user', content: 'hello' }] } },
+      { route: createOpenAiChatRoute, path: '/v1/chat/completions', body: { model: 'sonnet', reasoning_effort: 'none', messages: [{ role: 'user', content: 'hello' }] } },
+      { route: createOpenAiResponsesRoute, path: '/v1/responses', body: { model: 'sonnet', reasoning: { effort: 'none' }, input: 'hello' } },
+    ] as const;
+
+    for (const item of cases) {
+      const backend = new InspectingBackend(unsupportedModels);
+      const modelRegistry = new ModelRegistry({ defaults: neutralControlAliases, discoveredModels: unsupportedModels });
+      const deps = { backend, requestLog: new RequestLog(), modelRegistry, accountPool: new AccountPool() };
+      const response = await item.route(deps as never).request(item.path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(item.body) });
+      expect(response.status).toBe(400);
+      expect(await response.text()).toContain('Supported values: low');
+      expect(backend.lastRequest).toBeUndefined();
+    }
+  });
+
+  it('returns a safe 400 with ordered supported values for unsupported explicit controls on all routes', async () => {
+    const cases = [
+      { route: createMessagesRoute, path: '/v1/messages', body: { model: 'sonnet', max_tokens: 32, reasoning_effort: 'future-unsupported', messages: [{ role: 'user', content: 'hello' }] } },
+      { route: createOpenAiChatRoute, path: '/v1/chat/completions', body: { model: 'sonnet', reasoning_effort: 'future-unsupported', messages: [{ role: 'user', content: 'hello' }] } },
+      { route: createOpenAiResponsesRoute, path: '/v1/responses', body: { model: 'sonnet', reasoning: { effort: 'future-unsupported' }, input: 'hello' } },
+    ] as const;
+
+    for (const item of cases) {
+      const backend = new InspectingBackend(discoveredModels);
+      const deps = { backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() };
+      const response = await item.route(deps as never).request(item.path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(item.body) });
+      expect(response.status).toBe(400);
+      expect(await response.text()).toContain('Supported values: none, minimal, low, medium, high, xhigh, max');
+      expect(backend.lastRequest).toBeUndefined();
+    }
+  });
+
+  it('renders target-driven Admin controls and explicit Ultra lossiness labels', async () => {
+    const app = createApp(env);
+    const response = await app.request('/admin');
+    const html = await response.text();
+    expect(html).toContain('Light（官方 low）');
+    expect(html).toContain('Ultra（兼容最高强度）');
+    expect(html).toContain('不会把 ultra 发给上游');
+    expect(html).not.toContain("const effortOptions = ['off'");
+    expect(html).not.toContain('1.5x');
+    expect(html).not.toContain('2x');
   });
 });
 

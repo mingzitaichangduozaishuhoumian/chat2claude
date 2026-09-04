@@ -1,4 +1,4 @@
-export type ChatGptBackendErrorCode = 'unauthorized' | 'rate_limited' | 'upstream_error' | 'timeout' | 'network_error' | 'invalid_response';
+export type ChatGptBackendErrorCode = 'unauthorized' | 'rate_limited' | 'upstream_error' | 'timeout' | 'network_error' | 'invalid_response' | 'invalid_request';
 
 export interface ChatGptBackendErrorOptions {
   code?: ChatGptBackendErrorCode;
@@ -23,5 +23,5 @@ export class ChatGptBackendError extends Error {
 }
 
 function isBackendErrorCode(value: unknown): value is ChatGptBackendErrorCode {
-  return value === 'unauthorized' || value === 'rate_limited' || value === 'upstream_error' || value === 'timeout' || value === 'network_error' || value === 'invalid_response';
+  return value === 'unauthorized' || value === 'rate_limited' || value === 'upstream_error' || value === 'timeout' || value === 'network_error' || value === 'invalid_response' || value === 'invalid_request';
 }

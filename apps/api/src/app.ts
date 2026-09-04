@@ -55,7 +55,7 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   const restoredPrimaryAccount = accountPool.get(PRIMARY_CHATGPT_ACCOUNT_ID);
   const modelRegistryReady = (restoredPrimaryAccount?.provider === 'chatgpt-session'
     ? backend.listModels({ account: restoredPrimaryAccount }).then((models) => {
-      const prepared = modelRegistry.prepareProvisioning(models, 'sonnet', chooseBestModel(models)?.id, true);
+      const prepared = modelRegistry.prepareProvisioning(models, 'sonnet', chooseBestModel(models)?.id, 'bind-if-unbound');
       const commit = () => modelRegistry.commitPreparedProvisioning(prepared);
       // Persist an automatic first binding atomically; refreshes never replace a
       // persisted/manual binding because prepareProvisioning preserves it.

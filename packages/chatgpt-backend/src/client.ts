@@ -1,7 +1,9 @@
 import type { ChatGptStreamEvent } from './events.js';
 
-export type ChatGptReasoningEffort = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'max';
-export type ChatGptSpeedPreference = 'fastest' | 'fast' | 'balanced' | 'quality';
+export type ChatGptReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | (string & {});
+export type ChatGptServiceTier = string;
+/** @deprecated Use ChatGptServiceTier. */
+export type ChatGptSpeedPreference = ChatGptServiceTier;
 export type ChatGptFinishReason = 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'refusal' | 'interrupted' | 'error' | string;
 
 export interface ChatGptMessage { role: 'user' | 'assistant' | 'system'; content: string; }
@@ -17,9 +19,25 @@ export interface ChatGptTool { name: string; description?: string; inputSchema: 
 export type ChatGptToolChoice = { type: 'auto' | 'any' | 'none' } | { type: 'tool'; name: string };
 export interface ChatGptToolCall { id: string; name: string; input: unknown; }
 export interface ChatGptUsage { inputTokens?: number; outputTokens?: number; totalTokens?: number; raw?: unknown; }
-export interface ChatGptCompletionRequest { messages: ChatGptMessage[]; inputItems?: ChatGptInputItem[]; maxTokens: number; model: string; reasoningEffort?: ChatGptReasoningEffort; speedPreference?: ChatGptSpeedPreference; temperature?: number; topP?: number; stopSequences?: string[]; tools?: ChatGptTool[]; toolChoice?: ChatGptToolChoice; backendOptions?: Record<string, unknown>; }
+export interface ChatGptCompletionRequest { messages: ChatGptMessage[]; inputItems?: ChatGptInputItem[]; maxTokens: number; model: string; reasoningEffort?: ChatGptReasoningEffort; serviceTier?: ChatGptServiceTier; /** @deprecated Use serviceTier. */ speedPreference?: ChatGptSpeedPreference; temperature?: number; topP?: number; stopSequences?: string[]; tools?: ChatGptTool[]; toolChoice?: ChatGptToolChoice; backendOptions?: Record<string, unknown>; }
 export interface ChatGptCompletionResponse { text: string; finishReason: ChatGptFinishReason; toolCalls?: ChatGptToolCall[]; usage?: ChatGptUsage; }
-export interface ChatGptDiscoveredModel { id: string; displayName?: string; capabilities?: Record<string, unknown>; raw?: unknown; }
+export interface ChatGptReasoningLevelOption { effort: string; description?: string; }
+export interface ChatGptServiceTierOption { id: string; name?: string; description?: string; }
+export interface ChatGptModelControlCapabilities {
+  reasoning: {
+    metadataKnown: boolean;
+    supported: ChatGptReasoningLevelOption[];
+    defaultEffort?: string;
+    multiAgent?: unknown;
+  };
+  serviceTier: {
+    metadataKnown: boolean;
+    supported: ChatGptServiceTierOption[];
+    defaultTier?: string;
+    fastMode: boolean;
+  };
+}
+export interface ChatGptDiscoveredModel { id: string; displayName?: string; capabilities?: Record<string, unknown>; controls?: ChatGptModelControlCapabilities; raw?: unknown; }
 
 export interface ChatGptSessionSecret {
   type: 'chatgpt-session';

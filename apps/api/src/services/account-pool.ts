@@ -426,7 +426,7 @@ function normalizeProvider(value: unknown, fallback: AccountProvider): AccountPr
 
 function normalizeBackendErrorCode(value: unknown, fallback: ChatGptBackendErrorCode | null): ChatGptBackendErrorCode | null {
   if (value === null) return null;
-  return value === 'unauthorized' || value === 'rate_limited' || value === 'upstream_error' || value === 'timeout' || value === 'network_error' || value === 'invalid_response' ? value : fallback;
+  return value === 'unauthorized' || value === 'rate_limited' || value === 'upstream_error' || value === 'timeout' || value === 'network_error' || value === 'invalid_response' || value === 'invalid_request' ? value : fallback;
 }
 
 function normalizeSecret(value: unknown, provider: AccountProvider): ChatGptSessionSecret | undefined {

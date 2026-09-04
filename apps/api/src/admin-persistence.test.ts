@@ -114,7 +114,7 @@ describe('durable administration', () => {
       body: JSON.stringify({ id: 'research', display_name: 'Research alias', backendModel: 'backend-discovered-later', enabled: false, defaults: { reasoning_effort: 'max', speed: 'quality' } }),
     });
     expect(create.status).toBe(201);
-    expect(await create.json()).toMatchObject({ model: { id: 'research', builtIn: false, backendModel: 'backend-discovered-later', enabled: false, defaults: { reasoning_effort: 'max', speed: 'quality' } } });
+    expect(await create.json()).toMatchObject({ model: { id: 'research', builtIn: false, backendModel: 'backend-discovered-later', enabled: false, defaults: { reasoning_effort: 'max', speed: 'standard' } } });
     const duplicate = await first.request('/admin/api/models', { method: 'POST', headers, body: JSON.stringify({ id: 'research' }) });
     expect(duplicate.status).toBe(400);
     expect(await duplicate.json()).toMatchObject({ error: expect.stringMatching(/already exists/) });

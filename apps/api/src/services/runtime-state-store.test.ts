@@ -60,6 +60,33 @@ describe('RuntimeStateStore', () => {
     expect(migrated).toMatchObject({ version: 2, runtimeApiKeys: { records: [expect.objectContaining({ key: 'legacy-key' })] }, modelAliases: [] });
   });
 
+  it('migrates legacy reasoning and speed aliases while preserving future values', () => {
+    const path = statePath();
+    writeFileSync(path, JSON.stringify({
+      version: 2,
+      accounts: [],
+      runtimeApiKeys: { records: [] },
+      modelAliases: [{
+        id: 'legacy',
+        type: 'model',
+        display_name: 'Legacy',
+        builtIn: false,
+        enabled: true,
+        capabilities: {
+          reasoning_effort: ['off', 'light', 'extra-high', 'future-deep'],
+          response_speed: ['balanced', 'fastest', 'future-tier'],
+          thinking: true,
+        },
+        defaults: { reasoning_effort: 'extra-high', speed: 'fast' },
+      }],
+    }));
+
+    const migrated = new RuntimeStateStore({ path }).load()!;
+    expect(migrated.modelAliases[0].defaults).toEqual({ reasoning_effort: 'xhigh', speed: 'priority' });
+    expect(migrated.modelAliases[0].capabilities.reasoning_effort).toEqual(['none', 'low', 'xhigh', 'future-deep']);
+    expect(migrated.modelAliases[0].capabilities.response_speed).toEqual(['standard', 'priority', 'future-tier']);
+  });
+
   it('honors a valid persisted empty account pool instead of recreating defaults', () => {
     const path = statePath();
     new RuntimeStateStore({ path }).save({ version: 1, accounts: [], runtimeApiKeys: { keys: [], namedKeys: {} } });

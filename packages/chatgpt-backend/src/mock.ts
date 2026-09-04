@@ -1,7 +1,23 @@
 import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptToolCall } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
 export interface MockChatGptBackendOptions { responsePrefix?: string; models?: ChatGptDiscoveredModel[]; env?: Partial<Pick<NodeJS.ProcessEnv, 'MOCK_BACKEND_MODELS_JSON'>>; }
-const DEFAULT_MOCK_DISCOVERED_MODELS: ChatGptDiscoveredModel[] = [{ id: 'backend-test-model', displayName: 'Backend Test Model' }];
+const DEFAULT_MOCK_DISCOVERED_MODELS: ChatGptDiscoveredModel[] = [{
+  id: 'backend-test-model',
+  displayName: 'Backend Test Model',
+  controls: {
+    reasoning: {
+      metadataKnown: true,
+      supported: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((effort) => ({ effort })),
+      defaultEffort: 'medium',
+    },
+    serviceTier: {
+      metadataKnown: true,
+      supported: [{ id: 'priority', name: 'Priority' }],
+      defaultTier: 'standard',
+      fastMode: true,
+    },
+  },
+}];
 export class MockChatGptBackend implements ChatGptBackendClient {
   private readonly responsePrefix: string;
   private readonly models: ChatGptDiscoveredModel[];
@@ -34,8 +50,8 @@ export class MockChatGptBackend implements ChatGptBackendClient {
   }
   private buildText(request: ChatGptCompletionRequest): string {
     const lastUser = [...request.messages].reverse().find((message) => message.role === 'user');
-    const effort = request.reasoningEffort ?? 'off';
-    const speed = request.speedPreference ?? 'balanced';
+    const effort = request.reasoningEffort ?? 'none';
+    const speed = request.serviceTier ?? request.speedPreference ?? 'standard';
     return `${this.responsePrefix}[effort=${effort},speed=${speed}] ${lastUser?.content ?? ''}`.trim();
   }
 }
@@ -80,6 +96,7 @@ function normalizeDiscoveredModel(value: unknown, label: string): ChatGptDiscove
     id,
     displayName: typeof (raw.display_name ?? raw.displayName) === 'string' && String(raw.display_name ?? raw.displayName).trim() ? String(raw.display_name ?? raw.displayName).trim() : undefined,
     capabilities: raw.capabilities && typeof raw.capabilities === 'object' && !Array.isArray(raw.capabilities) ? { ...(raw.capabilities as Record<string, unknown>) } : undefined,
+    controls: raw.controls && typeof raw.controls === 'object' && !Array.isArray(raw.controls) ? raw.controls as ChatGptDiscoveredModel['controls'] : undefined,
     raw,
   };
 }
@@ -88,5 +105,9 @@ function cloneDiscoveredModels(models: ChatGptDiscoveredModel[]): ChatGptDiscove
   return models.map((model) => ({
     ...model,
     capabilities: model.capabilities ? { ...model.capabilities } : undefined,
+    controls: model.controls ? {
+      reasoning: { ...model.controls.reasoning, supported: model.controls.reasoning.supported.map((option) => ({ ...option })) },
+      serviceTier: { ...model.controls.serviceTier, supported: model.controls.serviceTier.supported.map((option) => ({ ...option })) },
+    } : undefined,
   }));
 }

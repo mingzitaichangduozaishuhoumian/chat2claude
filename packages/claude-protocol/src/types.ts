@@ -13,8 +13,8 @@ export interface ClaudeUnknownContentBlock { type: string; [key: string]: unknow
 export type ClaudeContentBlock = ClaudeTextBlock | ClaudeImageBlock | ClaudeToolUseBlock | ClaudeToolResultBlock | ClaudeThinkingBlock | ClaudeRedactedThinkingBlock | ClaudeUnknownContentBlock;
 
 export interface ClaudeInputMessage { role: ClaudeRole; content: string | ClaudeContentBlock[]; }
-export type ClaudeReasoningEffort = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'max';
-export type ClaudeResponseSpeed = 'fastest' | 'fast' | 'balanced' | 'quality';
+export type ClaudeReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'off' | 'light' | 'extra-high' | 'ultra';
+export type ClaudeResponseSpeed = 'standard' | 'standard_only' | 'default' | 'auto' | 'priority' | 'fastest' | 'fast' | 'balanced' | 'quality';
 export interface ClaudeThinkingConfig { type?: string; budget_tokens?: number; enabled?: boolean; [key: string]: unknown; }
 export interface ClaudeOutputConfig { effort?: ClaudeReasoningEffort | string; [key: string]: unknown; }
 export interface ClaudeTool { name: string; description?: string; input_schema: Record<string, unknown>; strict?: boolean; [key: string]: unknown; }

@@ -34,31 +34,38 @@ describe('resolveReasoningSpeed', () => {
     expect(resolveReasoningSpeed({ ...baseRequest, speed: 'fastest', response_speed: 'quality' }, {
       globalSpeedPreference: 'balanced',
       modelDefaults: { [baseRequest.model]: { speedPreference: 'fast' } },
-    }).speedPreference).toBe('fastest');
+    }).speedPreference).toBe('priority');
   });
 
   it('uses response_speed before model default and global default', () => {
     expect(resolveReasoningSpeed({ ...baseRequest, response_speed: 'quality' }, {
       globalSpeedPreference: 'balanced',
       modelDefaults: { [baseRequest.model]: { speedPreference: 'fast' } },
-    }).speedPreference).toBe('quality');
+    }).speedPreference).toBe('standard');
   });
 
   it('uses model speed default before global default', () => {
     expect(resolveReasoningSpeed(baseRequest, {
       globalSpeedPreference: 'quality',
       modelDefaults: { [baseRequest.model]: { speedPreference: 'fast' } },
-    }).speedPreference).toBe('fast');
+    }).speedPreference).toBe('priority');
   });
 
   it('uses global speed default when no request or model default is present', () => {
-    expect(resolveReasoningSpeed(baseRequest, { globalSpeedPreference: 'quality' }).speedPreference).toBe('quality');
+    expect(resolveReasoningSpeed(baseRequest, { globalSpeedPreference: 'quality' }).speedPreference).toBe('standard');
   });
 });
 
 describe('normalizeReasoningEffort and normalizeSpeedPreference', () => {
-  it('falls back for unsupported values without rejecting the request', () => {
-    expect(normalizeReasoningEffort('extreme')).toBe('off');
-    expect(normalizeSpeedPreference('turbo')).toBe('balanced');
+  it('canonicalizes compatibility aliases and preserves future strings', () => {
+    expect(normalizeReasoningEffort('off')).toBe('none');
+    expect(normalizeReasoningEffort('light')).toBe('low');
+    expect(normalizeReasoningEffort('extra_high')).toBe('xhigh');
+    expect(normalizeReasoningEffort('extreme')).toBe('extreme');
+    expect(normalizeSpeedPreference('fastest')).toBe('priority');
+    expect(normalizeSpeedPreference('quality')).toBe('standard');
+    expect(normalizeSpeedPreference('standard_only')).toBe('standard');
+    expect(normalizeSpeedPreference('auto')).toBe('auto');
+    expect(normalizeSpeedPreference('turbo')).toBe('turbo');
   });
 });

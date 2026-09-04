@@ -3,7 +3,11 @@ import type { ClaudeContentBlock, ClaudeMessagesRequest, ClaudeTool, ClaudeToolC
 import { normalizeClaudeMessagesToCanonical, flattenCanonicalContentForTextBackend, type CanonicalContentBlock, type CanonicalMappingDiagnostic } from './canonical.js';
 import { resolveReasoningSpeed, type ReasoningSpeedDefaults } from './reasoning.js';
 export { normalizeClaudeMessagesToCanonical, flattenCanonicalContentForTextBackend } from './canonical.js';
-export interface BackendRequestOptions { backendModel?: string; backendOptions?: Record<string, unknown>; }
+export interface BackendRequestOptions {
+  backendModel?: string;
+  backendOptions?: Record<string, unknown>;
+  resolvedControls?: { reasoningEffort?: string; serviceTier?: string };
+}
 
 export function mapClaudeRequestToChatGpt(request: ClaudeMessagesRequest, defaults: ReasoningSpeedDefaults = {}, options: BackendRequestOptions = {}): ChatGptCompletionRequest {
   const canonical = normalizeClaudeMessagesToCanonical(request);
@@ -11,7 +15,7 @@ export function mapClaudeRequestToChatGpt(request: ClaudeMessagesRequest, defaul
     role: message.role === 'tool' ? 'user' : message.role,
     content: flattenCanonicalContentForTextBackend(message.content, canonical.diagnostics),
   }));
-  const resolved = resolveReasoningSpeed(request, defaults);
+  const resolved = options.resolvedControls ? undefined : resolveReasoningSpeed(request, defaults);
   const stopSequences = normalizeStopSequences(request.stop_sequences);
   const claudeRequest = preserveClaudeRequestFields(request, canonical.diagnostics);
   const backendOptions = {
@@ -24,8 +28,15 @@ export function mapClaudeRequestToChatGpt(request: ClaudeMessagesRequest, defaul
     inputItems: mapCanonicalInputItems(canonical.messages, canonical.diagnostics),
     maxTokens: request.max_tokens,
     model: options.backendModel ?? request.model,
-    reasoningEffort: resolved.reasoningEffort,
-    speedPreference: resolved.speedPreference,
+    ...(options.resolvedControls
+      ? {
+          ...(options.resolvedControls.reasoningEffort === undefined ? {} : { reasoningEffort: options.resolvedControls.reasoningEffort }),
+          ...(options.resolvedControls.serviceTier === undefined ? {} : { serviceTier: options.resolvedControls.serviceTier }),
+        }
+      : {
+          reasoningEffort: resolved!.reasoningEffort,
+          speedPreference: resolved!.speedPreference,
+        }),
     temperature: typeof request.temperature === 'number' ? request.temperature : undefined,
     topP: typeof request.top_p === 'number' ? request.top_p : undefined,
     stopSequences,

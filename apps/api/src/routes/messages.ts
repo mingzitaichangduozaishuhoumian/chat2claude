@@ -26,10 +26,14 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
       try {
         if (deps.backendProvider === 'session') await deps.modelRegistry.refreshFromBackend(deps.backend, backendContext);
         const resolution = deps.modelRegistry.resolve(request.model);
-        const backendRequest = mapClaudeRequestToChatGpt(request, {
-          ...deps.defaults,
-          modelDefaults: { ...deps.defaults?.modelDefaults, [request.model]: { reasoningEffort: resolution.model.defaults.reasoning_effort, speedPreference: resolution.model.defaults.speed } },
-        }, { backendModel: resolution.backendModel });
+        const controls = deps.modelRegistry.resolveControls(resolution, {
+          reasoningEffort: request.output_config?.effort ?? request.reasoning_effort,
+          serviceTier: request.service_tier ?? request.speed ?? request.response_speed,
+        });
+        const backendRequest = mapClaudeRequestToChatGpt(request, {}, {
+          backendModel: resolution.backendModel,
+          resolvedControls: controls,
+        });
         deps.requestLog.record({ route: '/v1/messages', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {

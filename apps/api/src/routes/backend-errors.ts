@@ -4,6 +4,8 @@ import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 export function mapChatGptBackendError(error: unknown): ClaudeApiError | undefined {
   if (!(error instanceof ChatGptBackendError)) return undefined;
   switch (error.code) {
+    case 'invalid_request':
+      return new ClaudeApiError(error.message, 400, 'invalid_request_error');
     case 'unauthorized':
       return new ClaudeApiError(error.message, 401, 'authentication_error');
     case 'rate_limited':

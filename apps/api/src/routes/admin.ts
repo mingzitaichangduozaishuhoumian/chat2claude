@@ -319,7 +319,7 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
   const curlTemplate = `curl __ORIGIN__/v1/messages \\
   -H 'content-type: application/json' \\
   -H 'x-api-key: <your-api-key>' \\
-  -d '{"model":"sonnet","max_tokens":128,"reasoning_effort":"medium","response_speed":"balanced","messages":[{"role":"user","content":"你好"}]}'`;
+  -d '{"model":"sonnet","max_tokens":128,"messages":[{"role":"user","content":"你好"}]}'`;
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -363,14 +363,12 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       <section class="card full"><h2>内置模型 Alias</h2><p class="muted">Sonnet 会在首次授权时自动选择后端。Haiku、Fable 和 Opus 如显示“未绑定”，需要切换到专业模式选择后端模型后才能调用。</p><div id="model-availability"><div class="empty">正在读取 alias 状态。</div></div></section>
       <section class="card full professional-panel"><h2>个人账号池（高级）</h2><p class="muted">仅用于同一自托管操作者管理本人控制或获授权的账号，并进行故障隔离、冷却、并发控制和本地调度；禁止用于公开转售订阅流量或面向不特定第三方的大规模共享。</p><div class="row"><input id="account-label" placeholder="账号标识" value="Mock ChatGPT Account" /><input id="account-concurrency" type="number" min="1" value="1" aria-label="最大并发" /><button id="add-account" class="secondary">添加 mock 账号</button></div><div id="accounts"><div class="empty">正在读取个人账号池状态。</div></div></section>
       <section class="card full"><h2>Runtime API Keys</h2><p class="muted">这是 Claude Code 等客户端调用 <code>/v1/*</code> 使用的 Key，不是 Admin API Key。当前 <strong id="api-keys-count">0</strong> 个；这里只显示安全前缀，原始 Key 仅会在创建后显示一次。</p><p class="muted">遗失 Key 时，在此撤销旧 Key，再重新授权生成新 Key 并立即复制保存。撤销会要求确认，且对应客户端会立即失去访问权限。</p><div class="row"><button id="refresh-api-keys" class="secondary" type="button">刷新 Key 列表</button></div><div id="api-keys"><div class="empty">正在读取运行时 API Key。</div></div></section>
-      <section class="card full professional-panel"><h2>模型映射（高级管理）</h2><p class="muted">后端模型来自 discovery；alias overlay 负责映射、启用状态与缺省 reasoning_effort / response_speed。</p><div class="row"><button id="reset-models" class="secondary">重置 alias overlay</button><button id="refresh-models" class="secondary">刷新 backend discovery</button></div><form id="create-model-form" class="row"><input id="model-alias-id" required pattern="[a-zA-Z0-9._-]+" placeholder="新 alias，例如 research" aria-label="新模型 alias" /><input id="model-display-name" placeholder="显示名称（可选）" aria-label="模型显示名称" /><input id="model-backend" placeholder="Backend model（可选）" aria-label="Backend model" /><button type="submit">创建自定义 alias</button></form><div id="models"><div class="empty">正在加载模型映射。</div></div></section>
+      <section class="card full professional-panel"><h2>模型映射（高级管理）</h2><p class="muted">后端模型来自 discovery；alias overlay 负责映射、启用状态与缺省 reasoning_effort / response_speed。</p><div class="row"><button id="reset-models" class="secondary">重置 alias overlay</button><button id="refresh-models" class="secondary">刷新 backend discovery</button></div><form id="create-model-form" class="row"><input id="model-alias-id" required pattern="[a-zA-Z0-9._-]+" placeholder="新 alias，例如 research" aria-label="新模型 alias" /><input id="model-display-name" placeholder="显示名称（可选）" aria-label="模型显示名称" /><select id="model-backend" aria-label="Backend model"><option value="">未绑定（可选）</option></select><button type="submit">创建自定义 alias</button></form><div id="models"><div class="empty">正在加载模型映射。</div></div></section>
       <section class="card"><h2>结果面板</h2><pre id="result" role="status" aria-live="polite">${escapeHtml(setupStatus.nextStep)}</pre></section>
       <section class="card"><h2>curl 示例</h2><p class="muted">示例地址由当前页面 origin 生成。</p><pre id="curl-example" data-template="${escapeHtml(curlTemplate)}">${escapeHtml(curlTemplate)}</pre></section>
     </div>
   </div></main>
   <script>
-    const effortOptions = ['off', 'minimal', 'low', 'medium', 'high', 'max'];
-    const speedOptions = ['fastest', 'fast', 'balanced', 'quality'];
     let currentFlowId = null;
     let pollTimer = null;
     const curlExample = document.getElementById('curl-example');
@@ -621,23 +619,66 @@ function renderAdminPage(setupStatus: ReturnType<typeof status>): string {
       try { body = await getJson('/admin/api/models'); } catch (error) { const failure = loadFailureHtml('模型数据加载失败，未加载。', error); document.getElementById('model-availability').innerHTML = failure; document.getElementById('models').innerHTML = failure; return; }
       const aliases = Array.isArray(body.aliases) ? body.aliases : (Array.isArray(body.models) ? body.models : []);
       const discovered = Array.isArray(body.discovered) ? body.discovered : [];
-      const discoveryHtml = discovered.length ? '<div class="row">' + discovered.map((model) => '<span class="pill">' + esc(model.id) + '</span>').join('') + '</div>' : '<div class="empty">Backend discovery 暂无模型。</div>';
+      const discoveryHtml = discovered.length ? '<div class="row">' + discovered.map((model) => '<span class="pill" title="' + esc(capabilitySummary(model.capabilities)) + '">' + esc(model.id) + '</span>').join('') + '</div>' : '<div class="empty">Backend discovery 暂无模型；不会假设所有控制项都可用。</div>';
       const builtInAliases = aliases.filter((model) => model.builtIn);
       document.getElementById('model-availability').innerHTML = builtInAliases.length
         ? '<div class="row">' + builtInAliases.map((model) => '<span class="pill"><code>' + esc(model.id) + '</code>：' + (model.status === 'unbound' ? '未绑定，需要专业模式选择后端模型' : esc(model.status || '-')) + '</span>').join('') + '</div>'
         : '<div class="empty">暂无内置 alias。</div>';
+      const createBackend = document.getElementById('model-backend');
+      createBackend.innerHTML = backendOptionsHtml('', discovered, true);
       if (!aliases.length) { document.getElementById('models').innerHTML = discoveryHtml + '<div class="empty">暂无 alias overlay。</div>'; return; }
-      document.getElementById('models').innerHTML = '<p class="muted">Backend discovery</p>' + discoveryHtml + '<div class="table-wrap"><table><thead><tr><th>Alias</th><th>Backend Model</th><th>状态</th><th>启用</th><th>默认参数</th><th>操作</th></tr></thead><tbody>' + aliases.map((model) =>
-        '<tr><td><code>' + esc(model.id) + '</code>' + (model.builtIn ? ' <span class="muted">内置</span>' : '') + '</td><td><input data-field="backendModel" data-id="' + esc(model.id) + '" value="' + esc(model.backendModel || '') + '" /></td><td><span class="pill">' + esc(model.status || '-') + '</span></td><td><input type="checkbox" data-field="enabled" data-id="' + esc(model.id) + '" ' + (model.enabled ? 'checked' : '') + ' /></td><td>' + selectHtml(model.id, 'reasoning_effort', effortOptions, model.defaults.reasoning_effort) + ' ' + selectHtml(model.id, 'speed', speedOptions, model.defaults.speed) + '</td><td><button data-save-model="' + esc(model.id) + '">保存</button>' + (model.builtIn ? '' : ' <button class="secondary" data-delete-model="' + esc(model.id) + '">删除</button>') + '</td></tr>'
+      document.getElementById('models').innerHTML = '<p class="muted">Backend discovery（选项与顺序直接来自 catalog）</p>' + discoveryHtml + '<div class="table-wrap"><table><thead><tr><th>Alias</th><th>Backend Model</th><th>状态</th><th>启用</th><th>目标能力与默认参数</th><th>操作</th></tr></thead><tbody>' + aliases.map((model) =>
+        '<tr><td><code>' + esc(model.id) + '</code>' + (model.builtIn ? ' <span class="muted">内置</span>' : '') + '</td><td><select data-field="backendModel" data-id="' + esc(model.id) + '">' + backendOptionsHtml(model.backendModel || '', discovered, true) + '</select></td><td><span class="pill">' + esc(model.status || '-') + '</span></td><td><input type="checkbox" data-field="enabled" data-id="' + esc(model.id) + '" ' + (model.enabled ? 'checked' : '') + ' /></td><td><div class="stack" data-controls-for="' + esc(model.id) + '">' + controlSelectsHtml(model, model.defaults, model.id) + capabilityStateHtml(model) + '</div></td><td><button data-save-model="' + esc(model.id) + '">保存</button>' + (model.builtIn ? '' : ' <button class="secondary" data-delete-model="' + esc(model.id) + '">删除</button>') + '</td></tr>'
       ).join('') + '</tbody></table></div>';
+      document.querySelectorAll('[data-field="backendModel"]').forEach((select) => select.addEventListener('change', () => {
+        const alias = aliases.find((model) => model.id === select.dataset.id);
+        const target = discovered.find((model) => model.id === select.value);
+        const host = document.querySelector('[data-controls-for="' + CSS.escape(select.dataset.id) + '"]');
+        if (alias && host) host.innerHTML = controlSelectsHtml(target || { capabilities: unknownCapabilities() }, alias.defaults, alias.id) + capabilityStateHtml(target || { capabilities: unknownCapabilities(), configuration_issues: [] });
+      }));
       document.querySelectorAll('[data-save-model]').forEach((button) => button.addEventListener('click', async () => saveModel(button.dataset.saveModel)));
       document.querySelectorAll('[data-delete-model]').forEach((button) => button.addEventListener('click', async () => {
         if (!window.confirm('确认删除此自定义模型 alias？删除后无法恢复。')) return;
         const body = await deleteJson('/admin/api/models/' + encodeURIComponent(button.dataset.deleteModel)); renderResult(body); await loadModels();
       }));
     }
-    async function saveModel(id) { const byField = (field) => document.querySelector('[data-id="' + CSS.escape(id) + '"][data-field="' + field + '"]'); const body = await patchJson('/admin/api/models/' + encodeURIComponent(id), { backendModel: byField('backendModel').value, enabled: byField('enabled').checked, defaults: { reasoning_effort: byField('reasoning_effort').value, speed: byField('speed').value } }); renderResult(body); await loadModels(); }
-    function selectHtml(id, field, options, current) { return '<select data-field="' + field + '" data-id="' + esc(id) + '">' + options.map((option) => '<option value="' + option + '" ' + (option === current ? 'selected' : '') + '>' + option + '</option>').join('') + '</select>'; }
+    async function saveModel(id) { const byField = (field) => document.querySelector('[data-id="' + CSS.escape(id) + '"][data-field="' + field + '"]'); const body = await patchJson('/admin/api/models/' + encodeURIComponent(id), { backendModel: byField('backendModel').value, enabled: byField('enabled').checked, defaults: { reasoning_effort: byField('reasoning_effort').value, service_tier: byField('speed').value } }); renderResult(body); await loadModels(); }
+    function backendOptionsHtml(current, discovered, allowEmpty) {
+      const values = discovered.map((model) => ({ value: model.id, label: model.display_name || model.id }));
+      if (current && !values.some((option) => option.value === current)) values.unshift({ value: current, label: current + '（已失效）' });
+      if (allowEmpty) values.unshift({ value: '', label: '未绑定' });
+      return values.map((option) => '<option value="' + esc(option.value) + '" ' + (option.value === current ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('');
+    }
+    function controlSelectsHtml(model, defaults, aliasId) {
+      const capabilities = model.capabilities || unknownCapabilities();
+      const reasoning = (capabilities.reasoning_effort_options || []).map((option) => ({ value: option.effort, label: reasoningLabel(option.effort), description: option.description }));
+      const tiers = [{ value: 'standard', label: 'Standard（发送 service_tier: default）' }, { value: 'auto', label: 'Auto（省略 service_tier）' }].concat((capabilities.service_tiers || []).filter((option) => !['standard', 'default', 'auto'].includes(String(option.id).toLowerCase())).map((option) => ({ value: option.id, label: option.name || option.id, description: option.description })));
+      return '<label>推理 ' + selectHtml(aliasId, 'reasoning_effort', reasoning, defaults.reasoning_effort) + '</label><label>服务层级 ' + selectHtml(aliasId, 'speed', tiers, defaults.speed) + '</label>';
+    }
+    function selectHtml(id, field, options, current) {
+      const normalized = String(current || '').toLowerCase();
+      if (current && !options.some((option) => String(option.value).toLowerCase() === normalized)) options = [{ value: current, label: current + '（配置不受目标支持）' }].concat(options);
+      return '<select data-field="' + field + '" data-id="' + esc(id) + '">' + options.map((option) => '<option value="' + esc(option.value) + '" title="' + esc(option.description || '') + '" ' + (String(option.value).toLowerCase() === normalized ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('') + '</select>';
+    }
+    function reasoningLabel(effort) {
+      const value = String(effort).toLowerCase();
+      if (value === 'low') return 'Light（官方 low）';
+      if (value === 'ultra') return 'Ultra（兼容最高强度）';
+      return effort;
+    }
+    function capabilityStateHtml(model) {
+      const capabilities = model.capabilities || unknownCapabilities();
+      const states = capabilities.metadata_status || {};
+      const parts = ['推理元数据：' + (states.reasoning === 'known' ? '已发现' : '未知'), '服务层级元数据：' + (states.service_tier === 'known' ? '已发现' : '未知')];
+      if (capabilities.ultra_lossy) parts.push(capabilities.ultra_mapped_effort ? 'Ultra 会有损映射到 ' + capabilities.ultra_mapped_effort + '，不会把 ultra 发给上游' : 'Ultra 没有安全的非 ultra 映射；显式请求会拒绝，隐式默认会省略');
+      if (Array.isArray(model.configuration_issues) && model.configuration_issues.length) parts.push(model.configuration_issues.join('；'));
+      return '<span class="muted">' + esc(parts.join(' · ')) + '</span>';
+    }
+    function capabilitySummary(capabilities) {
+      const value = capabilities || unknownCapabilities();
+      return 'reasoning: ' + ((value.reasoning_effort || []).join(', ') || '未知') + '; service tiers: ' + ((value.response_speed || []).join(', ') || '未知');
+    }
+    function unknownCapabilities() { return { reasoning_effort_options: [], service_tiers: [], metadata_status: { reasoning: 'unknown', service_tier: 'unknown' } }; }
     function renderResult(body) { document.getElementById('result').textContent = JSON.stringify(redactApiKeys(body), null, 2); }
     function redactApiKeys(value) {
       if (Array.isArray(value)) return value.map(redactApiKeys);

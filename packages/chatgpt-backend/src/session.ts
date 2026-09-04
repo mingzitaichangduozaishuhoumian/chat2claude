@@ -1,5 +1,5 @@
 import packageJson from '../package.json' with { type: 'json' };
-import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputContentPart, ChatGptInputItem, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
+import type { ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputContentPart, ChatGptInputItem, ChatGptModelControlCapabilities, ChatGptReasoningLevelOption, ChatGptServiceTierOption, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
 import { ChatGptBackendError, type ChatGptBackendErrorCode } from './errors.js';
 
@@ -67,6 +67,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   }
 
   async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent> {
+    validateSessionRequest(request);
     const secret = requireSessionSecret(context);
     const response = await this.fetchWithTimeout(this.endpoint('/backend-api/codex/responses'), {
       method: 'POST',
@@ -135,6 +136,16 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   }
 }
 
+function validateSessionRequest(request: ChatGptCompletionRequest): void {
+  if (request.reasoningEffort?.trim().toLowerCase() === 'ultra') {
+    throw new ChatGptBackendError(
+      'The local-only reasoning effort "ultra" must be resolved to a target-supported upstream effort before calling the ChatGPT session backend.',
+      'invalid_request',
+      { status: 400 },
+    );
+  }
+}
+
 function httpBackendError(prefix: string, status: number): ChatGptBackendError {
   return new ChatGptBackendError(`${prefix}: HTTP ${status}`, backendErrorCodeForStatus(status), { status });
 }
@@ -165,7 +176,8 @@ function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {
     max_output_tokens: request.maxTokens,
   };
   applyResponsesBodyOptions(body, request.backendOptions?.responsesBody);
-  if (request.reasoningEffort && request.reasoningEffort !== 'off') body.reasoning = { effort: request.reasoningEffort };
+  if (request.reasoningEffort) body.reasoning = { effort: request.reasoningEffort };
+  if (request.serviceTier) body.service_tier = request.serviceTier;
   if (typeof request.temperature === 'number') body.temperature = request.temperature;
   if (typeof request.topP === 'number') body.top_p = request.topP;
   if (request.stopSequences?.length) body.stop = request.stopSequences.length === 1 ? request.stopSequences[0] : request.stopSequences;
@@ -239,12 +251,86 @@ function normalizeDiscoveredModel(value: unknown): ChatGptDiscoveredModel | unde
   const id = readNonEmptyString(raw.id) ?? readNonEmptyString(raw.slug) ?? readNonEmptyString(raw.name) ?? readNonEmptyString(raw.model);
   if (!id) return undefined;
   const displayName = readNonEmptyString(raw.display_name) ?? readNonEmptyString(raw.displayName) ?? readNonEmptyString(raw.title) ?? readNonEmptyString(raw.name);
+  const capabilities = isPlainObject(raw.capabilities) ? { ...raw.capabilities } : undefined;
   return {
     id,
     displayName,
-    capabilities: raw.capabilities && typeof raw.capabilities === 'object' && !Array.isArray(raw.capabilities) ? { ...(raw.capabilities as Record<string, unknown>) } : undefined,
+    capabilities,
+    controls: normalizeModelControls(raw, capabilities),
     raw,
   };
+}
+
+function normalizeModelControls(raw: JsonObject, capabilities: JsonObject | undefined): ChatGptModelControlCapabilities {
+  const sources = [raw, capabilities].filter((source): source is JsonObject => Boolean(source));
+  const supportedReasoningValue = firstDefined(sources, ['supported_reasoning_levels', 'supportedReasoningLevels']);
+  const defaultReasoningValue = firstDefined(sources, ['default_reasoning_level', 'defaultReasoningLevel']);
+  const supportedReasoning = normalizeReasoningOptions(supportedReasoningValue);
+  const defaultEffort = readNonEmptyString(defaultReasoningValue);
+  const multiAgent = firstDefined(sources, ['multi_agent_reasoning', 'multiAgentReasoning', 'multi_agent', 'multiAgent']);
+
+  const serviceTiersValue = firstDefined(sources, ['service_tiers', 'serviceTiers']);
+  const additionalSpeedTiersValue = firstDefined(sources, ['additional_speed_tiers', 'additionalSpeedTiers']);
+  const serviceTiers = normalizeServiceTierOptions(serviceTiersValue, additionalSpeedTiersValue);
+  const defaultTier = readNonEmptyString(firstDefined(sources, ['default_service_tier', 'defaultServiceTier']));
+  const features = firstDefined(sources, ['features']);
+  const fastMode = isPlainObject(features) && (features.fast_mode === true || features.fastMode === true);
+
+  return {
+    reasoning: {
+      metadataKnown: Array.isArray(supportedReasoningValue) || defaultEffort !== undefined || multiAgent !== undefined,
+      supported: supportedReasoning,
+      defaultEffort,
+      ...(multiAgent === undefined ? {} : { multiAgent }),
+    },
+    serviceTier: {
+      metadataKnown: Array.isArray(serviceTiersValue) || Array.isArray(additionalSpeedTiersValue) || defaultTier !== undefined || fastMode,
+      supported: serviceTiers,
+      defaultTier,
+      fastMode,
+    },
+  };
+}
+
+function firstDefined(sources: JsonObject[], keys: string[]): unknown {
+  for (const source of sources) {
+    for (const key of keys) {
+      if (source[key] !== undefined) return source[key];
+    }
+  }
+  return undefined;
+}
+
+function normalizeReasoningOptions(value: unknown): ChatGptReasoningLevelOption[] {
+  if (!Array.isArray(value)) return [];
+  const result: ChatGptReasoningLevelOption[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const raw = typeof item === 'string' ? { effort: item } : isPlainObject(item) ? item : undefined;
+    const effort = readNonEmptyString(raw?.effort);
+    if (!effort || seen.has(effort)) continue;
+    seen.add(effort);
+    const description = readNonEmptyString(raw?.description);
+    result.push({ effort, ...(description ? { description } : {}) });
+  }
+  return result;
+}
+
+function normalizeServiceTierOptions(serviceTiersValue: unknown, additionalSpeedTiersValue: unknown): ChatGptServiceTierOption[] {
+  const result: ChatGptServiceTierOption[] = [];
+  const seen = new Set<string>();
+  const append = (item: unknown) => {
+    const raw = typeof item === 'string' ? { id: item } : isPlainObject(item) ? item : undefined;
+    const id = readNonEmptyString(raw?.id) ?? readNonEmptyString(raw?.tier);
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    const name = readNonEmptyString(raw?.name);
+    const description = readNonEmptyString(raw?.description);
+    result.push({ id, ...(name ? { name } : {}), ...(description ? { description } : {}) });
+  };
+  if (Array.isArray(serviceTiersValue)) serviceTiersValue.forEach(append);
+  if (Array.isArray(additionalSpeedTiersValue)) additionalSpeedTiersValue.forEach(append);
+  return result;
 }
 
 function readNonEmptyString(value: unknown): string | undefined {

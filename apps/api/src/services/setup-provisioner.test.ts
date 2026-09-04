@@ -74,6 +74,41 @@ describe('SetupProvisioner', () => {
     expect(accountPool.get('chatgpt-primary')?.secret?.accessToken).toBe('candidate-access-2');
   });
 
+  it('preserves a manual Sonnet binding across reauthorization and persists it with stable credentials', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'chat2claude-reauthorize-'));
+    try {
+      const catalog = [{ id: 'catalog-a' }, { id: 'catalog-b' }];
+      const backend = backendFrom({ listModels: async () => catalog });
+      const accountPool = new AccountPool();
+      const modelRegistry = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+      const runtimeApiKeys = new RuntimeApiKeys();
+      const store = new RuntimeStateStore({ path: join(directory, 'runtime-state.json') });
+      const durableState = new DurableRuntimeState({ accountPool, runtimeApiKeys, modelRegistry, store });
+      const provisioner = new SetupProvisioner({ accountPool, modelRegistry, runtimeApiKeys, backend, durableState });
+
+      const first = await provisioner.provision({ type: 'chatgpt-session', accessToken: 'first-access' });
+      expect(modelRegistry.get('sonnet')?.backendModel).toBe('catalog-a');
+
+      durableState.transaction(() => modelRegistry.update('sonnet', { backendModel: 'catalog-b' }));
+      const reauthorized = await provisioner.provision({ type: 'chatgpt-session', accessToken: 'second-access' });
+
+      expect(reauthorized.apiKey).toBe(first.apiKey);
+      expect(reauthorized.boundAliases).toEqual({});
+      expect(accountPool.get('chatgpt-primary')?.secret?.accessToken).toBe('second-access');
+      expect(modelRegistry.get('sonnet')?.backendModel).toBe('catalog-b');
+
+      const restoredAccounts = new AccountPool();
+      const restoredKeys = new RuntimeApiKeys();
+      const restoredModels = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+      new DurableRuntimeState({ accountPool: restoredAccounts, runtimeApiKeys: restoredKeys, modelRegistry: restoredModels, store }).hydrate();
+      expect(restoredAccounts.get('chatgpt-primary')?.secret?.accessToken).toBe('second-access');
+      expect(restoredKeys.has(first.apiKey)).toBe(true);
+      expect(restoredModels.get('sonnet')?.backendModel).toBe('catalog-b');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('uses model discovery as the sole remote session validation request', async () => {
     let modelRequests = 0;
     const backend = backendFrom({

@@ -1,7 +1,8 @@
 import type { ClaudeMessagesRequest } from '@chatgpt-to-claude/claude-protocol';
 
-export type ReasoningEffort = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'max';
-export type SpeedPreference = 'fastest' | 'fast' | 'balanced' | 'quality';
+export type CanonicalReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | (string & {});
+export type ReasoningEffort = CanonicalReasoningEffort | 'ultra';
+export type SpeedPreference = 'standard' | 'priority' | (string & {});
 
 export interface ModelReasoningSpeedDefaults {
   reasoningEffort?: ReasoningEffort | string;
@@ -21,10 +22,8 @@ export interface ResolvedReasoningSpeed {
 
 export interface ReasoningConfig { enabled: boolean; budgetTokens?: number; effort: ReasoningEffort; }
 
-const REASONING_EFFORTS = new Set<ReasoningEffort>(['off', 'minimal', 'low', 'medium', 'high', 'max']);
-const SPEED_PREFERENCES = new Set<SpeedPreference>(['fastest', 'fast', 'balanced', 'quality']);
-export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'off';
-export const DEFAULT_SPEED_PREFERENCE: SpeedPreference = 'balanced';
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'none';
+export const DEFAULT_SPEED_PREFERENCE: SpeedPreference = 'standard';
 
 export function resolveReasoningSpeed(request: ClaudeMessagesRequest, defaults: ReasoningSpeedDefaults = {}): ResolvedReasoningSpeed {
   const modelDefaults = defaults.modelDefaults?.[request.model];
@@ -32,23 +31,28 @@ export function resolveReasoningSpeed(request: ClaudeMessagesRequest, defaults: 
     reasoningEffort: normalizeReasoningEffort(
       request.output_config?.effort ?? request.reasoning_effort ?? modelDefaults?.reasoningEffort ?? defaults.globalReasoningEffort
     ),
-    speedPreference: normalizeSpeedPreference(request.speed ?? request.response_speed ?? modelDefaults?.speedPreference ?? defaults.globalSpeedPreference),
+    speedPreference: normalizeSpeedPreference(request.service_tier ?? request.speed ?? request.response_speed ?? modelDefaults?.speedPreference ?? defaults.globalSpeedPreference),
   };
 }
 
 export function normalizeReasoningEffort(value: unknown, fallback: ReasoningEffort = DEFAULT_REASONING_EFFORT): ReasoningEffort {
-  if (typeof value !== 'string') return fallback;
-  const normalized = value.trim().toLowerCase().replace(/_/g, '-') === 'none' ? 'off' : value.trim().toLowerCase();
-  return REASONING_EFFORTS.has(normalized as ReasoningEffort) ? normalized as ReasoningEffort : fallback;
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  const normalized = value.trim().toLowerCase().replace(/_/g, '-');
+  if (normalized === 'off') return 'none';
+  if (normalized === 'light') return 'low';
+  if (normalized === 'extra-high') return 'xhigh';
+  return normalized as ReasoningEffort;
 }
 
 export function normalizeSpeedPreference(value: unknown, fallback: SpeedPreference = DEFAULT_SPEED_PREFERENCE): SpeedPreference {
-  if (typeof value !== 'string') return fallback;
+  if (typeof value !== 'string' || !value.trim()) return fallback;
   const normalized = value.trim().toLowerCase().replace(/_/g, '-');
-  return SPEED_PREFERENCES.has(normalized as SpeedPreference) ? normalized as SpeedPreference : fallback;
+  if (normalized === 'fast' || normalized === 'fastest') return 'priority';
+  if (normalized === 'balanced' || normalized === 'quality' || normalized === 'default' || normalized === 'standard-only') return 'standard';
+  return normalized as SpeedPreference;
 }
 
 export function getReasoningConfig(request?: ClaudeMessagesRequest, defaults: ReasoningSpeedDefaults = {}): ReasoningConfig {
   const effort = request ? resolveReasoningSpeed(request, defaults).reasoningEffort : normalizeReasoningEffort(defaults.globalReasoningEffort);
-  return { enabled: effort !== 'off', effort };
+  return { enabled: effort !== 'none', effort };
 }

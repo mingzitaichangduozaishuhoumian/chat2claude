@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import * as nodeFs from 'node:fs';
 import { dirname } from 'node:path';
 import type { ChatGptBackendErrorCode, ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
+import { normalizeReasoningEffort, normalizeSpeedPreference } from '@chatgpt-to-claude/protocol-mapper';
 import type { AccountProvider, AccountStatus, AccountPoolState, PersistedAccount } from './account-pool.js';
 import { legacyRuntimeApiKeyId, type RuntimeApiKeyRecord, type RuntimeApiKeysPersistedSnapshot, type RuntimeApiKeysSnapshot } from './runtime-api-keys.js';
 import type { AliasOverlay } from './model-registry.js';
@@ -182,10 +183,12 @@ function validateState(value: unknown): RuntimeState {
 function validateAlias(value: unknown, index: number): AliasOverlay {
   const label = `modelAliases[${index}]`;
   const raw = strictObject(value, ['id', 'type', 'display_name', 'builtIn', 'enabled', 'backendModel', 'capabilities', 'defaults'], label, ['backendModel']);
-  const capabilities = strictObject(raw.capabilities, ['reasoning_effort', 'response_speed', 'thinking'], `${label}.capabilities`);
+  const capabilities = strictObject(raw.capabilities, undefined, `${label}.capabilities`);
   const defaults = strictObject(raw.defaults, ['reasoning_effort', 'speed'], `${label}.defaults`);
-  const reasoningEffort = enumValue(defaults.reasoning_effort, ['off', 'minimal', 'low', 'medium', 'high', 'max'] as const, `${label}.defaults.reasoning_effort`);
-  const speed = enumValue(defaults.speed, ['fastest', 'fast', 'balanced', 'quality'] as const, `${label}.defaults.speed`);
+  const reasoningEffort = normalizeReasoningEffort(nonEmptyString(defaults.reasoning_effort, `${label}.defaults.reasoning_effort`));
+  const speed = normalizeSpeedPreference(nonEmptyString(defaults.speed, `${label}.defaults.speed`));
+  const reasoning = nonEmptyStringArray(capabilities.reasoning_effort, `${label}.capabilities.reasoning_effort`).map((item) => normalizeReasoningEffort(item)).filter(unique);
+  const serviceTiers = nonEmptyStringArray(capabilities.response_speed, `${label}.capabilities.response_speed`).map((item) => normalizeSpeedPreference(item)).filter(unique);
   return {
     id: nonEmptyString(raw.id, `${label}.id`),
     type: enumValue(raw.type, ['model'] as const, `${label}.type`),
@@ -194,9 +197,17 @@ function validateAlias(value: unknown, index: number): AliasOverlay {
     enabled: booleanValue(raw.enabled, `${label}.enabled`),
     ...(raw.backendModel === undefined ? {} : { backendModel: nonEmptyString(raw.backendModel, `${label}.backendModel`) }),
     capabilities: {
-      reasoning_effort: enumArray(capabilities.reasoning_effort, ['off', 'minimal', 'low', 'medium', 'high', 'max'] as const, `${label}.capabilities.reasoning_effort`),
-      response_speed: enumArray(capabilities.response_speed, ['fastest', 'fast', 'balanced', 'quality'] as const, `${label}.capabilities.response_speed`),
-      thinking: booleanValue(capabilities.thinking, `${label}.capabilities.thinking`),
+      reasoning_effort: reasoning,
+      reasoning_effort_options: reasoning.map((effort) => ({ effort })),
+      response_speed: serviceTiers,
+      service_tiers: serviceTiers.filter((id) => id !== 'standard').map((id) => ({ id })),
+      thinking: capabilities.thinking === undefined ? false : booleanValue(capabilities.thinking, `${label}.capabilities.thinking`),
+      metadata_status: {
+        reasoning: reasoning.length ? 'known' : 'unknown',
+        service_tier: serviceTiers.length ? 'known' : 'unknown',
+      },
+      fast_mode: serviceTiers.includes('priority'),
+      ultra_lossy: false,
     },
     defaults: { reasoning_effort: reasoningEffort, speed },
   };
@@ -215,7 +226,7 @@ function validateAccount(value: unknown, index: number): PersistedAccount {
     maxConcurrency: positiveInteger(raw.maxConcurrency, `${label}.maxConcurrency`),
     lastUsedAt: nullableTimestamp(raw.lastUsedAt, `${label}.lastUsedAt`),
     lastError: nullableString(raw.lastError, `${label}.lastError`),
-    lastErrorCode: nullableEnum(raw.lastErrorCode, ['unauthorized', 'rate_limited', 'upstream_error', 'timeout', 'network_error', 'invalid_response'] as const, `${label}.lastErrorCode`) as ChatGptBackendErrorCode | null,
+    lastErrorCode: nullableEnum(raw.lastErrorCode, ['unauthorized', 'rate_limited', 'upstream_error', 'timeout', 'network_error', 'invalid_response', 'invalid_request'] as const, `${label}.lastErrorCode`) as ChatGptBackendErrorCode | null,
     cooldownUntil: nullableTimestamp(raw.cooldownUntil, `${label}.cooldownUntil`),
     capabilities: nonEmptyStringArray(raw.capabilities, `${label}.capabilities`),
     secret: raw.secret === undefined ? undefined : validateSecret(raw.secret, `${label}.secret`, provider),
@@ -340,6 +351,10 @@ function nonEmptyStringArray(value: unknown, label: string): string[] {
   const result = value.map((item, index) => nonEmptyString(item, `${label}[${index}]`));
   if (new Set(result).size !== result.length) throw invalid(`${label} contains duplicates`);
   return result;
+}
+
+function unique<T>(value: T, index: number, values: T[]): boolean {
+  return values.indexOf(value) === index;
 }
 
 function enumValue<T extends string>(value: unknown, allowed: readonly T[], label: string): T {

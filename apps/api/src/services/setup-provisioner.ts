@@ -105,7 +105,7 @@ export class SetupProvisioner {
     const best = chooseBestModel(discovered);
     return {
       account,
-      models: this.options.modelRegistry.prepareProvisioning(discovered, 'sonnet', best?.id),
+      models: this.options.modelRegistry.prepareProvisioning(discovered, 'sonnet', best?.id, 'bind-if-unbound'),
       runtimeKey: this.options.runtimeApiKeys.prepareNamedKey(PRIMARY_RUNTIME_KEY_NAME),
       modelIds: discovered.map((model) => model.id),
     };
@@ -149,7 +149,9 @@ export class SetupProvisioner {
 }
 
 export function chooseBestModel(models: ChatGptDiscoveredModel[]): ChatGptDiscoveredModel | undefined {
-  return [...models].sort((a, b) => modelScore(b) - modelScore(a))[0];
+  // Catalog order is authoritative. Avoid guessing model quality from names or
+  // hard-coding provider model IDs that can change independently of this proxy.
+  return models[0];
 }
 
 function committedDurabilityWarning(): ProvisioningDiagnostic {
@@ -224,15 +226,4 @@ function provisioningCancelledError(): Error {
 
 function commitImmediately<T>(commit: (committedAt: Date) => T): T {
   return commit(new Date());
-}
-
-function modelScore(model: ChatGptDiscoveredModel): number {
-  const text = `${model.id} ${model.displayName ?? ''}`.toLowerCase();
-  const keywords: Array<[string, number]> = [
-    ['gpt-5', 100],
-    ['codex', 80],
-    ['thinking', 60],
-    ['gpt-4', 40],
-  ];
-  return keywords.reduce((score, [keyword, value]) => score + (text.includes(keyword) ? value : 0), 0);
 }

@@ -15,6 +15,7 @@ export interface OpenAiChatCompletionRequest {
   top_p?: number;
   stop?: string | string[] | null;
   reasoning_effort?: string;
+  service_tier?: string;
   speed?: string;
   response_speed?: string;
   tools?: OpenAiChatTool[];
@@ -52,7 +53,11 @@ export interface OpenAiChatResponseMessage {
 
 export interface OpenAiChatResponseToolCall { id: string; type: 'function'; function: { name: string; arguments: string }; }
 
-export interface OpenAiBackendRequestOptions { backendModel?: string; backendOptions?: Record<string, unknown>; }
+export interface OpenAiBackendRequestOptions {
+  backendModel?: string;
+  backendOptions?: Record<string, unknown>;
+  resolvedControls?: { reasoningEffort?: string; serviceTier?: string };
+}
 
 export function mapOpenAiChatRequestToChatGpt(request: OpenAiChatCompletionRequest, defaults: ReasoningSpeedDefaults = {}, options: OpenAiBackendRequestOptions = {}): ChatGptCompletionRequest {
   const messages: ChatGptMessage[] = request.messages.map((message) => ({
@@ -67,8 +72,15 @@ export function mapOpenAiChatRequestToChatGpt(request: OpenAiChatCompletionReque
     inputItems: mapOpenAiChatInputItems(request.messages),
     maxTokens: request.max_completion_tokens ?? request.max_tokens ?? 1024,
     model: options.backendModel ?? request.model,
-    reasoningEffort: normalizeReasoningEffort(request.reasoning_effort ?? modelDefaults?.reasoningEffort ?? defaults.globalReasoningEffort),
-    speedPreference: normalizeSpeedPreference(request.speed ?? request.response_speed ?? modelDefaults?.speedPreference ?? defaults.globalSpeedPreference),
+    ...(options.resolvedControls
+      ? {
+          ...(options.resolvedControls.reasoningEffort === undefined ? {} : { reasoningEffort: options.resolvedControls.reasoningEffort }),
+          ...(options.resolvedControls.serviceTier === undefined ? {} : { serviceTier: options.resolvedControls.serviceTier }),
+        }
+      : {
+          reasoningEffort: normalizeReasoningEffort(request.reasoning_effort ?? modelDefaults?.reasoningEffort ?? defaults.globalReasoningEffort),
+          speedPreference: normalizeSpeedPreference(request.service_tier ?? request.speed ?? request.response_speed ?? modelDefaults?.speedPreference ?? defaults.globalSpeedPreference),
+        }),
     temperature: typeof request.temperature === 'number' ? request.temperature : undefined,
     topP: typeof request.top_p === 'number' ? request.top_p : undefined,
     stopSequences,
