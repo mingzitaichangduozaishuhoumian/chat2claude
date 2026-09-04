@@ -1,4 +1,5 @@
-import { createServer } from 'node:http';
+import { EventEmitter } from 'node:events';
+import { createServer, type Server } from 'node:http';
 import { describe, expect, it } from 'vitest';
 import { CodexOAuthClient, CODEX_OAUTH_SCOPE } from './codex-oauth-client.js';
 import { ChatGptAuthFlowService } from './chatgpt-auth-flow.js';
@@ -49,7 +50,7 @@ describe('CodexOAuthClient', () => {
 });
 
 describe('ChatGptAuthFlowService', () => {
-  it('uses cryptographic URL-safe IDs/state and exchanges a callback only once under concurrent polling', async () => {
+  it('uses cryptographic URL-safe IDs/state and exchanges a callback immediately only once', async () => {
     let exchanges = 0;
     const service = new ChatGptAuthFlowService({ enableCallbackListener: false, fetch: async () => {
       exchanges += 1;
@@ -63,7 +64,7 @@ describe('ChatGptAuthFlowService', () => {
     expect(state).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(authorizeUrl.searchParams.get('code_challenge')).toMatch(/^[A-Za-z0-9_-]{43}$/);
 
-    await expect(service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code-secret&state=${state}` })).resolves.toMatchObject({ state: 'waiting' });
+    await expect(service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code-secret&state=${state}` })).resolves.toMatchObject({ state: 'ready' });
     await expect(service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=other&state=${state}` })).resolves.toBeUndefined();
     const [first, second] = await Promise.all([service.status(started.id), service.status(started.id)]);
     expect(exchanges).toBe(1);
@@ -93,12 +94,12 @@ describe('ChatGptAuthFlowService', () => {
   });
 
   it('rejects duplicate and conflicting OAuth callback parameters without consuming state', async () => {
-    const service = new ChatGptAuthFlowService({ enableCallbackListener: false });
+    const service = new ChatGptAuthFlowService({ enableCallbackListener: false, fetch: async () => Response.json({ access_token: 'access-secret' }) });
     const started = await service.start();
     const state = new URL(started.authorizeUrl).searchParams.get('state')!;
     await expect(service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=a&code=b&state=${state}` })).rejects.toThrow('duplicate code');
     await expect(service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=a&error=denied&state=${state}` })).rejects.toThrow('both code and error');
-    await expect(service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=valid&state=${state}` })).resolves.toMatchObject({ state: 'waiting' });
+    await expect(service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=valid&state=${state}` })).resolves.toMatchObject({ state: 'ready' });
   });
 
   it('runs provisioning once and clears the flow secret copy', async () => {
@@ -131,12 +132,11 @@ describe('ChatGptAuthFlowService', () => {
     const service = new ChatGptAuthFlowService({ enableCallbackListener: false, fetch: async () => exchange.promise });
     const started = await service.start();
     const state = new URL(started.authorizeUrl).searchParams.get('state')!;
-    await service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code&state=${state}` });
-    const polling = service.status(started.id);
+    const completing = service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code&state=${state}` });
     await Promise.resolve();
     await expect(service.cancel(started.id)).resolves.toMatchObject({ state: 'cancelled' });
     exchange.resolve(Response.json({ access_token: 'stale-access' }));
-    await expect(polling).resolves.toMatchObject({ state: 'cancelled' });
+    await expect(completing).resolves.toMatchObject({ state: 'cancelled' });
     await expect(service.status(started.id)).resolves.toMatchObject({ state: 'cancelled' });
   });
 
@@ -155,12 +155,11 @@ describe('ChatGptAuthFlowService', () => {
     } });
     const started = await service.start();
     const state = new URL(started.authorizeUrl).searchParams.get('state')!;
-    await service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code&state=${state}` });
-    const polling = service.status(started.id);
+    const completing = service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code&state=${state}` });
     await entered.promise;
     await service.cancel(started.id);
     await aborted.promise;
-    await expect(polling).resolves.toMatchObject({ state: 'cancelled' });
+    await expect(completing).resolves.toMatchObject({ state: 'cancelled' });
     await expect(service.status(started.id)).resolves.toMatchObject({ state: 'cancelled' });
   });
 
@@ -178,11 +177,10 @@ describe('ChatGptAuthFlowService', () => {
     } });
     const started = await service.start();
     const state = new URL(started.authorizeUrl).searchParams.get('state')!;
-    await service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code&state=${state}` });
-    const polling = service.status(started.id);
+    const completing = service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code&state=${state}` });
     await entered.promise;
     await aborted.promise;
-    await expect(polling).resolves.toMatchObject({ state: 'expired' });
+    await expect(completing).resolves.toMatchObject({ state: 'expired' });
     await expect(service.status(started.id)).resolves.toMatchObject({ state: 'expired' });
   });
 
@@ -192,12 +190,11 @@ describe('ChatGptAuthFlowService', () => {
     const service = new ChatGptAuthFlowService({ enableCallbackListener: false, ttlMs: 1000, now: () => now, fetch: async () => exchange.promise });
     const started = await service.start();
     const state = new URL(started.authorizeUrl).searchParams.get('state')!;
-    await service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code&state=${state}` });
-    const polling = service.status(started.id);
+    const completing = service.completeCallback({ redirectUrl: `http://localhost:1455/auth/callback?code=code&state=${state}` });
     await Promise.resolve();
     now = new Date('2026-08-22T00:00:02.000Z');
     exchange.resolve(Response.json({ access_token: 'stale-access' }));
-    await expect(polling).resolves.toMatchObject({ state: 'expired' });
+    await expect(completing).resolves.toMatchObject({ state: 'expired' });
   });
 
   it('aborts provisioning on cancellation and preserves the cancelled state', async () => {
@@ -240,6 +237,71 @@ describe('ChatGptAuthFlowService', () => {
     await expect(service.status(started.id)).resolves.toMatchObject({ state: 'ready', provisioned: true, message: 'ChatGPT 授权和 API 初始化已完成。' });
   });
 
+  it.each(['EAFNOSUPPORT', 'EADDRNOTAVAIL'] as const)('keeps the preferred port when IPv6 bind fails with %s and IPv4 succeeds', async (code) => {
+    const listener = scriptedServerFactory([code, 'success']);
+    const service = new ChatGptAuthFlowService({ callbackServerFactory: listener.factory });
+    try {
+      const started = await service.start();
+      expect(new URL(started.authorizeUrl).searchParams.get('redirect_uri')).toBe('http://localhost:1455/auth/callback');
+      expect(listener.attempts).toEqual([
+        { port: 1455, host: '::1', ipv6Only: true },
+        { port: 1455, host: '127.0.0.1', ipv6Only: false },
+      ]);
+    } finally {
+      await service.close();
+    }
+    expect(listener.openServers()).toHaveLength(0);
+  });
+
+  it('falls back immediately after IPv6 EADDRINUSE without trying IPv4 on the occupied port', async () => {
+    const listener = scriptedServerFactory(['EADDRINUSE', 'success', 'success']);
+    const service = new ChatGptAuthFlowService({ callbackServerFactory: listener.factory });
+    try {
+      const started = await service.start();
+      expect(new URL(started.authorizeUrl).searchParams.get('redirect_uri')).toBe('http://localhost:1457/auth/callback');
+      expect(listener.attempts).toEqual([
+        { port: 1455, host: '::1', ipv6Only: true },
+        { port: 1457, host: '::1', ipv6Only: true },
+        { port: 1457, host: '127.0.0.1', ipv6Only: false },
+      ]);
+    } finally {
+      await service.close();
+    }
+    expect(listener.openServers()).toHaveLength(0);
+  });
+
+  it('closes an opened IPv6 socket before falling back when IPv4 reports EADDRINUSE', async () => {
+    const listener = scriptedServerFactory(['success', 'EADDRINUSE', 'success', 'success']);
+    const service = new ChatGptAuthFlowService({ callbackServerFactory: listener.factory });
+    try {
+      const started = await service.start();
+      expect(new URL(started.authorizeUrl).searchParams.get('redirect_uri')).toBe('http://localhost:1457/auth/callback');
+      expect(listener.servers[0].closeCalls).toBe(1);
+      expect(listener.servers[0].listening).toBe(false);
+      expect(listener.attempts).toEqual([
+        { port: 1455, host: '::1', ipv6Only: true },
+        { port: 1455, host: '127.0.0.1', ipv6Only: false },
+        { port: 1457, host: '::1', ipv6Only: true },
+        { port: 1457, host: '127.0.0.1', ipv6Only: false },
+      ]);
+    } finally {
+      await service.close();
+    }
+    expect(listener.openServers()).toHaveLength(0);
+  });
+
+  it('closes every socket opened while both callback ports fail', async () => {
+    const listener = scriptedServerFactory(['success', 'EADDRINUSE', 'success', 'EADDRINUSE']);
+    const service = new ChatGptAuthFlowService({ callbackServerFactory: listener.factory });
+    const started = await service.start();
+    expect(new URL(started.authorizeUrl).searchParams.get('redirect_uri')).toBe('http://localhost:1455/auth/callback');
+    expect(started.message).toContain('本地 callback listener 未能启动');
+    expect(listener.servers.filter((server) => server.closeCalls === 1)).toHaveLength(2);
+    expect(listener.openServers()).toHaveLength(0);
+    await service.close();
+    expect(listener.openServers()).toHaveLength(0);
+  });
+
   it('serializes concurrent listener startup and gives every flow the fallback port', async () => {
     const blocker = createServer();
     await new Promise<void>((resolve, reject) => blocker.once('error', reject).listen(1455, '127.0.0.1', () => resolve()));
@@ -264,34 +326,78 @@ describe('ChatGptAuthFlowService', () => {
     try {
       const started = await service.start();
       expect(new URL(started.authorizeUrl).searchParams.get('redirect_uri')).toBe('http://localhost:1457/auth/callback');
+      if (await supportsIpv6Loopback()) {
+        const probe = createServer();
+        await new Promise<void>((resolve, reject) => probe.once('error', reject).listen({ port: 1455, host: '::1', ipv6Only: true }, () => resolve()));
+        await new Promise<void>((resolve) => probe.close(() => resolve()));
+      }
     } finally {
       await service.close();
       await new Promise<void>((resolve) => blocker.close(() => resolve()));
     }
   });
 
-  it('returns truthful listener statuses with defensive headers', async () => {
+  it('serves the authorize redirect_uri on localhost and returns defensive callback headers', async () => {
     const port = await reservePort();
-    const service = new ChatGptAuthFlowService({ callbackPort: port });
+    const service = new ChatGptAuthFlowService({ callbackPort: port, fetch: async () => Response.json({ access_token: 'access-secret' }) });
     try {
       const started = await service.start();
       const authorizeUrl = new URL(started.authorizeUrl);
       const state = authorizeUrl.searchParams.get('state')!;
-      const wrong = await fetch(`http://127.0.0.1:${port}/wrong`);
+      const callbackUrl = new URL(authorizeUrl.searchParams.get('redirect_uri')!);
+      const wrong = await fetch(new URL('/wrong', callbackUrl));
       expect(wrong.status).toBe(404);
-      const invalid = await fetch(`http://127.0.0.1:${port}/auth/callback?state=${state}`);
-      expect(invalid.status).toBe(400);
-      const valid = await fetch(`http://127.0.0.1:${port}/auth/callback?code=code&state=${state}`);
+      callbackUrl.searchParams.set('code', 'code');
+      callbackUrl.searchParams.set('state', state);
+      const valid = await fetch(callbackUrl);
       expect(valid.status).toBe(200);
       expect(valid.headers.get('cache-control')).toBe('no-store');
       expect(valid.headers.get('referrer-policy')).toBe('no-referrer');
       expect(valid.headers.get('x-content-type-options')).toBe('nosniff');
       expect(valid.headers.get('content-security-policy')).toContain("default-src 'none'");
-      const replay = await fetch(`http://127.0.0.1:${port}/auth/callback?code=code&state=${state}`);
+      expect(await service.status(started.id)).toMatchObject({ state: 'ready' });
+      const replay = await fetch(callbackUrl);
       expect(replay.status).toBe(404);
     } finally {
       await service.close();
     }
+  });
+
+  it('accepts callbacks on IPv4 and IPv6 loopback when IPv6 is available', async () => {
+    const port = await reservePort();
+    const ipv6Available = await supportsIpv6Loopback();
+    const service = new ChatGptAuthFlowService({ callbackPort: port, fetch: async () => Response.json({ access_token: 'access-secret' }) });
+    try {
+      const ipv4Flow = await service.start();
+      const ipv4Authorize = new URL(ipv4Flow.authorizeUrl);
+      const ipv4Callback = callbackForHost(ipv4Authorize, '127.0.0.1', 'ipv4-code');
+      expect((await fetch(ipv4Callback)).status).toBe(200);
+
+      if (ipv6Available) {
+        const ipv6Flow = await service.start();
+        const ipv6Authorize = new URL(ipv6Flow.authorizeUrl);
+        const ipv6Callback = callbackForHost(ipv6Authorize, '[::1]', 'ipv6-code');
+        expect((await fetch(ipv6Callback)).status).toBe(200);
+      }
+    } finally {
+      await service.close();
+    }
+  });
+
+  it('closes every loopback listener socket', async () => {
+    const port = await reservePort();
+    const ipv6Available = await supportsIpv6Loopback();
+    const service = new ChatGptAuthFlowService({ callbackPort: port });
+    const started = await service.start();
+    const redirectUri = new URL(started.authorizeUrl).searchParams.get('redirect_uri')!;
+    expect((await fetch(new URL('/wrong', redirectUri))).status).toBe(404);
+    expect((await fetch(`http://127.0.0.1:${port}/wrong`)).status).toBe(404);
+    if (ipv6Available) expect((await fetch(`http://[::1]:${port}/wrong`)).status).toBe(404);
+
+    await service.close();
+
+    await expect(fetch(`http://127.0.0.1:${port}/wrong`)).rejects.toThrow();
+    if (ipv6Available) await expect(fetch(`http://[::1]:${port}/wrong`)).rejects.toThrow();
   });
 
   it.each(['http://localhost:3100/admin', 'http://localhost:3100?next=x', 'http://user@localhost:3100', 'ftp://localhost:3100'])('rejects an unsafe internal return origin: %s', async (returnOrigin) => {
@@ -299,15 +405,23 @@ describe('ChatGptAuthFlowService', () => {
     await expect(service.start({ returnOrigin })).rejects.toThrow('exact HTTP(S) origin');
   });
 
-  it('redirects successful listener callbacks to the flow-bound admin origin with the same defensive headers', async () => {
+  it('redirects successful listener callbacks with a non-sensitive flow locator and defensive headers', async () => {
     const port = await reservePort();
-    const service = new ChatGptAuthFlowService({ callbackPort: port });
+    const service = new ChatGptAuthFlowService({ callbackPort: port, fetch: async () => Response.json({ access_token: 'access-secret' }) });
     try {
       const started = await service.start({ returnOrigin: 'http://localhost:3100' });
-      const state = new URL(started.authorizeUrl).searchParams.get('state')!;
-      const response = await fetch(`http://127.0.0.1:${port}/auth/callback?code=code&state=${state}`, { redirect: 'manual' });
+      const authorizeUrl = new URL(started.authorizeUrl);
+      const callbackUrl = new URL(authorizeUrl.searchParams.get('redirect_uri')!);
+      callbackUrl.searchParams.set('code', 'code-secret');
+      callbackUrl.searchParams.set('state', authorizeUrl.searchParams.get('state')!);
+      const response = await fetch(callbackUrl, { redirect: 'manual' });
       expect(response.status).toBe(303);
-      expect(response.headers.get('location')).toBe('http://localhost:3100/admin');
+      const location = new URL(response.headers.get('location')!);
+      expect(location.origin + location.pathname).toBe('http://localhost:3100/admin');
+      expect(location.searchParams.get('oauth_flow')).toBe(started.id);
+      expect(location.toString()).not.toContain('code-secret');
+      expect(location.toString()).not.toContain(authorizeUrl.searchParams.get('state')!);
+      expect(location.toString()).not.toContain('access-secret');
       expect(response.headers.get('cache-control')).toBe('no-store');
       expect(response.headers.get('referrer-policy')).toBe('no-referrer');
       expect(response.headers.get('x-content-type-options')).toBe('nosniff');
@@ -326,6 +440,26 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function callbackForHost(authorizeUrl: URL, host: string, code: string): URL {
+  const callback = new URL(authorizeUrl.searchParams.get('redirect_uri')!);
+  callback.host = `${host}:${callback.port}`;
+  callback.searchParams.set('code', code);
+  callback.searchParams.set('state', authorizeUrl.searchParams.get('state')!);
+  return callback;
+}
+
+async function supportsIpv6Loopback(): Promise<boolean> {
+  const server = createServer();
+  try {
+    await new Promise<void>((resolve, reject) => server.once('error', reject).listen({ port: 0, host: '::1', ipv6Only: true }, () => resolve()));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 async function reservePort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', () => resolve()));
@@ -333,4 +467,42 @@ async function reservePort(): Promise<number> {
   if (!address || typeof address === 'string') throw new Error('Failed to reserve port');
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return address.port;
+}
+
+type ScriptedListenOutcome = 'success' | 'EAFNOSUPPORT' | 'EADDRNOTAVAIL' | 'EADDRINUSE';
+type ScriptedServer = Server & { closeCalls: number };
+
+function scriptedServerFactory(outcomes: ScriptedListenOutcome[]) {
+  const remaining = [...outcomes];
+  const attempts: Array<{ port: number; host: string; ipv6Only: boolean }> = [];
+  const servers: ScriptedServer[] = [];
+  const factory = () => {
+    const server = new EventEmitter() as ScriptedServer;
+    Object.defineProperty(server, 'listening', { configurable: true, value: false, writable: true });
+    server.closeCalls = 0;
+    server.listen = ((options: { port: number; host: string; ipv6Only: boolean }) => {
+      attempts.push({ port: options.port, host: options.host, ipv6Only: options.ipv6Only });
+      const outcome = remaining.shift();
+      if (!outcome) throw new Error('Unexpected loopback listen attempt');
+      queueMicrotask(() => {
+        if (outcome === 'success') {
+          Object.defineProperty(server, 'listening', { configurable: true, value: true, writable: true });
+          server.emit('listening');
+          return;
+        }
+        const error = Object.assign(new Error(`bind ${outcome}`), { code: outcome }) as NodeJS.ErrnoException;
+        server.emit('error', error);
+      });
+      return server;
+    }) as unknown as ScriptedServer['listen'];
+    server.close = ((callback?: (error?: Error) => void) => {
+      server.closeCalls += 1;
+      Object.defineProperty(server, 'listening', { configurable: true, value: false, writable: true });
+      queueMicrotask(() => callback?.());
+      return server;
+    }) as unknown as ScriptedServer['close'];
+    servers.push(server);
+    return server;
+  };
+  return { factory, attempts, servers, openServers: () => servers.filter((server) => server.listening) };
 }

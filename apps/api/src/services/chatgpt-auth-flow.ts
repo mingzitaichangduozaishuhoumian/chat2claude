@@ -27,6 +27,8 @@ export interface ChatGptAuthFlowServiceOptions {
   enableCallbackListener?: boolean;
   oauthClient?: CodexOAuthClient;
   oauthRequestTimeoutMs?: number;
+  /** @internal Minimal deterministic seam for loopback bind regression tests. */
+  callbackServerFactory?: (requestListener: (req: IncomingMessage, res: ServerResponse) => void) => Server;
 }
 
 export interface StartChatGptAuthFlowInput {
@@ -56,7 +58,8 @@ interface InternalFlow extends ChatGptAuthFlowSnapshot {
 
 const DEFAULT_TTL_MS = 10 * 60 * 1000;
 const CALLBACK_PATH = '/auth/callback';
-const CALLBACK_HOST = '127.0.0.1';
+const CALLBACK_HOST_IPV6 = '::1';
+const CALLBACK_HOST_IPV4 = '127.0.0.1';
 const DEFAULT_CALLBACK_PORT = 1455;
 const FALLBACK_CALLBACK_PORT = 1457;
 const CALLBACK_HEADERS = {
@@ -72,10 +75,11 @@ export class ChatGptAuthFlowService {
   private readonly now: () => Date;
   private readonly ttlMs: number;
   private readonly oauthClient: CodexOAuthClient;
+  private readonly callbackServerFactory: NonNullable<ChatGptAuthFlowServiceOptions['callbackServerFactory']>;
   private readonly preferredCallbackPort: number;
   private readonly callbackPortExplicit: boolean;
   private callbackPort: number;
-  private callbackServer: Server | undefined;
+  private callbackServers: Server[] = [];
   private callbackServerReady = false;
   private callbackServerError: string | undefined;
   private callbackListenerPromise: Promise<void> | undefined;
@@ -84,6 +88,7 @@ export class ChatGptAuthFlowService {
     this.now = options.now ?? (() => new Date());
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.oauthClient = options.oauthClient ?? new CodexOAuthClient({ fetch: options.fetch, now: this.now, timeoutMs: options.oauthRequestTimeoutMs });
+    this.callbackServerFactory = options.callbackServerFactory ?? ((requestListener) => createServer(requestListener));
     this.callbackPortExplicit = options.callbackPort !== undefined;
     this.preferredCallbackPort = options.callbackPort ?? DEFAULT_CALLBACK_PORT;
     this.callbackPort = this.preferredCallbackPort;
@@ -102,8 +107,8 @@ export class ChatGptAuthFlowService {
       state: 'link_ready',
       authorizeUrl: this.oauthClient.buildAuthorizeUrl({ state: oauthState, codeVerifier, redirectUri }),
       message: this.callbackServerReady
-        ? `请复制或点击 Codex OAuth 授权链接，在当前浏览器完成授权；本地 ${CALLBACK_HOST}:${this.callbackPort} 会接收回调。`
-        : `请复制或点击 Codex OAuth 授权链接完成授权。授权后如果浏览器显示无法连接 localhost:${this.callbackPort}，请复制地址栏 callback URL 回后台粘贴。${this.callbackServerError ? ' 本地 callback listener 未能启动。' : ''}`,
+        ? `请在新窗口完成 Codex OAuth 授权；本地 localhost:${this.callbackPort} callback listener 会通过可用的 IPv6/IPv4 loopback 接收回调。`
+        : `请打开或复制 Codex OAuth 授权链接完成授权。授权后如果浏览器显示无法连接 localhost:${this.callbackPort}，请复制地址栏 callback URL 回后台粘贴。${this.callbackServerError ? ' 本地 callback listener 未能启动。' : ''}`,
       createdAt: createdAt.toISOString(),
       expiresAt: new Date(createdAt.getTime() + this.ttlMs).toISOString(),
       openedByService: false,
@@ -148,8 +153,7 @@ export class ChatGptAuthFlowService {
       return publicSnapshot(flow);
     }
     flow.code = parsed.code;
-    flow.state = 'waiting';
-    flow.message = '已收到 Codex OAuth callback，正在等待后台轮询换取 token。';
+    await this.exchangeCode(flow);
     return publicSnapshot(flow);
   }
 
@@ -235,12 +239,11 @@ export class ChatGptAuthFlowService {
       this.clearExpiryDeadline(flow);
     }
     await this.callbackListenerPromise?.catch(() => undefined);
-    const server = this.callbackServer;
-    this.callbackServer = undefined;
+    const servers = this.callbackServers;
+    this.callbackServers = [];
     this.callbackServerReady = false;
     this.callbackListenerPromise = undefined;
-    if (!server) return;
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await closeServers(servers);
   }
 
   private async exchangeCode(flow: InternalFlow): Promise<void> {
@@ -299,27 +302,47 @@ export class ChatGptAuthFlowService {
   }
 
   private async tryListen(port: number): Promise<boolean> {
-    const server = createServer((req, res) => { void this.handleCallbackRequest(req, res); });
-    this.callbackServer = server;
-    return new Promise<boolean>((resolve) => {
-      const onError = (error: Error) => {
+    const opened: Server[] = [];
+    const ipv6 = await this.listenOnLoopback(port, CALLBACK_HOST_IPV6, true);
+    if (ipv6.server) opened.push(ipv6.server);
+    else if (!isIpv6Unavailable(ipv6.error)) {
+      this.callbackServerError = ipv6.error.message;
+      return false;
+    }
+
+    const ipv4 = await this.listenOnLoopback(port, CALLBACK_HOST_IPV4, false);
+    if (!ipv4.server) {
+      this.callbackServerError = ipv4.error.message;
+      await closeServers(opened);
+      return false;
+    }
+    opened.push(ipv4.server);
+
+    this.callbackServers = opened;
+    this.callbackPort = port;
+    this.callbackServerReady = true;
+    this.callbackServerError = undefined;
+    return true;
+  }
+
+  private listenOnLoopback(port: number, host: string, ipv6Only: boolean): Promise<{ server: Server; error?: never } | { server?: never; error: NodeJS.ErrnoException }> {
+    const server = this.callbackServerFactory((req, res) => { void this.handleCallbackRequest(req, res); });
+    return new Promise((resolve) => {
+      const onError = (error: NodeJS.ErrnoException) => {
         server.removeListener('listening', onListening);
-        if (this.callbackServer === server) this.callbackServer = undefined;
-        this.callbackServerReady = false;
-        this.callbackServerError = error.message;
-        resolve(false);
+        resolve({ error });
       };
       const onListening = () => {
         server.removeListener('error', onError);
-        server.on('error', () => { this.callbackServerReady = false; });
-        this.callbackPort = port;
-        this.callbackServerReady = true;
-        this.callbackServerError = undefined;
-        resolve(true);
+        server.on('error', (error: Error) => {
+          this.callbackServerReady = false;
+          this.callbackServerError = error.message;
+        });
+        resolve({ server });
       };
       server.once('error', onError);
       server.once('listening', onListening);
-      server.listen(port, CALLBACK_HOST);
+      server.listen({ port, host, ipv6Only });
     });
   }
 
@@ -351,7 +374,9 @@ export class ChatGptAuthFlowService {
       }
       const returnOrigin = this.flows.get(snapshot.id)?.returnOrigin;
       if (returnOrigin) {
-        sendCallbackRedirect(res, `${returnOrigin}/admin`);
+        const target = new URL('/admin', returnOrigin);
+        target.searchParams.set('oauth_flow', snapshot.id);
+        sendCallbackRedirect(res, target.toString());
         return;
       }
       sendCallbackResponse(res, 200, '授权已完成，请回到 chat2claude 后台。', true);
@@ -421,6 +446,17 @@ export class ChatGptAuthFlowService {
     flow.operationController?.abort();
     flow.operationController = undefined;
   }
+}
+
+function isIpv6Unavailable(error: NodeJS.ErrnoException): boolean {
+  return error.code === 'EAFNOSUPPORT' || error.code === 'EADDRNOTAVAIL' || error.code === 'EPROTONOSUPPORT' || error.code === 'ENOPROTOOPT';
+}
+
+async function closeServers(servers: Server[]): Promise<void> {
+  await Promise.all(servers.map((server) => new Promise<void>((resolve) => {
+    if (!server.listening) { resolve(); return; }
+    server.close(() => resolve());
+  })));
 }
 
 function callbackRedirectUri(port: number): string {
