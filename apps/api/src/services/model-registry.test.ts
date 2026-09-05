@@ -47,6 +47,51 @@ function registry(model: ChatGptDiscoveredModel, defaults: { reasoning_effort: s
 }
 
 describe('ModelRegistry dynamic Codex controls', () => {
+  it.each([false, true])('projects one canonical Fast without changing raw catalog tiers (fastMode=%s)', (fastMode) => {
+    const target = catalogModel();
+    target.controls!.serviceTier = { metadataKnown: true, fastMode, supported: [
+      { id: 'economy', name: 'Economy' }, { id: 'FASTEST', name: 'Provider fastest' },
+      { id: 'flex', description: 'Queued' }, { id: 'FaSt' }, { id: 'Priority' }, { id: 'rapid' },
+    ] };
+    const models = registry(target);
+    expect(models.get('sonnet')?.capabilities.service_tiers).toEqual([
+      { id: 'economy', name: 'Economy' }, { id: 'priority', name: 'Fast' },
+      { id: 'flex', description: 'Queued' }, { id: 'rapid' },
+    ]);
+    expect(models.resolve('sonnet').target.controls?.serviceTier.supported).toEqual(target.controls!.serviceTier.supported);
+  });
+
+  it.each([
+    { ids: ['FASTEST', 'FaSt', 'Priority'], input: 'fast', expected: 'FaSt' },
+    { ids: ['FASTEST', 'FaSt', 'Priority'], input: 'fastest', expected: 'FASTEST' },
+    { ids: ['FASTEST', 'FaSt', 'Priority'], input: 'priority', expected: 'Priority' },
+    { ids: ['FASTEST', 'FaSt'], input: 'priority', expected: 'FaSt' },
+    { ids: ['FASTEST'], input: 'fast', expected: 'FASTEST' },
+    { ids: ['FaSt'], input: 'fastest', expected: 'FaSt' },
+  ])('resolves $input to raw provider ID $expected in $ids', ({ ids, input, expected }) => {
+    const target = catalogModel();
+    target.controls!.serviceTier = { metadataKnown: true, fastMode: false, supported: ids.map((id) => ({ id })) };
+    const models = registry(target, { reasoning_effort: 'low', speed: 'priority' });
+    expect(models.resolveControls(models.resolve('sonnet'), { serviceTier: input }).serviceTier).toBe(expected);
+    expect(models.resolveControls(models.resolve('sonnet')).serviceTier).toBe(ids.includes('Priority') ? 'Priority' : ids.includes('FaSt') ? 'FaSt' : 'FASTEST');
+  });
+
+  it('uses fastMode-only support but never borrows it from another account', () => {
+    const target = catalogModel();
+    target.controls!.serviceTier = { metadataKnown: true, supported: [], fastMode: true };
+    const models = registry(target);
+    expect(models.get('sonnet')?.capabilities.service_tiers).toEqual([{ id: 'priority', name: 'Fast' }]);
+    expect(models.resolveControls(models.resolve('sonnet'), { serviceTier: 'FASTEST' }).serviceTier).toBe('priority');
+    const identity = { accountId: 'no-fast', createdAt: '2026-09-04T01:00:00.000Z' };
+    const unsupported = catalogModel();
+    unsupported.controls!.serviceTier = { metadataKnown: false, supported: [{ id: 'rapid' }], fastMode: false };
+    models.replaceAccountModels(identity, [unsupported]);
+    for (const serviceTier of ['fast', 'fastest', 'priority']) {
+      expect(models.supportsAccountRequest('sonnet', identity, { serviceTier })).toBe(false);
+      expect(() => models.resolveControls(models.resolveForAccount('sonnet', identity), { serviceTier })).toThrow(/Unsupported service_tier/);
+    }
+  });
+
   it('projects ordered target capabilities instead of static alias capabilities', () => {
     const model = registry(catalogModel()).get('sonnet')!;
     expect(model.capabilities.reasoning_effort).toEqual(['low', 'future-deep', 'max']);

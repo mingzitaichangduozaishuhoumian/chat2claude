@@ -449,8 +449,15 @@ function effectiveCapabilities(model: ChatGptDiscoveredModel | undefined): Model
   if (!controls) return unknownCapabilities();
   const advertisesUltra = controls.reasoning.supported.some((option) => normalizeReasoningEffort(option.effort) === 'ultra');
   const ultraMappedEffort = advertisesUltra ? mapUltraEffort(controls) : undefined;
-  const serviceTiers = cloneServiceOptions(controls.serviceTier.supported);
-  if (controls.serviceTier.fastMode && !serviceTiers.some((option) => option.id.toLowerCase() === 'priority')) serviceTiers.push({ id: 'priority', name: 'Priority' });
+  const serviceTiers: ChatGptServiceTierOption[] = [];
+  let hasFast = false;
+  for (const option of controls.serviceTier.supported) {
+    if (isFastTier(option.id)) {
+      if (!hasFast) serviceTiers.push({ id: 'priority', name: 'Fast' });
+      hasFast = true;
+    } else serviceTiers.push({ ...option });
+  }
+  if (controls.serviceTier.fastMode && !hasFast) serviceTiers.push({ id: 'priority', name: 'Fast' });
   return {
     reasoning_effort: controls.reasoning.supported.map((option) => option.effort),
     reasoning_effort_options: controls.reasoning.supported.map((option) => ({ ...option })),
@@ -562,7 +569,7 @@ function validateServiceTier(model: ChatGptDiscoveredModel, rawValue: unknown, e
   const normalized = normalizeSpeedPreference(rawValue);
   if (normalized === 'auto') return undefined;
   if (normalized === 'standard') return 'default';
-  const advertised = findAdvertisedServiceTier(model, normalized);
+  const advertised = findAdvertisedServiceTier(model, rawValue.trim());
   if (!advertised) return invalidControl(model, 'service_tier', rawValue, supportedServiceTierValues(model), explicit);
   return advertised;
 }
@@ -577,10 +584,22 @@ function findAdvertisedReasoning(model: ChatGptDiscoveredModel, value: string): 
   return model.controls?.reasoning.supported.find((option) => normalizeReasoningEffort(option.effort) === value)?.effort;
 }
 
+const FAST_TIERS = ['priority', 'fast', 'fastest'];
+function isFastTier(value: string): boolean { return FAST_TIERS.includes(value.toLowerCase()); }
+
 function findAdvertisedServiceTier(model: ChatGptDiscoveredModel, value: string): string | undefined {
-  const advertised = model.controls?.serviceTier.supported.find((option) => option.id.toLowerCase() === value.toLowerCase())?.id;
+  const serviceTier = model.controls?.serviceTier;
+  const supported = serviceTier?.supported ?? [];
+  const advertised = supported.find((option) => option.id.toLowerCase() === value.toLowerCase())?.id;
   if (advertised) return advertised;
-  return value === 'priority' && model.controls?.serviceTier.fastMode ? 'priority' : undefined;
+  if (isFastTier(value)) {
+    for (const tier of FAST_TIERS) {
+      const match = supported.find((option) => option.id.toLowerCase() === tier);
+      if (match) return match.id;
+    }
+    return serviceTier?.fastMode ? 'priority' : undefined;
+  }
+  return supported.find((option) => option.id.toLowerCase() === normalizeSpeedPreference(value))?.id;
 }
 
 function supportedReasoningValues(model: ChatGptDiscoveredModel): string[] {
