@@ -130,6 +130,14 @@ summary { cursor: pointer; font-weight: 800; }
 table { width: 100%; min-width: 780px; border-collapse: collapse; font-size: 13px; }
 th, td { border-bottom: 1px solid var(--line); padding: 10px; text-align: left; vertical-align: top; }
 th { color: var(--ink-soft); background: var(--surface-muted); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+[data-admin-mode="simple"] .model-mapping-panel table { min-width: 0; table-layout: fixed; }
+[data-admin-mode="simple"] .model-mapping-panel th, [data-admin-mode="simple"] .model-mapping-panel td { padding: 8px 6px; overflow-wrap: anywhere; }
+[data-admin-mode="simple"] .model-mapping-panel th:nth-child(1) { width: 24%; }
+[data-admin-mode="simple"] .model-mapping-panel th:nth-child(4) { width: 48px; }
+[data-admin-mode="simple"] .model-mapping-panel th:last-child { width: 64px; }
+[data-admin-mode="simple"] .model-mapping-panel select { min-width: 0; max-width: 100%; padding: 8px 4px; }
+[data-admin-mode="simple"] .model-mapping-panel input[type="checkbox"] { width: 18px; min-height: 18px; }
+[data-admin-mode="simple"] .model-mapping-panel td button { padding: 8px; }
 .utility-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
