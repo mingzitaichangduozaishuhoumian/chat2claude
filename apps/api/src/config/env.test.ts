@@ -1,8 +1,23 @@
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadEnv } from './env.js';
+import { DEFAULT_CODEX_CLIENT_VERSION } from '@chatgpt-to-claude/chatgpt-backend';
 
 describe('loadEnv', () => {
+  it('uses the centralized Codex protocol version and accepts an explicit override', () => {
+    expect(loadEnv({}).codexClientVersion).toBe(DEFAULT_CODEX_CLIENT_VERSION);
+    expect(loadEnv({ CODEX_CLIENT_VERSION: '2.3.4' }).codexClientVersion).toBe('2.3.4');
+    expect(loadEnv({ CODEX_CLIENT_VERSION: '2.3.4-alpha.2+build.7' }).codexClientVersion).toBe('2.3.4-alpha.2+build.7');
+  });
+
+  it.each(['', ' ', ' 1.2.3', '1.2.3 ', 'v1.2.3', '1.2', '01.2.3', '1.02.3', '1.2.03', '1.2.3-01', '1.2.3-', '1.2.3+','1.2.3\n', '1.2.3\r\nsecret-header: secret', 'secret-value', `1.2.3+${'a'.repeat(129)}`])('rejects an invalid Codex client version safely (%j)', (value) => {
+    expect(() => loadEnv({ CODEX_CLIENT_VERSION: value })).toThrow('CODEX_CLIENT_VERSION must be a valid SemVer version');
+    try { loadEnv({ CODEX_CLIENT_VERSION: value }); } catch (error) {
+      expect(String(error)).not.toContain('secret-value');
+      expect(String(error)).not.toContain('secret-header');
+    }
+  });
+
   it('defaults host to localhost only, permits local bootstrap, and uses the API data directory', () => {
     const env = loadEnv({});
     expect(env).toMatchObject({ host: '127.0.0.1', allowAnonymousBootstrap: true, localContainerBootstrap: false });

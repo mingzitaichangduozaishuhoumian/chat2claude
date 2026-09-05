@@ -1,4 +1,4 @@
-import { ChatGptBackendError, type ChatGptAccountQuota, type ChatGptBackendClient, type ChatGptBackendHealthCheckResult, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, type ChatGptAccountQuota, type ChatGptBackendClient, type ChatGptBackendHealthCheckResult, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel, type ChatGptModelDiscoveryResult } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ChatGptStreamEvent } from '@chatgpt-to-claude/chatgpt-backend';
 import { markAccountCredentialError } from './account-pool.js';
 import type { SessionCredentialManager } from './session-credential-manager.js';
@@ -25,10 +25,15 @@ export function accountQuotaContext(account: NonNullable<ChatGptBackendRequestCo
 }
 
 export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
+  readonly discoverModels?: (context?: ChatGptBackendRequestContext) => Promise<ChatGptModelDiscoveryResult>;
+
   constructor(
     private readonly transport: ChatGptBackendClient,
     private readonly credentials: SessionCredentialManager,
-  ) {}
+  ) {
+    const discover = transport.discoverModels?.bind(transport);
+    if (discover) this.discoverModels = (context) => this.withOneUnauthorizedRetry(context, discover);
+  }
 
   async listModels(context?: ChatGptBackendRequestContext): Promise<ChatGptDiscoveredModel[]> {
     return this.withOneUnauthorizedRetry(context, (freshContext) => this.transport.listModels(freshContext));

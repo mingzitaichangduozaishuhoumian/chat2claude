@@ -251,7 +251,15 @@ async function loadAccounts() {
 }
 function bindAccountActions() {
   document.querySelectorAll('[data-account-health]').forEach((button) => button.addEventListener('click', async () => {
-    await withPendingButton(button, '正在刷新', async () => { const body = await postJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.accountHealth) + '/health-check'); renderResult(body); await Promise.all([loadAccounts(), loadModels()]); });
+    await withPendingButton(button, '正在刷新', async () => {
+      try {
+        const body = await postJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.accountHealth) + '/health-check');
+        renderResult(body);
+      } finally {
+        // A failed POST can still update discovery status and retain a cached catalog.
+        await Promise.all([loadAccounts(), loadModels()]);
+      }
+    });
   }));
   document.querySelectorAll('[data-account-reauthorize]').forEach((button) => button.addEventListener('click', () => startOAuthFlow('reauthorize', button.dataset.accountReauthorize)));
   document.querySelectorAll('[data-account-toggle]').forEach((button) => button.addEventListener('click', async () => {
@@ -319,6 +327,7 @@ async function refreshQuotaAccount(accountId) {
     if (index === -1) quotasCache.push(body.quota); else quotasCache[index] = body.quota;
     const feedback = quotaRefreshFeedback(body.quota);
     renderResult({ ...body, message: feedback }); announce(feedback);
+    await loadAccounts();
   } catch (error) { renderResult({ error: error.message }); announce('账号配额刷新失败。'); }
   finally { pendingQuotaAccounts.delete(accountId); renderQuotaPanel(); }
 }
@@ -330,6 +339,7 @@ document.getElementById('refresh-all-quotas').addEventListener('click', async ()
     quotasCache = Array.isArray(body.quotas) ? body.quotas : [];
     quotaRequestState = { status: 'loaded', error: null };
     renderResult(body);
+    await loadAccounts();
     const summary = body.summary || {};
     const fresh = Number(summary.fresh || 0);
     const stale = Number(summary.stale || 0);
@@ -421,7 +431,12 @@ document.getElementById('create-model-form').addEventListener('submit', async (e
 document.getElementById('reset-models').addEventListener('click', async () => { const body = await postJson('/admin/api/models/reset'); renderResult(body); await loadModels(); });
 document.getElementById('refresh-models').addEventListener('click', async () => { const body = await postJson('/admin/api/models/refresh'); renderResult(body); await Promise.all([loadModels(), loadAccounts()]); });
 
-function renderResult(body) { document.getElementById('result').textContent = JSON.stringify(redactApiKeys(body), null, 2); }
+function renderResult(body) {
+  const outcomes = Array.isArray(body.refreshedAccounts) ? body.refreshedAccounts : [];
+  const feedback = outcomes.map((item) => item.accountId + ': ' + item.message).join('；') || body.message;
+  if (feedback) announce(feedback);
+  document.getElementById('result').textContent = (feedback ? feedback + '\\n' : '') + JSON.stringify(redactApiKeys(body), null, 2);
+}
 function redactApiKeys(value) {
   if (Array.isArray(value)) return value.map(redactApiKeys);
   if (!value || typeof value !== 'object') return value;

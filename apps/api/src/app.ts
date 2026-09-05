@@ -1,3 +1,4 @@
+import { refreshAccountModels } from './services/account-model-discovery.js';
 import { Hono } from 'hono';
 import type { ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import { createLogger } from '@chatgpt-to-claude/shared';
@@ -23,7 +24,6 @@ import { DurableRuntimeState } from './services/durable-runtime-state.js';
 import { LocalAdminSession } from './services/local-admin-session.js';
 import { chooseBestModel, SetupProvisioner } from './services/setup-provisioner.js';
 import { AdminOperationalState } from './services/admin-operational-state.js';
-import { accountDiscoveryContext } from './services/refresh-aware-backend.js';
 import { AccountQuotaService } from './services/account-quota-service.js';
 
 export type Chat2ClaudeApp = Hono & { dispose: () => Promise<void> };
@@ -72,7 +72,7 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   });
   const requestLog = new RequestLog();
   const responsesStore = new ResponsesStore();
-  const authFlow = options.authFlow ?? new ChatGptAuthFlowService({ oauthRequestTimeoutMs: env.chatGptRequestTimeoutMs });
+  const authFlow = options.authFlow ?? new ChatGptAuthFlowService({ oauthRequestTimeoutMs: env.chatGptRequestTimeoutMs, codexClientVersion: env.codexClientVersion });
   const modelRegistryReady = (env.chatGptBackend === 'session'
     ? refreshSessionAccountCatalogs(accountPool, modelRegistry, backend, durableState, operationalState, logger)
     : modelRegistry.refreshFromBackend(backend)).catch(() => {
@@ -121,35 +121,18 @@ async function refreshSessionAccountCatalogs(
   const accounts = accountPool.snapshot().accounts.filter((account) =>
     account.provider === 'chatgpt-session' && account.enabled && account.status === 'available');
   for (const account of accounts) {
-    const discovery = accountPool.beginDiscovery(account);
-    if (!discovery) continue;
     try {
-      const models = await backend.listModels(accountDiscoveryContext(account, discovery.id));
-      if (!accountPool.isCurrentDiscovery(discovery)) {
-        logger.warn('ChatGPT startup account changed during model discovery.', { accountId: account.id });
-        continue;
-      }
-      const prepared = modelRegistry.prepareProvisioning(models, 'sonnet', chooseBestModel(models)?.id, 'bind-if-unbound');
-      const commit = () => modelRegistry.commitPreparedProvisioning(
-        prepared,
-        { accountId: account.id, createdAt: account.createdAt },
-        account.enabled,
-      );
-      if (Object.keys(prepared.boundAliases).length > 0 && durableState) durableState.transaction(commit);
-      else commit();
-      try {
-        operationalState?.recordProvisioningSuccess(
-          { accountId: account.id, createdAt: account.createdAt },
-          models,
-          { checkedAt: new Date().toISOString(), result: 'healthy', message: null },
-        );
-      } catch {
-        logger.warn('ChatGPT startup operational metadata update failed.', { accountId: account.id });
-      }
+      const outcome = await refreshAccountModels({ accountPool, modelRegistry, backend, operationalState }, account, (result) => {
+        const prepared = modelRegistry.prepareProvisioning(result.models, 'sonnet', chooseBestModel(result.models)?.id, 'bind-if-unbound');
+        const commit = () => modelRegistry.commitPreparedProvisioning(prepared, { accountId: account.id, createdAt: account.createdAt }, account.enabled);
+        if (Object.keys(prepared.boundAliases).length > 0 && durableState) durableState.transaction(commit);
+        else commit();
+      });
+      if (!outcome.ok || outcome.warning) logger.warn('ChatGPT startup account discovery requires attention.', { accountId: account.id });
     } catch {
-      logger.warn('ChatGPT startup account model discovery failed.', { accountId: account.id });
-    } finally {
-      accountPool.endDiscovery(discovery);
+      // The transaction owns rollback; a local commit failure must not prevent
+      // independent accounts from completing their startup discovery.
+      logger.warn('ChatGPT startup account catalog update failed.', { accountId: account.id });
     }
   }
 }

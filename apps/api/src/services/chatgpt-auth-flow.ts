@@ -34,6 +34,7 @@ export interface ChatGptAuthFlowServiceOptions {
   enableCallbackListener?: boolean;
   oauthClient?: CodexOAuthClient;
   oauthRequestTimeoutMs?: number;
+  codexClientVersion?: string;
   /** @internal Minimal deterministic seam for loopback bind regression tests. */
   callbackServerFactory?: (requestListener: (req: IncomingMessage, res: ServerResponse) => void) => Server;
 }
@@ -97,7 +98,7 @@ export class ChatGptAuthFlowService {
   constructor(private readonly options: ChatGptAuthFlowServiceOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
-    this.oauthClient = options.oauthClient ?? new CodexOAuthClient({ fetch: options.fetch, now: this.now, timeoutMs: options.oauthRequestTimeoutMs });
+    this.oauthClient = options.oauthClient ?? new CodexOAuthClient({ fetch: options.fetch, now: this.now, timeoutMs: options.oauthRequestTimeoutMs, clientVersion: options.codexClientVersion });
     this.callbackServerFactory = options.callbackServerFactory ?? ((requestListener) => createServer(requestListener));
     this.callbackPortExplicit = options.callbackPort !== undefined;
     this.preferredCallbackPort = options.callbackPort ?? DEFAULT_CALLBACK_PORT;

@@ -1,15 +1,19 @@
+import type { ChatGptModelDiscoveryDiagnostic } from './client.js';
+
 export type ChatGptBackendErrorCode = 'unauthorized' | 'rate_limited' | 'upstream_error' | 'timeout' | 'network_error' | 'invalid_response' | 'invalid_request';
 
 export interface ChatGptBackendErrorOptions {
   code?: ChatGptBackendErrorCode;
   status?: number;
   cause?: unknown;
+  discoveryDiagnostic?: ChatGptModelDiscoveryDiagnostic;
 }
 
 export class ChatGptBackendError extends Error {
   public readonly code: ChatGptBackendErrorCode;
   public readonly status?: number;
   public override readonly cause?: unknown;
+  public readonly discoveryDiagnostic?: ChatGptModelDiscoveryDiagnostic;
 
   constructor(message: string, codeOrCause?: ChatGptBackendErrorCode | unknown, options: ChatGptBackendErrorOptions = {}) {
     const code = isBackendErrorCode(codeOrCause) ? codeOrCause : options.code ?? 'upstream_error';
@@ -19,6 +23,7 @@ export class ChatGptBackendError extends Error {
     this.code = code;
     this.status = options.status;
     this.cause = cause;
+    this.discoveryDiagnostic = options.discoveryDiagnostic;
   }
 }
 

@@ -1,17 +1,18 @@
 import { createHash } from 'node:crypto';
-import { ChatGptBackendError, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, CODEX_ORIGINATOR, codexUserAgent, normalizeCodexClientVersion, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 
 export const CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 export const CODEX_AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize';
 export const CODEX_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 export const CODEX_OAUTH_SCOPE = 'openid profile email offline_access api.connectors.read api.connectors.invoke';
-export const CODEX_OAUTH_ORIGINATOR = 'chat2claude';
+export const CODEX_OAUTH_ORIGINATOR = CODEX_ORIGINATOR;
 const DEFAULT_OAUTH_REQUEST_TIMEOUT_MS = 60_000;
 
 export interface CodexOAuthClientOptions {
   fetch?: typeof fetch;
   now?: () => Date;
   timeoutMs?: number;
+  clientVersion?: string;
 }
 
 export interface CodexAuthorizationInput {
@@ -29,11 +30,13 @@ export class CodexOAuthClient {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => Date;
   private readonly timeoutMs: number;
+  private readonly clientVersion: string;
 
   constructor(options: CodexOAuthClientOptions = {}) {
     this.fetchImpl = options.fetch ?? fetch;
     this.now = options.now ?? (() => new Date());
     this.timeoutMs = normalizeTimeout(options.timeoutMs);
+    this.clientVersion = normalizeCodexClientVersion(options.clientVersion);
   }
 
   buildAuthorizeUrl(input: CodexAuthorizationInput): string {
@@ -84,7 +87,12 @@ export class CodexOAuthClient {
       ({ response, payload } = await withDeadline(async (requestSignal) => {
         const tokenResponse = await this.fetchImpl(CODEX_TOKEN_URL, {
           method: 'POST',
-          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          headers: {
+            'content-type': 'application/x-www-form-urlencoded',
+            accept: 'application/json',
+            originator: CODEX_ORIGINATOR,
+            'user-agent': codexUserAgent(this.clientVersion, current?.userAgent),
+          },
           body,
           signal: requestSignal,
         });

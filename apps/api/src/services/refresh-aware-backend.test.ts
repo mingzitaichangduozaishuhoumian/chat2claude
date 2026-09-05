@@ -20,6 +20,27 @@ function setup(backend: ChatGptBackendClient) {
 }
 
 describe('RefreshAwareChatGptBackend', () => {
+  it('preserves typed discovery results across the existing unauthorized retry', async () => {
+    const tokens: string[] = [];
+    const result = { models: [{ id: 'synthetic-model' }], status: 'partial' as const, diagnostic: {
+      clientVersion: '1.2.3', httpStatus: 200, contentType: 'json' as const, envelope: 'models' as const,
+      candidateCount: 2, acceptedCount: 1, rejectedCount: 1, duplicateCount: 0, reasons: ['invalid_model_id' as const],
+    } };
+    const backend = backendFrom({ discoverModels: async (context) => {
+      tokens.push(context?.account?.secret?.accessToken ?? '');
+      if (tokens.length === 1) throw unauthorized();
+      return result;
+    } });
+    const { wrapper, context, getRefreshes } = setup(backend);
+    await expect(wrapper.discoverModels!(context)).resolves.toBe(result);
+    expect(tokens).toEqual(['access-1', 'access-2']);
+    expect(getRefreshes()).toBe(1);
+  });
+
+  it('does not advertise typed discovery when the wrapped provider lacks it', () => {
+    expect(setup(backendFrom({})).wrapper.discoverModels).toBeUndefined();
+  });
+
   it('refreshes and retries once after the first unauthorized response', async () => {
     const tokens: string[] = [];
     const backend = backendFrom({ complete: async (_request, context) => {

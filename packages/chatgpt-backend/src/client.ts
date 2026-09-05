@@ -39,6 +39,26 @@ export interface ChatGptModelControlCapabilities {
 }
 export interface ChatGptDiscoveredModel { id: string; displayName?: string; capabilities?: Record<string, unknown>; controls?: ChatGptModelControlCapabilities; raw?: unknown; }
 
+/** Allowlisted operational metadata only. Never attach provider payloads or error text. */
+export interface ChatGptModelDiscoveryDiagnostic {
+  clientVersion: string;
+  httpStatus?: number;
+  contentType: 'json' | 'event_stream' | 'html' | 'other' | 'missing';
+  envelope: 'models' | 'data' | 'body_models' | 'array' | 'unknown';
+  candidateCount: number;
+  acceptedCount: number;
+  rejectedCount: number;
+  duplicateCount: number;
+  reasons: Array<'unknown_envelope' | 'invalid_model_array' | 'invalid_model_id' | 'duplicate_model_id' | 'invalid_json'>;
+}
+
+export interface ChatGptModelDiscoveryResult {
+  models: ChatGptDiscoveredModel[];
+  /** unknown means no account/provider discovery was performed. */
+  status: 'unknown' | 'success' | 'empty' | 'partial';
+  diagnostic?: ChatGptModelDiscoveryDiagnostic;
+}
+
 export interface ChatGptSessionSecret {
   type: 'chatgpt-session';
   accessToken?: string;
@@ -101,6 +121,7 @@ export interface ChatGptBackendClient {
   complete(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse>;
   stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent>;
   listModels(context?: ChatGptBackendRequestContext): Promise<ChatGptDiscoveredModel[]>;
+  discoverModels?(context?: ChatGptBackendRequestContext): Promise<ChatGptModelDiscoveryResult>;
   healthCheck?(context?: ChatGptBackendRequestContext): Promise<ChatGptBackendHealthCheckResult>;
   getAccountQuota?(context?: ChatGptBackendRequestContext): Promise<ChatGptAccountQuota>;
 }

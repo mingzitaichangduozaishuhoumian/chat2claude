@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { normalizeCodexClientVersion } from '@chatgpt-to-claude/chatgpt-backend';
 import { fileURLToPath } from 'node:url';
 import { readCommaList, readNumber, type LogLevel } from '@chatgpt-to-claude/shared';
 import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningEffort, type SpeedPreference } from '@chatgpt-to-claude/protocol-mapper';
@@ -17,6 +18,8 @@ export interface AppEnv {
   chatGptBackend: ChatGptBackendProvider;
   chatGptBaseUrl: string;
   chatGptRequestTimeoutMs: number;
+  /** loadEnv always supplies this; omitted programmatic configs use the protocol default. */
+  codexClientVersion?: string;
   defaultReasoningEffort: ReasoningEffort;
   defaultResponseSpeed: SpeedPreference;
   dataDir: string;
@@ -46,6 +49,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     chatGptBackend: parseBackendProvider(source.CHATGPT_BACKEND),
     chatGptBaseUrl: source.CHATGPT_BASE_URL?.trim() || 'https://chatgpt.com',
     chatGptRequestTimeoutMs: readNumber(source.CHATGPT_REQUEST_TIMEOUT_MS, 60000),
+    codexClientVersion: normalizeCodexClientVersion(source.CODEX_CLIENT_VERSION),
     defaultReasoningEffort: normalizeReasoningEffort(source.DEFAULT_REASONING_EFFORT),
     defaultResponseSpeed: normalizeSpeedPreference(source.DEFAULT_RESPONSE_SPEED),
     dataDir,

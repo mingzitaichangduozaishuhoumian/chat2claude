@@ -1,3 +1,5 @@
+import { discoverAccountModels, discoveryMessage, type ModelDiscoveryState } from './model-discovery.js';
+import type { ChatGptModelDiscoveryResult } from '@chatgpt-to-claude/chatgpt-backend';
 import { randomBytes } from 'node:crypto';
 import type { Account, AccountPool, AccountView } from './account-pool.js';
 import { ChatGptBackendError, type ChatGptBackendClient, type ChatGptDiscoveredModel, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
@@ -48,6 +50,8 @@ export interface ProvisionResult {
   apiKey?: string;
   account: AccountView;
   modelsDiscovered: string[];
+  discovery?: ModelDiscoveryState;
+  message?: string;
   boundAliases: Record<string, string>;
 }
 
@@ -58,6 +62,7 @@ interface PreparedProvisioningCommit {
   models: PreparedModelProvisioning;
   runtimeKey?: PreparedRuntimeApiKey;
   discoveredModels: ChatGptDiscoveredModel[];
+  discoveryResult?: ChatGptModelDiscoveryResult;
 }
 
 export class SetupProvisioner {
@@ -90,41 +95,53 @@ export class SetupProvisioner {
     if (!candidateSecret.accessToken) throw this.provisioningError('session_verification', new Error('missing access token'));
     const candidate = createCandidateAccount(targetState.accountId, candidateSecret, targetState.existing);
     const context = candidateSessionContext(candidate, signal);
-    let discovered: ChatGptDiscoveredModel[];
+    const operation = targetState.existing ? this.options.accountPool.beginDiscovery(targetState.existing) : undefined;
+    if (targetState.existing && !operation) throw conflict('reauthorization_target_changed', 'Account changed before discovery.', 409);
     try {
-      // Model discovery is the single remote validation request. A second
-      // health-check would repeat the same credentials and consume a request.
-      discovered = await this.options.backend.listModels(context);
-      assertProvisioningNotCancelled(signal);
-      this.validateIdentity(target, targetState.existing, candidate.secret ?? candidateSecret);
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      if (error instanceof ChatGptProvisioningError) throw error;
-      throw this.provisioningError('session_verification', error);
-    }
+      let discoveryResult: ChatGptModelDiscoveryResult;
+      let discovered: ChatGptDiscoveredModel[];
+      try {
+        // Model discovery is the single remote validation request. A second
+        // health-check would repeat the same credentials and consume a request.
+        discoveryResult = await discoverAccountModels(this.options.backend, context);
+        discovered = discoveryResult.status === 'unknown' && targetState.existing
+          ? this.options.modelRegistry.snapshot().accountCatalogs.find((catalog) => catalog.identity.accountId === targetState.accountId && catalog.identity.createdAt === targetState.existing!.createdAt)?.models ?? []
+          : discoveryResult.models;
+        assertProvisioningNotCancelled(signal);
+        this.validateIdentity(target, targetState.existing, candidate.secret ?? candidateSecret);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        if (error instanceof ChatGptProvisioningError) throw error;
+        throw this.provisioningError('session_verification', error);
+      }
 
-    // Preserve optional credential fields only after the incoming credential
-    // itself has passed identity validation.
-    candidate.secret = targetState.existing
-      ? mergeReauthorizationSecret(targetState.existing.secret, candidate.secret ?? candidateSecret)
-      : { ...(candidate.secret ?? candidateSecret) };
+      // Preserve optional credential fields only after the incoming credential
+      // itself has passed identity validation.
+      candidate.secret = targetState.existing
+        ? mergeReauthorizationSecret(targetState.existing.secret, candidate.secret ?? candidateSecret)
+        : { ...(candidate.secret ?? candidateSecret) };
 
-    let prepared: PreparedProvisioningCommit;
-    try {
-      prepared = this.prepareCommit(target, candidate, targetState.existing, discovered);
-      assertProvisioningNotCancelled(signal);
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      if (error instanceof ChatGptProvisioningError) throw error;
-      throw this.provisioningError('model_preparation', error);
-    }
+      let prepared: PreparedProvisioningCommit;
+      try {
+        prepared = this.prepareCommit(target, candidate, targetState.existing, discovered);
+        prepared.discoveryResult = discoveryResult;
+        assertProvisioningNotCancelled(signal);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        if (error instanceof ChatGptProvisioningError) throw error;
+        throw this.provisioningError('model_preparation', error);
+      }
 
-    try {
-      return commitBoundary((committedAt) => this.commitPrepared(prepared, committedAt));
-    } catch (error) {
-      if (error instanceof ChatGptProvisioningError) throw error;
-      throw this.provisioningError('state_commit', error);
-    }
+      try {
+        return commitBoundary((committedAt) => {
+          if (operation && !this.options.accountPool.isCurrentDiscovery(operation)) throw conflict('reauthorization_target_changed', 'Account changed during discovery.', 409, 'state_commit');
+          return this.commitPrepared(prepared, committedAt);
+        });
+      } catch (error) {
+        if (error instanceof ChatGptProvisioningError) throw error;
+        throw this.provisioningError('state_commit', error);
+      }
+    } finally { if (operation) this.options.accountPool.endDiscovery(operation); }
   }
 
   private resolveTarget(target: InternalProvisioningTarget): { accountId: string; existing?: Account } {
@@ -223,8 +240,17 @@ export class SetupProvisioner {
     }
 
     if (prepared.expectedTarget) this.options.onAccountCredentialsReplaced?.(committed.account);
-    this.recordOperationalSuccess(committed.account, prepared.discoveredModels, committedAt);
+    this.recordOperationalSuccess(committed.account, prepared.discoveredModels, committedAt, prepared.discoveryResult);
+    const discovery: ModelDiscoveryState = {
+      status: prepared.discoveryResult?.status ?? 'unknown',
+      attemptedAt: committedAt.toISOString(),
+      succeededAt: prepared.discoveryResult?.status === 'unknown' ? null : committedAt.toISOString(),
+      stale: prepared.discoveryResult?.status === 'unknown' && prepared.discoveredModels.length > 0,
+      ...(prepared.discoveryResult?.diagnostic ? { diagnostic: prepared.discoveryResult.diagnostic } : {}),
+    };
     return {
+      discovery,
+      message: discoveryMessage(discovery, prepared.discoveredModels.length),
       ok: true,
       runtimeKeyCreated: Boolean(prepared.runtimeKey),
       ...(committed.apiKey ? { apiKey: committed.apiKey } : {}),
@@ -253,13 +279,17 @@ export class SetupProvisioner {
     }
   }
 
-  private recordOperationalSuccess(account: AccountView, models: ChatGptDiscoveredModel[], committedAt: Date): void {
+  private recordOperationalSuccess(account: AccountView, models: ChatGptDiscoveredModel[], committedAt: Date, discoveryResult?: ChatGptModelDiscoveryResult): void {
     if (!this.options.operationalState) return;
     try {
       this.options.operationalState.recordProvisioningSuccess(
         { accountId: account.id, createdAt: account.createdAt },
         models,
         { checkedAt: committedAt.toISOString(), result: 'healthy', message: null },
+      );
+      this.options.operationalState.recordDiscovery(
+        { accountId: account.id, createdAt: account.createdAt },
+        discoveryResult ?? { models, status: models.length ? 'success' : 'unknown' }, committedAt.toISOString(),
       );
       // Provisioning's successful response commits both credential state and its
       // safe account catalog. Ordinary request telemetry remains debounced.

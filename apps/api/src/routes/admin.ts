@@ -1,5 +1,6 @@
+import { presentPlan } from '../services/plan-presentation.js';
 import { Hono } from 'hono';
-import type { ChatGptBackendClient, ChatGptDiscoveredModel, ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, type ChatGptBackendClient, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ReasoningEffort, SpeedPreference } from '@chatgpt-to-claude/protocol-mapper';
 import type { ChatGptBackendProvider } from '../config/env.js';
 import type { AccountPool } from '../services/account-pool.js';
@@ -8,7 +9,8 @@ import { DEV_API_KEY_PREFIX, type RuntimeApiKeys } from '../services/runtime-api
 import { ChatGptAuthFlowService } from '../services/chatgpt-auth-flow.js';
 import { ChatGptProvisioningError, SetupProvisioner, type ProvisionResult, type ProvisioningTarget } from '../services/setup-provisioner.js';
 import type { DurableRuntimeState } from '../services/durable-runtime-state.js';
-import { accountDiscoveryContext } from '../services/refresh-aware-backend.js';
+import { refreshAccountModels } from '../services/account-model-discovery.js';
+import { unknownDiscovery, discoveryMessage } from '../services/model-discovery.js';
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
 import type { LocalAdminSession } from '../services/local-admin-session.js';
 import { AccountQuotaNotFoundError, AccountQuotaService, type AccountQuotaResult } from '../services/account-quota-service.js';
@@ -130,7 +132,7 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     }
   });
 
-  app.get('/admin/api/accounts', (c) => c.json({ accounts: accountsWithRequestStats(options) }));
+  app.get('/admin/api/accounts', (c) => c.json({ accounts: accountsWithRequestStats(options, quotaService) }));
   app.get('/admin/api/api-keys', (c) => c.json({ apiKeys: options.runtimeApiKeys.listSafe() }));
   app.delete('/admin/api/api-keys/:id', (c) => {
     const revoke = () => options.runtimeApiKeys.revoke(c.req.param('id'));
@@ -192,83 +194,28 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     const id = c.req.param('id');
     const internalAccount = options.accountPool.get(id);
     if (!internalAccount) return c.json({ error: 'Account not found' }, 404);
-    if (!options.backend.healthCheck) {
-      const healthCheck = () => options.accountPool.healthCheck(id);
-      const account = options.durableState ? options.durableState.transaction(healthCheck) : healthCheck();
-      return account ? c.json({ ok: true, account }) : c.json({ error: 'Account not found' }, 404);
+    if (internalAccount.provider === 'chatgpt-session') {
+      const outcome = await refreshAccountModels({ ...options, onHealth: (error) => {
+        const safeError = error instanceof ChatGptBackendError
+          ? new ChatGptBackendError('Health check request failed.', error.code)
+          : error === undefined ? undefined : new Error('Health check request failed.');
+        const update = () => safeError ? options.accountPool.markError(id, safeError, internalAccount.incarnation) : options.accountPool.markHealthy(id, internalAccount.incarnation);
+        if (options.durableState) options.durableState.transaction(update); else update();
+        try {
+          options.operationalState?.setHealthCheck({ accountId: id, createdAt: internalAccount.createdAt },
+            { checkedAt: new Date().toISOString(), result: safeError ? 'unhealthy' : 'healthy', message: safeError ? 'Health check request failed.' : null });
+        } catch { /* Discovery metadata independently reports persistence availability. */ }
+      } }, internalAccount);
+      const account = accountsWithRequestStats(options, quotaService).find((item) => item.id === id);
+      return c.json({ ...outcome, account, view: options.modelRegistry.adminView() }, outcome.requestFailed ? 502 : 200);
     }
-    const discovery = internalAccount.provider === 'chatgpt-session'
-      ? options.accountPool.beginDiscovery(internalAccount, true)
-      : undefined;
-    if (internalAccount.provider === 'chatgpt-session' && !discovery) return c.json({ error: 'Account changed before health check started' }, 409);
     try {
-      let discovered: ChatGptDiscoveredModel[] | undefined;
-      const result = internalAccount.provider === 'chatgpt-session'
-        ? await options.backend.listModels(accountDiscoveryContext(internalAccount, discovery!.id)).then((models) => {
-          discovered = models;
-          return { ok: true as const, message: undefined };
-        })
-        : await options.backend.healthCheck({ account: internalAccount });
-      const updateHealth = () => {
-        const current = discovery
-          ? options.accountPool.isCurrentDiscovery(discovery)
-          : options.accountPool.isCurrentHealth(internalAccount);
-        if (!current) return undefined;
-        const account = result.ok
-          ? options.accountPool.markHealthy(id, internalAccount.incarnation)
-          : options.accountPool.markError(id, result.message ?? 'Health check failed', internalAccount.incarnation);
-        if (account && discovered) {
-          options.modelRegistry.replaceAccountModels(
-            { accountId: internalAccount.id, createdAt: internalAccount.createdAt },
-            discovered,
-            account.enabled,
-          );
-        }
-        return account;
-      };
-      const account = options.durableState ? options.durableState.transaction(updateHealth) : updateHealth();
-      const view = discovered ? options.modelRegistry.adminView() : undefined;
-      let operationalWarning: string | undefined;
-      try {
-        if (result.ok && account && discovered) {
-          options.operationalState?.recordProvisioningSuccess(
-            { accountId: internalAccount.id, createdAt: internalAccount.createdAt },
-            discovered,
-            { checkedAt: new Date().toISOString(), result: 'healthy', message: null },
-          );
-        } else if (account) {
-          options.operationalState?.setHealthCheck(
-            { accountId: internalAccount.id, createdAt: internalAccount.createdAt },
-            { checkedAt: new Date().toISOString(), result: 'unhealthy', message: result.message ?? 'Health check failed' },
-          );
-        }
-      } catch {
-        operationalWarning = 'Health result was applied, but admin operational metadata could not be updated.';
-      }
-      return c.json({ ok: result.ok, message: result.message, account, view, ...(operationalWarning ? { warning: operationalWarning } : {}) });
-    } catch (error) {
-      const markError = () => {
-        const current = discovery
-          ? options.accountPool.isCurrentDiscovery(discovery)
-          : options.accountPool.isCurrentHealth(internalAccount);
-        return current ? options.accountPool.markError(id, error, internalAccount.incarnation) : undefined;
-      };
-      const account = options.durableState ? options.durableState.transaction(markError) : markError();
-      let operationalWarning: string | undefined;
-      try {
-        if (account) {
-          options.operationalState?.setHealthCheck(
-            { accountId: internalAccount.id, createdAt: internalAccount.createdAt },
-            { checkedAt: new Date().toISOString(), result: 'unhealthy', message: 'Health check request failed.' },
-          );
-        }
-      } catch {
-        operationalWarning = 'Health failure was applied, but admin operational metadata could not be updated.';
-      }
-      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error), account, ...(operationalWarning ? { warning: operationalWarning } : {}) }, 502);
-    } finally {
-      if (discovery) options.accountPool.endDiscovery(discovery);
-    }
+      const result = options.backend.healthCheck ? await options.backend.healthCheck({ account: internalAccount }) : { ok: true };
+      if (!options.accountPool.isCurrentHealth(internalAccount)) return c.json({ error: 'Account changed during health check.' }, 409);
+      const update = () => result.ok ? options.accountPool.markHealthy(id) : options.accountPool.markError(id, 'Health check failed.');
+      const account = options.durableState ? options.durableState.transaction(update) : update();
+      return c.json({ ok: result.ok, account });
+    } catch { return c.json({ ok: false, error: 'Health check request failed.' }, 502); }
   });
 
   app.get('/admin/api/models', async (c) => {
@@ -315,44 +262,19 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     const accounts = options.accountPool.snapshot().accounts.filter((account) =>
       account.provider === 'chatgpt-session' && account.enabled && account.status === 'available');
     if (accounts.length === 0) return c.json({ error: 'No available chatgpt-session account. Import and health-check a ChatGPT session account before refreshing models.' }, 409);
-    const refreshedAccounts: Array<{ accountId: string; ok: boolean; models?: string[]; error?: string }> = [];
-    for (const account of accounts) {
-      const discovery = options.accountPool.beginDiscovery(account);
-      if (!discovery) {
-        refreshedAccounts.push({ accountId: account.id, ok: false, error: 'Account changed before model discovery started.' });
-        continue;
-      }
-      try {
-        const models = await options.backend.listModels(accountDiscoveryContext(account, discovery.id));
-        if (!options.accountPool.isCurrentDiscovery(discovery)) {
-          refreshedAccounts.push({ accountId: account.id, ok: false, error: 'Account changed while model discovery was in progress.' });
-          continue;
-        }
-        options.modelRegistry.replaceAccountModels({ accountId: account.id, createdAt: account.createdAt }, models, account.enabled);
-        try {
-          options.operationalState?.recordProvisioningSuccess(
-            { accountId: account.id, createdAt: account.createdAt },
-            models,
-            { checkedAt: new Date().toISOString(), result: 'healthy', message: null },
-          );
-        } catch { /* discovery remains valid in memory; persistence warning is reported below */ }
-        refreshedAccounts.push({ accountId: account.id, ok: true, models: models.map((model) => model.id) });
-      } catch {
-        refreshedAccounts.push({ accountId: account.id, ok: false, error: 'Model discovery failed.' });
-      } finally {
-        options.accountPool.endDiscovery(discovery);
-      }
-    }
+    const refreshedAccounts = [];
+    for (const account of accounts) refreshedAccounts.push(await refreshAccountModels(options, account));
     return c.json({ ...options.modelRegistry.adminView(), refreshedAccounts });
   });
   return app;
 }
 
-function accountsWithRequestStats(options: AdminRouteOptions) {
+function accountsWithRequestStats(options: AdminRouteOptions, quotaService?: AccountQuotaService) {
+  const quotas = quotaService?.getAll() ?? [];
   const operations = new Map((options.operationalState?.snapshot().accounts ?? []).map((account) => [JSON.stringify([account.accountId, account.createdAt]), account]));
   return options.accountPool.list().map((account) => {
     const operational = operations.get(JSON.stringify([account.id, account.createdAt]));
-    const discoveredModels = operational?.discoveredModels ?? [];
+    const discoveredModels = operational?.discoveredModels ?? options.modelRegistry.snapshot().accountCatalogs.find((catalog) => catalog.identity.accountId === account.id && catalog.identity.createdAt === account.createdAt)?.models ?? [];
     return {
       ...account,
       requestStats: operational?.requestStats ?? {
@@ -365,6 +287,9 @@ function accountsWithRequestStats(options: AdminRouteOptions) {
         lastRequestAt: null,
         inFlight: 0,
       },
+      discovery: operational?.discovery ?? unknownDiscovery(),
+      discoveryMessage: discoveryMessage(operational?.discovery ?? unknownDiscovery(), discoveredModels.length),
+      plan: presentPlan(quotas.find((quota) => quota.accountId === account.id && quota.createdAt === account.createdAt) ?? operational?.quotaCache, account.planType),
       modelCount: discoveredModels.length,
       discoveredModels: discoveredModels.map((model) => ({ id: model.id, ...(model.displayName ? { displayName: model.displayName } : {}) })),
     };
@@ -523,6 +448,8 @@ function sanitizeProvisionResult(result: ProvisionResult) {
     ...(result.apiKey ? { apiKey: result.apiKey } : {}),
     account: result.account,
     modelsDiscovered: result.modelsDiscovered,
+    discovery: result.discovery,
+    message: result.message,
     boundAliases: result.boundAliases,
   };
 }

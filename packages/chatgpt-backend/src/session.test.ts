@@ -1,4 +1,4 @@
-import packageJson from '../package.json' with { type: 'json' };
+import { CODEX_ORIGINATOR, DEFAULT_CODEX_CLIENT_VERSION, codexUserAgent } from './codex-protocol.js';
 import { describe, expect, it } from 'vitest';
 import { ChatGptBackendError, SessionChatGptBackend, type ChatGptCompletionRequest } from './index.js';
 
@@ -24,6 +24,108 @@ const context = {
 };
 
 describe('SessionChatGptBackend', () => {
+  it('uses JSON discovery and SSE Responses with a versioned official default User-Agent', async () => {
+    const calls: Headers[] = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, clientVersion: '2.3.4', fetch: async (url, init) => {
+      calls.push(new Headers(init?.headers));
+      return String(url).includes('/models') ? Response.json({ models: [] }) : sseResponse(['[DONE]']);
+    } });
+    const noAgent = { account: { ...context.account, secret: { ...context.account.secret, userAgent: undefined } } };
+    await backend.listModels(noAgent);
+    await backend.complete(request, noAgent);
+    expect(calls.map((headers) => headers.get('accept'))).toEqual(['application/json', 'text/event-stream']);
+    for (const headers of calls) {
+      expect(headers.get('originator')).toBe('codex_cli_rs');
+      expect(headers.get('user-agent')).toBe(codexUserAgent('2.3.4'));
+      expect(headers.get('authorization')).toBe('Bearer token-1');
+      expect(headers.get('cookie')).toBe('cookie-1');
+      expect(headers.get('oai-device-id')).toBe('device-1');
+      expect(headers.get('chatgpt-account-id')).toBe('acct-1');
+    }
+  });
+
+  it('prefers official models and slug over compatibility envelopes and IDs', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => Response.json({
+      models: [{ slug: 'synthetic-route', id: 'synthetic-other', name: 'Synthetic Display' }],
+      data: ['synthetic-ignore'], body: { models: ['synthetic-also-ignore'] },
+    }) });
+    const result = await backend.discoverModels(context);
+    expect(result.status).toBe('success');
+    expect(result.models.map((model) => model.id)).toEqual(['synthetic-route']);
+    expect(result.diagnostic).toEqual({ clientVersion: DEFAULT_CODEX_CLIENT_VERSION, httpStatus: 200, contentType: 'json', envelope: 'models', candidateCount: 1, acceptedCount: 1, rejectedCount: 0, duplicateCount: 0, reasons: [] });
+  });
+
+  it.each([
+    { payload: ['synthetic-a'], envelope: 'array' },
+    { payload: { data: [{ id: 'synthetic-a' }] }, envelope: 'data' },
+    { payload: { body: { models: [{ model: 'synthetic-a' }] } }, envelope: 'body_models' },
+    { payload: { models: [{ name: 'synthetic-a' }] }, envelope: 'models' },
+  ])('retains the explicit $envelope compatibility envelope', async ({ payload, envelope }) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => Response.json(payload) });
+    const result = await backend.discoverModels(context);
+    expect(result.models.map((model) => model.id)).toEqual(['synthetic-a']);
+    expect(result.diagnostic?.envelope).toBe(envelope);
+  });
+
+  it.each([[], { models: [], data: ['synthetic-ignore'] }, { data: [] }, { body: { models: [] } }].map((payload) => ({ payload })))('reports an explicit empty catalog (%j)', async ({ payload }) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => Response.json(payload) });
+    await expect(backend.discoverModels(context)).resolves.toMatchObject({ models: [], status: 'empty', diagnostic: { candidateCount: 0, acceptedCount: 0 } });
+    await expect(backend.listModels(context)).resolves.toEqual([]);
+  });
+
+  it.each([
+    null, {}, { unknown: ['synthetic-a'] }, { data: { models: ['synthetic-a'] } },
+    { models: null, data: ['synthetic-must-not-fallback'] }, { models: {} }, { models: 'synthetic-a' },
+    { models: [null, {}, false, 4, [], '', ' ', { slug: 42 }, { display_name: 'Display only' }, { id: 'not a routable id' }] },
+  ])('rejects unknown, malformed and entirely unusable catalogs (%j)', async (payload) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => Response.json(payload) });
+    await expect(backend.listModels(context)).rejects.toMatchObject({ name: 'ChatGptBackendError', code: 'invalid_response', status: 502, cause: undefined });
+    await expect(backend.healthCheck(context)).resolves.toMatchObject({ ok: false });
+  });
+
+  it('reports counts and reason enums for mixed invalid and duplicate entries without raw metadata', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => Response.json({ models: [
+      { slug: 'synthetic-a', arbitrary: 'sensitive-body' }, null, { slug: 'synthetic-a' },
+      { id: 'synthetic-b' }, { display_name: 'sensitive-body' },
+    ] }, { headers: { 'content-type': 'application/json; private=sensitive-header' } }) });
+    const result = await backend.discoverModels(context);
+    expect(result.status).toBe('partial');
+    expect(result.models.map((model) => model.id)).toEqual(['synthetic-a', 'synthetic-b']);
+    expect(result.diagnostic).toEqual({ clientVersion: DEFAULT_CODEX_CLIENT_VERSION, httpStatus: 200, contentType: 'json', envelope: 'models', candidateCount: 5, acceptedCount: 2, rejectedCount: 2, duplicateCount: 1, reasons: ['invalid_model_id', 'duplicate_model_id'] });
+    expect(JSON.stringify(result.diagnostic)).not.toMatch(/sensitive|synthetic|token|cookie/);
+    await expect(backend.listModels(context)).resolves.toHaveLength(2);
+  });
+
+  it.each([
+    { contentType: 'text/html; private=secret-body', category: 'html' },
+    { contentType: 'text/event-stream', category: 'event_stream' },
+    { contentType: 'application/problem+json', category: 'json' },
+    { contentType: 'application/secret-body', category: 'other' },
+  ])('safely classifies malformed JSON with $category content type', async ({ contentType, category }) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response('secret-body', { headers: { 'content-type': contentType } }) });
+    const error = await backend.listModels(context).catch((error: unknown) => error);
+    expect(error).toMatchObject({ code: 'invalid_response', cause: undefined, discoveryDiagnostic: { httpStatus: 200, contentType: category, envelope: 'unknown', reasons: ['invalid_json'] } });
+    expect(JSON.stringify(error)).not.toContain('secret-body');
+    expect(String(error)).not.toContain('secret-body');
+  });
+
+  it('does not retain raw network error causes or HTTP response bodies', async () => {
+    for (const fetchImpl of [async () => { throw new Error('sensitive-network-error'); }, async () => new Response('sensitive-body', { status: 403 })]) {
+      const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: fetchImpl });
+      const error = await backend.listModels(context).catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(ChatGptBackendError);
+      expect(error).toHaveProperty('cause', undefined);
+      expect(JSON.stringify(error)).not.toContain('sensitive');
+      expect(String(error)).not.toContain('sensitive');
+    }
+  });
+
+  it('keeps missing-account calls compatible without declaring verified emptiness', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => { throw new Error('must not fetch'); } });
+    await expect(backend.listModels()).resolves.toEqual([]);
+    await expect(backend.discoverModels()).resolves.toEqual({ models: [], status: 'unknown' });
+  });
+
   it('aggregates SSE text deltas for complete', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test/', timeoutMs: 1000, fetch: async (url, init) => {
@@ -338,7 +440,7 @@ describe('SessionChatGptBackend', () => {
     } });
 
     await expect(backend.healthCheck(context)).resolves.toEqual({ ok: true });
-    expect(calls[0].url).toBe(`https://chatgpt.test/backend-api/codex/models?client_version=${packageJson.version}`);
+    expect(calls[0].url).toBe(`https://chatgpt.test/backend-api/codex/models?client_version=${DEFAULT_CODEX_CLIENT_VERSION}`);
     expect(calls[0].init.method).toBe('GET');
     expect((calls[0].init.headers as Headers).get('authorization')).toBe('Bearer token-1');
     expect((calls[0].init.headers as Headers).get('chatgpt-account-id')).toBe('acct-1');
@@ -410,7 +512,7 @@ describe('SessionChatGptBackend', () => {
     expect(calls).toEqual(['https://chatgpt.test/backend-api/codex/models?client_version=1.2.3']);
   });
 
-  it('sends the configured originator on model and response requests', async () => {
+  it('uses the official originator even when legacy options specify another identity', async () => {
     const calls: Array<{ url: string; originator: string | null }> = [];
     const backend = new SessionChatGptBackend({
       baseUrl: 'https://chatgpt.test',
@@ -426,8 +528,8 @@ describe('SessionChatGptBackend', () => {
     await backend.complete(request, context);
 
     expect(calls).toEqual([
-      { url: `https://chatgpt.test/backend-api/codex/models?client_version=${packageJson.version}`, originator: 'chat2claude' },
-      { url: 'https://chatgpt.test/backend-api/codex/responses', originator: 'chat2claude' },
+      { url: `https://chatgpt.test/backend-api/codex/models?client_version=${DEFAULT_CODEX_CLIENT_VERSION}`, originator: CODEX_ORIGINATOR },
+      { url: 'https://chatgpt.test/backend-api/codex/responses', originator: CODEX_ORIGINATOR },
     ]);
   });
 
@@ -455,6 +557,34 @@ describe('SessionChatGptBackend', () => {
 
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     expect(transportAborted).toBe(true);
+  });
+
+  it('keeps discovery timeout active through JSON body parsing and permits a later request', async () => {
+    let calls = 0;
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 10, fetch: async () => {
+      calls += 1;
+      return calls === 1 ? new Response(new ReadableStream({ start() {} })) : Response.json({ models: [{ slug: 'synthetic-later' }] });
+    } });
+    await expect(backend.discoverModels(context)).rejects.toMatchObject({ code: 'timeout', status: 504, cause: undefined });
+    await expect(backend.discoverModels(context)).resolves.toMatchObject({ status: 'success', models: [{ id: 'synthetic-later' }] });
+  });
+
+  it('cancels discovery during body parsing and refuses pre-cancelled requests', async () => {
+    let calls = 0;
+    const started = deferred<void>();
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 60_000, fetch: async () => {
+      calls += 1;
+      started.resolve();
+      return new Response(new ReadableStream({ start() {} }));
+    } });
+    const controller = new AbortController();
+    const pending = backend.discoverModels({ ...context, signal: controller.signal });
+    await started.promise;
+    await Promise.resolve();
+    controller.abort('sensitive-cancellation-reason');
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError', message: 'ChatGPT session backend request was cancelled.' });
+    await expect(backend.discoverModels({ ...context, signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(calls).toBe(1);
   });
 
   it('retains timeout classification when no caller cancellation occurs', async () => {
@@ -518,7 +648,7 @@ describe('SessionChatGptBackend', () => {
     expect(calls[0].url).toBe('https://chatgpt.test/backend-api/wham/usage');
     expect(calls[0].headers.get('authorization')).toBe('Bearer token-1');
     expect(calls[0].headers.get('chatgpt-account-id')).toBe('acct-1');
-    expect(calls[0].headers.get('originator')).toBe('chat2claude');
+    expect(calls[0].headers.get('originator')).toBe(CODEX_ORIGINATOR);
     expect(calls[0].headers.get('accept')).toBe('application/json');
   });
 

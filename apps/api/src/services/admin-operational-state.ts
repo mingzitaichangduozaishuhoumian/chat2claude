@@ -3,6 +3,9 @@ import * as nodeFs from 'node:fs';
 import { dirname } from 'node:path';
 import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptDiscoveredModel, ChatGptModelControlCapabilities, ChatGptQuotaWindow, ChatGptReasoningLevelOption, ChatGptServiceTierOption } from '@chatgpt-to-claude/chatgpt-backend';
 
+import type { ChatGptModelDiscoveryResult } from '@chatgpt-to-claude/chatgpt-backend';
+import { discoveryFailure, safeDiscoveryDiagnostic, unknownDiscovery, type ModelDiscoveryState } from './model-discovery.js';
+
 const OPERATIONAL_STATE_VERSION = 1;
 const DEFAULT_DEBOUNCE_MS = 1_000;
 
@@ -48,6 +51,7 @@ export interface OperationalAccountSnapshot extends OperationalAccountIdentity {
   lastHealthCheck: OperationalHealthCheck | null;
   discoveredModelIds: string[];
   discoveredModels: ChatGptDiscoveredModel[];
+  discovery: ModelDiscoveryState;
   quotaCache: SanitizedQuotaCache;
 }
 
@@ -57,6 +61,7 @@ interface PersistedOperationalAccount extends OperationalAccountIdentity {
   lastHealthCheck: OperationalHealthCheck | null;
   discoveredModelIds: string[];
   discoveredModels: ChatGptDiscoveredModel[];
+  discovery: ModelDiscoveryState;
   quotaCache: SanitizedQuotaCache;
 }
 interface OperationalStateDocument {
@@ -177,6 +182,36 @@ export class AdminOperationalState {
     this.schedulePersist();
   }
 
+  recordDiscovery(identity: OperationalAccountIdentity, result: ChatGptModelDiscoveryResult, at = new Date().toISOString()): void {
+    const diagnostic = result.diagnostic ? safeDiscoveryDiagnostic(result.diagnostic) : undefined;
+    const attemptedAt = timestamp(at, 'discovery.attemptedAt');
+    const models = result.status === 'unknown' ? undefined : sanitizeDiscoveredModels(result.models);
+    const account = this.getOrCreate(identity);
+    if (models) {
+      account.discoveredModels = models;
+      account.discoveredModelIds = models.map((model) => model.id);
+    }
+    account.discovery = {
+      status: result.status, attemptedAt,
+      succeededAt: models ? attemptedAt : account.discovery.succeededAt,
+      stale: !models && account.discoveredModels.length > 0,
+      ...(diagnostic ? { diagnostic } : {}),
+    };
+    this.schedulePersist();
+  }
+
+  recordDiscoveryFailure(identity: OperationalAccountIdentity, error: unknown, at = new Date().toISOString()): void {
+    const failure = discoveryFailure(error);
+    const account = this.getOrCreate(identity);
+    account.discovery = {
+      status: 'error', attemptedAt: timestamp(at, 'discovery.attemptedAt'),
+      succeededAt: account.discovery.succeededAt,
+      stale: account.discoveredModels.length > 0 || account.discovery.succeededAt !== null,
+      ...failure,
+    };
+    this.schedulePersist();
+  }
+
   recordProvisioningSuccess(identity: OperationalAccountIdentity, models: ChatGptDiscoveredModel[], healthCheck: OperationalHealthCheck): void {
     const validatedIdentity = validateIdentity(identity, 'account identity');
     const validatedModels = sanitizeDiscoveredModels(models);
@@ -249,6 +284,7 @@ export class AdminOperationalState {
         lastHealthCheck: null,
         discoveredModelIds: [],
         discoveredModels: [],
+        discovery: unknownDiscovery(),
         quotaCache: { status: 'unknown', fetchedAt: null, expiresAt: null },
       };
       this.accounts.set(key, account);
@@ -314,6 +350,7 @@ function toPersisted(account: OperationalAccountSnapshot): PersistedOperationalA
     lastHealthCheck: account.lastHealthCheck ? { ...account.lastHealthCheck } : null,
     discoveredModelIds: [...account.discoveredModelIds],
     discoveredModels: cloneDiscoveredModels(account.discoveredModels),
+    discovery: validateDiscovery(account.discovery),
     quotaCache: cloneQuotaCache(account.quotaCache),
   };
 }
@@ -326,6 +363,7 @@ function fromPersisted(account: PersistedOperationalAccount): OperationalAccount
     lastHealthCheck: account.lastHealthCheck ? { ...account.lastHealthCheck } : null,
     discoveredModelIds: [...account.discoveredModelIds],
     discoveredModels: cloneDiscoveredModels(account.discoveredModels),
+    discovery: validateDiscovery(account.discovery),
     quotaCache: cloneQuotaCache(account.quotaCache),
   };
 }
@@ -337,6 +375,7 @@ function cloneAccount(account: OperationalAccountSnapshot): OperationalAccountSn
     lastHealthCheck: account.lastHealthCheck ? { ...account.lastHealthCheck } : null,
     discoveredModelIds: [...account.discoveredModelIds],
     discoveredModels: cloneDiscoveredModels(account.discoveredModels),
+    discovery: validateDiscovery(account.discovery),
     quotaCache: cloneQuotaCache(account.quotaCache),
   };
 }
@@ -361,7 +400,7 @@ function validateDocument(value: unknown): OperationalStateDocument {
 
 function validateAccount(value: unknown, index: number): PersistedOperationalAccount {
   const label = `accounts[${index}]`;
-  const raw = strictObject(value, ['accountId', 'createdAt', 'requestStats', 'lastHealthCheck', 'discoveredModelIds', 'discoveredModels', 'quotaCache'], label, ['discoveredModels']);
+  const raw = strictObject(value, ['accountId', 'createdAt', 'requestStats', 'lastHealthCheck', 'discoveredModelIds', 'discoveredModels', 'quotaCache', 'discovery'], label, ['discoveredModels', 'discovery']);
   const identity = validateIdentity(raw, label);
   const stats = strictObject(raw.requestStats, ['totalRequests', 'successfulRequests', 'failedRequests', 'cancelledRequests', 'inputTokens', 'outputTokens', 'lastRequestAt'], `${label}.requestStats`, ['cancelledRequests']);
   const requestStats: PersistedRequestStats = {
@@ -389,8 +428,24 @@ function validateAccount(value: unknown, index: number): PersistedOperationalAcc
     lastHealthCheck: raw.lastHealthCheck === null ? null : validateHealthCheck(raw.lastHealthCheck, `${label}.lastHealthCheck`),
     discoveredModelIds,
     discoveredModels,
+    discovery: raw.discovery === undefined ? { ...unknownDiscovery(), stale: discoveredModels.length > 0 } : validateDiscovery(raw.discovery),
     quotaCache: validateQuotaCache(raw.quotaCache, `${label}.quotaCache`),
   };
+}
+
+function validateDiscovery(value: unknown): ModelDiscoveryState {
+  const raw = strictObject(value, ['status', 'attemptedAt', 'succeededAt', 'stale', 'error', 'diagnostic'], 'discovery', ['error', 'diagnostic']);
+  if (raw.diagnostic !== undefined) strictObject(raw.diagnostic, ['clientVersion', 'httpStatus', 'contentType', 'envelope', 'candidateCount', 'acceptedCount', 'rejectedCount', 'duplicateCount', 'reasons'], 'discovery diagnostic', ['httpStatus']);
+  try {
+    return {
+      status: enumValue(raw.status, ['unknown', 'success', 'empty', 'partial', 'error'] as const, 'discovery status'),
+      attemptedAt: nullableTimestamp(raw.attemptedAt, 'discovery attemptedAt'),
+      succeededAt: nullableTimestamp(raw.succeededAt, 'discovery succeededAt'),
+      stale: booleanValue(raw.stale, 'discovery stale'),
+      ...(raw.error === undefined ? {} : { error: enumValue(raw.error, ['invalid_response', 'transport'] as const, 'discovery error') }),
+      ...(raw.diagnostic === undefined ? {} : { diagnostic: safeDiscoveryDiagnostic(raw.diagnostic as NonNullable<ModelDiscoveryState['diagnostic']>) }),
+    };
+  } catch { throw invalid('invalid discovery metadata'); }
 }
 
 function validateIdentity(value: unknown, label: string): OperationalAccountIdentity {

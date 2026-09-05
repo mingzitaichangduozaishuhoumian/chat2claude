@@ -1,3 +1,4 @@
+import { presentPlan, type PlanPresentation } from './plan-presentation.js';
 import { ChatGptBackendError, type ChatGptAccountQuota, type ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import type { Account, AccountPool, AccountQuotaOperation } from './account-pool.js';
 import { AdminOperationalStateError, type AdminOperationalState, type SanitizedQuotaCache, type SanitizedQuotaError } from './admin-operational-state.js';
@@ -9,6 +10,7 @@ export interface AccountQuotaResult {
   accountId: string;
   createdAt: string;
   supported: boolean;
+  plan?: PlanPresentation;
   status: SanitizedQuotaCache['status'];
   fetchedAt?: string;
   expiresAt?: string;
@@ -150,6 +152,7 @@ export class AccountQuotaService {
       accountId: account.id,
       createdAt: account.createdAt,
       supported: true,
+      plan: presentPlan({ ...cache, status }, account.secret?.planType),
       status,
       ...(cache.fetchedAt ? { fetchedAt: cache.fetchedAt } : {}),
       ...(cache.expiresAt ? { expiresAt: cache.expiresAt } : {}),
@@ -163,6 +166,7 @@ export class AccountQuotaService {
       accountId: account.id,
       createdAt: account.createdAt,
       supported: false,
+      plan: presentPlan(undefined, account.secret?.planType),
       status: 'unknown',
       error: { code: 'unsupported', category: 'unsupported', message: 'Account quota is not supported for this account.' },
     };

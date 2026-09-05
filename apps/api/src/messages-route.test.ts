@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { ChatGptBackendError, SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, DEFAULT_CODEX_CLIENT_VERSION, SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 import { createApp } from './app.js';
 import { createAdminRoute } from './routes/admin.js';
 import { createMessagesRoute } from './routes/messages.js';
@@ -1833,7 +1833,7 @@ describe('ChatGPT one-click auth admin flow', () => {
     expect(url.searchParams.get('response_type')).toBe('code');
     expect(url.searchParams.get('redirect_uri')).toBe('http://localhost:1455/auth/callback');
     expect(url.searchParams.get('scope')).toBe('openid profile email offline_access api.connectors.read api.connectors.invoke');
-    expect(url.searchParams.get('originator')).toBe('chat2claude');
+    expect(url.searchParams.get('originator')).toBe('codex_cli_rs');
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
     expect(url.searchParams.get('prompt')).toBe('login');
     expect(url.searchParams.get('id_token_add_organizations')).toBe('true');
@@ -2086,7 +2086,7 @@ describe('SessionChatGptBackend', () => {
     });
 
     const models = await backend.listModels({ account: { id: 'session-1', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token-1', accountId: 'acct-1' } } });
-    expect(calls).toEqual([{ url: 'https://chatgpt.test/backend-api/codex/models?client_version=0.1.0', authorization: 'Bearer token-1', accountId: 'acct-1' }]);
+    expect(calls).toEqual([{ url: `https://chatgpt.test/backend-api/codex/models?client_version=${DEFAULT_CODEX_CLIENT_VERSION}`, authorization: 'Bearer token-1', accountId: 'acct-1' }]);
     expect(models.map((model) => model.id)).toEqual(['gpt-5-thinking', 'codex-mini']);
     expect(models[0].displayName).toBe('GPT 5 Thinking');
   });
@@ -2287,7 +2287,7 @@ describe('session admin model discovery', () => {
     first.resolve([{ id: 'older-success-model' }]);
     await expect(older).resolves.toHaveProperty('status', 200);
 
-    expect(accountPool.get(account.id)).toMatchObject({ status: 'unhealthy', lastError: 'newer unauthorized', lastErrorCode: 'unauthorized' });
+    expect(accountPool.get(account.id)).toMatchObject({ status: 'unhealthy', lastError: 'Health check request failed.', lastErrorCode: 'unauthorized' });
     expect(modelRegistry.get('older-success-model')).toBeUndefined();
   });
 
@@ -2309,7 +2309,7 @@ describe('session admin model discovery', () => {
     manualDiscovery.resolve([{ id: 'older-manual-model' }]);
     await expect(olderManual).resolves.toHaveProperty('status', 200);
 
-    expect(accountPool.get(account.id)).toMatchObject({ status: 'unhealthy', lastError: 'newer health failure', lastErrorCode: 'unauthorized' });
+    expect(accountPool.get(account.id)).toMatchObject({ status: 'unhealthy', lastError: 'Health check request failed.', lastErrorCode: 'unauthorized' });
     expect(modelRegistry.get('older-manual-model')).toBeUndefined();
   });
 

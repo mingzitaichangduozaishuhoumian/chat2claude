@@ -10,7 +10,7 @@ describe('CodexOAuthClient', () => {
     const client = new CodexOAuthClient();
     const url = new URL(client.buildAuthorizeUrl({ state: 'state', codeVerifier: 'verifier', redirectUri: 'http://localhost:1455/auth/callback' }));
     expect(url.searchParams.get('scope')).toBe(CODEX_OAUTH_SCOPE);
-    expect(url.searchParams.get('originator')).toBe('chat2claude');
+    expect(url.searchParams.get('originator')).toBe('codex_cli_rs');
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
     expect(url.searchParams.get('id_token_add_organizations')).toBe('true');
     expect(url.searchParams.get('codex_cli_simplified_flow')).toBe('true');

@@ -1,6 +1,14 @@
+import { presentPlan as sharedPresentPlan, planPresentationText as sharedPlanText, type PlanPresentation } from '../services/plan-presentation.js';
+import { discoveryMessage as sharedDiscoveryMessage, unknownDiscovery as sharedUnknownDiscovery, type ModelDiscoveryState } from '../services/model-discovery.js';
 import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptQuotaWindow } from '@chatgpt-to-claude/chatgpt-backend';
 import type { AccountView } from '../services/account-pool.js';
 import type { AccountQuotaResult } from '../services/account-quota-service.js';
+
+// Local bindings keep serialized renderer functions independent of module-loader aliases.
+const presentPlan = sharedPresentPlan;
+const planPresentationText = sharedPlanText;
+const discoveryMessage = sharedDiscoveryMessage;
+const unknownDiscovery = sharedUnknownDiscovery;
 
 export interface AdminAccountView extends AccountView {
   requestStats: {
@@ -14,6 +22,8 @@ export interface AdminAccountView extends AccountView {
     inFlight: number;
   };
   modelCount: number;
+  plan?: PlanPresentation;
+  discovery?: ModelDiscoveryState;
   discoveredModels: Array<{ id: string; displayName?: string }>;
 }
 
@@ -38,11 +48,12 @@ function renderAccountCard(account: AdminAccountView): string {
   return `<article class="account-card" data-account-id="${esc(account.id)}">
     <header class="card-header"><div class="identity"><span class="eyebrow">${esc(account.provider === 'chatgpt-session' ? 'ChatGPT Account' : 'Mock Account')}</span><h3>${esc(account.label)}</h3><p class="wrap-anywhere">${esc(identity)}</p></div><span class="state-badge ${health.tone}">${esc(health.label)}</span></header>
     <dl class="account-summary">
-      <div><dt>套餐</dt><dd>${esc(account.planType || '未知')}</dd></div>
+      <div><dt>套餐</dt><dd>${esc(planPresentationText(account.plan ?? presentPlan(undefined, account.planType)))}</dd></div>
       <div><dt>启用</dt><dd>${account.enabled ? '已启用' : '已停用'}</dd></div>
-      <div><dt>模型</dt><dd>模型 ${account.modelCount}</dd></div>
+      <div><dt>模型</dt><dd>${esc(discoveryMessage(account.discovery ?? unknownDiscovery(), account.modelCount))}</dd></div>
       <div><dt>最近活动</dt><dd>${esc(formatTime(stats.lastRequestAt || account.lastUsedAt))}</dd></div>
     </dl>
+    <p class="muted">5x/20x 是套餐类别标识，不代表当前剩余额度。</p>
     <div class="stat-line" aria-label="请求结果统计"><span>成功 ${stats.successfulRequests}</span><span>失败 ${stats.failedRequests}</span><span>取消 ${stats.cancelledRequests}</span><span>总计 ${stats.totalRequests}</span></div>
     <div class="professional-detail" data-professional-only>
       <dl class="technical-list">
@@ -53,6 +64,8 @@ function renderAccountCard(account: AdminAccountView): string {
         <div><dt>冷却至</dt><dd>${esc(formatTime(account.cooldownUntil))}</dd></div>
         <div><dt>安全错误码</dt><dd><code>${esc(account.lastErrorCode || '无')}</code></dd></div>
       </dl>
+      <p class="wrap-anywhere">最近发现尝试：${esc(formatTime(account.discovery?.attemptedAt))} · 最近成功：${esc(formatTime(account.discovery?.succeededAt))}</p>
+      ${account.discovery?.diagnostic ? `<p class="wrap-anywhere">安全发现诊断：<code>${esc(JSON.stringify(account.discovery.diagnostic))}</code></p>` : ''}
       <details class="model-disclosure"><summary>动态模型完整列表（${account.modelCount}）</summary><ul>${modelItems}</ul></details>
     </div>
     <div class="card-actions" aria-label="${esc(account.label)} 账号操作">
@@ -75,7 +88,7 @@ function renderQuotaCard(result: AccountQuotaResult, account: AdminAccountView |
   const quota = result.quota;
   const accountLabel = account?.label || result.accountId;
   const accountIdentity = account?.email || result.accountId;
-  const planType = quota?.planType || account?.planType || 'Plan unknown';
+  const planType = planPresentationText(result.plan ?? presentPlan(result, account?.planType));
   const mainWindows = quota?.windows ?? [];
   const fiveHour = mainWindows.find((window) => window.durationSeconds === 18_000);
   const weekly = mainWindows.find((window) => window.durationSeconds === 604_800);
@@ -176,7 +189,7 @@ function esc(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char);
 }
 
-const browserFunctions = [renderAccountCards, renderQuotaCards, renderAccountCard, renderQuotaCard, renderAdditionalLimit, renderMeter, renderUnavailable, accountHealth, quotaState, allowanceText, validPercent, formatPercent, formatDuration, formatTime, relativeReset, relativeSeconds, esc];
+const browserFunctions = [presentPlan, planPresentationText, discoveryMessage, unknownDiscovery,renderAccountCards, renderQuotaCards, renderAccountCard, renderQuotaCard, renderAdditionalLimit, renderMeter, renderUnavailable, accountHealth, quotaState, allowanceText, validPercent, formatPercent, formatDuration, formatTime, relativeReset, relativeSeconds, esc];
 
 export function adminPageViewSource(): string {
   return browserFunctions.map((fn) => fn.toString()).join('\n');

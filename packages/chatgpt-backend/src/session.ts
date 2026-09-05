@@ -1,4 +1,5 @@
-import packageJson from '../package.json' with { type: 'json' };
+import { CODEX_ORIGINATOR, codexUserAgent, normalizeCodexClientVersion } from './codex-protocol.js';
+import type { ChatGptModelDiscoveryDiagnostic, ChatGptModelDiscoveryResult } from './client.js';
 import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputContentPart, ChatGptInputItem, ChatGptModelControlCapabilities, ChatGptQuotaWindow, ChatGptReasoningLevelOption, ChatGptServiceTierOption, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
 import { ChatGptBackendError, type ChatGptBackendErrorCode } from './errors.js';
@@ -7,11 +8,10 @@ export interface SessionChatGptBackendOptions {
   baseUrl: string;
   timeoutMs: number;
   clientVersion?: string;
+  /** @deprecated The Codex protocol always uses codex_cli_rs. */
   originator?: string;
   fetch?: typeof fetch;
 }
-
-const DEFAULT_CODEX_CLIENT_VERSION = packageJson.version;
 
 type JsonObject = Record<string, unknown>;
 
@@ -19,28 +19,44 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
   private readonly clientVersion: string;
-  private readonly originator: string | undefined;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: SessionChatGptBackendOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.timeoutMs = options.timeoutMs;
-    this.clientVersion = options.clientVersion?.trim() || DEFAULT_CODEX_CLIENT_VERSION;
-    this.originator = options.originator?.trim() || undefined;
+    this.clientVersion = normalizeCodexClientVersion(options.clientVersion);
     this.fetchImpl = options.fetch ?? fetch;
   }
 
   async listModels(context?: ChatGptBackendRequestContext): Promise<ChatGptDiscoveredModel[]> {
-    if (!context?.account) return [];
+    return (await this.discoverModels(context)).models;
+  }
+
+  async discoverModels(context?: ChatGptBackendRequestContext): Promise<ChatGptModelDiscoveryResult> {
+    if (!context?.account) return { models: [], status: 'unknown' };
     const secret = requireSessionSecret(context);
-    const { response, payload } = await this.fetchJsonWithTimeout(
-      this.backendApiEndpoint('/codex/models', { client_version: this.clientVersion }),
-      { method: 'GET', headers: this.headers(secret, false) },
-      context.signal,
-      'ChatGPT models response was not valid JSON.',
-    );
-    if (!response.ok) throw httpBackendError('ChatGPT models discovery failed', response.status);
-    return parseDiscoveredModels(payload);
+    return this.runWithTimeout(async (signal) => {
+      const response = await this.fetchResponse(
+        this.backendApiEndpoint('/codex/models', { client_version: this.clientVersion }),
+        { method: 'GET', headers: this.headers(secret, false, 'application/json') },
+        signal,
+      );
+      const diagnostic = discoveryDiagnostic(response, this.clientVersion);
+      if (!response.ok) {
+        throw new ChatGptBackendError(`ChatGPT models discovery failed: HTTP ${response.status}`, backendErrorCodeForStatus(response.status), {
+          status: response.status, discoveryDiagnostic: diagnostic,
+        });
+      }
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch (error) {
+        if (signal.aborted) throw error;
+        diagnostic.reasons.push('invalid_json');
+        throw invalidDiscoveryResponse(diagnostic);
+      }
+      return parseDiscoveredModels(payload, diagnostic);
+    }, context.signal);
   }
 
   async healthCheck(context?: ChatGptBackendRequestContext): Promise<ChatGptBackendHealthCheckResult> {
@@ -114,10 +130,10 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     headers.set('accept', accept);
     if (includeContentType) headers.set('content-type', 'application/json');
     if (secret.cookie) headers.set('cookie', secret.cookie);
-    if (secret.userAgent) headers.set('user-agent', secret.userAgent);
+    headers.set('user-agent', codexUserAgent(this.clientVersion, secret.userAgent));
     if (secret.deviceId) headers.set('oai-device-id', secret.deviceId);
     if (secret.accountId) headers.set('chatgpt-account-id', secret.accountId);
-    if (this.originator) headers.set('originator', this.originator);
+    headers.set('originator', CODEX_ORIGINATOR);
     return headers;
   }
 
@@ -151,7 +167,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     });
     return Promise.race([operation(controller.signal), aborted]).catch((error) => {
       if (callerSignal?.aborted) throw abortError();
-      if (timedOut) throw new ChatGptBackendError('ChatGPT session backend request timed out.', 'timeout', { status: 504, cause: error });
+      if (timedOut) throw new ChatGptBackendError('ChatGPT session backend request timed out.', 'timeout', { status: 504 });
       throw error;
     }).finally(() => {
       clearTimeout(timeout);
@@ -164,7 +180,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       return await this.fetchImpl(url, { ...init, signal });
     } catch (error) {
       if (signal.aborted) throw error;
-      throw new ChatGptBackendError('ChatGPT session backend network request failed.', 'network_error', { cause: error });
+      throw new ChatGptBackendError('ChatGPT session backend network request failed.', 'network_error');
     }
   }
 
@@ -367,33 +383,69 @@ function stringifyArguments(value: unknown): string {
   try { return JSON.stringify(value ?? {}); } catch { return String(value); }
 }
 
-function parseDiscoveredModels(value: unknown): ChatGptDiscoveredModel[] {
-  const rawModels = readModelArray(value);
-  if (!rawModels) return [];
+function discoveryDiagnostic(response: Response, clientVersion: string): ChatGptModelDiscoveryDiagnostic {
+  const mime = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+  const contentType = !mime ? 'missing' : mime === 'application/json' || /^application\/[a-z0-9!#$&^_.+-]+\+json$/.test(mime)
+    ? 'json' : mime === 'text/event-stream' ? 'event_stream' : mime === 'text/html' ? 'html' : 'other';
+  return { clientVersion, httpStatus: response.status, contentType, envelope: 'unknown', candidateCount: 0, acceptedCount: 0, rejectedCount: 0, duplicateCount: 0, reasons: [] };
+}
+
+function invalidDiscoveryResponse(diagnostic: ChatGptModelDiscoveryDiagnostic): ChatGptBackendError {
+  return new ChatGptBackendError('ChatGPT models response was incompatible with the model discovery protocol.', 'invalid_response', {
+    status: 502, discoveryDiagnostic: diagnostic,
+  });
+}
+
+function parseDiscoveredModels(value: unknown, diagnostic: ChatGptModelDiscoveryDiagnostic): ChatGptModelDiscoveryResult {
+  const rawModels = readModelArray(value, diagnostic);
+  if (!Array.isArray(rawModels)) {
+    diagnostic.reasons.push(diagnostic.envelope === 'unknown' ? 'unknown_envelope' : 'invalid_model_array');
+    throw invalidDiscoveryResponse(diagnostic);
+  }
+  diagnostic.candidateCount = rawModels.length;
   const ids = new Set<string>();
   const models: ChatGptDiscoveredModel[] = [];
   for (const item of rawModels) {
     const model = normalizeDiscoveredModel(item);
-    if (!model || ids.has(model.id)) continue;
+    if (!model) { diagnostic.rejectedCount += 1; continue; }
+    if (ids.has(model.id)) { diagnostic.duplicateCount += 1; continue; }
     ids.add(model.id);
     models.push(model);
   }
-  return models;
+  diagnostic.acceptedCount = models.length;
+  if (diagnostic.rejectedCount) diagnostic.reasons.push('invalid_model_id');
+  if (diagnostic.duplicateCount) diagnostic.reasons.push('duplicate_model_id');
+  if (rawModels.length && !models.length) throw invalidDiscoveryResponse(diagnostic);
+  return { models, status: !rawModels.length ? 'empty' : diagnostic.reasons.length ? 'partial' : 'success', diagnostic };
 }
 
-function readModelArray(value: unknown): unknown[] | undefined {
-  if (Array.isArray(value)) return value;
-  if (!value || typeof value !== 'object') return undefined;
-  const raw = value as JsonObject;
-  const candidates = [raw.models, raw.data, readPath(raw, ['body', 'models'])];
-  return candidates.find((candidate): candidate is unknown[] => Array.isArray(candidate));
+function readModelArray(value: unknown, diagnostic: ChatGptModelDiscoveryDiagnostic): unknown {
+  if (Array.isArray(value)) { diagnostic.envelope = 'array'; return value; }
+  if (!isPlainObject(value)) return undefined;
+  // Official envelope is authoritative, even if malformed or explicitly empty.
+  if (Object.hasOwn(value, 'models')) { diagnostic.envelope = 'models'; return value.models; }
+  if (Object.hasOwn(value, 'data')) { diagnostic.envelope = 'data'; return value.data; }
+  if (isPlainObject(value.body) && Object.hasOwn(value.body, 'models')) {
+    diagnostic.envelope = 'body_models';
+    return value.body.models;
+  }
+  return undefined;
+}
+
+function readRoutableModelId(value: unknown): string | undefined {
+  const id = readNonEmptyString(value);
+  // Route IDs are bounded tokens, not display labels, URLs, or arbitrary text.
+  return id && id.length <= 256 && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(id) ? id : undefined;
 }
 
 function normalizeDiscoveredModel(value: unknown): ChatGptDiscoveredModel | undefined {
-  if (typeof value === 'string' && value.trim()) return { id: value.trim() };
+  if (typeof value === 'string') {
+    const id = readRoutableModelId(value);
+    return id ? { id } : undefined;
+  }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const raw = value as JsonObject;
-  const id = readNonEmptyString(raw.id) ?? readNonEmptyString(raw.slug) ?? readNonEmptyString(raw.name) ?? readNonEmptyString(raw.model);
+  const id = readRoutableModelId(raw.slug) ?? readRoutableModelId(raw.id) ?? readRoutableModelId(raw.name) ?? readRoutableModelId(raw.model);
   if (!id) return undefined;
   const displayName = readNonEmptyString(raw.display_name) ?? readNonEmptyString(raw.displayName) ?? readNonEmptyString(raw.title) ?? readNonEmptyString(raw.name);
   const capabilities = isPlainObject(raw.capabilities) ? { ...raw.capabilities } : undefined;

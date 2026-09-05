@@ -1,9 +1,51 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { adminPageClientScript } from './routes/admin-page-client.js';
 import { createApp } from './app.js';
 import { loadEnv } from './config/env.js';
-import { renderAccountCards, renderQuotaCards, type AdminAccountView } from './routes/admin-page-view.js';
+import { adminPageViewSource, renderAccountCards, renderQuotaCards, type AdminAccountView } from './routes/admin-page-view.js';
 
 describe('Admin UI redesign contracts', () => {
+  it.each([200, 502])('reloads authoritative account and model state after health discovery HTTP %s', async (status) => {
+    const script = adminPageClientScript();
+    const healthBinding = script.slice(script.indexOf('function bindAccountActions()'), script.indexOf("  document.querySelectorAll('[data-account-reauthorize]')")) + '}';
+    const requestJson = script.slice(script.indexOf('async function requestJson('), script.indexOf('function loadFailureHtml('));
+    const pendingButton = script.slice(script.indexOf('async function withPendingButton('), script.indexOf('void loadQuotas();'));
+    let click!: () => Promise<void>;
+    const button = { dataset: { accountHealth: 'synthetic-account' }, disabled: false, textContent: '刷新健康与模型', addEventListener: (_event: string, callback: () => Promise<void>) => { click = callback; } };
+    let displayedDiscovery = 'success';
+    const expectedDiscovery = status === 502 ? 'error' : 'partial';
+    const loadAccounts = vi.fn(async () => { expect(button.disabled).toBe(true); displayedDiscovery = expectedDiscovery; });
+    const loadModels = vi.fn(async () => { expect(button.disabled).toBe(true); });
+    const renderResult = vi.fn();
+    const fetchWithAdminKey = vi.fn(async () => new Response(JSON.stringify({ ok: status === 200, message: status === 502 ? '最新刷新失败，继续使用 1 个缓存模型' : '部分条目被安全忽略' }), { status, headers: { 'content-type': 'application/json' } }));
+    const bind = new Function('document', 'fetchWithAdminKey', 'renderResult', 'loadAccounts', 'loadModels', `${requestJson}\n${pendingButton}\nasync function postJson(url) { return requestJson(url, { method: 'POST' }); }\n${healthBinding}\nreturn bindAccountActions;`)(
+      { querySelectorAll: () => [button] }, fetchWithAdminKey, renderResult, loadAccounts, loadModels,
+    );
+    bind();
+    await click();
+    expect(fetchWithAdminKey).toHaveBeenCalledWith('/admin/api/accounts/synthetic-account/health-check', { method: 'POST' });
+    expect(loadAccounts).toHaveBeenCalledTimes(1);
+    expect(loadModels).toHaveBeenCalledTimes(1);
+    expect(displayedDiscovery).toBe(expectedDiscovery);
+    expect(button).toMatchObject({ disabled: false, textContent: '刷新健康与模型' });
+    if (status === 502) expect(renderResult).toHaveBeenLastCalledWith({ error: '最新刷新失败，继续使用 1 个缓存模型' });
+    else expect(renderResult).toHaveBeenLastCalledWith(expect.objectContaining({ ok: true }));
+  });
+  it('renders safe plan labels and all discovery outcomes in browser-shared renderers', () => {
+    const renderInBrowser = new Function(`${adminPageViewSource()}; return renderAccountCards;`)() as typeof renderAccountCards;
+    const cases: Array<[NonNullable<AdminAccountView['discovery']>['status'], number, string]> = [
+      ['unknown', 0, '尚无已验证目录'], ['success', 2, '已发现 2 个账号级模型'],
+      ['partial', 1, '部分条目被安全忽略'], ['empty', 0, '上游明确返回空目录'],
+      ['error', 0, '模型响应格式不兼容'], ['error', 2, '继续使用 2 个缓存模型'],
+    ];
+    for (const [status, count, message] of cases) {
+      const fixture = account({ planType: 'prolite', modelCount: count, discovery: { status, attemptedAt: null, succeededAt: null, stale: status === 'error' && count > 0, error: 'invalid_response' } });
+      const html = renderInBrowser([fixture]);
+      expect(html).toContain(message);
+      expect(html).toContain('ChatGPT Pro 5x');
+      expect(html).toContain('prolite');
+    }
+  });
   it('renders distinct authentication and quota workspaces with independent data calls', async () => {
     const app = createApp(loadEnv({ NODE_ENV: 'test' }));
     const html = await (await app.request('/admin')).text();
@@ -94,7 +136,9 @@ describe('Admin UI redesign contracts', () => {
     expect(html).toContain('成功 7');
     expect(html).toContain('失败 2');
     expect(html).toContain('取消 1');
-    expect(html).toContain('模型 3');
+    expect(html).toContain('发现状态未知；保留 3 个缓存模型');
+    expect(html).toContain('ChatGPT Plus');
+    expect(html).toContain('5x/20x 是套餐类别标识，不代表当前剩余额度');
     expect(html).toContain('data-professional-only');
     expect(html).toContain('internal-account-id-with-a-very-long-value');
     expect(html).toContain('dynamic-model-beta-with-a-long-identifier');

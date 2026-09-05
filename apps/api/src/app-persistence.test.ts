@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ChatGptBackendClient, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
 import { createApp } from './app.js';
 import { loadEnv } from './config/env.js';
@@ -22,6 +22,49 @@ afterEach(() => {
 });
 
 describe('createApp runtime state hydration', () => {
+  it('rolls back a failed startup catalog commit and still discovers the next account', async () => {
+    const env = loadEnv({ DATA_DIR: temporaryDirectory(), CHATGPT_BACKEND: 'session', API_KEYS: 'test-key' });
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const first = accountPool.add({ id: 'startup-first', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'first-secret' } });
+    accountPool.add({ id: 'startup-second', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'second-secret' } });
+    const store = new RuntimeStateStore({ path: env.runtimeStatePath });
+    new DurableRuntimeState({ accountPool, runtimeApiKeys: new RuntimeApiKeys(), modelRegistry: new ModelRegistry(), store }).persist();
+    const operational = new AdminOperationalState({ path: env.operationalStatePath });
+    operational.recordDiscovery({ accountId: first.id, createdAt: first.createdAt }, { status: 'success', models: [{ id: 'synthetic-cached-first' }] });
+    await operational.dispose();
+
+    const discoveredAccounts: string[] = [];
+    let failNextCommit = false;
+    const save = store.save.bind(store);
+    const saveSpy = vi.spyOn(store, 'save').mockImplementation((state) => {
+      if (failNextCommit) { failNextCommit = false; throw new Error('injected startup commit failure'); }
+      save(state);
+    });
+    const backend: ChatGptBackendClient = {
+      complete: async () => ({ text: '', finishReason: 'stop' }), async *stream() {},
+      listModels: async () => { throw new Error('typed discovery expected'); },
+      discoverModels: async (context) => {
+        const id = context!.account!.id;
+        discoveredAccounts.push(id);
+        if (id === first.id) failNextCommit = true;
+        return { status: 'success', models: [{ id: id === first.id ? 'synthetic-rejected-first' : 'synthetic-accepted-second' }] };
+      },
+    };
+    const app = createApp(env, { backend, runtimeStateStore: store });
+    try {
+      const headers = { 'x-api-key': 'test-key' };
+      const models = await (await app.request('/admin/api/models', { headers })).json() as { discovered: Array<{ id: string }>; aliases: Array<{ id: string; backendModel?: string }> };
+      expect(discoveredAccounts).toEqual(['startup-first', 'startup-second']);
+      expect(models.discovered.map((model) => model.id).sort()).toEqual(['synthetic-accepted-second', 'synthetic-cached-first']);
+      expect(models.aliases.find((alias) => alias.id === 'sonnet')?.backendModel).toBe('synthetic-accepted-second');
+      expect(await (await app.request('/admin/api/accounts', { headers })).json()).toMatchObject({ accounts: [
+        expect.objectContaining({ id: first.id, discoveredModels: [{ id: 'synthetic-cached-first' }] }),
+        expect.objectContaining({ id: 'startup-second', discovery: expect.objectContaining({ status: 'success' }), discoveredModels: [{ id: 'synthetic-accepted-second' }] }),
+      ] });
+      expect(store.load()?.modelAliases.find((alias) => alias.id === 'sonnet')?.backendModel).toBe('synthetic-accepted-second');
+      expect(saveSpy).toHaveBeenCalledTimes(2);
+    } finally { await app.dispose(); saveSpy.mockRestore(); }
+  });
   it('hydrates accounts and runtime keys before backend and auth construction', async () => {
     const dataDir = temporaryDirectory();
     const env = loadEnv({ DATA_DIR: dataDir });
@@ -222,7 +265,7 @@ describe('createApp runtime state hydration', () => {
     expect((await models.json() as { discovered: Array<{ id: string }> }).discovered).toEqual([]);
     const accountResponse = await app.request('/admin/api/accounts', { headers: { 'x-api-key': 'test-key' } });
     expect(await accountResponse.json()).toMatchObject({
-      accounts: [expect.objectContaining({ id: 'startup-health-order', status: 'error', lastError: 'newer health failure' })],
+      accounts: [expect.objectContaining({ id: 'startup-health-order', status: 'error', lastError: 'Health check request failed.', discovery: expect.objectContaining({ status: 'error', stale: false }) })],
     });
     await app.dispose();
   });
