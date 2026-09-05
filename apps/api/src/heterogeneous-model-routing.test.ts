@@ -72,6 +72,29 @@ describe('heterogeneous account model routing', () => {
     expect(backend.listModelsCalls).toBe(0);
   });
 
+  it.each(['FaSt', 'FASTEST'])('routes canonical Fast defaults only through supporting accounts using provider ID %s', async (tier) => {
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    const unsupported = accountPool.add({ id: 'unsupported', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'synthetic-one' } });
+    const supported = accountPool.add({ id: 'supported', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'synthetic-two' } });
+    const models = registry();
+    models.update('sonnet', { defaults: { service_tier: 'priority' } });
+    models.replaceAccountModels({ accountId: unsupported.id, createdAt: unsupported.createdAt }, [model('model-a', 'high')]);
+    const target = model('model-a', 'high');
+    target.controls!.serviceTier.supported = [{ id: tier }];
+    models.replaceAccountModels({ accountId: supported.id, createdAt: supported.createdAt }, [target]);
+    const backend = new RoutingBackend();
+    const app = createMessagesRoute({ backend, requestLog: new RequestLog(), modelRegistry: models, accountPool, backendProvider: 'session' });
+    for (const serviceTier of [undefined, 'priority', 'fastest']) {
+      const response = await app.request('/v1/messages', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'sonnet', max_tokens: 8, service_tier: serviceTier, messages: [{ role: 'user', content: 'hello' }] }),
+      });
+      expect(response.status).toBe(200);
+    }
+    expect(backend.completions).toEqual(Array.from({ length: 3 }, () => ({ accountId: 'supported', model: 'model-a', reasoningEffort: 'high', serviceTier: tier })));
+    expect(backend.listModelsCalls).toBe(0);
+  });
+
   it('treats valid implicit alias effort and tier defaults as account eligibility requirements', async () => {
     const accountPool = new AccountPool({ seedMockAccount: false });
     const accountA = accountPool.add({ id: 'account-a', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token-a' } });

@@ -1620,7 +1620,7 @@ describe('/admin', () => {
     expect(html).toContain("verifyLocalAdminSession().then(async () => { await Promise.all([loadAccounts(), loadApiKeys(), loadModels()]); await restoreOAuthFlow(); });");
     expect(html).toContain('Runtime API Keys');
     expect(html).toContain('id="api-keys-count"');
-    expect(html).toContain('未绑定，需要专业模式选择后端模型');
+    expect(html).toContain('未绑定，请在下方模型映射中选择后端模型并保存');
     expect(html).toContain("key === 'apiKey' || key === 'key' ? '<one-time-key-hidden>'");
     expect(html).toContain("return pageAdminApiKey || localStorage.getItem('adminApiKey') || '';");
     expect(html).not.toContain('window.prompt');
