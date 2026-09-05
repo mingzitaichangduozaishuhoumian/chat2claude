@@ -5,6 +5,81 @@ import { loadEnv } from './config/env.js';
 import { adminPageViewSource, renderAccountCards, renderQuotaCards, type AdminAccountView } from './routes/admin-page-view.js';
 
 describe('Admin UI redesign contracts', () => {
+  it('keeps basic mapping visible and marks static and dynamic advanced controls professional-only', async () => {
+    const app = createApp(loadEnv({ NODE_ENV: 'test' }));
+    const html = await (await app.request('/admin')).text();
+    expect(html).toMatch(/<section class="panel model-mapping-panel">/);
+    expect(html).toMatch(/<form id="create-model-form"[^>]*data-professional-only/);
+    expect(html).toMatch(/<button id="reset-models"[^>]*data-professional-only/);
+    expect(html).toMatch(/<button id="refresh-models"[^>]*data-professional-only/);
+    expect(html).not.toMatch(/需要(?:切换到)?专业模式选择后端模型/);
+    expect(html).toContain('[data-admin-mode="simple"] .model-mapping-panel table');
+    const script = adminPageClientScript();
+    const elements = new Map<string, { innerHTML: string }>();
+    const document = { getElementById: (id: string) => {
+      if (!elements.has(id)) elements.set(id, { innerHTML: '' });
+      return elements.get(id)!;
+    } };
+    const helpers = script.slice(script.indexOf('function backendOptionsHtml('), script.indexOf("document.getElementById('create-model-form')"));
+    const load = script.slice(script.indexOf('async function loadModels()'), script.indexOf('function bindModelActions('));
+    const loadModels = new Function('document', 'getJson', 'bindModelActions', `${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, async () => ({
+      aliases: [{ id: 'custom', enabled: true, defaults: {}, status: 'unbound' }], discovered: [{ id: 'provider' }],
+    }), vi.fn());
+    await loadModels();
+    const table = elements.get('models')!.innerHTML;
+    expect(table).toContain('<th data-professional-only>状态</th>');
+    expect(table).toContain('<th data-professional-only>目标能力与默认参数</th>');
+    expect(table).toContain('<td data-professional-only>unbound</td>');
+    expect(table).toContain('<td data-professional-only><div class="stack"');
+    expect(table).toMatch(/<button[^>]*data-professional-only[^>]*data-delete-model="custom"/);
+    expect(table).toContain('<button data-save-model="custom">保存</button>');
+    expect(table).toMatch(/<div data-professional-only><p class="muted">Backend discovery/);
+    await app.dispose();
+  });
+
+  it('toggles modes without refetch or losing advanced edits and omits defaults in the simple PATCH', async () => {
+    const script = adminPageClientScript();
+    const fields: Record<string, { value?: string; checked?: boolean }> = {
+      backendModel: { value: 'new-target' }, enabled: { checked: true },
+      reasoning_effort: { value: 'future-deep' }, speed: { value: 'priority' },
+    };
+    const document = {
+      documentElement: { dataset: { adminMode: 'professional' } },
+      querySelector: (selector: string) => fields[selector.match(/data-field="([^"]+)"/)![1]],
+    };
+    const patchJson = vi.fn(async () => ({}));
+    const loadModels = vi.fn();
+    const mode = script.slice(script.indexOf('function setAdminMode('), script.indexOf('modeButtons.simple.addEventListener'));
+    const save = script.slice(script.indexOf('async function saveModel('), script.indexOf('function backendOptionsHtml('));
+    const controls = new Function('document', 'CSS', 'modeButtons', 'localStorage', 'patchJson', 'renderResult', 'loadModels', `${mode}\n${save}\nreturn { setAdminMode, saveModel };`)(
+      document, { escape: (value: string) => value }, { simple: { setAttribute: vi.fn() }, professional: { setAttribute: vi.fn() } }, { setItem: vi.fn() }, patchJson, vi.fn(), loadModels,
+    );
+    controls.setAdminMode('simple');
+    controls.setAdminMode('professional');
+    expect(fields.reasoning_effort.value).toBe('future-deep');
+    expect(fields.speed.value).toBe('priority');
+    expect(loadModels).not.toHaveBeenCalled();
+    await controls.saveModel('custom');
+    expect(patchJson).toHaveBeenLastCalledWith('/admin/api/models/custom', { backendModel: 'new-target', enabled: true, defaults: { reasoning_effort: 'future-deep', service_tier: 'priority' } });
+    controls.setAdminMode('simple');
+    await controls.saveModel('custom');
+    expect(patchJson).toHaveBeenLastCalledWith('/admin/api/models/custom', { backendModel: 'new-target', enabled: true });
+  });
+
+  it.each(['fast', 'FASTEST', 'Priority'])('renders one canonical Fast for current %s without changing reasoning semantics', (current) => {
+    const script = adminPageClientScript();
+    const helpers = script.slice(script.indexOf('function controlSelectsHtml('), script.indexOf("document.getElementById('create-model-form')"));
+    const render = new Function(`${adminPageViewSource()}\n${helpers}\nreturn controlSelectsHtml;`)();
+    for (const supported of [[], [{ id: 'economy' }, { id: 'FASTEST' }, { id: 'flex' }, { id: 'fast' }, { id: 'priority' }]]) {
+      const html = render({ capabilities: { service_tiers: supported, reasoning_effort_options: [{ effort: 'low' }] } }, { speed: current, reasoning_effort: 'future-effort' }, 'custom');
+      const tiers = html.match(/<select data-field="speed"[^>]*>([\s\S]*?)<\/select>/)![1];
+      expect([...tiers.matchAll(/<option value="([^"]+)"/g)].map((match) => match[1])).toEqual(supported.length ? ['standard', 'auto', 'priority', 'economy', 'flex'] : ['standard', 'auto', 'priority']);
+      expect(tiers).toMatch(/<option value="priority"[^>]*selected[^>]*>Fast/);
+      expect(html).toContain('future-effort（配置不受目标支持）');
+      expect(html).toContain('Light（官方 low）');
+    }
+  });
+
   it.each([200, 502])('reloads authoritative account and model state after health discovery HTTP %s', async (status) => {
     const script = adminPageClientScript();
     const healthBinding = script.slice(script.indexOf('function bindAccountActions()'), script.indexOf("  document.querySelectorAll('[data-account-reauthorize]')")) + '}';
