@@ -24,6 +24,28 @@ const context = {
 };
 
 describe('SessionChatGptBackend', () => {
+  it('deduplicates tier IDs case-insensitively without merging the Fast family or replacing first metadata', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => Response.json({ models: [{
+      id: 'tier-model',
+      service_tiers: [{ id: 'FaSt', name: 'First Fast', description: 'First metadata' }, 'economy', 'fast', 'FASTEST'],
+      additional_speed_tiers: [{ id: 'FAST', name: 'Duplicate' }, 'ECONOMY', 'priority', 'fastest', 'flex'],
+    }] }) });
+    const models = await backend.listModels(context);
+    expect(models[0].controls?.serviceTier.supported).toEqual([
+      { id: 'FaSt', name: 'First Fast', description: 'First metadata' }, { id: 'economy' },
+      { id: 'FASTEST' }, { id: 'priority' }, { id: 'flex' },
+    ]);
+  });
+
+  it.each(['FaSt', 'FASTEST', 'Priority'])('preserves the resolved provider tier %s in the wire body', async (serviceTier) => {
+    const bodies: unknown[] = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return sseResponse([{ type: 'response.completed' }]);
+    } });
+    await backend.complete({ ...request, serviceTier }, context);
+    expect(bodies[0]).toHaveProperty('service_tier', serviceTier);
+  });
   it('uses JSON discovery and SSE Responses with a versioned official default User-Agent', async () => {
     const calls: Headers[] = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, clientVersion: '2.3.4', fetch: async (url, init) => {

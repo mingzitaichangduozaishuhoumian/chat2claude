@@ -519,8 +519,8 @@ function normalizeServiceTierOptions(serviceTiersValue: unknown, additionalSpeed
   const append = (item: unknown) => {
     const raw = typeof item === 'string' ? { id: item } : isPlainObject(item) ? item : undefined;
     const id = readNonEmptyString(raw?.id) ?? readNonEmptyString(raw?.tier);
-    if (!id || seen.has(id)) return;
-    seen.add(id);
+    if (!id || seen.has(id.toLowerCase())) return;
+    seen.add(id.toLowerCase());
     const name = readNonEmptyString(raw?.name);
     const description = readNonEmptyString(raw?.description);
     result.push({ id, ...(name ? { name } : {}), ...(description ? { description } : {}) });
