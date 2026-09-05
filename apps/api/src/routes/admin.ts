@@ -134,6 +134,12 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
 
   app.get('/admin/api/accounts', (c) => c.json({ accounts: accountsWithRequestStats(options, quotaService) }));
   app.get('/admin/api/api-keys', (c) => c.json({ apiKeys: options.runtimeApiKeys.listSafe() }));
+  app.post('/admin/api/api-keys', (c) => {
+    const createKey = () => options.runtimeApiKeys.create();
+    const apiKey = options.durableState ? options.durableState.transaction(createKey) : createKey();
+    c.header('cache-control', 'no-store');
+    return c.json({ ok: true, apiKey }, 201);
+  });
   app.delete('/admin/api/api-keys/:id', (c) => {
     const revoke = () => options.runtimeApiKeys.revoke(c.req.param('id'));
     const apiKey = options.durableState ? options.durableState.transaction(revoke) : revoke();

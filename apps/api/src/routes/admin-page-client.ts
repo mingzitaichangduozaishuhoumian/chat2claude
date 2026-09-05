@@ -114,13 +114,29 @@ document.getElementById('copy-auth-link').addEventListener('click', async () => 
     document.getElementById('auth-message').textContent = '复制失败，请手动选中下方完整授权 URL 复制。';
   }
 });
-document.getElementById('copy-runtime-api-key').addEventListener('click', async () => {
-  const key = document.getElementById('api-key').dataset.value;
-  if (!key) return;
+document.getElementById('copy-runtime-api-key').addEventListener('click', () => { void copyOneTimeRuntimeApiKey(); });
+document.getElementById('dismiss-runtime-api-key').addEventListener('click', () => {
+  clearOneTimeRuntimeApiKey();
+  renderResult({ message: '一次性 Runtime API Key 显示已清除。' });
+});
+let generatingRuntimeApiKey = false;
+document.getElementById('generate-runtime-api-key').addEventListener('click', async () => {
+  if (generatingRuntimeApiKey) return;
+  const button = document.getElementById('generate-runtime-api-key');
+  generatingRuntimeApiKey = true;
+  button.setAttribute('disabled', '');
   try {
-    await navigator.clipboard.writeText(key);
-    renderResult({ message: 'Runtime API Key 已复制。请立即保存；刷新页面后不会再次显示原始 Key。' });
-  } catch { renderResult({ error: 'Runtime API Key 复制失败，请手动选中并立即保存。' }); }
+    const body = await postJson('/admin/api/api-keys');
+    showOneTimeRuntimeApiKey(body.apiKey);
+    renderResult({ ok: body.ok, message: '已生成新的 Runtime API Key；现有 Key 保持有效。' });
+    await copyOneTimeRuntimeApiKey({ suppressResult: true });
+    await loadApiKeys();
+  } catch (error) {
+    renderResult({ error: error.message });
+  } finally {
+    generatingRuntimeApiKey = false;
+    button.removeAttribute('disabled');
+  }
 });
 document.getElementById('submit-oauth-callback').addEventListener('click', async () => {
   const redirectUrl = document.getElementById('oauth-callback-url').value.trim();
@@ -222,20 +238,47 @@ function showAuthError(error) {
 }
 function showReady(result) {
   const endpoint = window.location.origin + '/v1/messages';
+  const hasRawKey = showOneTimeRuntimeApiKey(result.apiKey);
   document.getElementById('api-config').hidden = false;
   document.getElementById('endpoint').textContent = endpoint;
-  const apiKey = document.getElementById('api-key');
-  const oneTimeKeyRow = document.getElementById('one-time-key-row');
-  const existingKeyRow = document.getElementById('existing-key-row');
-  const hasRawKey = typeof result.apiKey === 'string' && result.apiKey.length > 0;
-  apiKey.textContent = hasRawKey ? result.apiKey : '';
-  apiKey.dataset.value = hasRawKey ? result.apiKey : '';
-  oneTimeKeyRow.hidden = !hasRawKey;
-  existingKeyRow.hidden = hasRawKey;
   const curl = curlExample.dataset.template.replace('__ORIGIN__', window.location.origin);
   document.getElementById('ready-curl').textContent = curl; curlExample.textContent = curl;
   document.getElementById('key-state').textContent = '已配置';
   document.getElementById('auth-message').textContent = hasRawKey ? '初始化完成：已创建账号并生成 Runtime API Key，请立即复制保存。' : '授权完成：账号凭据已更新，现有 Runtime API Key 保持有效且不会再次显示原始值。';
+}
+function showOneTimeRuntimeApiKey(value) {
+  const apiKey = document.getElementById('api-key');
+  const display = document.getElementById('runtime-api-key-once');
+  const status = document.getElementById('runtime-key-copy-status');
+  const hasRawKey = typeof value === 'string' && value.length > 0;
+  if (!hasRawKey) return false;
+  apiKey.textContent = value;
+  apiKey.dataset.value = value;
+  status.textContent = '请立即复制保存；关闭或清除显示后无法恢复原始 Key。';
+  display.hidden = false;
+  return true;
+}
+async function copyOneTimeRuntimeApiKey(options) {
+  const key = document.getElementById('api-key').dataset.value;
+  const status = document.getElementById('runtime-key-copy-status');
+  if (!key) return false;
+  try {
+    await navigator.clipboard.writeText(key);
+    status.textContent = '已复制到剪贴板。请立即保存；刷新页面后不会再次显示原始 Key。';
+    if (!options?.suppressResult) renderResult({ message: 'Runtime API Key 已复制。' });
+    return true;
+  } catch {
+    status.textContent = '剪贴板不可用，请手动选中上方完整 Key 并立即保存。';
+    if (!options?.suppressResult) renderResult({ error: 'Runtime API Key 复制失败，请手动选中并立即保存。' });
+    return false;
+  }
+}
+function clearOneTimeRuntimeApiKey() {
+  const apiKey = document.getElementById('api-key');
+  apiKey.textContent = '';
+  delete apiKey.dataset.value;
+  document.getElementById('runtime-key-copy-status').textContent = '';
+  document.getElementById('runtime-api-key-once').hidden = true;
 }
 
 async function loadAccounts() {
@@ -460,7 +503,16 @@ async function requestJson(url, init) {
   try { body = await response.json(); } catch { body = {}; }
   if (response.ok) return body;
   const message = body?.error?.message || body?.error || body?.message || ('HTTP ' + response.status);
-  if (response.status === 401) { setAdminSessionState(false); adminKeyFallback.open = true; renderResult({ error: '未认证/数据未加载。请展开“远程访问或自动化”并显式启用 Admin API Key 后重试。' }); }
+  if (response.status === 401) {
+    setAdminSessionState(false);
+    if (document.documentElement.dataset.adminMode === 'simple') {
+      setAdminMode('professional');
+      selectModule('authentication');
+    }
+    adminKeyFallback.open = true;
+    adminKeyInput.focus();
+    renderResult({ error: '未认证/数据未加载。请使用高级“远程管理凭据（Admin API Key）”后重试。' });
+  }
   const error = new Error(message); error.status = response.status; throw error;
 }
 function loadFailureHtml(message, error) { return '<div class="empty">' + esc(message + ' ' + (error instanceof Error ? error.message : String(error))) + '</div>'; }

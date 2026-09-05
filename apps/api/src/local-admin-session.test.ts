@@ -107,6 +107,7 @@ describe('local admin browser session', () => {
     const hostileApp = createApp(loadEnv(env));
     const hostileHeaders = { host: 'attacker.example', origin: 'http://attacker.example' };
     expect((await hostileApp.request('http://attacker.example/admin/api/api-keys/dev-enable', { method: 'POST', headers: hostileHeaders })).status).toBe(401);
+    expect((await hostileApp.request('http://attacker.example/admin/api/api-keys', { method: 'POST', headers: hostileHeaders })).status).toBe(401);
     expect((await hostileApp.request('http://attacker.example/admin/api/auth/chatgpt/start', { method: 'POST', headers: hostileHeaders })).status).toBe(401);
     await hostileApp.dispose();
 

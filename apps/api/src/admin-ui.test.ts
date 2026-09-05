@@ -37,6 +37,34 @@ describe('Admin UI redesign contracts', () => {
     await app.dispose();
   });
 
+  it('keeps Runtime key generation visible, one-time, and separate from advanced remote management credentials', async () => {
+    const app = createApp(loadEnv({ NODE_ENV: 'test' }));
+    const html = await (await app.request('/admin')).text();
+
+    expect(html).toContain('id="generate-runtime-api-key"');
+    expect(html).toContain('生成新 Key 不会撤销现有 Key');
+    expect(html).toContain('id="runtime-api-key-once"');
+    expect(html).toContain('id="copy-runtime-api-key"');
+    expect(html).toContain('id="dismiss-runtime-api-key"');
+    expect(html).toContain('id="runtime-key-copy-status"');
+    expect(html).toContain('<details id="admin-key-fallback" data-professional-only>');
+    expect(html).toContain('高级：远程管理凭据（Admin API Key）');
+    expect(html).toContain('跨浏览器和服务重启保持有效，直至显式撤销');
+    expect(html).toContain('[data-admin-mode="simple"] [id="admin-key-fallback"]');
+    expect(html).toContain("postJson('/admin/api/api-keys')");
+    expect(html).toContain('let generatingRuntimeApiKey = false;');
+    expect(html).toContain('await loadApiKeys();');
+    expect(html).toContain('function showOneTimeRuntimeApiKey(value)');
+    expect(html).toContain('function clearOneTimeRuntimeApiKey()');
+    expect(html).toContain('delete apiKey.dataset.value;');
+    expect(html).toContain("key === 'apiKey' || key === 'key' ? '<one-time-key-hidden>'");
+    expect(html).toContain('剪贴板不可用，请手动选中上方完整 Key 并立即保存。');
+    expect(html).toContain("setAdminMode('professional');");
+    expect(html).toContain("selectModule('authentication');");
+    expect(html).toContain('adminKeyInput.focus();');
+    await app.dispose();
+  });
+
   it('toggles modes without refetch or losing advanced edits and omits defaults in the simple PATCH', async () => {
     const script = adminPageClientScript();
     const fields: Record<string, { value?: string; checked?: boolean }> = {

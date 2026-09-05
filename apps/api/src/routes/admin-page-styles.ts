@@ -72,6 +72,10 @@ pre { margin: 0; max-width: 100%; overflow: auto; white-space: pre-wrap; overflo
 .session-strip { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: start; margin: 14px 0; border-left: 4px solid var(--positive); padding: 12px 14px; background: var(--positive-soft); }
 .session-strip.warn { border-left-color: var(--warning); background: var(--warning-soft); }
 .session-strip strong, .session-strip span { display: block; }
+.one-time-key { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start; margin: 0 0 14px; border-left: 4px solid var(--accent); padding: 14px; background: var(--accent-soft); }
+.one-time-key strong, .one-time-key code { display: block; }
+.one-time-key code { margin-top: 6px; color: var(--ink); }
+.one-time-key p { margin: 6px 0 0; }
 .state-badge { display: inline-flex; align-items: center; width: fit-content; min-width: 0; max-width: 100%; min-height: 28px; border: 1px solid currentColor; border-radius: 999px; padding: 4px 9px; font-size: 12px; font-weight: 800; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 .state-badge.positive { color: var(--positive); background: var(--positive-soft); }
 .state-badge.warning { color: var(--warning); background: var(--warning-soft); }
@@ -97,7 +101,7 @@ dt { color: var(--ink-faint); font-size: 11px; letter-spacing: 0.06em; text-tran
 dd { min-width: 0; margin: 2px 0 0; overflow-wrap: anywhere; }
 .stat-line { margin-bottom: 12px; color: var(--ink-soft); font-family: var(--font-mono); font-size: 12px; }
 .stat-line span { border-left: 2px solid var(--line-strong); padding-left: 7px; }
-[data-admin-mode="simple"] [data-professional-only] { display: none !important; }
+[data-admin-mode="simple"] [data-professional-only], [data-admin-mode="simple"] [id="admin-key-fallback"] { display: none !important; }
 .professional-detail { margin: 12px 0; border-top: 1px dashed var(--line-strong); padding-top: 12px; }
 .model-disclosure ul { display: grid; gap: 7px; margin: 10px 0 0; padding: 0; list-style: none; }
 .model-disclosure li { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 7px; }
@@ -142,6 +146,6 @@ th { color: var(--ink-soft); background: var(--surface-muted); font-family: var(
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 @media(max-width:1000px) { .workspace { grid-template-columns: 1fr; } .module-nav { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); } .account-grid, .quota-grid { grid-template-columns: 1fr; } }
-@media(max-width:760px) { .quota-request-error { grid-template-columns: 1fr; } .quota-request-error button { grid-column: 1; grid-row: auto; } .admin-shell { padding: 8px; } .topbar, .module-header { grid-template-columns: 1fr; align-items: start; } .oauth-layout, .utility-grid { grid-template-columns: 1fr; } .window-grid { grid-template-columns: 1fr; } .quota-footer { grid-template-columns: 1fr; } }
+@media(max-width:760px) { .one-time-key { grid-template-columns: 1fr; } .quota-request-error { grid-template-columns: 1fr; } .quota-request-error button { grid-column: 1; grid-row: auto; } .admin-shell { padding: 8px; } .topbar, .module-header { grid-template-columns: 1fr; align-items: start; } .oauth-layout, .utility-grid { grid-template-columns: 1fr; } .window-grid { grid-template-columns: 1fr; } .quota-footer { grid-template-columns: 1fr; } }
 @media(max-width:420px) { .topbar { padding: 18px; } .module-nav { grid-template-columns: 1fr; } .mode-toggle { width: 100%; } .mode-toggle button { flex: 1; } .panel { padding: 13px; } .card-header, .panel-heading, .meter-copy { display: grid; } .account-summary, .technical-list, .account-settings { grid-template-columns: 1fr; } .account-settings .form-actions { grid-column: 1; } .card-actions button, .oauth-actions button, .oauth-callback-row button { width: 100%; } .oauth-callback-row { grid-template-columns: 1fr; } }
 `;

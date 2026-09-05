@@ -61,6 +61,39 @@ describe('durable administration', () => {
     await restarted.dispose();
   });
 
+  it('creates a distinct durable Runtime API Key without revoking existing keys', async () => {
+    const dataDir = temporaryDirectory();
+    const env = loadEnv({ DATA_DIR: dataDir, NODE_ENV: 'test' });
+    const first = createApp(env);
+    const bootstrap = await first.request('/admin/api/api-keys/dev-enable', { method: 'POST' });
+    const { key: existingKey } = await bootstrap.json() as { key: string };
+
+    const createdResponse = await first.request('/admin/api/api-keys', {
+      method: 'POST',
+      headers: { 'x-api-key': existingKey },
+    });
+    const created = await createdResponse.json() as { ok: boolean; apiKey: string };
+
+    expect(createdResponse.status).toBe(201);
+    expect(createdResponse.headers.get('cache-control')).toBe('no-store');
+    expect(created).toMatchObject({ ok: true, apiKey: expect.any(String) });
+    expect(created.apiKey).not.toBe(existingKey);
+    expect((await first.request('/v1/models', { headers: { 'x-api-key': existingKey } })).status).toBe(200);
+    expect((await first.request('/v1/models', { headers: { 'x-api-key': created.apiKey } })).status).toBe(200);
+    expect(await (await first.request('/admin/api/api-keys', { headers: { 'x-api-key': existingKey } })).json()).toEqual({
+      apiKeys: expect.arrayContaining([
+        expect.objectContaining({ prefix: existingKey.slice(0, 12) }),
+        expect.objectContaining({ prefix: created.apiKey.slice(0, 12) }),
+      ]),
+    });
+    await first.dispose();
+
+    const restarted = createApp(env);
+    expect((await restarted.request('/v1/models', { headers: { 'x-api-key': existingKey } })).status).toBe(200);
+    expect((await restarted.request('/v1/models', { headers: { 'x-api-key': created.apiKey } })).status).toBe(200);
+    await restarted.dispose();
+  });
+
   it('reports a model mutation as successful when persistence commits but confirmation fails', async () => {
     const path = join(temporaryDirectory(), 'runtime-state.json');
     const app = createApp(loadEnv({ DATA_DIR: temporaryDirectory(), NODE_ENV: 'test' }), {
