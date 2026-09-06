@@ -1,4 +1,5 @@
 import { adminPageViewSource } from './admin-page-view.js';
+import { adminPageLocaleSource } from './admin-page-locale.js';
 
 export function adminPageClientScript(): string {
   return `${adminPageViewSource()}
@@ -6,11 +7,17 @@ let currentFlowId = null;
 let pollTimer = null;
 let accountsCache = [];
 let quotasCache = [];
+let modelsCache = { aliases: [], discovered: [] };
+let apiKeysCache = [];
+const overviewLoadState = { accounts: 'loading', models: 'loading', keys: 'loading' };
 let quotaRequestState = { status: 'idle', error: null };
 const pendingQuotaAccounts = new Set();
 let quotaRefreshAllPending = false;
 const curlExample = document.getElementById('curl-example');
 curlExample.textContent = curlExample.dataset.template.replace('__ORIGIN__', window.location.origin);
+document.getElementById('base-url').textContent = window.location.origin;
+document.getElementById('endpoint').textContent = window.location.origin + '/v1/messages';
+document.getElementById('ready-curl').textContent = curlExample.textContent;
 const adminKeyInput = document.getElementById('admin-api-key');
 const rememberAdminKeyInput = document.getElementById('remember-admin-api-key');
 const adminKeyFallback = document.getElementById('admin-key-fallback');
@@ -22,25 +29,36 @@ const modeButtons = { simple: document.getElementById('mode-simple'), profession
 const moduleButtons = document.querySelectorAll('[data-admin-module]');
 const modules = document.querySelectorAll('.admin-module');
 
+function renderOverviewPanel() {
+  document.getElementById('overview').innerHTML = renderAdminOverview({
+    accounts: accountsCache, quotas: quotasCache, models: modelsCache, keyCount: apiKeysCache.length,
+    states: { ...overviewLoadState, quotas: quotaRequestState.status }, localSession: localAdminSessionActive,
+  });
+}
 function announce(message) { globalLiveRegion.textContent = message; }
 function setAdminMode(mode) {
   const professional = mode === 'professional';
   document.documentElement.dataset.adminMode = professional ? 'professional' : 'simple';
   Object.entries(modeButtons).forEach(([name, button]) => button.setAttribute('aria-pressed', String(name === mode)));
-  localStorage.setItem('adminViewMode', mode);
+  try { localStorage.setItem('adminViewMode', mode); } catch { /* Keep mode usable without storage. */ }
 }
 modeButtons.simple.addEventListener('click', () => setAdminMode('simple'));
 modeButtons.professional.addEventListener('click', () => setAdminMode('professional'));
-setAdminMode(localStorage.getItem('adminViewMode') === 'professional' ? 'professional' : 'simple');
+let savedAdminMode;
+try { savedAdminMode = localStorage.getItem('adminViewMode'); } catch { /* Use simple mode. */ }
+setAdminMode(savedAdminMode === 'professional' ? 'professional' : 'simple');
 
 function selectModule(name) {
+  const aliases = { accounts: 'authentication', authorization: 'authentication', quotas: 'quota', 'api-config': 'api-access' };
+  name = aliases[name] || name;
+  if (!Array.from(moduleButtons).some((button) => button.dataset.adminModule === name)) name = 'overview';
   moduleButtons.forEach((button) => {
     const selected = button.dataset.adminModule === name;
     button.setAttribute('aria-selected', String(selected));
     button.tabIndex = selected ? 0 : -1;
   });
   modules.forEach((module) => { module.hidden = module.dataset.moduleName !== name; });
-  history.replaceState(history.state, '', name === 'quota' ? '#quota' : '#authentication');
+  history.replaceState(history.state, '', '#' + name);
 }
 function focusModuleTab(index) {
   const button = moduleButtons[index];
@@ -53,8 +71,8 @@ moduleButtons.forEach((button, index) => {
   button.addEventListener('keydown', (event) => {
     const lastIndex = moduleButtons.length - 1;
     let targetIndex;
-    if (event.key === 'ArrowRight') targetIndex = index === lastIndex ? 0 : index + 1;
-    else if (event.key === 'ArrowLeft') targetIndex = index === 0 ? lastIndex : index - 1;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') targetIndex = index === lastIndex ? 0 : index + 1;
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') targetIndex = index === 0 ? lastIndex : index - 1;
     else if (event.key === 'Home') targetIndex = 0;
     else if (event.key === 'End') targetIndex = lastIndex;
     else return;
@@ -62,7 +80,8 @@ moduleButtons.forEach((button, index) => {
     focusModuleTab(targetIndex);
   });
 });
-selectModule(location.hash === '#quota' ? 'quota' : 'authentication');
+selectModule(location.hash.slice(1));
+window.addEventListener('hashchange', () => selectModule(location.hash.slice(1)));
 
 document.getElementById('save-admin-api-key').addEventListener('click', async () => {
   saveAdminApiKey(adminKeyInput.value.trim(), rememberAdminKeyInput.checked);
@@ -239,6 +258,7 @@ function showAuthError(error) {
 function showReady(result) {
   const endpoint = window.location.origin + '/v1/messages';
   const hasRawKey = showOneTimeRuntimeApiKey(result.apiKey);
+  if (hasRawKey) selectModule('api-access');
   document.getElementById('api-config').hidden = false;
   document.getElementById('endpoint').textContent = endpoint;
   const curl = curlExample.dataset.template.replace('__ORIGIN__', window.location.origin);
@@ -285,12 +305,14 @@ async function loadAccounts() {
   try {
     const body = await getJson('/admin/api/accounts');
     accountsCache = Array.isArray(body.accounts) ? body.accounts : [];
+    overviewLoadState.accounts = 'loaded';
     updateManualAccountOptions(accountsCache);
     document.getElementById('accounts').innerHTML = renderAccountCards(accountsCache);
     bindAccountActions();
     // Account metadata only enriches quota cards; it must not reset a quota load/error result.
     renderQuotaPanel();
-  } catch (error) { document.getElementById('accounts').innerHTML = loadFailureHtml('账号数据加载失败，未加载。', error); }
+  } catch (error) { overviewLoadState.accounts = 'error'; document.getElementById('accounts').innerHTML = loadFailureHtml('账号数据加载失败，未加载。', error); }
+  renderOverviewPanel();
 }
 function bindAccountActions() {
   document.querySelectorAll('[data-account-health]').forEach((button) => button.addEventListener('click', async () => {
@@ -316,14 +338,14 @@ function bindAccountActions() {
     const body = await patchJson('/admin/api/accounts/' + encodeURIComponent(form.dataset.accountSettingsForm), { label: form.elements.label.value, maxConcurrency: Number(form.elements.maxConcurrency.value) }); renderResult(body); await loadAccounts();
   }));
   document.querySelectorAll('[data-account-delete]').forEach((button) => button.addEventListener('click', async () => {
-    if (!window.confirm('确认删除此账号？账号凭据、动态模型关联和配额缓存将被移除，操作无法恢复。')) return;
+    if (!window.confirm(translateAdminText('确认删除此账号？账号凭据、动态模型关联和配额缓存将被移除，操作无法恢复。', adminLocale))) return;
     const body = await deleteJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.accountDelete)); renderResult(body); await Promise.all([loadAccounts(), loadModels(), loadQuotas()]);
   }));
 }
 function updateManualAccountOptions(accounts) {
   const selected = manualAccountId.value;
   const sessionAccounts = accounts.filter((account) => account.provider === 'chatgpt-session');
-  manualAccountId.innerHTML = '<option value="">请选择 session 账号</option>' + sessionAccounts.map((account) => '<option value="' + esc(account.id) + '">' + esc(account.label || account.id) + ' (' + esc(account.id) + ')</option>').join('');
+  manualAccountId.innerHTML = '<option value="">请选择 session 账号</option>' + sessionAccounts.map((account) => '<option data-i18n-ignore value="' + esc(account.id) + '">' + esc(account.label || account.id) + ' (' + esc(account.id) + ')</option>').join('');
   if (sessionAccounts.some((account) => account.id === selected)) manualAccountId.value = selected;
 }
 
@@ -352,6 +374,7 @@ function quotaRefreshFeedback(quota) {
   return '账号配额刷新完成，但返回了未知配额状态。';
 }
 function renderQuotaPanel() {
+  renderOverviewPanel();
   document.getElementById('quotas').innerHTML = quotaRequestErrorHtml() + renderQuotaCards(quotasCache, accountsCache);
   document.querySelectorAll('[data-retry-quotas]').forEach((button) => button.addEventListener('click', loadQuotas));
   document.querySelectorAll('[data-quota-refresh]').forEach((button) => {
@@ -398,13 +421,15 @@ async function loadApiKeys() {
   try {
     const body = await getJson('/admin/api/api-keys');
     const apiKeys = Array.isArray(body.apiKeys) ? body.apiKeys : [];
+    apiKeysCache = apiKeys; overviewLoadState.keys = 'loaded';
     document.getElementById('api-keys-count').textContent = String(apiKeys.length);
-    document.getElementById('api-keys').innerHTML = apiKeys.length ? '<div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>安全前缀</th><th>创建时间</th><th>操作</th></tr></thead><tbody>' + apiKeys.map((apiKey) => '<tr><td><code>' + esc(apiKey.id) + '</code></td><td>' + esc(apiKey.name || '-') + '</td><td><code>' + esc(apiKey.prefix) + '</code></td><td>' + esc(apiKey.createdAt) + '</td><td><button class="secondary" data-revoke-key="' + esc(apiKey.id) + '">撤销</button></td></tr>').join('') + '</tbody></table></div>' : '<div class="empty">没有运行时 API Key。</div>';
+    document.getElementById('api-keys').innerHTML = apiKeys.length ? '<div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>安全前缀</th><th>创建时间</th><th>操作</th></tr></thead><tbody>' + apiKeys.map((apiKey) => '<tr><td><code>' + esc(apiKey.id) + '</code></td><td data-i18n-ignore>' + esc(apiKey.name || '-') + '</td><td><code>' + esc(apiKey.prefix) + '</code></td><td>' + esc(apiKey.createdAt) + '</td><td><button class="secondary" data-revoke-key="' + esc(apiKey.id) + '">撤销</button></td></tr>').join('') + '</tbody></table></div>' : '<div class="empty">没有运行时 API Key。</div>';
     document.querySelectorAll('[data-revoke-key]').forEach((button) => button.addEventListener('click', async () => {
-      if (!window.confirm('确认撤销此运行时 API Key？撤销后对应客户端会立即失效。')) return;
+      if (!window.confirm(translateAdminText('确认撤销此运行时 API Key？撤销后对应客户端会立即失效。', adminLocale))) return;
       const result = await deleteJson('/admin/api/api-keys/' + encodeURIComponent(button.dataset.revokeKey)); renderResult(result); await loadApiKeys();
     }));
-  } catch (error) { document.getElementById('api-keys-count').textContent = '-'; document.getElementById('api-keys').innerHTML = loadFailureHtml('运行时 API Key 加载失败，未加载。', error); }
+  } catch (error) { overviewLoadState.keys = 'error'; document.getElementById('api-keys-count').textContent = '-'; document.getElementById('api-keys').innerHTML = loadFailureHtml('运行时 API Key 加载失败，未加载。', error); }
+  renderOverviewPanel();
 }
 document.getElementById('refresh-api-keys').addEventListener('click', loadApiKeys);
 
@@ -413,6 +438,7 @@ async function loadModels() {
     const body = await getJson('/admin/api/models');
     const aliases = Array.isArray(body.aliases) ? body.aliases : (Array.isArray(body.models) ? body.models : []);
     const discovered = Array.isArray(body.discovered) ? body.discovered : [];
+    modelsCache = { aliases, discovered }; overviewLoadState.models = 'loaded';
     const discoveryHtml = discovered.length ? '<div class="row">' + discovered.map((model) => '<span class="state-badge neutral" title="' + esc(capabilitySummary(model.capabilities)) + '">' + esc(model.id) + '</span>').join('') + '</div>' : '<div class="empty">Backend discovery 暂无模型；不会假设所有控制项都可用。</div>';
     const discoverySection = '<div data-professional-only><p class="muted">Backend discovery（选项与顺序直接来自 catalog）</p>' + discoveryHtml + '</div>';
     const builtInAliases = aliases.filter((model) => model.builtIn);
@@ -420,7 +446,8 @@ async function loadModels() {
     document.getElementById('model-backend').innerHTML = backendOptionsHtml('', discovered, true);
     document.getElementById('models').innerHTML = aliases.length ? discoverySection + '<div class="table-wrap"><table><thead><tr><th>Alias</th><th>Backend Model</th><th data-professional-only>状态</th><th>启用</th><th data-professional-only>目标能力与默认参数</th><th>操作</th></tr></thead><tbody>' + aliases.map((model) => '<tr><td><code>' + esc(model.id) + '</code>' + (model.builtIn ? ' <span class="muted">内置</span>' : '') + '</td><td><select data-field="backendModel" data-id="' + esc(model.id) + '" aria-label="Alias ' + esc(model.id) + ' 的 Backend Model">' + backendOptionsHtml(model.backendModel || '', discovered, true) + '</select></td><td data-professional-only>' + esc(model.status || '-') + '</td><td><input type="checkbox" data-field="enabled" data-id="' + esc(model.id) + '" aria-label="Alias ' + esc(model.id) + ' 是否启用" ' + (model.enabled ? 'checked' : '') + ' /></td><td data-professional-only><div class="stack" data-controls-for="' + esc(model.id) + '">' + controlSelectsHtml(model, model.defaults, model.id) + capabilityStateHtml(model) + '</div></td><td><button data-save-model="' + esc(model.id) + '">保存</button>' + (model.builtIn ? '' : ' <button class="secondary" data-professional-only data-delete-model="' + esc(model.id) + '">删除</button>') + '</td></tr>').join('') + '</tbody></table></div>' : discoverySection + '<div class="empty">暂无 alias overlay。</div>';
     bindModelActions(aliases, discovered);
-  } catch (error) { const failure = loadFailureHtml('模型数据加载失败，未加载。', error); document.getElementById('model-availability').innerHTML = failure; document.getElementById('models').innerHTML = failure; }
+  } catch (error) { overviewLoadState.models = 'error'; const failure = loadFailureHtml('模型数据加载失败，未加载。', error); document.getElementById('model-availability').innerHTML = failure; document.getElementById('models').innerHTML = failure; }
+  renderOverviewPanel();
 }
 function bindModelActions(aliases, discovered) {
   document.querySelectorAll('[data-field="backendModel"]').forEach((select) => select.addEventListener('change', () => {
@@ -431,7 +458,7 @@ function bindModelActions(aliases, discovered) {
   }));
   document.querySelectorAll('[data-save-model]').forEach((button) => button.addEventListener('click', () => saveModel(button.dataset.saveModel)));
   document.querySelectorAll('[data-delete-model]').forEach((button) => button.addEventListener('click', async () => {
-    if (!window.confirm('确认删除此自定义模型 alias？删除后无法恢复。')) return;
+    if (!window.confirm(translateAdminText('确认删除此自定义模型 alias？删除后无法恢复。', adminLocale))) return;
     const body = await deleteJson('/admin/api/models/' + encodeURIComponent(button.dataset.deleteModel)); renderResult(body); await loadModels();
   }));
 }
@@ -442,10 +469,10 @@ async function saveModel(id) {
   const body = await patchJson('/admin/api/models/' + encodeURIComponent(id), patch); renderResult(body); await loadModels();
 }
 function backendOptionsHtml(current, discovered, allowEmpty) {
-  const values = discovered.map((model) => ({ value: model.id, label: model.display_name || model.id }));
+  const values = discovered.map((model) => ({ value: model.id, label: model.display_name || model.id, provider: true }));
   if (current && !values.some((option) => option.value === current)) values.unshift({ value: current, label: current + '（已失效）' });
   if (allowEmpty) values.unshift({ value: '', label: '未绑定' });
-  return values.map((option) => '<option value="' + esc(option.value) + '" ' + (option.value === current ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('');
+  return values.map((option) => '<option value="' + esc(option.value) + '" ' + (option.provider ? 'data-i18n-ignore ' : '') + (option.value === current ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('');
 }
 function controlSelectsHtml(model, defaults, aliasId) {
   const capabilities = model.capabilities || unknownCapabilities();
@@ -456,13 +483,13 @@ function controlSelectsHtml(model, defaults, aliasId) {
   const currentTier = isFast(defaults.speed) ? 'priority' : defaults.speed;
   const tiers = [{ value: 'standard', label: 'Standard（发送 service_tier: default）' }, { value: 'auto', label: 'Auto（省略 service_tier）' }];
   if (supportsFast || isFast(defaults.speed)) tiers.push({ value: 'priority', label: supportsFast ? 'Fast' : 'Fast（配置不受目标支持）' });
-  tiers.push(...supportedTiers.filter((option) => !isFast(option.id) && !['standard', 'default', 'auto'].includes(String(option.id).toLowerCase())).map((option) => ({ value: option.id, label: option.name || option.id, description: option.description })));
+  tiers.push(...supportedTiers.filter((option) => !isFast(option.id) && !['standard', 'default', 'auto'].includes(String(option.id).toLowerCase())).map((option) => ({ value: option.id, label: option.name || option.id, description: option.description, provider: true })));
   return '<label>推理 ' + selectHtml(aliasId, 'reasoning_effort', reasoning, defaults.reasoning_effort) + '</label><label>服务层级 ' + selectHtml(aliasId, 'speed', tiers, currentTier) + '</label>';
 }
 function selectHtml(id, field, options, current) {
   const normalized = String(current || '').toLowerCase();
   if (current && !options.some((option) => String(option.value).toLowerCase() === normalized)) options = [{ value: current, label: current + '（配置不受目标支持）' }].concat(options);
-  return '<select data-field="' + field + '" data-id="' + esc(id) + '">' + options.map((option) => '<option value="' + esc(option.value) + '" title="' + esc(option.description || '') + '" ' + (String(option.value).toLowerCase() === normalized ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('') + '</select>';
+  return '<select data-field="' + field + '" data-id="' + esc(id) + '">' + options.map((option) => '<option value="' + esc(option.value) + '" ' + (option.provider ? 'data-i18n-ignore ' : '') + 'title="' + esc(option.description || '') + '" ' + (String(option.value).toLowerCase() === normalized ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('') + '</select>';
 }
 function reasoningLabel(effort) { const value = String(effort).toLowerCase(); if (value === 'low') return 'Light（官方 low）'; if (value === 'ultra') return 'Ultra（兼容最高强度）'; return effort; }
 function capabilityStateHtml(model) {
@@ -485,9 +512,10 @@ document.getElementById('refresh-models').addEventListener('click', async () => 
 
 function renderResult(body) {
   const outcomes = Array.isArray(body.refreshedAccounts) ? body.refreshedAccounts : [];
-  const feedback = outcomes.map((item) => item.accountId + ': ' + item.message).join('；') || body.message;
+  const feedback = outcomes.map((item) => item.accountId + ': ' + item.message).join('；') || body.message || (typeof body.error === 'string' ? body.error : '');
   if (feedback) announce(feedback);
-  document.getElementById('result').textContent = (feedback ? feedback + '\\n' : '') + JSON.stringify(redactApiKeys(body), null, 2);
+  document.getElementById('result-message').textContent = feedback || '';
+  document.getElementById('result').textContent = JSON.stringify(redactApiKeys(body), null, 2);
 }
 function redactApiKeys(value) {
   if (Array.isArray(value)) return value.map(redactApiKeys);
@@ -507,8 +535,8 @@ async function requestJson(url, init) {
     setAdminSessionState(false);
     if (document.documentElement.dataset.adminMode === 'simple') {
       setAdminMode('professional');
-      selectModule('authentication');
     }
+    selectModule('admin-access');
     adminKeyFallback.open = true;
     adminKeyInput.focus();
     renderResult({ error: '未认证/数据未加载。请使用高级“远程管理凭据（Admin API Key）”后重试。' });
@@ -531,9 +559,11 @@ function setAdminSessionState(active) {
 }
 function getStoredAdminApiKey() { return pageAdminApiKey || localStorage.getItem('adminApiKey') || ''; }
 function saveAdminApiKey(key, persistent) { pageAdminApiKey = key; if (key && persistent) localStorage.setItem('adminApiKey', key); else localStorage.removeItem('adminApiKey'); adminKeyInput.value = key; }
+${adminPageLocaleSource()}
 async function withPendingButton(button, label, action) { const original = button.textContent; button.disabled = true; button.textContent = label; try { await action(); } catch (error) { renderResult({ error: error.message }); } finally { button.disabled = false; button.textContent = original; } }
 
 void loadQuotas();
+renderOverviewPanel();
 verifyLocalAdminSession().then(async () => { await Promise.all([loadAccounts(), loadApiKeys(), loadModels()]); await restoreOAuthFlow(); });
 `;
 }

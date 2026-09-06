@@ -10,6 +10,7 @@ import { accountReleaseError } from './account-release-error.js';
 import { mapChatGptBackendError, mapErrorPayload } from './backend-errors.js';
 import { createAccountRequestTracker, trackStreamStatistics, usageFromBackend } from '../services/request-statistics.js';
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
+import { setAccessLogMetadata } from '../middleware/access-log.js';
 
 export interface OpenAiResponsesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; responsesStore?: ResponsesStore; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; }
 
@@ -20,6 +21,7 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
     try {
       if (deps.ready) await deps.ready;
       const request = parseOpenAiResponsesRequest(await c.req.json());
+      setAccessLogMetadata(c, { model: request.model, stream: Boolean(request.stream) });
       const ownerId = String((c as { get: (key: string) => unknown }).get('ownerId') ?? 'anonymous');
       const downstreamRequest = withPreviousResponseContext(ownerId, request, responsesStore);
       const explicitControls = {

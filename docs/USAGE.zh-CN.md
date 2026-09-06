@@ -1,73 +1,175 @@
-# 使用 Claude Code
+# 使用 Claude Code 与管理后台
 
-本指南说明如何把本项目作为 Claude Code 的直接 API 提供方使用。项目对外提供 Claude Messages API；启动服务、完成本地授权并取得 Runtime API Key 后，即可在 Claude Code 中使用。
+本指南说明如何启动 `chatgpt-to-claude`、完成本地 Codex OAuth、配置 Claude Code，并理解 `/admin` 控制台的实际行为。示例中的 token、cookie、API Key 和账号信息都是占位符。
 
-## 前置条件
+## 1. 启动服务
 
-1. 在项目根目录启动服务：
+在项目根目录执行：
 
-   ```bat
-   start.bat
-   ```
+```bat
+start.bat
+```
 
-   或在 Git Bash、Linux、macOS 中运行：
+或在 Git Bash、Linux、macOS 执行：
 
-   ```bash
-   ./start.sh
-   ```
+```bash
+./start.sh
+```
 
-2. 打开 <http://127.0.0.1:3000/admin>，完成 Codex OAuth 授权。
-3. 授权完成后，立即复制页面显示的 **Runtime API Key**。
+也可以手动执行：
 
-默认服务端口是 `3000`。如果通过 `PORT` 改用了其他端口，请将下面所有示例中的 `3000` 替换为实际端口，例如 `PORT=3100` 时使用 `http://127.0.0.1:3100`。文档统一使用 `127.0.0.1`，以明确表示仅连接本机服务。
+```bash
+corepack pnpm setup
+corepack pnpm check
+corepack pnpm start
+```
 
-Runtime API Key 是 `/v1/*` 客户端凭据，Admin 浏览器会话不能替代它。原始 Key 只在创建时显示一次；如果遗失，请重新打开本机 `/admin`，点击 **Generate New Key（生成新的 Runtime API Key）**，复制新 Key 即可，**不需要再次进行 OAuth 授权**。新 Key 不会撤销现有 Key；如需作废遗失的旧 Key，再在后台的 Runtime Key 列表中撤销它。
+默认服务地址为 `http://127.0.0.1:3000`，管理后台为：
 
-## 配置 Claude Code
+```text
+http://127.0.0.1:3000/admin
+```
 
-Claude Code 的 API 基地址必须填写服务的**根 origin**，不要附加 `/v1`：
+如果设置了 `PORT`，请把所有示例中的 `3000` 换成实际端口。文档使用 `127.0.0.1` 是为了明确表示本机连接。
+
+服务默认监听 loopback。若 `HOST` 不是 loopback，启动时必须预先设置 `API_KEYS`；`LOCAL_CONTAINER_BOOTSTRAP=true` 只用于容器监听 `0.0.0.0` 且宿主端口仍仅发布到 loopback 的场景。
+
+## 2. Admin 的六个目的地
+
+后台左侧导航固定提供六个目的地，页面 hash 也会反映当前目的地：
+
+| 目的地 | 用途 |
+| --- | --- |
+| **概览（Overview）** `#overview` | 查看账号数量和健康摘要、已发现模型、可用 alias、Runtime Key 数量、配额缓存状态和最近账号活动。最近活动是摘要，不是完整请求日志。 |
+| **账号与授权（Accounts & Authorization）** `#authentication` | 添加/重新授权 ChatGPT session、取消 OAuth、检查健康与模型、启用/停用/编辑/删除账号；专业模式提供手动 session 导入。 |
+| **模型（Models）** `#models` | 查看 discovery、为 alias 绑定 backend model、启用/停用 alias、设置默认 reasoning/service tier；专业模式支持自定义 alias、refresh 和 reset。 |
+| **API 接入（API Access）** `#api-access` | 创建、复制、查看安全前缀和撤销 Runtime API Key；查看动态 Base URL、endpoint 和 curl 示例。 |
+| **配额（Quotas）** `#quota` | 读取 provider allowance 缓存，按账号或全部刷新；显示五小时、每周及其他上游窗口，缺失百分比不会伪显示为 0%。 |
+| **管理访问（Admin Access）** `#admin-access` | 查看本机 HttpOnly 管理会话；专业模式提供远程/自动化使用的 Admin API Key fallback。 |
+
+### 简洁模式与专业模式
+
+后台默认使用**简洁模式**，适合完成正常授权、绑定 backend model、生成 Runtime API Key 和查看基本状态。它展示账号身份、套餐、启用状态、健康、请求结果、最近活动和模型数量。
+
+**专业模式**额外显示：
+
+- 账号内部 ID、上游 ID、凭据到期时间、并发、冷却时间和安全错误码；
+- discovery 尝试/成功时间、安全诊断和完整动态模型列表；
+- reasoning effort、service tier、能力元数据和配置问题；
+- 自定义 alias 的创建、更新、删除、reset alias overlay、刷新 backend discovery；
+- 高级手动 `accessToken`/cookie 导入；
+- 远程/自动化用 Admin API Key fallback。
+
+模式偏好保存在当前浏览器的 `localStorage.adminViewMode`，只接受 `simple` 或 `professional`。它不是服务端账号配置，换浏览器或清理存储后会回到简洁模式。
+
+### 语言记忆
+
+后台默认简体中文，点击右上角 **English** 可切换英文。选择保存在当前浏览器的 `localStorage.adminLocale`，刷新后台后继续使用；只接受 `zh-CN` 或 `en`。页面会原地翻译静态文本、ARIA 属性、日期和数字，不会翻译账号标签或 provider 返回的模型名称。
+
+OAuth 回跳只会在 `sessionStorage` 保存短期 `{ flowId, origin }` 定位信息，随后从地址栏移除 `oauth_flow`。其中不保存 code、state、code verifier、token、cookie、Admin Key 或 Runtime Key。
+
+## 3. 完成 Codex OAuth
+
+正常流程是浏览器授权，不依赖已登录的 `chatgpt.com` 页面抓 token：
+
+1. 打开 `/admin`，点击“添加 ChatGPT 账号”。
+2. 页面会先同步执行 `window.open('about:blank', '_blank')`，然后请求 OAuth flow；服务返回授权 URL 后导航新标签页。服务本身不会启动独立 Chrome 或新 profile。
+3. flow 使用随机 flow ID、一次性 OAuth `state` 和 PKCE `code_verifier`/`code_challenge`。授权 scope 是实现中配置的 OpenID/profile/email/offline access 及 connectors scope，并带有 `originator=chat2claude`。
+4. callback listener 优先在同一个端口同时绑定 IPv6 `::1`（IPv6-only）和 IPv4 `127.0.0.1`。默认端口是 `1455`；若该端口任一可用地址族无法完整监听，会关闭本轮 socket 并整体切换到 `1457`。IPv6 不可用时可以只使用 IPv4，不会绑定 wildcard 或 LAN 地址。
+5. flow 默认十分钟过期。callback URL 必须完整匹配本次 flow 的 `http://localhost:<1455|1457>/auth/callback`，重复、冲突、错误 host/port/path、userinfo 或 fragment 会被拒绝；state 成功接收后只能消费一次。
+6. callback 收到 code 后立即 single-flight 换 token，不等待下一次 polling。成功 listener callback 会以 `303` 回到 `/admin?oauth_flow=<flow-id>`；URL 只含非敏感 flow locator。
+7. 服务自动 provisioning：验证 session，发现 backend models，保存 `chatgpt-session` 账号和模型 catalog；首次 session 账号会从 discovery 顺序中选择第一个模型绑定 `sonnet`，并在尚无 Runtime Key 时生成持久化 Runtime API Key。
+8. 页面只展示脱敏账号信息、发现模型、绑定 alias、Base URL、endpoint 和一次性 Runtime API Key，不展示 access token、refresh token、id token、cookie 或其他 secret。
+
+如果浏览器提示无法连接本地 callback：
+
+1. 原样复制浏览器地址栏中的完整 `http://localhost:<port>/auth/callback?...` URL；
+2. 在“账号与授权”的 callback 输入框粘贴；
+3. 点击“提交 callback URL”，页面会继续 exchange/provisioning。
+
+取消授权只取消当前服务端 flow，不会启动或关闭浏览器。服务重启后 flow 不再存在，页面会提示流程过期并要求重新授权。
+
+### 高级手动导入
+
+仅在 OAuth 无法使用或已有可用 session secret 时，在专业模式展开“高级：手动导入 accessToken / cookie”。可以新增账号或重新授权已有 `chatgpt-session` 账号；表单提交后服务仍会执行相同的 session 验证、模型发现和持久化流程。表单和响应不会返回 secret。
+
+## 4. Runtime API Key、Admin API Key 与静态 API_KEYS
+
+三者的**命名用途**不同，但当前服务端没有把 Runtime Key 与 Admin Key 做成完全隔离的认证集合：
+
+| 凭据 | 主要用途 | 认证位置 |
+| --- | --- | --- |
+| Runtime API Key | 客户端调用 `/v1/*`；当前实现中有效 Runtime Key 也可访问受保护的 `/admin/api/*` | `Authorization: Bearer <key>` 或 `x-api-key: <key>` |
+| Admin API Key | 远程/自动化调用 `/admin/api/*` 的专用命名；使用时应按管理凭据保护 | `Authorization: Bearer <key>` 或 `x-api-key: <key>` |
+| `API_KEYS` | 启动前配置的服务端静态允许列表；可作为 `/v1/*` 和远程 Admin API 的 key | 同上 |
+
+因此 Runtime API Key 与 Admin API Key 是用途和管理习惯上的区分，不是当前认证层面的安全隔离；泄露 Runtime Key 也应按可能暴露管理 API 处理。
+
+本机 loopback 访问 `/admin` 时，服务会签发进程级随机 HttpOnly、`SameSite=Strict`、`Path=/admin` cookie。该 cookie：
+
+- 只在服务当前进程有效，重启后失效；
+- 只接受可信 loopback Host；
+- 只能用于 Admin API，不能用于 `/v1/*`；
+- 对写操作要求同源 `Origin`；
+- 远程访问、自动化或会话不可用时必须改用显式 Admin API Key。
+
+Runtime API Key 的原始值只在创建/生成后的当前页面显示一次。列表只显示 ID、名称、创建时间和安全前缀，不会再次显示原始值。遗失时生成新 Key；旧 Key 不会自动撤销，如需作废请在 Key 列表中撤销旧记录。
+
+启动前固定服务端 key 的示例：
+
+```bash
+API_KEYS='<key-1>,<key-2>' ./start.sh
+```
+
+开发环境的 `/admin/api/api-keys/dev-enable` 可生成 `sk-dev-...` key；`NODE_ENV=production` 时该入口禁用。正常 Runtime Key 使用 `sk-runtime-...` 前缀。
+
+## 5. Base URL 与 Claude Code 配置
+
+Claude Code 的 Base URL 必须填写服务根 origin，**不要包含 `/v1`**：
 
 ```text
 http://127.0.0.1:3000
 ```
 
-不要配置为 `http://127.0.0.1:3000/v1`。Claude Code 会在基地址后拼接 Claude API 路径；本项目实际 Messages 端点为 `POST /v1/messages`。
+错误示例：
 
-### 临时配置
+```text
+http://127.0.0.1:3000/v1
+```
 
-在启动 Claude Code 的同一个终端设置环境变量。
+项目的实际 Claude Messages endpoint 是 `POST /v1/messages`，客户端会在根 Base URL 后拼接路径。若 `PORT=3100`，使用 `http://127.0.0.1:3100`。
 
-#### PowerShell
+### 临时环境变量
+
+PowerShell：
 
 ```powershell
 $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:3000"
-$env:ANTHROPIC_AUTH_TOKEN = "sk-runtime-..."
+$env:ANTHROPIC_AUTH_TOKEN = "<runtime-api-key>"
 claude
 ```
 
-#### CMD
+CMD：
 
 ```bat
 set "ANTHROPIC_BASE_URL=http://127.0.0.1:3000"
-set "ANTHROPIC_AUTH_TOKEN=sk-runtime-..."
+set "ANTHROPIC_AUTH_TOKEN=<runtime-api-key>"
 claude
 ```
 
-#### Git Bash、Linux 或 macOS
+Git Bash、Linux 或 macOS：
 
 ```bash
 export ANTHROPIC_BASE_URL='http://127.0.0.1:3000'
-export ANTHROPIC_AUTH_TOKEN='sk-runtime-...'
+export ANTHROPIC_AUTH_TOKEN='<runtime-api-key>'
 claude
 ```
 
-将 `sk-runtime-...` 替换为 `/admin` 一次性显示的 Runtime API Key。该 Key 会通过 `Authorization: Bearer <key>` 认证；项目也接受 `x-api-key`，但 Claude Code 配置应使用上述认证令牌变量。
+`ANTHROPIC_AUTH_TOKEN` 会以 Bearer token 发送。Claude Code 配置使用 Runtime API Key，不要填 Admin API Key。
 
-### 安全检查环境变量
+### 安全检查，不打印完整 key
 
-检查时不要直接 `echo` 或 `printenv` 输出完整 Key。可以只确认变量已设置，并验证健康检查；下面的命令不会打印 Key 内容：
-
-#### PowerShell 安全检查
+PowerShell：
 
 ```powershell
 if ([string]::IsNullOrWhiteSpace($env:ANTHROPIC_BASE_URL)) { throw "ANTHROPIC_BASE_URL 未设置" }
@@ -78,17 +180,7 @@ Invoke-RestMethod "$env:ANTHROPIC_BASE_URL/healthz" | Out-Null
 Write-Output "healthz=OK"
 ```
 
-#### CMD 安全检查
-
-```bat
-if "%ANTHROPIC_BASE_URL%"=="" (echo ANTHROPIC_BASE_URL 未设置 1>&2 & exit /b 1)
-if "%ANTHROPIC_AUTH_TOKEN%"=="" (echo ANTHROPIC_AUTH_TOKEN 未设置 1>&2 & exit /b 1)
-echo ANTHROPIC_BASE_URL=%ANTHROPIC_BASE_URL%
-echo ANTHROPIC_AUTH_TOKEN=已设置（内容已隐藏）
-curl.exe "%ANTHROPIC_BASE_URL%/healthz"
-```
-
-#### Git Bash、Linux 或 macOS 安全检查
+Git Bash、Linux 或 macOS：
 
 ```bash
 : "${ANTHROPIC_BASE_URL:?ANTHROPIC_BASE_URL 未设置}"
@@ -100,14 +192,12 @@ curl --fail "$ANTHROPIC_BASE_URL/healthz"
 
 ### Claude Code settings 示例
 
-也可以将环境变量放入 Claude Code 的设置文件（例如 `~/.claude/settings.json`），避免每次开启新终端都重新导出。下面的模型覆盖全部使用项目内置别名，不要填入未在 `/v1/models` 中出现的后端模型 ID：
-
 ```json
 {
   "model": "sonnet",
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:3000",
-    "ANTHROPIC_AUTH_TOKEN": "sk-runtime-...",
+    "ANTHROPIC_AUTH_TOKEN": "<runtime-api-key>",
     "ANTHROPIC_MODEL": "sonnet",
     "ANTHROPIC_REASONING_MODEL": "sonnet",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "opus",
@@ -118,56 +208,122 @@ curl --fail "$ANTHROPIC_BASE_URL/healthz"
 }
 ```
 
-该配置会把 Claude Code 的主模型和 reasoning model 设为 `sonnet`，并将 Opus、Sonnet、Haiku、Fable 四类模型分别映射到项目内置的 `opus`、`sonnet`、`haiku`、`fable` alias。如果某个 alias 尚未绑定有效后端模型，请先在 `/admin` 模型管理中完成绑定。该文件包含访问凭据，请勿提交到仓库、同步到公共位置或分享给他人。修改设置后，请关闭已有 Claude Code 会话并重新加载 VS Code 或终端。
+该文件含访问凭据，不要提交仓库、同步到公共位置或分享给他人。修改后关闭已有 Claude Code 会话并重新加载终端或 VS Code。
 
-## 选择模型
+## 6. 模型 alias、discovery 与 reasoning/speed
 
-项目内置四个 Claude Code 可用的别名：
+### 内置 alias
 
-| 别名 | 默认 reasoning effort | 初始可用性 |
+| Alias | 默认 reasoning effort | 初始行为 |
 | --- | --- | --- |
-| `sonnet` | `medium` | 标准 OAuth provisioning 会自动选择已发现的后端模型并绑定此别名。推荐先使用它。 |
-| `haiku` | `low` | 内置但默认未绑定；需在 `/admin` 专业模式将其绑定到 discovery 中的后端模型。 |
-| `fable` | `high` | 内置但默认未绑定；需先绑定有效后端模型。它不是硬编码的生产模型 ID。 |
-| `opus` | `high` | 内置但默认未绑定；需先绑定有效后端模型。 |
+| `sonnet` | `medium` | 首次 session provisioning 会绑定 discovery 返回的第一个 backend model；建议先验证它。 |
+| `haiku` | `low` | 内置但通常未绑定；需在模型映射中选择已发现的 backend model。 |
+| `fable` | `high` | 可配置内置 alias，不是硬编码生产模型 ID；需先绑定。 |
+| `opus` | `high` | 内置但通常未绑定；需先绑定。 |
 
-在 Claude Code 中选择 `sonnet` 作为首次验证。要使用其他别名，请先在 `/admin` 的模型管理中刷新 discovery，并把别名映射到可用的 backend model。`GET /v1/models` 只会返回已启用且可解析的别名及 discovery passthrough 模型。
+模型来源不是静态生产模型表：
 
-## 服务端 Key 的替代配置
+- `MODEL_REGISTRY_JSON` 存在时优先作为 alias overlay 配置；否则读取 `config/models.json`。
+- session backend 在有账号上下文时从上游 discovery 获取模型；无账号启动 discovery 可能为空。
+- mock backend 可通过 `MOCK_BACKEND_MODELS_JSON` 提供 discovery。
+- OAuth provisioning 和账号健康/模型刷新会使用账号上下文刷新 catalog。
+- `/v1/models` 只返回已启用且状态为 `bound` 或 `passthrough` 的 alias/discovery 模型；`unbound` 和 `stale` 不会列出。
+- 已存在的持久化或手动 alias binding 不会被服务重启时的 discovery refresh 随意覆盖；refresh 只在需要绑定时使用 discovery。
 
-默认流程由 `/admin` 生成并持久化 Runtime API Key。若要在启动前固定服务端访问 Key，可设置以逗号分隔的 `API_KEYS`：
+模型映射的 Backend Model 下拉只来自当前 discovery。专业模式中的 reasoning effort、service tier 和默认值也来自所选目标的能力元数据；元数据未知时不会假设所有控制项都可用。显式请求不支持的 `reasoning_effort` 或 service tier 会返回 400，而不是静默改写。
+
+## 7. 配额、日志和计时边界
+
+### 配额
+
+后台首次加载配额只读取本地缓存，不触发上游请求。刷新按账号去重；批量刷新允许部分成功。页面按 provider 实际返回的 `durationSeconds` 识别五小时窗口（18,000 秒）和每周窗口（604,800 秒），其他窗口原样列出。
+
+未知或缺失的 `usedPercent` 不会显示为 0% 进度条，也不会从套餐名称、429 或请求统计推断剩余额度。配额状态区分 `fresh`、`stale`、`error`、`unknown`；不支持 quota lookup 的账号会明确显示不可用。
+
+### HTTP access log
+
+access log 只应用于 `/v1/*` 和 `/admin/api/*`，每条记录包含：
+
+- request ID、HTTP method、归一化 path；
+- 查询参数类别（只保留 `beta`，其他归为 `other`）；
+- HTTP status、peer IP；
+- 已通过路由校验的 model ID 和 stream 标志；
+- `durationMs` 和固定的 `durationKind: response_ready`。
+
+它**不会读取或记录** request body、response body、token、cookie、Authorization、API Key、OAuth code/state/verifier 或完整查询值。动态 flow/account/key/model ID 会被归一化为占位路径；非法或过长模型 ID 会被写成安全占位符。
+
+`response_ready` 的含义是响应已经准备好：普通响应是 handler 返回 response 的时间；流式响应是 SSE response 建立的时间，**不是**流式 body 全部发送完的时间。
+
+### 后台请求统计
+
+账号卡片的成功、失败、取消、总请求数、token 累计、最近请求时间和 in-flight 数量来自独立的运营状态统计，不是完整访问日志。运营状态会 debounce 写入 `admin-operational-state.json`；`inFlight` 不持久化，重启后恢复为 0。统计持久化失败不会改变 provider 响应、账号释放或冷却逻辑。`/metrics` 只返回当前进程内 request log 的数量。
+
+## 8. 持久化、密钥与安全文件
+
+默认数据目录是 API 应用的 `data` 目录。可设置：
 
 ```bash
-API_KEYS='sk-local-1,sk-local-2' ./start.sh
+DATA_DIR=./custom-data
 ```
 
-这是服务端设置，不是 Claude Code 设置。Claude Code 仍应把其中一个 Key 配置为 `ANTHROPIC_AUTH_TOKEN`。服务监听非 loopback 地址时，若未预先设置 `API_KEYS`，会拒绝启动以避免匿名初始化暴露。
+runtime state 位于 `${DATA_DIR}/runtime-state.json`，保存账号 session secret、Runtime API Key 和 alias overlay；运营状态位于 `${DATA_DIR}/admin-operational-state.json`，保存脱敏请求统计、健康、发现 catalog 和配额缓存。服务使用临时文件、fsync 和原子 rename，并尽量设置目录 `0700`、文件 `0600`。
 
-## 故障排除
+可选的 `STATE_ENCRYPTION_KEY` 会使用 AES-256-GCM 加密 runtime state。它必须是无空白、严格标准 base64 的 32 字节 key（44 个字符，末尾一个 `=`）。生成占位配置值：
 
-| 现象 | 原因与解决方法 |
-| --- | --- |
-| `401`，提示先访问 `/admin` 初始化 | `/v1/*` 必须使用有效的 Runtime API Key 或静态 `API_KEYS`。完成 `/admin` 授权并配置 `ANTHROPIC_AUTH_TOKEN`；浏览器 Admin 会话不能用于 API。 |
-| 请求地址包含重复的 `/v1` 或返回路由错误 | `ANTHROPIC_BASE_URL` 填写了 `/v1`。改为服务 origin，例如 `http://127.0.0.1:3000`；若设置了自定义 `PORT`，使用实际端口。 |
-| `message.role must be user or assistant` | **先检查 `ANTHROPIC_BASE_URL` 是否错误地包含 `/v1`，或是否指向了错误的 OpenAI 兼容端点。** Claude Code 应通过根 origin 调用本项目的 `POST /v1/messages`。确认 base URL 正确后，Claude Messages 的 `messages` 中只发送 `user` 和 `assistant`；系统提示放在顶层 `system` 字段，不要在 `messages` 中发送 `system`、`developer` 或 `tool` role。 |
-| `gpt-6-astra` 错误或模型不可用 | 项目没有为 `gpt-6-astra` 提供特殊的内置别名或硬编码映射。检查 `GET /v1/models`（携带 API Key）中实际可用的模型；使用已列出的模型，或在 `/admin` 刷新 discovery 后将一个别名绑定到可用的后端模型。 |
-| 别名未绑定、已禁用或后端模型已失效 | 在 `/admin` 刷新模型 discovery，确认别名启用并绑定到当前可用的 backend model。首次使用优先选 `sonnet`；OAuth provisioning 通常会自动绑定它。 |
-| OpenAI Chat 的 role 报错 | `/v1/chat/completions` 与 `/v1/messages` 是不同协议。前者接受 `system`、`developer`、`user`、`assistant`、`tool`；直接使用 Claude Code 时调用的是 Messages API，应遵循前一行的 Claude role 规则。 |
+```bash
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
+```
 
-## 连接验证
+把完整输出放进本地 `.env`，不要把输出写入文档或提交记录。加密文件启动时必须提供同一 key；没有 key 或 key 不匹配会拒绝读取状态。
 
-在配置 Claude Code 前，可先确认服务、认证和 `sonnet` 映射：
+## 9. 环境变量
+
+常用值：
+
+```bash
+CHATGPT_BACKEND=session
+CHATGPT_BASE_URL=https://chatgpt.com
+CHATGPT_REQUEST_TIMEOUT_MS=60000
+PORT=3000
+HOST=127.0.0.1
+API_KEYS=<key-1>,<key-2>
+```
+
+`CHATGPT_BASE_URL` 是 session backend 请求上游 `/backend-api/codex/responses` 和 discovery 的地址，不是 Claude Code 的客户端 Base URL。客户端 Base URL 仍然是服务根 origin，例如 `http://127.0.0.1:3000`。
+
+## 10. 连接验证
 
 ```bash
 curl http://127.0.0.1:3000/healthz
 
 curl http://127.0.0.1:3000/v1/models \
-  -H 'Authorization: Bearer sk-runtime-...'
+  -H 'Authorization: Bearer <runtime-api-key>'
 
 curl http://127.0.0.1:3000/v1/messages \
   -H 'content-type: application/json' \
-  -H 'Authorization: Bearer sk-runtime-...' \
+  -H 'Authorization: Bearer <runtime-api-key>' \
   -d '{"model":"sonnet","max_tokens":64,"messages":[{"role":"user","content":"你好"}]}'
 ```
 
-最后一个请求成功后，再以同一 Runtime API Key 启动 Claude Code。
+如果 `GET /v1/models` 没有 `sonnet`，先在 `/admin` 刷新 discovery 并确认 alias 已绑定、启用且 backend model 仍然存在。
+
+## 11. 常见问题
+
+| 现象 | 处理 |
+| --- | --- |
+| `/v1/*` 返回 401 | 使用 Runtime API Key 或 `API_KEYS`；浏览器 Admin cookie 不能用于 `/v1/*`。 |
+| Admin 写操作返回 401/403 | 本地会话可能已失效；专业模式输入 Admin API Key。cookie 写操作还必须带同源 `Origin`。 |
+| 地址出现重复 `/v1` | `ANTHROPIC_BASE_URL` 错误地包含 `/v1`；改为服务根 origin。 |
+| `message.role must be user or assistant` | Claude Messages 的 `messages` 只使用 `user`/`assistant`；系统提示放顶层 `system`。不要把 Claude 请求发到 OpenAI 兼容路径。 |
+| alias 未绑定、stale 或 disabled | 在模型映射刷新 discovery，选择当前存在的 backend model，启用 alias 并保存。 |
+| OAuth callback 无法连接 localhost | 复制完整 callback URL，粘贴到账号与授权页面提交；服务会校验 redirect URI、state 和参数。 |
+| 配额显示未知或陈旧 | 这是 provider 返回状态的真实表示；按账号或全部刷新，不能把未知当作 0%。 |
+| 重启后页面不记得模式/语言 | 模式和语言只记在当前浏览器 localStorage；换浏览器、清除站点存储或隐私模式会恢复默认。 |
+
+## 12. 验证命令
+
+```bash
+corepack pnpm test
+corepack pnpm build
+corepack pnpm typecheck
+```

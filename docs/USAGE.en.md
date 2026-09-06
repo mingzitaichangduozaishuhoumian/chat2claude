@@ -1,0 +1,335 @@
+# Using Claude Code and the Admin Console
+
+This guide explains how to run `chatgpt-to-claude`, complete the local Codex OAuth flow, configure Claude Code, and use the `/admin` console. All credentials in examples are placeholders.
+
+## 1. Start the service
+
+From the repository root, run one of the following.
+
+Windows:
+
+```bat
+start.bat
+```
+
+Git Bash, Linux, or macOS:
+
+```bash
+./start.sh
+```
+
+Manual setup and verification:
+
+```bash
+corepack pnpm setup
+corepack pnpm check
+corepack pnpm start
+```
+
+The default address is `http://127.0.0.1:3000`; open:
+
+```text
+http://127.0.0.1:3000/admin
+```
+
+If you set `PORT`, replace `3000` in every example with the actual port. This guide uses `127.0.0.1` to make local-only access explicit.
+
+The service listens on loopback by default. A non-loopback `HOST` requires `API_KEYS` at startup. `LOCAL_CONTAINER_BOOTSTRAP=true` is intended only for a container that listens on `0.0.0.0` while its host port remains published only on loopback.
+
+## 2. The six Admin destinations
+
+The Admin console has six fixed destinations. The selected destination is also reflected in the URL hash.
+
+| Destination | Purpose |
+| --- | --- |
+| **Overview** `#overview` | Shows account and health summary, discovered models, available aliases, Runtime Key count, quota-cache state, and recent account activity. Recent activity is a summary, not a complete request log. |
+| **Accounts & Authorization** `#authentication` | Runs Codex OAuth, restores or cancels flows, checks account health and models, reauthorizes/enables/disables/edits/deletes accounts, and exposes manual session import in Professional mode. |
+| **Models** `#models` | Binds aliases to discovered backend models, changes alias enabled state and defaults, refreshes discovery, and manages custom aliases in Professional mode. |
+| **API access** `#api-access` | Creates, copies, lists, and revokes Runtime API Keys; shows the dynamic Base URL, endpoint, and curl example. |
+| **Quotas** `#quota` | Reads cached provider allowance data and refreshes one or all accounts. It distinguishes fresh, stale, error, and unknown states. |
+| **Admin access** `#admin-access` | Shows the local HttpOnly admin session. Professional mode contains the Admin API Key fallback for remote or automated management. |
+
+### Simple and Professional modes
+
+The console opens in **Simple mode**. Simple mode is sufficient for normal OAuth, backend-model binding, Runtime API Key generation, and basic status checks. It shows account identity, plan, enabled state, health, request outcomes, recent activity, and model count.
+
+**Professional mode** additionally exposes:
+
+- internal and upstream account IDs, credential expiry, concurrency, cooldown, and safe error codes;
+- discovery attempt/success times, safe diagnostics, and the full discovered-model list;
+- reasoning-effort and service-tier controls, capability metadata, and configuration issues;
+- custom alias creation, editing, deletion, overlay reset, and backend-discovery refresh;
+- advanced manual `accessToken`/cookie import;
+- the remote/automation Admin API Key fallback.
+
+The mode preference is stored in the current browser as `localStorage.adminViewMode` and accepts only `simple` or `professional`. It is not server-side account configuration; another browser or cleared storage returns to Simple mode.
+
+### Language memory
+
+The console defaults to Simplified Chinese. Click **English** in the upper-right corner to switch languages. The choice is stored in the current browser as `localStorage.adminLocale` and is reused after refresh; accepted values are `zh-CN` and `en`.
+
+The page translates static text, ARIA attributes, dates, and numbers in place. It does not translate account labels or provider-supplied model names. The service does not persist these UI preferences in runtime state.
+
+During an OAuth return, the page temporarily stores only `{ flowId, origin }` in `sessionStorage`, then removes `oauth_flow` from the address bar. It does not store the OAuth code, state, verifier, token, cookie, Admin Key, or Runtime Key there.
+
+## 3. Complete Codex OAuth
+
+The normal path is browser authorization. It does not extract a token from an already signed-in `chatgpt.com` page.
+
+1. Open `/admin` and click **Add ChatGPT account**.
+2. The page synchronously opens `about:blank` in a new tab, then requests an OAuth flow. Once the service returns the authorization URL, that tab navigates to it. The service does not start a separate Chrome process or profile.
+3. Each flow receives a random flow ID, one-time OAuth `state`, and PKCE `code_verifier`/`code_challenge`. The authorization URL uses `auth.openai.com`, the configured OpenID/profile/email/offline and connector scopes, and `originator=chat2claude`.
+4. The callback listener attempts to bind IPv6 `::1` (IPv6-only) and IPv4 `127.0.0.1` on the same port. The default port is `1455`; if a complete bind is not possible, the already-open sockets are closed and the whole flow moves to `1457`. If IPv6 is unavailable, IPv4 alone can be used. The service never binds a wildcard or LAN address.
+5. A flow expires after ten minutes by default. A callback URL must exactly match this flow's `http://localhost:<1455|1457>/auth/callback`; duplicate/conflicting parameters and an incorrect protocol, host, port, path, userinfo, or fragment are rejected. A successful state is consumed once.
+6. As soon as the callback contains a code, the service performs a single-flight code exchange instead of waiting for the next polling request. A successful listener callback redirects with `303` to `/admin?oauth_flow=<flow-id>`; the URL contains only a non-sensitive flow locator.
+7. Provisioning then verifies the session, discovers backend models, persists the `chatgpt-session` account and model catalog, binds `sonnet` to the first model in the discovery order for the first session account, and creates a persistent Runtime API Key if none exists.
+8. The page displays only sanitized account information, discovered models, alias bindings, Base URL, endpoint, and the one-time Runtime API Key. It never displays access tokens, refresh tokens, ID tokens, cookies, or other secrets.
+
+If the browser cannot connect to the local callback:
+
+1. Copy the complete `http://localhost:<port>/auth/callback?...` URL from the address bar without editing it.
+2. Paste it into the callback field in **Accounts & authorization**.
+3. Click **Submit callback URL**; the service validates it and continues exchange/provisioning.
+
+Cancelling an authorization cancels only the server-side flow; it does not open or close browser windows. A service restart removes in-memory flows, so the page asks you to authorize again.
+
+### Advanced manual import
+
+Use **Advanced: import accessToken / cookie** only when OAuth is unavailable or you already have a usable session secret. Professional mode supports adding a session account or reauthorizing an existing `chatgpt-session` account. Manual import still runs session verification, model discovery, and the same persistence path. The form and response do not return secrets.
+
+## 4. Runtime API Keys, Admin API Keys, and `API_KEYS`
+
+The names describe different primary uses, but the current server does not enforce a completely separate Runtime-Key and Admin-Key authentication set:
+
+| Credential | Primary use | Accepted authentication |
+| --- | --- | --- |
+| Runtime API Key | Client calls to `/v1/*`; under the current implementation, a valid Runtime Key is also accepted for protected `/admin/api/*` routes | `Authorization: Bearer <key>` or `x-api-key: <key>` |
+| Admin API Key | The name used for remote or automated `/admin/api/*` management; protect it as an administrative credential | `Authorization: Bearer <key>` or `x-api-key: <key>` |
+| `API_KEYS` | Static server-side allow-list configured before startup; usable for `/v1/*` and remote Admin API access | Same headers |
+
+Runtime API Key and Admin API Key are therefore a distinction of purpose and operating practice, not a hard authentication isolation boundary in the current implementation. Treat a leaked Runtime Key as potentially granting Admin API access.
+
+On loopback, opening `/admin` issues a process-scoped random HttpOnly, `SameSite=Strict`, `Path=/admin` cookie. The cookie:
+
+- is valid only in the current process and expires on restart;
+- is accepted only for a trusted loopback Host;
+- is accepted for Admin API routes, never for `/v1/*`;
+- requires a same-origin `Origin` header for mutations;
+- falls back to an explicit Admin API Key for remote access, automation, or an unavailable local session.
+
+A Runtime API Key is shown in raw form only on the page that creates it. Later lists contain only its ID, optional name, creation time, and safe prefix. If the raw value is lost, create a replacement and revoke the old record if necessary.
+
+For a fixed server-side key, use a placeholder value such as:
+
+```bash
+API_KEYS='<key-1>,<key-2>' ./start.sh
+```
+
+In development, `/admin/api/api-keys/dev-enable` can create an `sk-dev-...` key. That route is disabled when `NODE_ENV=production`. Normal Runtime Keys use the `sk-runtime-...` prefix.
+
+## 5. Base URL and Claude Code configuration
+
+Claude Code must use the service root origin as its Base URL. **Do not append `/v1`.**
+
+Correct:
+
+```text
+http://127.0.0.1:3000
+```
+
+Incorrect:
+
+```text
+http://127.0.0.1:3000/v1
+```
+
+The Claude Messages endpoint is `POST /v1/messages`; the client appends the path to the root Base URL. With `PORT=3100`, use `http://127.0.0.1:3100`.
+
+### Temporary environment variables
+
+PowerShell:
+
+```powershell
+$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:3000"
+$env:ANTHROPIC_AUTH_TOKEN = "<runtime-api-key>"
+claude
+```
+
+CMD:
+
+```bat
+set "ANTHROPIC_BASE_URL=http://127.0.0.1:3000"
+set "ANTHROPIC_AUTH_TOKEN=<runtime-api-key>"
+claude
+```
+
+Git Bash, Linux, or macOS:
+
+```bash
+export ANTHROPIC_BASE_URL='http://127.0.0.1:3000'
+export ANTHROPIC_AUTH_TOKEN='<runtime-api-key>'
+claude
+```
+
+`ANTHROPIC_AUTH_TOKEN` is sent as a Bearer token. Configure a Runtime API Key, not an Admin API Key.
+
+### Safe environment check
+
+PowerShell:
+
+```powershell
+if ([string]::IsNullOrWhiteSpace($env:ANTHROPIC_BASE_URL)) { throw "ANTHROPIC_BASE_URL is not set" }
+if ([string]::IsNullOrWhiteSpace($env:ANTHROPIC_AUTH_TOKEN)) { throw "ANTHROPIC_AUTH_TOKEN is not set" }
+Write-Output "ANTHROPIC_BASE_URL=$env:ANTHROPIC_BASE_URL"
+Write-Output "ANTHROPIC_AUTH_TOKEN=set (value hidden)"
+Invoke-RestMethod "$env:ANTHROPIC_BASE_URL/healthz" | Out-Null
+Write-Output "healthz=OK"
+```
+
+Git Bash, Linux, or macOS:
+
+```bash
+: "${ANTHROPIC_BASE_URL:?ANTHROPIC_BASE_URL is not set}"
+: "${ANTHROPIC_AUTH_TOKEN:?ANTHROPIC_AUTH_TOKEN is not set}"
+printf 'ANTHROPIC_BASE_URL=%s\n' "$ANTHROPIC_BASE_URL"
+printf 'ANTHROPIC_AUTH_TOKEN=set (value hidden)\n'
+curl --fail "$ANTHROPIC_BASE_URL/healthz"
+```
+
+### Claude Code settings example
+
+```json
+{
+  "model": "sonnet",
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:3000",
+    "ANTHROPIC_AUTH_TOKEN": "<runtime-api-key>",
+    "ANTHROPIC_MODEL": "sonnet",
+    "ANTHROPIC_REASONING_MODEL": "sonnet",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "opus",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "haiku",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL": "fable"
+  }
+}
+```
+
+This maps the Claude Code model roles to the project's aliases. If an alias is unbound, bind it in **Model mapping** before using it. This file contains credentials; do not commit or share it. Restart the existing Claude Code session after changing settings.
+
+## 6. Model aliases, discovery, and reasoning/speed controls
+
+### Built-in aliases
+
+| Alias | Default reasoning effort | Initial behavior |
+| --- | --- | --- |
+| `sonnet` | `medium` | First session provisioning binds it to the first discovered backend model. Start with this alias. |
+| `haiku` | `low` | Built in but commonly unbound; select a discovered backend model first. |
+| `fable` | `high` | Configurable built-in alias, not a hard-coded production model ID; bind it before use. |
+| `opus` | `high` | Built in but commonly unbound; bind it before use. |
+
+The backend model list is not a static source-code table:
+
+- If present, `MODEL_REGISTRY_JSON` is the alias-overlay source; otherwise `config/models.json` is used.
+- The session backend discovers models with an account context; startup discovery without an account may be empty.
+- The mock backend can use `MOCK_BACKEND_MODELS_JSON` for discovery.
+- OAuth provisioning and account health/model refresh update the account-scoped catalog.
+- `GET /v1/models` returns only enabled, resolvable aliases (`bound`) and discovery passthrough models (`passthrough`); `unbound` and `stale` entries are omitted.
+- Existing persistent or manually selected alias bindings are not arbitrarily overwritten by a restart discovery refresh; refresh only binds when a binding is needed.
+
+The Backend Model choices in Admin come from the current discovery catalog. Professional mode also exposes the target model's reasoning-effort and service-tier metadata. When metadata is unknown, the service does not assume that every control is supported. An explicit unsupported `reasoning_effort` or service tier returns HTTP 400 instead of being silently rewritten.
+
+## 7. Quotas, logs, and timing boundaries
+
+### Quotas
+
+The first quota-panel load reads the local cache and does not call the provider. Refreshes are deduplicated per account; a batch refresh may partially succeed. The UI identifies the five-hour window from `durationSeconds=18000` and the weekly window from `durationSeconds=604800`; other provider meters are shown as returned.
+
+Missing or unknown `usedPercent` is not rendered as a zero-value progress bar. The UI does not infer allowance from plan names, 429 responses, or request counts. Quota results are classified as `fresh`, `stale`, `error`, or `unknown`; an account without provider quota support is shown as unsupported.
+
+### HTTP access logs
+
+Access logging is installed only for `/v1/*` and `/admin/api/*`. Each entry contains:
+
+- request ID, HTTP method, and normalized path;
+- query-parameter categories (`beta` is retained; all other names become `other`);
+- HTTP status and peer IP;
+- model ID and stream flag only after route validation;
+- `durationMs` and the fixed `durationKind: response_ready`.
+
+The logger does **not** read or record request bodies, response bodies, tokens, cookies, Authorization headers, API Keys, OAuth code/state/verifier values, or complete query values. Dynamic flow/account/key/model IDs are normalized to placeholders; invalid or oversized model IDs are replaced with a safe placeholder.
+
+`response_ready` means that the response object is ready: for a non-streaming request, the handler has produced the response; for a streaming request, the SSE response has been created. It does **not** mean that the streaming body has finished sending.
+
+### Admin request statistics
+
+Account-card success, failure, cancellation, total-request, token, last-request, and in-flight values come from separate operational statistics, not from the complete access log. Operational state is debounced into `admin-operational-state.json`; `inFlight` is not persisted and returns to zero after restart. A statistics persistence failure does not change the provider response, account release, or cooldown behavior. `/metrics` returns only the count of in-process request-log entries.
+
+## 8. Persistence, encryption, and secret handling
+
+The default data directory is the API application's `data` directory. Set a custom directory with:
+
+```bash
+DATA_DIR=./custom-data
+```
+
+`${DATA_DIR}/runtime-state.json` stores account session secrets, Runtime API Keys, and alias overlays. `${DATA_DIR}/admin-operational-state.json` stores sanitized request statistics, health, discovery catalogs, and quota cache. Writes use temporary files, fsync, and atomic rename; the service attempts to use directory mode `0700` and file mode `0600`.
+
+If `STATE_ENCRYPTION_KEY` is set, runtime state is encrypted with AES-256-GCM. It must be a strict standard-base64 encoding of a 32-byte key (44 characters ending in one `=`). Generate a local value with:
+
+```bash
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
+```
+
+Put the complete output in a local `.env` file. Never put it in documentation or commits. An encrypted state file requires the same key at startup; a missing or mismatched key prevents the state from being loaded.
+
+## 9. Environment variables
+
+Common settings:
+
+```bash
+CHATGPT_BACKEND=session
+CHATGPT_BASE_URL=https://chatgpt.com
+CHATGPT_REQUEST_TIMEOUT_MS=60000
+PORT=3000
+HOST=127.0.0.1
+API_KEYS=<key-1>,<key-2>
+```
+
+`CHATGPT_BASE_URL` is the upstream URL used by the session backend for `/backend-api/codex/responses` and model discovery. It is not the client Base URL for Claude Code. Claude Code still uses the service root origin, for example `http://127.0.0.1:3000`.
+
+## 10. Verify a connection
+
+```bash
+curl http://127.0.0.1:3000/healthz
+
+curl http://127.0.0.1:3000/v1/models \
+  -H 'Authorization: Bearer <runtime-api-key>'
+
+curl http://127.0.0.1:3000/v1/messages \
+  -H 'content-type: application/json' \
+  -H 'Authorization: Bearer <runtime-api-key>' \
+  -d '{"model":"sonnet","max_tokens":64,"messages":[{"role":"user","content":"Hello"}]}'
+```
+
+If `GET /v1/models` does not contain `sonnet`, refresh discovery in Admin and confirm that the alias is enabled, bound, and still points to an available backend model.
+
+## 11. Troubleshooting
+
+| Symptom | Resolution |
+| --- | --- |
+| `/v1/*` returns 401 | Use a Runtime API Key or `API_KEYS`; the browser Admin cookie is not accepted by `/v1/*`. |
+| Admin mutation returns 401/403 | The local session may have expired; use the Professional-mode Admin API Key fallback. Cookie mutations also require a same-origin `Origin`. |
+| The URL contains a repeated `/v1` | `ANTHROPIC_BASE_URL` incorrectly includes `/v1`; use the service root origin. |
+| `message.role must be user or assistant` | Claude Messages `messages` may contain only `user` and `assistant`; put system instructions in the top-level `system` field. Do not send Claude Code traffic to the OpenAI-compatible route. |
+| An alias is unbound, stale, or disabled | Refresh discovery, select an available backend model, enable the alias, and save it in **Model mapping**. |
+| OAuth callback cannot connect to localhost | Paste the complete callback URL into **Accounts & authorization**; the service validates its redirect URI, state, and parameters. |
+| Quota is unknown or stale | This reflects the provider response. Refresh the account or all accounts; do not interpret unknown as zero. |
+| Language or mode is forgotten after restart | Language and mode are browser-local `localStorage` preferences; another browser, cleared site storage, or private browsing restores the defaults. |
+
+## 12. Verification commands
+
+```bash
+corepack pnpm test
+corepack pnpm build
+corepack pnpm typecheck
+```

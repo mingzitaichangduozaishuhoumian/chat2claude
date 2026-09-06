@@ -1,48 +1,30 @@
 # chatgpt-to-claude
 
-`chatgpt-to-claude` 是一个 TypeScript + Hono 的个人自托管、local-first 开源 Claude/OpenAI 兼容层，向上暴露 Claude-like `/v1/messages`、OpenAI-compatible `/v1/chat/completions`、`/v1/responses` 和 `/v1/models`，向下可接入 mock backend 或真实 ChatGPT session backend。
+`chatgpt-to-claude` 是一个 TypeScript + Hono 的个人自托管、local-first 兼容层：对外提供 Claude Messages、OpenAI Chat Completions、OpenAI Responses 和 Models API，对内连接 mock backend 或真实 ChatGPT session backend。
 
-本项目面向使用本人控制或已获明确授权的 ChatGPT/Codex 账号及其包含用量的个人自托管场景。不得将个人订阅流量公开转售、向不特定第三方重新提供或进行大规模共享；它不是订阅聚合、流量转售或多租户共享网关。
-
-普通用户路径是“浏览器授权（Codex OAuth）”：打开 `/admin` 后点击主按钮，页面会立即预开一个新标签页，再生成 OpenAI Codex OAuth PKCE 授权链接并导航到授权页。服务不会启动独立 Chrome/新 profile，也不再依赖已登录 `chatgpt.com` 页面抓 token。成功后自动创建 `chatgpt-primary` 账号、执行 health-check、刷新模型、绑定 `sonnet` alias、生成幂等的持久化 runtime API key，并在页面展示 endpoint/key/curl。若弹窗被拦截，仍可点击普通授权链接或复制完整 URL；手动 accessToken/cookie 导入保留在高级区域作为 fallback。
-
-## 技术栈
-
-- pnpm workspace monorepo
-- TypeScript strict mode
-- Hono HTTP API
-- Vitest 单元测试
-- Docker / docker-compose 基础运行配置
+本项目面向使用本人控制或已获明确授权的 ChatGPT/Codex 账号的个人自托管场景。它不是订阅聚合、流量转售或多租户共享网关；不要把个人订阅流量公开转售或面向不特定第三方大规模共享。
 
 ## 快速开始
 
-### Windows
+### 启动
 
-双击 `start.bat`，或在项目根目录运行：
+Windows：
 
 ```bat
 start.bat
 ```
 
-### Git Bash / Linux / Mac
+Git Bash、Linux 或 macOS：
 
 ```bash
 ./start.sh
 ```
 
-启动后打开：
+然后打开：
 
 ```text
-http://localhost:3000/admin
+http://127.0.0.1:3000/admin
 ```
-
-本机打开 `/admin` 会自动建立仅当前进程有效的 HttpOnly 浏览器管理会话，无需先设置临时 `API_KEYS`，即使重启后浏览器没有保存 Runtime API Key 也可继续管理账号。点击页面主按钮“打开 Codex OAuth 授权页”会直接打开新标签页；若浏览器拦截弹窗，可点击保留的普通链接或复制完整授权 URL。授权完成后，新标签页会回到同一 Admin flow 并继续自动初始化；随后立即复制页面一次性显示的 Runtime API Key、endpoint 和 curl 示例即可调用 `/v1/messages`。
-
-一键启动脚本会自动启用 corepack；如果还没有 `node_modules`，会先安装依赖。面向普通用户的 `start.bat` / `start.sh` 在未设置 `CHATGPT_BACKEND` 时默认使用 `session`，并提示打开 `/admin` 授权。代码层 `loadEnv()` 默认仍保持 `mock`，用于保护测试与本地开发。
-
-生产默认 `config/models.json` 定义四个内置 alias：`haiku`、`sonnet`、`fable`、`opus`，包含能力与默认 effort/speed，但不预绑定任何生产 backend model。`/v1/models` 只返回已经解析成功的 alias 与 backend discovery passthrough 模型。完成 OAuth/手动 session provisioning 后，服务会从 discovery 自动选择最佳后端；服务重启后的 discovery refresh 则只在 `sonnet` 尚未绑定时自动选择，已持久化或手动选择的 `sonnet.backendModel` 不会被覆盖。测试如需固定 `sonnet -> backend-test-model`，通过测试 fixture/env 显式注入 alias overlay。
-
-使用本项目直接配置 Claude Code（包括 Runtime API Key、模型别名和常见错误处理）请参阅[中文使用指南](docs/USAGE.zh-CN.md)。
 
 也可以手动运行：
 
@@ -52,127 +34,111 @@ corepack pnpm check
 corepack pnpm start
 ```
 
-服务默认只监听本机 `127.0.0.1`（`http://localhost:3000`），健康检查为 `http://localhost:3000/healthz`。非 loopback `HOST` 在没有预配置 `API_KEYS` 时会拒绝启动，避免匿名 bootstrap 暴露到局域网/公网。`LOCAL_CONTAINER_BOOTSTRAP=true` 只供 `docker-compose.yml` 的容器内 `0.0.0.0` 监听使用；compose 将宿主端口固定发布为 `127.0.0.1:3000:3000`，不得把该开关当作公网部署默认值。
+默认监听 `127.0.0.1:3000`。服务默认使用 `mock` backend；一键启动脚本在未设置 `CHATGPT_BACKEND` 时会提示使用 `/admin` 完成 Codex OAuth，并将普通用户流程切换到 `session` backend。
 
-## 一键授权流程
+### 首次使用
 
-1. `POST /admin/api/auth/chatgpt/start` 创建授权 flow，使用密码学随机 flow ID、一次性 OAuth `state`、PKCE `code_verifier` / `code_challenge`，返回 `https://auth.openai.com/oauth/authorize` 授权链接。当前 scope 为 `openid profile email offline_access api.connectors.read api.connectors.invoke`，并诚实标记 `originator=chat2claude`。Admin 点击处理器会在任何网络等待前同步 `window.open('about:blank', '_blank')`，start 成功后导航并聚焦该标签；服务端本身不会启动独立 Chrome/新 profile。
-2. `POST /admin/api/auth/chatgpt/start` 接收页面提交的精确 `adminOrigin`。服务将它与实际请求的 Host 和 `Origin` 严格比对，只接受不含 path、query、hash、userinfo 的完整 HTTP(S) origin；通过后仅在服务端 flow 内关联为安全回跳目标。redirect URI 始终为 `http://localhost:<port>/auth/callback`。listener 会在同一端口仅绑定 Windows/Linux 可用的 loopback：优先尝试 `::1`（`ipv6Only`）并同时绑定 `127.0.0.1`；若某个可用地址族的端口已占用，会关闭本轮已打开的 socket，并从 1455 整体切换到已注册的 1457 fallback。系统不支持 IPv6 时可只使用 IPv4，绝不绑定 wildcard 或 LAN 地址。
-3. listener 或手动 callback API 收到 code 后会立即以 single-flight 完成 authorization-code exchange，不再等待原 Admin 标签页下一次 status polling 才换 token。成功 listener callback 返回 `303 <origin>/admin?oauth_flow=<flow-id>`；query 只含非敏感高熵 flow locator，不含 code、state、verifier 或 token。未关联 origin 时保持静态成功页。所有 listener 响应继续使用 no-store、no-referrer、CSP 和 nosniff 安全头。`POST /admin/api/auth/chatgpt/callback` 支持粘贴完整 `redirectUrl` / `redirect_url`；URL 必须与该 flow 的实际 `http://localhost:<1455|1457>/auth/callback` 完全匹配，错误协议、host、端口、path、userinfo、fragment、重复或冲突参数会被拒绝，state 成功接收后只能消费一次。
-4. callback 打开的 Admin 页面会先校验 `oauth_flow` 格式，只把 `{flowId, origin}` 写入 `sessionStorage`，随即用 `history.replaceState` 从地址栏移除 query，再恢复同一 flow 并继续轮询/provisioning。刷新恢复也会校验 origin；完成、取消、过期、错误或 404 时清理，404 会明确提示服务重启或流程过期。绝不会在 URL 或该存储中保存 OAuth code/state/verifier/token/cookie、Admin key 或 Runtime key。authorization-code exchange 与 provisioning 都按 flow single-flight；并发请求不会重复换码、重复创建账号或生成多批 key。换码完成后清理 code/verifier，provisioning 完成后清理 flow secret 副本。`refresh_token` / `id_token` / `expiresAt` 仅保存在进程内账号 secret，不返回给前端、错误或日志。
-5. 拿到 OAuth access token 后自动 provisioning：
-   - upsert 固定账号 `chatgpt-primary`，provider 为 `chatgpt-session`；
-   - 调用 backend `healthCheck({ account })`；
-   - `modelRegistry.refreshFromBackend(backend, { account })`；
-   - 从 discovery 中按关键词优先级选择最佳模型（`gpt-5`、`codex`、`thinking`、`gpt-4`、第一个）并原子持久化绑定；之后启动恢复中的 discovery refresh 会保留已有手动/持久化绑定；
-   - 生成持久化 runtime API key。
-6. 页面只展示脱敏账号信息、API key、base URL 和 curl，不返回 accessToken/cookie/id_token/refresh_token。
-7. 运行时会在 token 到期前 60 秒主动 refresh，并原子写回 refresh-token rotation。同账号并发 refresh 合并为一次；首次 401 会使用最新凭据最多重试一次。流式请求只有在尚未输出任何事件时才允许 refresh/retry，避免重复内容。
+1. 打开 `/admin`。
+2. 点击“添加 ChatGPT 账号”，在当前浏览器完成 Codex OAuth。
+3. 服务会验证 session、发现模型、创建或更新 ChatGPT session 账号，并在首次初始化时生成 Runtime API Key。
+4. 立即复制页面一次性显示的 Runtime API Key。
+5. 使用页面生成的 Base URL 和 `/v1/messages` 示例调用服务。
 
-OAuth 凭据、账号池和 runtime key 会持久保存到本机 `DATA_DIR/runtime-state.json`；没有数据库或远端同步。默认 `DATA_DIR` 为 API 应用的 `data` 目录；例如在 `.env` 设置 `DATA_DIR=./custom-data` 可指定其他目录。可选的 `STATE_ENCRYPTION_KEY` 会以 AES-256-GCM 加密状态文件，必须是无空白、严格标准 base64 编码的 32 字节密钥（44 个字符、末尾一个 `=`）；请先用 `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"` 生成，再将完整输出写入 `.env`。Docker Compose 默认挂载命名卷 `runtime-state` 到 `/app/data`，因此容器重启会恢复账号和 runtime key。
+OAuth 不会启动独立 Chrome 或新 profile；浏览器弹窗被拦截时，可以点击保留的授权链接、复制 URL，或粘贴完整 callback URL。手动 access token/cookie 导入仅是高级 fallback。
 
-取消授权：`POST /admin/api/auth/chatgpt/:id/cancel`。服务只取消当前 OAuth flow；不会启动或关闭用户浏览器。
+## Admin 控制台
 
-## 高级手动导入 fallback
+`/admin` 有六个固定目的地：
 
-OAuth 授权不可用或你已有可用 session secret 时，在 `/admin` 展开“高级：手动导入 accessToken / cookie”，填入 session 后会走同一套 provisioning。主流程不要依赖 `chatgpt.com` 已登录页面抓 token；高级导入只是 fallback。
+1. **概览（Overview）**：读取账号、动态模型、可用 alias、Runtime Key 数量、配额缓存和最近账号活动摘要。
+2. **账号与授权（Accounts & Authorization）**：完成 Codex OAuth、取消或恢复流程，查看账号健康与请求结果，重新授权、启用/停用、编辑并删除账号；高级区域可手动导入 session。
+3. **模型（Models）**：把已发现的 backend model 绑定到 alias，刷新 discovery，调整启用状态和默认控制项；专业模式可管理自定义 alias。
+4. **API 接入（API Access）**：生成、复制和撤销 Runtime API Key，查看根 Base URL、`POST /v1/messages` endpoint 和动态 curl 示例。
+5. **配额（Quotas）**：读取缓存的 provider allowance；按账号或全部刷新，并区分新鲜、陈旧、错误和未知状态。
+6. **管理访问（Admin Access）**：查看本机 HttpOnly 管理会话；专业模式提供远程/自动化使用的 Admin API Key fallback。
 
-Docker、远程服务器或浏览器不在运行 chat2claude 的同一台机器时，授权提供方访问的 `localhost` 指向浏览器所在机器，callback 可能无法到达服务容器/远端主机；本修复不声称自动解决这种网络拓扑。此时请从浏览器地址栏复制包含 `code` 和 `state` 的完整 `http://localhost:<port>/auth/callback?...` URL，并粘贴到 Admin 的“提交 callback URL”输入框，由服务端校验后继续 exchange/provisioning。
+控制台默认是简洁模式。专业模式额外显示内部/上游 ID、并发、冷却、安全错误码、发现诊断、完整动态模型、推理/服务层级选项、自定义 alias、手动 session 导入和 Admin API Key fallback。简洁/专业模式偏好保存在当前浏览器的 `localStorage.adminViewMode`；语言偏好保存在 `localStorage.adminLocale`。服务端不把这些 UI 偏好写入 runtime state。
 
-对应 API：
+管理页面默认简体中文，也可切换 English。切换会原地翻译页面文本、ARIA 属性、日期和数字，并在刷新后沿用当前浏览器选择；账号标签、provider 返回的模型名称等动态值不被擅自翻译。
 
-```bash
-curl -X POST http://localhost:3000/admin/api/auth/chatgpt/complete \
-  -H 'content-type: application/json' \
-  -d '{"accessToken":"<access-token>","cookie":"<cookie>","deviceId":"<device-id>","userAgent":"<user-agent>"}'
+## 认证与密钥
+
+- `/v1/*` 使用 Runtime API Key 或预配置的 `API_KEYS`，使用 `x-api-key: <key>` 或 `Authorization: Bearer <key>`。
+- Admin API Key 是远程或自动化管理 `/admin/api/*` 的专用命名；当前服务端认证也会接受有效 Runtime API Key 或 `API_KEYS` 访问 `/admin/api/*`。因此实际部署中应把 Runtime Key 同样视为敏感的管理凭据，不能将两者当作安全隔离边界。
+- Runtime Key 原始值只在创建/生成后的当前页面显示一次。列表只显示稳定 ID、名称、创建时间和安全前缀；遗失后应撤销旧 Key 并生成新 Key。
+- 本机 loopback 访问 `/admin` 会获得仅当前进程有效的 HttpOnly、`SameSite=Strict` cookie。写操作还要求同源 `Origin`。服务重启后 cookie 失效。
+- 非 loopback 启动必须预先配置 `API_KEYS`，除非仅供宿主机回环访问的容器设置 `LOCAL_CONTAINER_BOOTSTRAP=true`。
+- OAuth access token、refresh token、id token、cookie 和其他 session secret 不返回给前端、错误响应或日志。
+
+## Base URL 与调用示例
+
+客户端 Base URL 必须是服务根 origin，不要附加 `/v1`：
+
+```text
+http://127.0.0.1:3000
 ```
 
-响应不会泄露 secret，只返回脱敏账号、发现模型、绑定 alias 和 runtime API key。
-
-## API
-
-- `GET /healthz`：健康检查
-- `GET /admin`：原生 JS 管理后台，一键授权、API 配置、账号池和模型映射
-- `GET /admin/api/setup/status`：查看 API key、默认 effort/speed、backend provider 状态
-- `GET /admin/api/auth/status`：查看整体授权 ready 状态
-- `POST /admin/api/auth/chatgpt/start`：开始 Codex OAuth PKCE 授权并返回授权链接；Admin 页面会同步预开新标签后导航，API 本身不启动浏览器
-- `POST /admin/api/auth/chatgpt/callback`：提交完整 OAuth callback URL，并立即推进 single-flight token exchange
-- `GET /admin/api/auth/chatgpt/:id`：恢复/轮询授权；拿到 exchanged secret 后自动 provisioning（只执行一次）
-- `POST /admin/api/auth/chatgpt/:id/cancel`：取消授权 flow
-- `POST /admin/api/auth/chatgpt/complete`：高级手动导入 session，并走同一套 provisioning
-- `POST /admin/api/api-keys/dev-enable`：开发阶段生成随机持久 runtime key；`NODE_ENV=production` 时禁用
-- `GET /admin/api/api-keys`：列出脱敏的 runtime key 记录（稳定 ID、可选名称、创建时间和前缀；不返回原始 key）
-- `DELETE /admin/api/api-keys/:id`：撤销指定 runtime key；撤销后立即失效，删除最后一个 runtime key 后是否可匿名 bootstrap 仍仅由现有本地监听、无 `API_KEYS` 和无 runtime key 策略决定
-- `GET /admin/api/accounts` / `POST /admin/api/accounts`：列出或添加运行时账号；列表只返回 `hasSecret`
-- `PATCH /admin/api/accounts/:id`：更新账号元数据
-- `DELETE /admin/api/accounts/:id`：删除持久账号；不存在返回 404，有进行中的请求（`currentConcurrency > 0`）返回 409
-- `POST /admin/api/accounts/:id/health-check`：执行健康检查；session 账号成功后会刷新模型 discovery
-- `GET /admin/api/models`：列出 alias overlay、backend discovery 与合并后的 runtime 模型视图
-- `POST /admin/api/models`：创建自定义 alias；创建、更新和删除均会原子持久化
-- `PATCH /admin/api/models/:id`：更新 alias 的 backendModel 映射、启用状态与默认 `reasoning_effort` / `speed`
-- `DELETE /admin/api/models/:id`：删除自定义 alias（内置 `haiku` / `sonnet` / `fable` / `opus` 不可删除）
-- `POST /admin/api/models/reset`：重置 alias overlay 为配置源默认值
-- `POST /admin/api/models/refresh`：重新从 backend discovery 获取可用后端模型
-- `GET /v1/models`：返回已启用且可解析的 alias 与 discovery passthrough 模型列表
-- `POST /v1/messages`：Claude-like Messages API，支持非流式与 SSE 流式
-
-OpenAI Responses 的 `store:true` 仅用于本地短期续接 `previous_response_id`，不会请求 ChatGPT/Codex 上游持久保存。Responses built-in/hosted tools（如 `web_search_preview` / `file_search` / `code_interpreter`）会 best-effort 透传给 session backend；真实支持取决于 ChatGPT/Codex 上游。
-
-`/v1/*` 请求始终需要携带已配置或运行时启用的 API key。浏览器管理会话绝不会被 `/v1/*` 接受。自动化和远程管理继续使用：
-
-- `x-api-key: <key>`；或
-- `Authorization: Bearer <key>`
-
-默认 loopback 监听（或明确的 `LOCAL_CONTAINER_BOOTSTRAP=true`）下，访问 `/admin` 会签发仅进程有效的 HttpOnly、`SameSite=Strict` 管理 cookie；cookie 驱动的写操作必须有同源 `Origin`。它只用于个人本机管理，服务重启后自动失效，重新打开 `/admin` 会重新签发。连接到本地会话时，页面不会读取或发送 `localStorage` 中旧的显式 Admin API Key；仅远程访问或本地会话不可用时才会回退到明确输入/保存的 Admin Key。
-
-管理页面默认是简洁模式：保留 OAuth、一次性 Runtime API Key 复制区、Runtime Key 的用途、数量/安全前缀列表和确认撤销入口。专业模式提供账号池和完整 alias/custom alias 管理。Runtime API Key 是客户端访问 `/v1/*` 的凭据；Admin API Key 仅用于远程或自动化管理 `/admin/api/*`，两者不可互换。Runtime API Key 持久化后，原始值不会在 Key 列表或之后的页面加载中重新展示；遗失时请在本地后台撤销旧 Key 后重新授权生成并立即复制。
-
-非 loopback 且未启用 `LOCAL_CONTAINER_BOOTSTRAP=true` 时，服务不会签发或接受此 cookie，并且仍要求显式 `API_KEYS`。未设置 `API_KEYS` 且尚未通过 `/admin` 授权生成 runtime key 时，`/v1/*` 会返回 401 并提示去 `/admin` 初始化。
-
-## 调用示例
-
 ```bash
-curl http://localhost:3000/healthz
+curl http://127.0.0.1:3000/healthz
 
-curl http://localhost:3000/v1/models \
-  -H 'x-api-key: <your-api-key>'
+curl http://127.0.0.1:3000/v1/models \
+  -H 'Authorization: Bearer <runtime-api-key>'
 
-curl http://localhost:3000/v1/messages \
+curl http://127.0.0.1:3000/v1/messages \
   -H 'content-type: application/json' \
-  -H 'x-api-key: <your-api-key>' \
+  -H 'Authorization: Bearer <runtime-api-key>' \
   -d '{"model":"sonnet","max_tokens":128,"reasoning_effort":"medium","response_speed":"balanced","messages":[{"role":"user","content":"你好"}]}'
 ```
 
-管理后台里的 curl/base URL 基于 `window.location.origin` 生成，不写死端口。
+管理后台中的 curl 和 endpoint 使用 `window.location.origin` 动态生成，因此自定义 `PORT` 时不会写死 `3000`。
 
-## Runtime 管理骨架
+## OAuth、账号与模型发现
 
-### 模型 discovery 与 alias overlay
+Codex OAuth 使用 authorization code + PKCE。服务为每个 flow 生成高熵 flow ID、一次性 state 和 code verifier；授权链接使用 `auth.openai.com`，回调固定为 `http://localhost:<port>/auth/callback`。listener 优先同时绑定 IPv6 `::1` 和 IPv4 `127.0.0.1`，默认端口 `1455` 被占用时整体切换到 `1457`。flow 默认十分钟过期，callback code 只消费一次。
 
-后端模型不是源码或 `config/models.json` 里的静态模型表。启动时 API 会创建 backend client，并通过 `backend.listModels(context?)` 获取可用模型；mock 阶段可通过 `MOCK_BACKEND_MODELS_JSON` 配置 discovery。session backend 在无账号上下文的启动 discovery 会返回空数组；一键授权或高级导入完成后，会用 `chatgpt-primary` 的账号上下文请求 `/backend-api/codex/models` 刷新 discovery。
+收到 callback 后服务立即 single-flight 换 token，不等待下一轮页面 polling；成功后才执行 provisioning：验证 session、请求 backend model discovery、原子提交账号/模型/Runtime Key，并在首次 session 账号初始化时绑定 `sonnet` 到 discovery 返回的第一个模型。后续 refresh 不会覆盖已有有效的 alias 绑定。运行时会在 token 到期前主动 refresh；同一账号的并发 refresh 会合并。
 
-alias overlay 启动时从外部配置源读取：
+后端模型不是静态源码表：session backend 使用账号上下文发现模型，mock backend 可用 `MOCK_BACKEND_MODELS_JSON`；`/v1/models` 只返回已启用且已解析的 alias，以及未被 alias 覆盖的 discovery passthrough 模型。alias overlay 来源优先级为 `MODEL_REGISTRY_JSON`，否则是 `config/models.json`。内置 alias 为 `haiku`、`sonnet`、`fable`、`opus`；未绑定或 stale 的 alias 不可调用。模型的 reasoning effort、service tier 和默认值以选定 backend discovery 的能力元数据为准，显式发送不支持的控制项会被拒绝。
 
-1. 如果设置了 `MODEL_REGISTRY_JSON`，优先解析该环境变量中的 JSON；
-2. 否则读取根目录 `config/models.json`。
+## 持久化与安全文件
 
-`config/models.json` 只管理 alias 映射，不是真实后端模型表。内置 alias 为 `haiku`、`sonnet`、`fable`、`opus`；其中未绑定的 alias 不可调用，需在专业模式选择 discovery 中的 backend model。`fable` 是可配置内置 alias，不硬编码生产 backend ID。专业模式支持自定义 alias 的创建、更新和删除，所有 alias overlay 变更都会保存到 `DATA_DIR/runtime-state.json` 并在重启后恢复。管理后台的 reset 会恢复 alias overlay，refresh 会重新拉取 backend discovery。
+默认数据目录是 API 应用的 `data` 目录；可通过 `DATA_DIR` 修改。账号、Runtime Key 和 alias overlay 保存于 `runtime-state.json`；管理运营统计和发现/配额缓存保存于 `admin-operational-state.json`。文件使用临时文件、fsync、原子 rename 写入，并尽量设置目录 `0700`、文件 `0600`。
 
-### 个人账号池
+如设置 `STATE_ENCRYPTION_KEY`，runtime state 使用 AES-256-GCM 加密。它必须是严格标准 base64 的 32 字节密钥（44 个字符，末尾一个 `=`）：
 
-多账号池保留给同一自托管操作者管理本人控制或获明确授权的账号，用于故障隔离、冷却、并发控制和本地调度，不用于公开转售或面向不特定第三方的大规模共享。账号字段包含：`id`、`label`、`provider`、`status`、`enabled`、`maxConcurrency`、`currentConcurrency`、`lastUsedAt`、`lastError`、`capabilities`、`hasSecret`、`createdAt`。内部账号可携带 `secret` 供 backend 使用，但 admin list/add/update/provisioning 响应会脱敏，只暴露 `hasSecret`。账号与 runtime key 的可变管理操作会原子持久化，重启后恢复；请求中的临时并发计数不会持久化，并会以 0 恢复。
+```bash
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
+```
 
-### Backend 配置
+不要把真实 token、cookie、API Key 或加密密钥写入文档、提交记录或公共位置；示例中的凭据均为占位符。
 
-`.env.example` 提供普通用户默认配置：
+## 日志与计时边界
+
+HTTP access log 只挂在 `/v1/*` 和 `/admin/api/*`。它记录 request ID、方法、归一化路径、查询参数类别、HTTP 状态、peer IP、已验证的模型 ID/stream 标志，以及 `durationMs`。它不读取或记录 request/response body，也不会记录 token、cookie、Authorization、API Key 或 OAuth 参数；未知路径和动态 ID 会被归一化，查询参数只保留 `beta` 或 `other` 类别。
+
+`durationKind` 固定为 `response_ready`：普通请求表示响应已准备好；流式请求表示 SSE response 已创建，不表示整个响应体已经发送完成。后台“最近账号活动”和请求结果是累计运营统计，不是完整请求日志。请求统计保存成功、失败、取消、token 总量、最近请求时间和 in-flight 数量；in-flight 不会持久化，重启后恢复为 0。`/metrics` 只返回进程内请求计数。
+
+## 环境变量
+
+常用配置：
 
 ```bash
 CHATGPT_BACKEND=session
 CHATGPT_BASE_URL=https://chatgpt.com
 CHATGPT_REQUEST_TIMEOUT_MS=60000
+PORT=3000
+HOST=127.0.0.1
+API_KEYS=<admin-or-runtime-key>
+DATA_DIR=./data
 ```
 
-设置 `CHATGPT_BACKEND=session` 后，`SessionChatGptBackend` 会使用授权账号的 `secret.accessToken`/`cookie` 请求 `CHATGPT_BASE_URL/backend-api/codex/responses`，以 SSE 聚合或流式返回文本。不会硬编码真实模型表，不会把 token/cookie 打到日志或返回给前端。
+`CHATGPT_BASE_URL` 只控制 session backend 的上游地址，不是客户端调用本项目的 Base URL。生产或非 loopback 部署前请显式设置 `API_KEYS`，并自行提供网络层访问控制。
+
+## 文档
+
+- [中文使用指南](docs/USAGE.zh-CN.md)
+- [English usage guide](docs/USAGE.en.md)
+- [协议兼容性说明](docs/protocol-compatibility.md)
 
 ## 验证
 
@@ -181,3 +147,11 @@ corepack pnpm test
 corepack pnpm build
 corepack pnpm typecheck
 ```
+
+## 技术栈
+
+- pnpm workspace monorepo
+- TypeScript strict mode
+- Hono HTTP API
+- Vitest
+- Docker / docker-compose 基础运行配置

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { adminPageClientScript } from './routes/admin-page-client.js';
 import { createApp } from './app.js';
 import { loadEnv } from './config/env.js';
-import { adminPageViewSource, renderAccountCards, renderQuotaCards, type AdminAccountView } from './routes/admin-page-view.js';
+import { adminPageViewSource, renderAccountCards, renderQuotaCards, renderAdminOverview, type AdminAccountView, type AdminOverviewData } from './routes/admin-page-view.js';
 
 describe('Admin UI redesign contracts', () => {
   it('keeps basic mapping visible and marks static and dynamic advanced controls professional-only', async () => {
@@ -22,7 +22,8 @@ describe('Admin UI redesign contracts', () => {
     } };
     const helpers = script.slice(script.indexOf('function backendOptionsHtml('), script.indexOf("document.getElementById('create-model-form')"));
     const load = script.slice(script.indexOf('async function loadModels()'), script.indexOf('function bindModelActions('));
-    const loadModels = new Function('document', 'getJson', 'bindModelActions', `${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, async () => ({
+    const loadModels = new Function('document', 'getJson', 'bindModelActions', `let modelsCache; const overviewLoadState = {}; function renderOverviewPanel() {}
+${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, async () => ({
       aliases: [{ id: 'custom', enabled: true, defaults: {}, status: 'unbound' }], discovered: [{ id: 'provider' }],
     }), vi.fn());
     await loadModels();
@@ -60,7 +61,7 @@ describe('Admin UI redesign contracts', () => {
     expect(html).toContain("key === 'apiKey' || key === 'key' ? '<one-time-key-hidden>'");
     expect(html).toContain('剪贴板不可用，请手动选中上方完整 Key 并立即保存。');
     expect(html).toContain("setAdminMode('professional');");
-    expect(html).toContain("selectModule('authentication');");
+    expect(html).toContain("selectModule('admin-access');");
     expect(html).toContain('adminKeyInput.focus();');
     await app.dispose();
   });
@@ -157,8 +158,8 @@ describe('Admin UI redesign contracts', () => {
     expect(html).toContain('data-admin-module="quota"');
     expect(html).toContain('id="authentication-module"');
     expect(html).toContain('id="quota-module"');
-    expect(html).toContain('认证管理');
-    expect(html).toContain('配额管理');
+    expect(html).toContain('账号与授权');
+    expect(html).toContain('配额');
     expect(html).toContain("getJson('/admin/api/accounts')");
     expect(html).toContain("getJson('/admin/api/quotas')");
     expect(html).toContain("postJson('/admin/api/quotas/refresh')");
@@ -168,7 +169,7 @@ describe('Admin UI redesign contracts', () => {
     expect(html).toContain(':focus-visible');
     expect(html).toContain('@media(max-width:420px)');
     expect(html).not.toMatch(/gradient\s*\(/i);
-    expect(html).not.toMatch(/#[0-9a-f]*[89a-f][0-9a-f]*[5-9a-f][0-9a-f]*/i);
+    expect(html.match(/<style>([\s\S]*?)<\/style>/)?.[1]).not.toMatch(/#[0-9a-f]*[89a-f][0-9a-f]*[5-9a-f][0-9a-f]*/i);
     expect(html).not.toMatch(/[😀-🙏🌀-🫿]/u);
     expect(html).not.toContain('1.5x');
     expect(html).not.toContain('2x');
@@ -189,7 +190,7 @@ describe('Admin UI redesign contracts', () => {
     expect(html).toContain('aria-controls="quota-module"');
     expect(html).toContain('aria-labelledby="authentication-tab"');
     expect(html).toContain('aria-labelledby="quota-tab"');
-    expect(html).toContain('data-admin-module="authentication" aria-controls="authentication-module" aria-selected="true" tabindex="0"');
+    expect(html).toContain('data-admin-module="overview" aria-controls="overview-module" aria-selected="true" tabindex="0"');
     expect(html).toContain('data-admin-module="quota" aria-controls="quota-module" aria-selected="false" tabindex="-1"');
     expect(html).not.toMatch(/<h2\b[^>]*\btabindex=/);
     expect(script).toBeTruthy();
@@ -388,6 +389,102 @@ describe('Admin UI redesign contracts', () => {
     expect(token).toBeTruthy();
     expect(contrastRatio(token!.slice(1).map(Number), [248, 247, 242])).toBeGreaterThanOrEqual(4.7);
     await app.dispose();
+  });
+  it('keeps six unique destinations with linked tabs and each workflow owned by one panel', async () => {
+    const app = createApp(loadEnv({ NODE_ENV: 'test' }));
+    try {
+      const html = await (await app.request('/admin')).text();
+      const markup = html.slice(html.indexOf('<body>'), html.indexOf('<script>'));
+      const destinations = ['overview', 'authentication', 'models', 'api-access', 'quota', 'admin-access'];
+      expect([...markup.matchAll(/data-admin-module="([^"]+)"/g)].map((match) => match[1])).toEqual(destinations);
+      const ids = [...markup.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+      expect(new Set(ids).size).toBe(ids.length);
+      for (const destination of destinations) {
+        expect(markup).toContain(`aria-controls="${destination}-module"`);
+        expect(markup).toContain(`aria-labelledby="${destination}-tab"`);
+      }
+      expect(markup.indexOf('id="models-module"')).toBeLessThan(markup.indexOf('id="create-model-form"'));
+      expect(markup.indexOf('id="api-access-module"')).toBeLessThan(markup.indexOf('id="runtime-api-key-once"'));
+      expect(markup.indexOf('id="admin-access-module"')).toBeLessThan(markup.indexOf('id="admin-api-key"'));
+      expect(markup).toContain('data-i18n="概览"');
+    } finally { await app.dispose(); }
+  });
+
+  it('routes legacy/new hashes and keyboard navigation without rebuilding destination contents', () => {
+    const script = adminPageClientScript();
+    const navigation = script.slice(script.indexOf('function selectModule(name)'), script.indexOf("document.getElementById('save-admin-api-key')"));
+    const names = ['overview', 'authentication', 'models', 'api-access', 'quota', 'admin-access'];
+    const listeners: Array<Record<string, (event?: { key: string; preventDefault: () => void }) => void>> = [];
+    const buttons = names.map((name, index) => ({ dataset: { adminModule: name }, tabIndex: -1, setAttribute: vi.fn(), focus: vi.fn(), addEventListener: (event: string, handler: (event?: { key: string; preventDefault: () => void }) => void) => { (listeners[index] ??= {})[event] = handler; } }));
+    const modules = names.map((name) => ({ dataset: { moduleName: name }, hidden: true, draft: 'preserved' }));
+    const history = { state: {}, replaceState: vi.fn() };
+    const window = { addEventListener: vi.fn() };
+    const select = new Function('moduleButtons', 'modules', 'history', 'location', 'window', `${navigation}\nreturn selectModule;`)(buttons, modules, history, { hash: '#quota' }, window);
+    expect(modules[4].hidden).toBe(false);
+    for (const [hash, expected] of [['authentication', 1], ['accounts', 1], ['api-config', 3], ['quotas', 4], ['models', 2], ['admin-access', 5], ['unknown', 0]]) {
+      select(hash);
+      expect(modules.map((module) => !module.hidden)).toEqual(names.map((_name, index) => index === expected));
+    }
+    listeners[0].keydown({ key: 'ArrowUp', preventDefault: vi.fn() });
+    expect(buttons[5].focus).toHaveBeenCalled();
+    listeners[5].keydown({ key: 'ArrowDown', preventDefault: vi.fn() });
+    expect(buttons[0].focus).toHaveBeenCalled();
+    expect(modules.every((module) => module.draft === 'preserved')).toBe(true);
+  });
+
+  it.each(['simple', 'professional'])('opens and focuses Admin Access after a 401 in %s mode', async (mode) => {
+    const script = adminPageClientScript();
+    const request = script.slice(script.indexOf('async function requestJson('), script.indexOf('function loadFailureHtml('));
+    const selectModule = vi.fn();
+    const setAdminMode = vi.fn();
+    const fallback = { open: false };
+    const input = { focus: vi.fn() };
+    const requestJson = new Function('fetchWithAdminKey', 'document', 'setAdminSessionState', 'setAdminMode', 'selectModule', 'adminKeyFallback', 'adminKeyInput', 'renderResult', `${request}\nreturn requestJson;`)(
+      async () => new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 }),
+      { documentElement: { dataset: { adminMode: mode } } }, vi.fn(), setAdminMode, selectModule, fallback, input, vi.fn(),
+    );
+    await expect(requestJson('/admin/api/accounts')).rejects.toMatchObject({ status: 401 });
+    expect(selectModule).toHaveBeenCalledWith('admin-access');
+    expect(fallback.open).toBe(true);
+    expect(input.focus).toHaveBeenCalled();
+    if (mode === 'simple') expect(setAdminMode).toHaveBeenCalledWith('professional');
+  });
+
+  it('renders true cached overview data, independent failures and sorted account activity', () => {
+    const data: AdminOverviewData = {
+      accounts: [account({ id: 'older', label: 'Older', lastUsedAt: '2026-09-01T00:00:00Z' }), account({ id: 'newer', label: 'Newer', status: 'disabled', enabled: false, requestStats: { ...account().requestStats, lastRequestAt: '2026-09-05T00:00:00Z' } })],
+      quotas: [{ accountId: 'older', createdAt: '', supported: true, status: 'fresh', expiresAt: '2000-01-01T00:00:00Z' }, { accountId: 'newer', createdAt: '', supported: true, status: 'error' }],
+      models: { discovered: [{ id: 'real-provider-model' }], aliases: [{ enabled: true, status: 'bound' }, { enabled: true, status: 'unbound' }] },
+      keyCount: 2, states: { accounts: 'loaded', models: 'loaded', keys: 'error', quotas: 'loaded' }, localSession: true,
+    };
+    const renderBrowser = new Function(`${adminPageViewSource()}; return renderAdminOverview;`)() as typeof renderAdminOverview;
+    const html = renderBrowser(data, 'en');
+    expect(html).toContain('Healthy 1 · Unhealthy 0 · Disabled 1');
+    expect(html).toContain('Fresh 0 · Stale 1 · Error 1 · Unknown 0');
+    expect(html).toContain('Load failed; retaining last cache');
+    expect(html).toContain('data-admin-number="2"');
+    expect(html.indexOf('Newer')).toBeLessThan(html.indexOf('Older'));
+    expect(data.accounts.map((item) => item.id)).toEqual(['older', 'newer']);
+    expect(html).toContain('not a complete request log');
+    const empty = { ...data, accounts: [], quotas: [], keyCount: 0, models: { aliases: [], discovered: [] } };
+    expect(renderAdminOverview(empty, 'en')).toContain('No account activity yet.');
+    expect(renderAdminOverview({ ...empty, states: { ...data.states, accounts: 'loading' } }, 'en')).toContain('Loading');
+    expect(renderAdminOverview({ ...empty, states: { ...data.states, accounts: 'loading' } }, 'en')).not.toContain('No account activity yet.');
+    const overviewClient = adminPageClientScript().split('function renderOverviewPanel()')[1].split('function announce')[0];
+    expect(overviewClient).not.toMatch(/fetch|getJson|postJson|localStorage/);
+  });
+
+  it('renders bilingual accounts and quotas without translating identities or inventing usage', () => {
+    const fixture = account({ label: '健康', discovery: { status: 'success', attemptedAt: null, succeededAt: null, stale: false } });
+    const english = renderAccountCards([fixture], 'en');
+    expect(english).toContain('<h3 data-i18n-ignore>健康</h3>');
+    expect(english).toContain('Discovered 2 account models');
+    expect(english).toContain('Refresh health &amp; models');
+    expect(english).toContain('operator@example.test');
+    const quotas = renderQuotaCards([{ accountId: fixture.id, createdAt: fixture.createdAt, status: 'unknown', supported: true }], [fixture], 'en');
+    expect(quotas).toContain('Five-hour window unavailable');
+    expect(quotas).toContain('Not fetched');
+    expect(quotas).not.toContain('role="progressbar"');
   });
 });
 

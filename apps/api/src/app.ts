@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import type { ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import { createLogger } from '@chatgpt-to-claude/shared';
 import { loadEnv, type AppEnv } from './config/env.js';
+import { accessLog } from './middleware/access-log.js';
 import { adminApiAuth, apiKeyAuth } from './middleware/auth.js';
 import { healthRoute } from './routes/health.js';
 import { createModelsRoute } from './routes/models.js';
@@ -95,6 +96,7 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   app.get('/', (c) => c.redirect('/admin'));
   app.get('/favicon.ico', (c) => c.body(null, 204));
   app.route('/', healthRoute);
+  app.use('/v1/*', accessLog(logger));
   app.use('/v1/*', apiKeyAuth(env.apiKeys, runtimeApiKeys));
   app.route('/', createModelsRoute({ modelRegistry, ready: modelRegistryReady }));
   app.route('/', createCountTokensRoute());
@@ -102,6 +104,7 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   app.route('/', createOpenAiChatRoute({ backend, requestLog, modelRegistry, accountPool, operationalState, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createOpenAiResponsesRoute({ backend, requestLog, modelRegistry, accountPool, responsesStore, operationalState, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createMetricsRoute(requestLog));
+  app.use('/admin/api/*', accessLog(logger));
   app.use('/admin/api/*', adminApiAuth(env.apiKeys, runtimeApiKeys, { allowAnonymousBootstrap: env.allowAnonymousBootstrap, localAdminSession }));
   app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, durableState, operationalState, quotaService, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow, setupProvisioner, localAdminSession }));
   app.dispose = async () => {

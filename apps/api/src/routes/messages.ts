@@ -9,6 +9,7 @@ import { accountReleaseError } from './account-release-error.js';
 import { mapChatGptBackendError, mapErrorPayload } from './backend-errors.js';
 import { createAccountRequestTracker, trackStreamStatistics, usageFromBackend } from '../services/request-statistics.js';
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
+import { setAccessLogMetadata } from '../middleware/access-log.js';
 
 export interface MessagesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; }
 
@@ -18,6 +19,7 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
     try {
       if (deps.ready) await deps.ready;
       const request = parseClaudeMessagesRequest(await c.req.json());
+      setAccessLogMetadata(c, { model: request.model, stream: Boolean(request.stream) });
       const explicitControls = {
         reasoningEffort: request.output_config?.effort ?? request.reasoning_effort,
         serviceTier: request.service_tier ?? request.speed ?? request.response_speed,
