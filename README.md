@@ -42,6 +42,8 @@ http://localhost:3000/admin
 
 生产默认 `config/models.json` 定义四个内置 alias：`haiku`、`sonnet`、`fable`、`opus`，包含能力与默认 effort/speed，但不预绑定任何生产 backend model。`/v1/models` 只返回已经解析成功的 alias 与 backend discovery passthrough 模型。完成 OAuth/手动 session provisioning 后，服务会从 discovery 自动选择最佳后端；服务重启后的 discovery refresh 则只在 `sonnet` 尚未绑定时自动选择，已持久化或手动选择的 `sonnet.backendModel` 不会被覆盖。测试如需固定 `sonnet -> backend-test-model`，通过测试 fixture/env 显式注入 alias overlay。
 
+使用本项目直接配置 Claude Code（包括 Runtime API Key、模型别名和常见错误处理）请参阅[中文使用指南](docs/USAGE.zh-CN.md)。
+
 也可以手动运行：
 
 ```bash
