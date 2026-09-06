@@ -1,4 +1,4 @@
-import type { ClaudeContentBlock, ClaudeCountTokensRequest, ClaudeMessagesRequest } from './types.js';
+import type { ClaudeContentBlock, ClaudeCountTokensRequest, ClaudeMessagesRequest, ClaudeTextBlock } from './types.js';
 
 export function parseClaudeMessagesRequest(value: unknown): ClaudeMessagesRequest {
   const body = parseClaudeRequestBase(value, { requireMaxTokens: true });
@@ -12,7 +12,7 @@ export function parseClaudeCountTokensRequest(value: unknown): ClaudeCountTokens
 
 function parseClaudeRequestBase(value: unknown, options: { requireMaxTokens: boolean }): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Request body must be an object');
-  const body = value as Record<string, unknown>;
+  const body = { ...(value as Record<string, unknown>) };
   if (typeof body.model !== 'string' || !body.model) throw new Error('model is required');
   if (options.requireMaxTokens && (typeof body.max_tokens !== 'number' || body.max_tokens <= 0)) throw new Error('max_tokens must be a positive number');
   if (body.max_tokens !== undefined && (typeof body.max_tokens !== 'number' || body.max_tokens <= 0)) throw new Error('max_tokens must be a positive number');
@@ -31,11 +31,23 @@ function parseClaudeRequestBase(value: unknown, options: { requireMaxTokens: boo
   if (body.response_speed !== undefined && typeof body.response_speed !== 'string') throw new Error('response_speed must be a string');
   if (body.tools !== undefined && !Array.isArray(body.tools)) throw new Error('tools must be an array');
   if (body.tool_choice !== undefined && (!body.tool_choice || typeof body.tool_choice !== 'object' || Array.isArray(body.tool_choice))) throw new Error('tool_choice must be an object');
+  const messages: unknown[] = [];
+  const liftedSystemGroups: ClaudeTextBlock[][] = [];
   for (const message of body.messages) {
     if (!message || typeof message !== 'object' || Array.isArray(message)) throw new Error('message must be an object');
     const item = message as Record<string, unknown>;
-    if (item.role !== 'user' && item.role !== 'assistant') throw new Error('message.role must be user or assistant');
+    if (item.role === 'system' || item.role === 'developer') {
+      liftedSystemGroups.push(systemBlocksFromMessageContent(item.content));
+      continue;
+    }
+    if (item.role !== 'user' && item.role !== 'assistant') throw new Error('message.role must be user, assistant, system, or developer');
     validateContent(item.content, 'message.content');
+    messages.push(message);
+  }
+  if (liftedSystemGroups.length) {
+    const systemGroups = [systemBlocksFromExistingSystem(body.system), ...liftedSystemGroups].filter((group) => group.length);
+    body.system = systemGroups.flatMap((group, index) => index === 0 ? group : [{ type: 'text', text: '\n' }, ...group]);
+    body.messages = messages;
   }
   return body;
 }
@@ -48,6 +60,19 @@ function validateSystem(system: unknown): void {
   if (typeof system === 'string') return;
   if (!Array.isArray(system)) throw new Error('system must be a string or text block array');
   for (const block of system) validateTextBlock(block, 'system');
+}
+
+function systemBlocksFromExistingSystem(system: unknown): ClaudeTextBlock[] {
+  if (system === undefined) return [];
+  if (typeof system === 'string') return [{ type: 'text', text: system }];
+  return [...(system as ClaudeTextBlock[])];
+}
+
+function systemBlocksFromMessageContent(content: unknown): ClaudeTextBlock[] {
+  if (typeof content === 'string') return [{ type: 'text', text: content }];
+  if (!Array.isArray(content)) throw new Error('system/developer message.content must be a string or text block array');
+  for (const block of content) validateTextBlock(block, 'system/developer message.content');
+  return content as ClaudeTextBlock[];
 }
 
 function validateContent(content: unknown, path: string): void {

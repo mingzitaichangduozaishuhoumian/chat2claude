@@ -1264,6 +1264,27 @@ describe('/v1/messages', () => {
     expect(backend.lastRequest?.messages[1]).toEqual({ role: 'user', content: 'hello' });
   });
 
+  it('accepts CC Switch system and developer messages on the Claude endpoint', async () => {
+    const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
+    const app = createMessagesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool() });
+
+    const res = await app.request('/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      model: 'sonnet',
+      max_tokens: 64,
+      system: 'existing instruction',
+      messages: [
+        { role: 'system', content: 'system instruction' },
+        { role: 'developer', content: 'developer instruction' },
+        { role: 'user', content: 'hello' },
+      ],
+    }) });
+    expect(res.status).toBe(200);
+    expect(backend.lastRequest?.messages).toEqual([
+      { role: 'system', content: 'existing instruction\nsystem instruction\ndeveloper instruction' },
+      { role: 'user', content: 'hello' },
+    ]);
+  });
+
   it('releases account concurrency after a non-streaming request', async () => {
     const accountPool = new AccountPool();
     const app = createMessagesRoute({ backend: new InspectingBackend([{ id: 'backend-test-model' }]), requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool });
