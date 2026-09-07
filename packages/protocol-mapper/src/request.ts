@@ -1,5 +1,5 @@
 import type { ChatGptCompletionRequest, ChatGptImageDetail, ChatGptInputContentPart, ChatGptInputItem, ChatGptMessage, ChatGptTool, ChatGptToolChoice } from '@chatgpt-to-claude/chatgpt-backend';
-import type { ClaudeContentBlock, ClaudeMessagesRequest, ClaudeTool, ClaudeToolChoice } from '@chatgpt-to-claude/claude-protocol';
+import { validateClaudeToolContract, type ClaudeContentBlock, type ClaudeMessagesRequest, type ClaudeTool, type ClaudeToolChoice } from '@chatgpt-to-claude/claude-protocol';
 import { normalizeClaudeMessagesToCanonical, flattenCanonicalContentForTextBackend, type CanonicalContentBlock, type CanonicalMappingDiagnostic } from './canonical.js';
 import { resolveReasoningSpeed, type ReasoningSpeedDefaults } from './reasoning.js';
 export { normalizeClaudeMessagesToCanonical, flattenCanonicalContentForTextBackend } from './canonical.js';
@@ -10,6 +10,7 @@ export interface BackendRequestOptions {
 }
 
 export function mapClaudeRequestToChatGpt(request: ClaudeMessagesRequest, defaults: ReasoningSpeedDefaults = {}, options: BackendRequestOptions = {}): ChatGptCompletionRequest {
+  validateClaudeToolContract(request);
   const canonical = normalizeClaudeMessagesToCanonical(request);
   const messages: ChatGptMessage[] = canonical.messages.map((message) => ({
     role: message.role === 'tool' ? 'user' : message.role,

@@ -156,18 +156,19 @@ export async function* mapChatGptStreamToOpenAiChatSse(request: OpenAiChatComple
   const id = createOpenAiId();
   const created = currentUnixSeconds();
   let finishReason: string | undefined;
-  let sawToolCall = false;
+  const toolIndices = new Map<string, number>();
   let usage: ChatGptUsage | undefined;
   yield openAiSse({ id, object: 'chat.completion.chunk', created, model: request.model, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });
   for await (const event of events) {
     if (event.type === 'text_delta') {
       yield openAiSse({ id, object: 'chat.completion.chunk', created, model: request.model, choices: [{ index: 0, delta: { content: event.text }, finish_reason: null }] });
     } else if (event.type === 'tool_call') {
-      sawToolCall = true;
-      yield openAiSse({ id, object: 'chat.completion.chunk', created, model: request.model, choices: [{ index: 0, delta: { tool_calls: [mapToolCallDelta(event.toolCall, 0)] }, finish_reason: null }] });
+      const toolIndex = toolIndices.get(event.toolCall.id) ?? toolIndices.size;
+      toolIndices.set(event.toolCall.id, toolIndex);
+      yield openAiSse({ id, object: 'chat.completion.chunk', created, model: request.model, choices: [{ index: 0, delta: { tool_calls: [mapToolCallDelta(event.toolCall, toolIndex)] }, finish_reason: null }] });
       finishReason = 'tool_calls';
     } else if (event.type === 'done') {
-      finishReason = sawToolCall ? 'tool_calls' : mapOpenAiFinishReason(event.finishReason);
+      finishReason = toolIndices.size ? 'tool_calls' : mapOpenAiFinishReason(event.finishReason);
       usage = event.usage ?? usage;
     }
   }

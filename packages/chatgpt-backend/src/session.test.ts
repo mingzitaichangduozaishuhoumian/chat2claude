@@ -26,6 +26,253 @@ const context = {
 };
 
 describe('SessionChatGptBackend', () => {
+  it.each(['added-only', 'delta', 'done', 'delta-and-done'] as const)('preserves nonempty added arguments with %s finalization', async (mode) => {
+    const item = { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{"q":"x"}' };
+    const frames = [
+      { type: 'response.output_item.added', output_index: 0, item },
+      ...(mode.includes('delta') ? [
+        { type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: '{"q":' },
+        { type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: '"x"}' },
+      ] : []),
+      ...(mode.includes('done') ? [
+        { type: 'response.function_call_arguments.done', item_id: 'fc_1', arguments: '{ "q": "x" }' },
+        { type: 'response.output_item.done', output_index: 0, item },
+      ] : []),
+      { type: 'response.completed' },
+    ];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse(frames) });
+    await expect(backend.complete(request, context)).resolves.toEqual({ text: '', finishReason: 'tool_calls', toolCalls: [{ id: 'call_1', name: 'lookup', input: { q: 'x' } }] });
+  });
+
+  it('does not treat empty added arguments as a complete empty object', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '' } },
+      { type: 'response.completed' },
+    ]) });
+    await expect(backend.complete(request, context)).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
+  it.each(['standalone', 'event-only', 'after-delta'] as const)('aggregates a simplified done without item.type: %s', async (mode) => {
+    const item = { id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{"q":"x"}' };
+    const frames = [
+      ...(mode === 'after-delta' ? [
+        { type: 'response.output_item.added', output_index: 0, item: { ...item, type: 'function_call', arguments: '' } },
+        { type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: item.arguments },
+      ] : []),
+      { type: 'response.output_item.done', output_index: 0, item },
+      { type: 'response.output_item.done', output_index: 0, item },
+      { type: 'response.completed', finish_reason: 'stop' },
+    ];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => mode === 'event-only'
+      ? new Response(frames.map(({ type, ...frame }) => `event: ${type}\ndata: ${JSON.stringify(frame)}\n\n`).join(''))
+      : sseResponse(frames) });
+    const events = [];
+    for await (const event of backend.stream(request, context)) events.push(event);
+    expect(events).toEqual([
+      { type: 'tool_call', toolCall: { id: 'call_1', name: 'lookup', input: { q: 'x' } } },
+      { type: 'done', finishReason: 'stop' },
+    ]);
+  });
+
+  it.each([
+    { type: 'message', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{}' },
+    { id: 'fc_1', name: 'lookup', arguments: '{}' },
+    { id: 'fc_1', call_id: 'call_1', arguments: '{}' },
+    { id: 'fc_1', call_id: 'call_1', name: 'lookup' },
+  ])('does not infer a function call from an unrelated or incomplete done item %#', async (item) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
+      { type: 'response.output_item.done', item }, { type: 'response.completed' },
+    ]) });
+    await expect(backend.complete(request, context)).resolves.toEqual({ text: '', finishReason: 'stop' });
+  });
+
+  it('independently emits mixed compatibility text and tools, but never standard argument deltas', async () => {
+    const tool_call = { id: 'fc_compat', call_id: 'call_compat', name: 'lookup', input: { q: 'x' } };
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
+      { delta: 'before ', tool_call },
+      { delta: 'after', tool_call },
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '' } },
+      { type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: '{"q":"x"}' },
+      { type: 'response.completed' },
+    ]) });
+    await expect(backend.complete(request, context)).resolves.toEqual({ text: 'before after', finishReason: 'tool_calls', toolCalls: [
+      { id: 'call_compat', name: 'lookup', input: { q: 'x' } },
+      { id: 'call_1', name: 'lookup', input: { q: 'x' } },
+    ] });
+  });
+
+  it.each(['added-delta', 'added-done', 'added-duplicate', 'simplified-delta', 'simplified-duplicate', 'simplified-association'] as const)('rejects %s conflicts without retaining arguments or provider text', async (mode) => {
+    const item = { id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{"secret":"REGRESSION_CANARY"}' };
+    const added = mode.startsWith('added');
+    const frames = [
+      { type: 'response.output_item.added', output_index: 0, item: { ...item, type: 'function_call', arguments: added ? item.arguments : '' } },
+      ...(mode.endsWith('delta') ? [{ type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: '{}' }] : []),
+      ...(mode === 'added-done' ? [{ type: 'response.function_call_arguments.done', item_id: 'fc_1', arguments: '{}' }] : []),
+      ...(mode === 'added-duplicate' ? [{ type: 'response.output_item.added', item: { ...item, type: 'function_call', arguments: '{}' } }] : []),
+      ...(!added ? [{ type: 'response.output_item.done', output_index: 0, item: { ...item, ...(mode === 'simplified-association' ? { call_id: 'call_other' } : {}) } }] : []),
+      ...(mode === 'simplified-duplicate' ? [{ type: 'response.output_item.done', item: { ...item, arguments: '{}' } }] : []),
+      { type: 'response.completed' },
+    ];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse(frames.map((frame) => ({ ...frame, message: 'REGRESSION_CANARY', details: 'REGRESSION_CANARY' }))) });
+    // Capture only the error: failed assertions must not print the successful tool payload.
+    const error = await backend.complete(request, context).then(() => undefined, (error: unknown) => error);
+    expect(error).toMatchObject({ code: 'invalid_response', safeDiagnostic: { failurePhase: 'response_protocol' } });
+    expect(String(error) + JSON.stringify(error)).not.toContain('REGRESSION_CANARY');
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it('assembles interleaved official function calls once using call_id, never argument text', async () => {
+    const items = [
+      { type: 'function_call', id: 'fc_a', call_id: 'call_a', name: 'first', arguments: '' },
+      { type: 'function_call', id: 'fc_b', call_id: 'call_b', name: 'second', arguments: '' },
+    ];
+    const frames = [
+      ...items.map((item, output_index) => ({ type: 'response.output_item.added', output_index, item })),
+      { type: 'response.function_call_arguments.delta', item_id: 'fc_a', output_index: 0, delta: '{"a":' },
+      { type: 'response.function_call_arguments.delta', item_id: 'fc_b', output_index: 1, delta: '{"b":2}' },
+      { type: 'response.function_call_arguments.delta', item_id: 'fc_a', output_index: 0, delta: '1}' },
+      { type: 'response.function_call_arguments.done', item_id: 'fc_b', output_index: 1, arguments: '{"b":2}' },
+      { type: 'response.function_call_arguments.done', item_id: 'fc_a', output_index: 0, arguments: '{"a":1}' },
+      ...items.map((item, output_index) => ({ type: 'response.output_item.done', output_index, item: { ...item, arguments: output_index ? '{"b":2}' : '{"a":1}' } })),
+      { type: 'response.completed', response: { output: items.map((item, i) => ({ ...item, arguments: i ? '{"b":2}' : '{"a":1}' })) } },
+    ];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse(frames) });
+    const result = await backend.complete(request, context);
+    expect(result.text).toBe('');
+    expect(result.toolCalls).toHaveLength(2);
+    expect(result.toolCalls).toEqual(expect.arrayContaining([
+      { id: 'call_a', name: 'first', input: { a: 1 } }, { id: 'call_b', name: 'second', input: { b: 2 } },
+    ]));
+  });
+
+  it.each(['full', 'delta', 'completed', 'event-only'] as const)('supports %s argument finalization and deduplicates compatibility echoes', async (mode) => {
+    const item = { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{"q":"x"}' };
+    const frames = mode === 'completed' ? [{ type: 'response.completed', response: { output: [item] } }] : [
+      { type: 'response.output_item.added', output_index: 0, item: { ...item, arguments: '' } },
+      ...(mode === 'delta' ? [{ type: 'response.function_call_arguments.delta', output_index: 0, delta: item.arguments }] : []),
+      { type: 'response.output_item.done', item: { ...item, ...(mode === 'delta' ? { arguments: undefined } : {}) } },
+      { tool_call: { id: 'different_item_id', call_id: 'call_1', name: 'lookup', input: { q: 'x' } } },
+      { tool_call: { id: 'call_1', name: 'lookup', input: { q: 'x' } } },
+      { type: 'response.completed', response: { output: [item] } },
+    ];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => mode === 'event-only'
+      ? new Response(frames.map(({ type, ...frame }) => `${type ? `event: ${type}\n` : ''}data: ${JSON.stringify(frame)}\n\n`).join(''))
+      : sseResponse(frames) });
+    await expect(backend.complete(request, context)).resolves.toMatchObject({ text: '', toolCalls: [{ id: 'call_1', name: 'lookup', input: { q: 'x' } }] });
+  });
+
+  it.each(['arguments', 'association', 'missing-call-id', 'duplicate-call-id'] as const)('rejects %s protocol conflicts without retaining payloads', async (conflict) => {
+    const item = { type: 'function_call', id: 'fc_1', call_id: conflict === 'missing-call-id' ? undefined : 'call_1', name: 'lookup', arguments: '' };
+    const frames = [
+      { type: 'response.output_item.added', output_index: 0, item },
+      ...(conflict === 'association' || conflict === 'duplicate-call-id' ? [{ type: 'response.output_item.added', output_index: 1, item: { ...item, id: 'fc_2', call_id: conflict === 'duplicate-call-id' ? 'call_1' : 'call_2' } }] : []),
+      { type: 'response.function_call_arguments.delta', item_id: 'fc_1', output_index: conflict === 'association' ? 1 : 0, delta: '{"secret":"TOOL_CANARY"}' },
+      { type: 'response.output_item.done', output_index: 0, item: { ...item, arguments: conflict === 'arguments' ? '{}' : '{"secret":"TOOL_CANARY"}' } },
+      { type: 'response.completed' },
+    ];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse(frames) });
+    try { await backend.complete(request, context); expect.fail('Expected protocol conflict'); }
+    catch (error) {
+      expect(error).toMatchObject({ code: 'invalid_response', safeDiagnostic: { failurePhase: 'response_protocol' } });
+      expect(String(error) + JSON.stringify(error)).not.toContain('TOOL_CANARY');
+      expect((error as Error).cause).toBeUndefined();
+    }
+  });
+
+  it.each(['error', 'response.failed', 'response.incomplete'])('keeps only allowlisted diagnostics for %s', async (type) => {
+    const secret = 'PROVIDER_DIAGNOSTIC_CANARY';
+    const payload = { type, code: secret, message: secret, param: secret, details: secret,
+      response: { status: type === 'response.incomplete' ? 'incomplete' : 'failed', error: { code: 'misalignment_policy_violation', message: secret, param: secret, details: secret }, incomplete_details: { reason: secret, explanation: secret } } };
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([payload]) });
+    const events = [];
+    try {
+      for await (const event of backend.stream(request, context)) events.push(event);
+      expect.fail('Expected terminal error');
+    } catch (error) {
+      expect(error).toMatchObject({ code: type === 'response.incomplete' ? 'invalid_response' : 'upstream_error', safeDiagnostic: {
+        eventType: type, responseStatus: payload.response.status, httpStatus: 200,
+        failurePhase: type === 'response.incomplete' ? 'response_incomplete' : 'response_event',
+        ...(type === 'response.failed' ? { responseErrorCode: 'misalignment_policy_violation' } : {}),
+        ...(type === 'response.incomplete' ? { incompleteReason: 'unknown' } : {}),
+      } });
+      expect(String(error) + JSON.stringify(error)).not.toContain(secret);
+      expect((error as Error).cause).toBeUndefined();
+    }
+    expect(events).toEqual([]);
+  });
+
+  it.each(['rate_limit_exceeded', 'ERROR_CODE_CANARY'])('sanitizes top-level standard error code %s', async (code) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
+      { type: 'error', code, message: 'ERROR_MESSAGE_CANARY', param: 'ERROR_PARAM_CANARY', raw: 'ERROR_RAW_CANARY' },
+    ]) });
+    const error = await backend.complete(request, context).catch((error: unknown) => error);
+    expect(error).toMatchObject({ code: 'upstream_error', status: 502, safeDiagnostic: {
+      eventType: 'error', responseErrorCode: code === 'rate_limit_exceeded' ? code : 'unknown', httpStatus: 200, failurePhase: 'response_event',
+    } });
+    expect(String(error) + JSON.stringify(error)).not.toContain('CANARY');
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it.each([
+    { frame: { type: 'error', error: { code: 'rate_limit_exceeded', message: 'NESTED_MESSAGE_CANARY', detail: 'NESTED_DETAIL_CANARY', param: 'NESTED_PARAM_CANARY', raw: 'NESTED_RAW_CANARY' } }, code: 'rate_limit_exceeded' },
+    { frame: { type: 'error', error: { code: 'NESTED_CODE_CANARY', message: 'NESTED_MESSAGE_CANARY', detail: 'NESTED_DETAIL_CANARY', param: 'NESTED_PARAM_CANARY', raw: 'NESTED_RAW_CANARY' } }, code: 'unknown' },
+    { frame: { error: { code: 'rate_limit_exceeded', message: 'NESTED_MESSAGE_CANARY', detail: 'NESTED_DETAIL_CANARY', param: 'NESTED_PARAM_CANARY', raw: 'NESTED_RAW_CANARY' } }, code: 'rate_limit_exceeded' },
+    { frame: { error: { code: 'NESTED_CODE_CANARY', message: 'NESTED_MESSAGE_CANARY', detail: 'NESTED_DETAIL_CANARY', param: 'NESTED_PARAM_CANARY', raw: 'NESTED_RAW_CANARY' } }, code: 'unknown' },
+  ])('sanitizes nested response error codes for $frame.type frames', async ({ frame, code }) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([frame]) });
+    const error = await backend.complete(request, context).catch((error: unknown) => error);
+    expect(error).toMatchObject({ code: 'upstream_error', status: 502, safeDiagnostic: {
+      ...(frame.type ? { eventType: frame.type } : {}), responseErrorCode: code, httpStatus: 200, failurePhase: 'response_event',
+    } });
+    expect(String(error) + JSON.stringify(error)).not.toContain('NESTED_');
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it.each(['eof', 'done-marker'] as const)('defaults emitted tools to tool_calls at %s', async (terminal) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response(
+      'data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":"{}"}}\n\n'
+      + (terminal === 'done-marker' ? 'data: [DONE]\n\n' : ''),
+    ) });
+    await expect(backend.complete(request, context)).resolves.toMatchObject({ finishReason: 'tool_calls' });
+  });
+
+  it('continues skipping malformed JSON frames without exposing their raw contents', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response('data: {MALFORMED_FRAME_CANARY\n\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\ndata: {"type":"response.completed"}\n\n') });
+    await expect(backend.complete(request, context)).resolves.toMatchObject({ text: 'ok', finishReason: 'stop' });
+  });
+
+  it('preserves an upstream reader AbortError without classifying it as a network failure', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response(new ReadableStream({
+      pull(controller) { controller.error(new DOMException('ABORT_CANARY', 'AbortError')); },
+    })) });
+    try { await backend.complete(request, context); expect.fail('Expected abort'); }
+    catch (error) {
+      expect(error).toMatchObject({ name: 'AbortError' });
+      expect(error).not.toBeInstanceOf(ChatGptBackendError);
+      expect(String(error) + JSON.stringify(error)).not.toContain('ABORT_CANARY');
+      expect((error as Error).cause).toBeUndefined();
+    }
+  });
+
+  it('classifies missing HTTP 2xx response bodies as invalid responses', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response(null) });
+    await expect(backend.complete(request, context)).rejects.toMatchObject({ code: 'invalid_response', safeDiagnostic: { httpStatus: 200, failurePhase: 'response_body_read' } });
+  });
+
+  it.each([TypeError, SyntaxError])('classifies a body read %s safely after HTTP 2xx', async (ErrorClass) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response(new ReadableStream({
+      pull(controller) { controller.error(new ErrorClass('BODY_READ_CANARY')); },
+    })) });
+    try {
+      await backend.complete(request, context);
+      expect.fail('Expected body read failure');
+    } catch (error) {
+      expect(error).toMatchObject({ code: ErrorClass === SyntaxError ? 'invalid_response' : 'network_error', safeDiagnostic: { httpStatus: 200, failurePhase: 'response_body_read' } });
+      expect(String(error) + JSON.stringify(error)).not.toContain('BODY_READ_CANARY');
+      expect((error as Error).cause).toBeUndefined();
+    }
+  });
+
   it.each([
     'data: {"type":"error","message":"SSE_SECRET_CANARY"}',
     'data: {"type":"response.error","message":{"content":"SSE_SECRET_CANARY"}}',

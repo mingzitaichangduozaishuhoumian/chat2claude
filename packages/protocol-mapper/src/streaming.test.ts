@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ClaudeMessagesRequest } from '@chatgpt-to-claude/claude-protocol';
+import { parseClaudeMessagesRequest, type ClaudeMessagesRequest } from '@chatgpt-to-claude/claude-protocol';
+import { SessionChatGptBackend } from '@chatgpt-to-claude/chatgpt-backend';
+import { mapClaudeRequestToChatGpt } from './request.js';
+import { mapChatGptResponseToClaude } from './response.js';
 import { mapChatGptStreamToOpenAiChatSse } from './openai-chat.js';
 import { mapChatGptStreamToOpenAiResponsesSse } from './openai-responses.js';
 import { mapChatGptStreamToClaudeSse, readableStreamFromAsyncIterable } from './streaming.js';
@@ -7,6 +10,56 @@ import { mapChatGptStreamToClaudeSse, readableStreamFromAsyncIterable } from './
 const request: ClaudeMessagesRequest = { model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] };
 
 describe('mapChatGptStreamToClaudeSse', () => {
+  it('round trips standard session SSE to unique Claude tool_result call IDs on the next upstream request', async () => {
+    const items = ['a', 'b'].map((key) => ({ type: 'function_call', id: `fc_${key}`, call_id: `call_${key}`, name: 'lookup', arguments: JSON.stringify({ key }) }));
+    const frames = [
+      ...items.map((item, output_index) => ({ type: 'response.output_item.added', output_index, item: { ...item, arguments: '' } })),
+      ...[1, 0].flatMap((i) => [
+        { type: 'response.function_call_arguments.delta', item_id: items[i].id, output_index: i, delta: items[i].arguments },
+        { type: 'response.function_call_arguments.done', item_id: items[i].id, output_index: i, arguments: items[i].arguments },
+        { type: 'response.output_item.done', output_index: i, item: items[i] },
+      ]),
+      { type: 'response.completed', response: { output: items } },
+    ];
+    const bodies: Array<{ input: Array<{ type: string; call_id: string }> }> = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(frames.map((frame) => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`).join(''));
+    } });
+    const context = { account: { id: 'session-1', provider: 'chatgpt-session' as const, secret: { type: 'chatgpt-session' as const, accessToken: 'token' } } };
+    const text = await collect(mapChatGptStreamToClaudeSse(request, backend.stream(mapClaudeRequestToChatGpt(request), context)));
+    const starts = text.split('\n').filter((line) => line.startsWith('data: ')).map((line) => JSON.parse(line.slice(6)))
+      .filter((event) => event.type === 'content_block_start' && event.content_block.type === 'tool_use');
+    expect(starts.map((event) => event.content_block.id)).toEqual(['call_b', 'call_a']);
+    expect(text).not.toContain('fc_');
+    expect(text).not.toContain('"type":"text_delta"');
+    const next = parseClaudeMessagesRequest({ ...request, messages: [
+      ...request.messages,
+      { role: 'assistant', content: starts.map((event) => ({ ...event.content_block, input: { key: event.content_block.id.slice(-1) } })) },
+      { role: 'user', content: starts.map((event) => ({ type: 'tool_result', tool_use_id: event.content_block.id, content: 'ok' })) },
+    ] });
+    await backend.complete(mapClaudeRequestToChatGpt(next), context);
+    expect(bodies[1].input.filter((item) => item.type === 'function_call').map((item) => item.call_id)).toEqual(['call_b', 'call_a']);
+    expect(bodies[1].input.filter((item) => item.type === 'function_call_output').map((item) => item.call_id)).toEqual(['call_b', 'call_a']);
+  });
+
+  it.each([undefined, null, '', 'stop', 'length'] as const)('maps session tool completion to Claude stop reason with finish_reason=%s', async (finish_reason) => {
+    const item = { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{}' };
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response([
+      { type: 'response.output_item.done', item },
+      { type: 'response.completed', response: { finish_reason } },
+    ].map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('')) });
+    const context = { account: { id: 'session-1', provider: 'chatgpt-session' as const, secret: { type: 'chatgpt-session' as const, accessToken: 'token' } } };
+    const backendRequest = mapClaudeRequestToChatGpt(request);
+    const expected = finish_reason === 'length' ? 'max_tokens' : finish_reason === 'stop' ? 'end_turn' : 'tool_use';
+    const completion = mapChatGptResponseToClaude(request, await backend.complete(backendRequest, context));
+    expect(completion.stop_reason).toBe(expected);
+    expect(completion.content).toEqual([{ type: 'tool_use', id: 'call_1', name: 'lookup', input: {} }]);
+    const text = await collect(mapChatGptStreamToClaudeSse(request, backend.stream(backendRequest, context)));
+    expect(text).toContain(`"stop_reason":"${expected}"`);
+    expect(text.match(/event: message_delta\n/g)).toHaveLength(1);
+  });
+
   it('streams tool calls as Claude tool_use blocks with input_json_delta', async () => {
     const text = await collect(mapChatGptStreamToClaudeSse(request, async function* () {
       yield { type: 'tool_call' as const, toolCall: { id: 'call_1', name: 'get_weather', input: { city: 'Paris' } } };

@@ -1,10 +1,23 @@
 import { describe, expect, it } from 'vitest';
+import { SessionChatGptBackend } from '@chatgpt-to-claude/chatgpt-backend';
 import { AdminOperationalState } from './admin-operational-state.js';
 import { createAccountRequestTracker, trackStreamStatistics } from './request-statistics.js';
 
 const identity = { accountId: 'account-1', createdAt: '2026-09-04T00:00:00.000Z' };
 
 describe('per-account request statistics', () => {
+  it.each(['response.failed', 'response.incomplete', 'body-read'])('counts session %s as one failure without retaining diagnostics payload', async (type) => {
+    const state = new AdminOperationalState({ path: 'unused.json', debounceMs: 60_000 });
+    const tracker = createAccountRequestTracker(state, identity);
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => type === 'body-read'
+      ? new Response(new ReadableStream({ pull(controller) { controller.error(new TypeError('STAT_CANARY')); } }))
+      : new Response(`data: ${JSON.stringify({ type, response: { status: type === 'response.failed' ? 'failed' : 'incomplete', error: { code: 'STAT_CANARY', message: 'STAT_CANARY' }, incomplete_details: { reason: 'max_output_tokens' } } })}\n\n`) });
+    const context = { account: { id: identity.accountId, provider: 'chatgpt-session' as const, secret: { type: 'chatgpt-session' as const, accessToken: 'token' } } };
+    await expect(consume(trackStreamStatistics(backend.stream({ model: 'test', maxTokens: 64, messages: [{ role: 'user', content: 'test' }] }, context), tracker))).rejects.toMatchObject({ code: type === 'body-read' ? 'network_error' : type === 'response.incomplete' ? 'invalid_response' : 'upstream_error' });
+    expect(state.snapshot().accounts[0]?.requestStats).toMatchObject({ totalRequests: 1, successfulRequests: 0, failedRequests: 1, cancelledRequests: 0, inFlight: 0 });
+    expect(JSON.stringify(state.snapshot())).not.toContain('STAT_CANARY');
+  });
+
   it.each([
     { aborted: true, error: new DOMException('client cancelled', 'AbortError'), outcome: 'cancelled' },
     { aborted: false, error: new DOMException('upstream aborted', 'AbortError'), outcome: 'failure' },

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SessionChatGptBackend } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ChatGptBackendClient, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
 import { createMessagesRoute } from './messages.js';
@@ -68,6 +68,40 @@ describe('request-statistics protocol attribution', () => {
       expect(state.snapshot().accounts[0]?.requestStats).toMatchObject({ totalRequests: 1, successfulRequests: 0, failedRequests: 1, cancelledRequests: 0, inFlight: 0 });
       expect(pool.get('session-canary')).toMatchObject({ currentConcurrency: 0, status: 'available', cooldownUntil: null, lastErrorCode: 'upstream_error' });
       expect(JSON.stringify(state.snapshot()) + JSON.stringify(pool.get('session-canary'))).not.toContain('SSE_SECRET_CANARY');
+    }
+  });
+
+  it.each([
+    [createMessagesRoute, '/v1/messages', { model: 'sonnet', max_tokens: 16, messages: [{ role: 'user', content: 'USER_CANARY' }] }],
+    [createOpenAiChatRoute, '/v1/chat/completions', { model: 'sonnet', messages: [{ role: 'user', content: 'USER_CANARY' }] }],
+    [createOpenAiResponsesRoute, '/v1/responses', { model: 'sonnet', input: 'USER_CANARY' }],
+  ] as const)('logs exactly one safe non-streaming cancellation for %s', async (createRoute, path, body) => {
+    for (const aborted of [true, false]) {
+      const state = new AdminOperationalState({ path: 'unused.json', debounceMs: 60_000 });
+      const pool = new AccountPool();
+      const release = vi.spyOn(pool, 'release');
+      const controller = new AbortController();
+      const backend = new UsageBackend();
+      vi.spyOn(backend, 'complete').mockImplementation(async () => {
+        if (aborted) controller.abort();
+        throw new DOMException('PROVIDER_TOKEN_COOKIE_CANARY', 'AbortError');
+      });
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const app = createRoute({ backend, requestLog: new RequestLog(), modelRegistry: registry(), accountPool: pool, operationalState: state, logger });
+      const response = await app.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
+      expect(await response.text()).not.toContain('CANARY');
+      expect(state.snapshot().accounts[0]?.requestStats).toMatchObject({ totalRequests: 1, successfulRequests: 0, failedRequests: aborted ? 0 : 1, cancelledRequests: aborted ? 1 : 0, inFlight: 0 });
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledWith(expect.any(String), undefined);
+      expect(pool.get(release.mock.calls[0][0])).toMatchObject({ currentConcurrency: 0, status: 'available', cooldownUntil: null });
+      expect(logger.info.mock.calls.length + logger.error.mock.calls.length).toBe(1);
+      if (aborted) {
+        expect(logger.error).not.toHaveBeenCalled();
+        expect(logger.info).toHaveBeenCalledWith('HTTP request terminated', { route: path, outcome: 'cancelled' });
+      } else {
+        expect(logger.error).toHaveBeenCalledWith('HTTP request terminated', expect.objectContaining({ route: path, outcome: 'failure' }));
+      }
+      expect(JSON.stringify([logger.info.mock.calls, logger.error.mock.calls, state.snapshot()])).not.toContain('CANARY');
     }
   });
 

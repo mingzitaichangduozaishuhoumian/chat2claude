@@ -1349,6 +1349,46 @@ describe('/v1/messages', () => {
 });
 
 describe('completion protocol public-error boundary', () => {
+  it.each([false, true])('returns safe 400 before calling upstream for invalid Claude tools (stream=%s)', async (stream) => {
+    const backend = new InspectingBackend(discoveredModels);
+    const complete = vi.spyOn(backend, 'complete');
+    const app = createApp(env, { backend });
+    const canary = 'SCHEMA_HISTORY_PRIVATE_CANARY';
+    try {
+      for (const invalid of [
+        { tools: [{ name: 'lookup', strict: true, input_schema: { type: 'object', properties: { [canary]: { type: 'string' } } } }], messages: [{ role: 'user', content: canary }] },
+        { messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: canary, content: canary }] }] },
+      ]) {
+        const response = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, stream, ...invalid }) });
+        expect(response.status).toBe(400);
+        expect(await response.text()).not.toContain(canary);
+      }
+      expect(complete).not.toHaveBeenCalled();
+    } finally { await app.dispose(); }
+  });
+
+  it.each([false, true])('logs only safe session termination diagnostics (stream=%s)', async (stream) => {
+    const canary = 'PROVIDER_PRIVATE_CANARY';
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response(`data: ${JSON.stringify({ type: 'response.failed', response: { status: 'failed', error: { code: 'misalignment_policy_violation', message: canary, param: canary, details: canary } } })}\n\n`) });
+    const accountPool = new AccountPool();
+    const account = accountPool.add({ id: canary, provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: canary }, capabilities: ['chatgpt-session', 'messages'] });
+    const modelRegistry = new ModelRegistry();
+    modelRegistry.replaceAccountModels({ accountId: account.id, createdAt: account.createdAt }, [{ id: 'backend-test-model' }]);
+    modelRegistry.update('sonnet', { backendModel: 'backend-test-model' });
+    const app = createMessagesRoute({ backend, accountPool, modelRegistry, requestLog: new RequestLog(), backendProvider: 'session', logger });
+    const response = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, stream, messages: [{ role: 'user', content: canary }] }) });
+    const text = await response.text();
+    expect(response.status).toBe(stream ? 200 : 502);
+    expect(text).toContain('Upstream request failed.');
+    expect(text + JSON.stringify(logger.error.mock.calls)).not.toContain(canary);
+    expect(logger.error).toHaveBeenCalledWith(stream ? 'HTTP stream terminated' : 'HTTP request terminated', expect.objectContaining({
+      route: '/v1/messages', outcome: 'failure', exceptionFamily: 'ChatGptBackendError', code: 'upstream_error',
+      eventType: 'response.failed', responseStatus: 'failed', responseErrorCode: 'misalignment_policy_violation', httpStatus: 200, failurePhase: 'response_event',
+    }));
+    expect(accountPool.get(account.id)?.currentConcurrency).toBe(0);
+  });
+
   it.each(['/v1/messages', '/v1/chat/completions', '/v1/responses'])('returns a fixed safe 400 for malformed JSON at %s', async (path) => {
     const app = createApp(env);
     const canary = 'private-json-canary';

@@ -69,10 +69,39 @@ for (const protocol of protocols) describe(protocol.path, () => {
     expect(streamLogger.error).toHaveBeenCalledTimes(1);
     expect(streamLogger.error).toHaveBeenCalledWith('HTTP stream terminated', {
       route: protocol.path, requestId: logs[0].requestId, outcome: 'failure', code: code === 'upstream_error' ? code : 'internal_error',
+      exceptionFamily: code === 'internal_error' ? 'Error' : 'ChatGptBackendError',
     });
     expect(streamLogger.info).not.toHaveBeenCalled();
     expect(JSON.stringify([logs, streamLogger.error.mock.calls, pool.exportState()])).not.toContain(canary);
     expect(pool.acquire()).toBeDefined();
+  });
+
+  it.each(['error', 'response.failed', 'response.incomplete', 'body-read', 'http-error'] as const)('logs safe %s diagnostics and counts one failure in both response modes', async (type) => {
+    const canary = 'SESSION_ROUTE_PRIVATE_CANARY';
+    for (const stream of [false, true]) {
+      const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => {
+        if (type === 'body-read') return new Response(new ReadableStream({ pull(controller) { controller.error(new TypeError(canary)); } }));
+        if (type === 'http-error') return new Response(canary, { status: 503 });
+        return new Response(`data: ${JSON.stringify({ type, message: canary, param: canary, details: canary, response: { status: type === 'response.incomplete' ? 'incomplete' : 'failed', error: { code: canary, message: canary, param: canary, detail: canary, details: canary }, incomplete_details: { reason: 'max_output_tokens', explanation: canary } } })}\n\n`);
+      } });
+      const { request, logs, streamLogger, operationalState, pool } = fixture(undefined, backend);
+      const response = await request(stream);
+      const text = await response.text();
+      expect(response.status).toBe(stream ? 200 : 502);
+      const fields = {
+        route: protocol.path, requestId: logs[0].requestId, outcome: 'failure', exceptionFamily: 'ChatGptBackendError',
+        code: type === 'body-read' ? 'network_error' : type === 'response.incomplete' ? 'invalid_response' : 'upstream_error',
+        httpStatus: type === 'http-error' ? 503 : 200,
+        failurePhase: type === 'http-error' ? 'response_headers' : type === 'body-read' ? 'response_body_read' : type === 'response.incomplete' ? 'response_incomplete' : 'response_event',
+        ...(type === 'body-read' || type === 'http-error' ? {} : { eventType: type, responseStatus: type === 'response.incomplete' ? 'incomplete' : 'failed', responseErrorCode: 'unknown' }),
+        ...(type === 'response.incomplete' ? { incompleteReason: 'max_output_tokens' } : {}),
+      };
+      expect(streamLogger.error).toHaveBeenCalledTimes(1);
+      expect(streamLogger.error).toHaveBeenCalledWith(stream ? 'HTTP stream terminated' : 'HTTP request terminated', fields);
+      expect(text + JSON.stringify([logs, streamLogger.error.mock.calls, operationalState.snapshot(), pool.exportState()])).not.toContain(canary);
+      expect(operationalState.snapshot().accounts[0]?.requestStats).toMatchObject({ totalRequests: 1, failedRequests: 1, successfulRequests: 0, cancelledRequests: 0, inFlight: 0 });
+      expect(pool.get('session')?.currentConcurrency).toBe(0);
+    }
   });
 
   it.each(['reader-cancel', 'request-abort'] as const)('interrupts already-blocked upstream I/O on %s and releases for the queued request', async (outcome) => {
@@ -172,7 +201,7 @@ for (const protocol of protocols) describe(protocol.path, () => {
     expect(terminalLogger).toHaveBeenCalledWith('HTTP stream terminated', {
       route: protocol.path, requestId: logs[0].requestId,
       outcome: outcome === 'complete' ? 'success' : outcome === 'cancel' ? 'cancelled' : 'failure',
-      ...(outcome === 'error' ? { code: 'internal_error' } : {}),
+      ...(outcome === 'error' ? { code: 'internal_error', exceptionFamily: 'Error' } : {}),
     });
     expect(operationalState.snapshot().accounts[0]?.requestStats).toMatchObject({
       totalRequests: 2, successfulRequests: outcome === 'complete' ? 2 : 1,

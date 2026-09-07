@@ -58,7 +58,69 @@ function parseClaudeRequestBase(value: unknown, options: { requireMaxTokens: boo
     body.system = systemGroups.flatMap((group, index) => index === 0 ? group : [{ type: 'text', text: '\n' }, ...group]);
     body.messages = messages;
   }
+  if (options.requireMaxTokens) validateClaudeToolContract(body);
   return body;
+}
+
+/** Shared by the HTTP parser and direct mapper callers. Never includes input in errors. */
+export function validateClaudeToolContract(request: { tools?: unknown; messages?: unknown }): void {
+  if (Array.isArray(request.tools)) for (const tool of request.tools) {
+    if (!isPlainObject(tool)) throw new ClaudeApiError('tool must be an object');
+    if (tool.strict !== undefined && typeof tool.strict !== 'boolean') throw new ClaudeApiError('tool.strict must be a boolean');
+    if (tool.strict === true) validateStrictToolSchema(tool.input_schema);
+  }
+  const calls = new Set<string>();
+  const results = new Set<string>();
+  if (Array.isArray(request.messages)) for (const message of request.messages) {
+    if (!isPlainObject(message) || !Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (!isPlainObject(block)) continue;
+      if (block.type === 'tool_use') {
+        if (message.role !== 'assistant' || typeof block.id !== 'string' || !block.id || calls.has(block.id)) {
+          throw new ClaudeApiError('tool_use must have a unique id and belong to an assistant message');
+        }
+        calls.add(block.id);
+      } else if (block.type === 'tool_result') {
+        if (message.role !== 'user' || typeof block.tool_use_id !== 'string' || !calls.has(block.tool_use_id) || results.has(block.tool_use_id)) {
+          throw new ClaudeApiError('tool_result must reference a previous assistant tool_use exactly once; truncated or orphan results are not supported');
+        }
+        results.add(block.tool_use_id);
+      }
+    }
+  }
+}
+
+function validateStrictToolSchema(root: unknown): void {
+  const invalid = () => new ClaudeApiError('strict tool schema requires object schemas with additionalProperties:false and every property in required');
+  if (!isPlainObject(root) || root.type !== 'object') throw invalid();
+  const pending: unknown[] = [root];
+  const seen = new Set<object>();
+  while (pending.length) {
+    const schema = pending.pop();
+    if (!isPlainObject(schema)) {
+      if (typeof schema !== 'boolean') throw invalid();
+      continue;
+    }
+    if (seen.has(schema)) continue;
+    seen.add(schema);
+    if (schema.type === 'object' || Array.isArray(schema.type) && schema.type.includes('object')
+      || schema.properties !== undefined || schema.required !== undefined || schema.additionalProperties !== undefined) {
+      if (schema.additionalProperties !== false || schema.properties !== undefined && !isPlainObject(schema.properties)) throw invalid();
+      const keys = Object.keys(isPlainObject(schema.properties) ? schema.properties : {});
+      const required = schema.required;
+      if (!Array.isArray(required) || required.some((key) => typeof key !== 'string')
+        || new Set(required).size !== required.length || required.length !== keys.length
+        || keys.some((key) => !required.includes(key))) throw invalid();
+    }
+    // Visit schema positions only, not descriptions/defaults/examples or user property names.
+    for (const key of ['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas']) {
+      if (isPlainObject(schema[key])) pending.push(...Object.values(schema[key]));
+    }
+    for (const key of ['items', 'prefixItems', 'anyOf', 'oneOf', 'allOf', 'not', 'if', 'then', 'else', 'contains', 'additionalProperties', 'additionalItems', 'unevaluatedProperties', 'unevaluatedItems', 'propertyNames']) {
+      const value = schema[key];
+      if (value !== undefined) pending.push(...(Array.isArray(value) ? value : [value]));
+    }
+  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

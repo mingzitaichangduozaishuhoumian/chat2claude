@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { Logger } from '@chatgpt-to-claude/shared';
-import { releaseAccountWhenDone } from './stream-lifecycle.js';
+import { logHttpRequestFailure, releaseAccountWhenDone } from './stream-lifecycle.js';
 import type { ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { mapChatGptResponseToOpenAiChat, mapChatGptStreamToOpenAiChatSse, mapOpenAiChatRequestToChatGpt, readableStreamFromAsyncIterable, type OpenAiChatCompletionRequest, type ReasoningSpeedDefaults } from '@chatgpt-to-claude/protocol-mapper';
@@ -81,6 +81,7 @@ export function createOpenAiChatRoute(deps: OpenAiChatRouteDeps): Hono {
         if (!releaseDeferredToStream) deps.accountPool.release(account.id, accountReleaseError(releaseError));
       }
     } catch (error) {
+      logHttpRequestFailure(error, { route: '/v1/chat/completions', requestId: getAccessLogRequestId(c), logger: deps.logger }, c.req.raw.signal);
       const apiError = error instanceof ClaudeApiError ? error : mapChatGptBackendError(error) ?? (error instanceof ModelRegistryError ? new ClaudeApiError(error.message, error.status, error.status === 404 ? 'not_found_error' : 'invalid_request_error') : unexpectedApiError());
       return c.json(toOpenAiError(apiError), apiError.status as 400);
     }

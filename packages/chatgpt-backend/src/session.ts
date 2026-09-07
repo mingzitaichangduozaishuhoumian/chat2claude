@@ -2,7 +2,8 @@ import { CODEX_ORIGINATOR, codexUserAgent, normalizeCodexClientVersion } from '.
 import type { ChatGptModelDiscoveryDiagnostic, ChatGptModelDiscoveryResult } from './client.js';
 import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputContentPart, ChatGptInputItem, ChatGptModelControlCapabilities, ChatGptQuotaWindow, ChatGptReasoningLevelOption, ChatGptServiceTierOption, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
-import { ChatGptBackendError, type ChatGptBackendErrorCode } from './errors.js';
+import { ChatGptBackendError, sanitizeBackendDiagnostic, type ChatGptBackendErrorCode } from './errors.js';
+import { ResponsesToolCalls } from './responses-tools.js';
 
 export interface SessionChatGptBackendOptions {
   baseUrl: string;
@@ -134,6 +135,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     validateSessionRequest(request);
     const secret = requireSessionSecret(context);
     const lifetime = createRequestLifetime(this.timeoutMs, context?.signal);
+    let httpStatus: number | undefined;
     try {
       const response = await lifetime.run(() => this.fetchResponse(this.backendApiEndpoint('/codex/responses'), {
         method: 'POST',
@@ -146,26 +148,58 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         throw httpBackendError('ChatGPT responses request failed', response.status);
       }
 
+      httpStatus = response.status;
       let latestUsage: ChatGptUsage | undefined;
+      let sawToolCall = false;
+      const tools = new ResponsesToolCalls(httpStatus);
       for await (const frame of iterateSseData(response, lifetime)) {
         const parsed = parseJson(frame.data);
-        if (isFailureEvent(frame.event, parsed)) {
-          // Never retain provider messages, details, codes or payloads in the error.
-          throw new ChatGptBackendError('ChatGPT session backend response failed.', 'upstream_error', { status: 502 });
-        }
+        const type = parsed?.type ?? frame.event;
+        const terminalError = responseEventError(frame.event, parsed, httpStatus);
+        if (terminalError) throw terminalError;
         if (frame.data === '[DONE]') break;
         if (!parsed) continue;
         latestUsage = mergeUsage(latestUsage, extractUsage(parsed));
-        const delta = extractTextDelta(parsed);
-        if (delta) yield { type: 'text_delta', text: delta };
-        const toolCall = extractToolCall(parsed);
-        if (toolCall) yield { type: 'tool_call', toolCall };
-        if (isDoneEvent(parsed)) {
-          yield { type: 'done', finishReason: extractFinishReason(parsed), ...(latestUsage ? { usage: latestUsage } : {}) };
+        for (const toolCall of tools.accept(type, parsed)) {
+          sawToolCall = true;
+          yield { type: 'tool_call', toolCall };
+        }
+        // Standard Responses events are typed. Only text deltas may reach the text mapper.
+        if (typeof type !== 'string' || !type.startsWith('response.') || type === 'response.output_text.delta') {
+          const delta = extractTextDelta(parsed);
+          if (delta) yield { type: 'text_delta', text: delta };
+          const toolCall = extractToolCall(parsed);
+          if (toolCall) {
+            for (const call of tools.compatibility(toolCall)) {
+              sawToolCall = true;
+              yield { type: 'tool_call', toolCall: call };
+            }
+          }
+        }
+        if (isDoneEvent({ ...parsed, type })) {
+          for (const toolCall of tools.finish()) {
+            sawToolCall = true;
+            yield { type: 'tool_call', toolCall };
+          }
+          yield { type: 'done', finishReason: extractFinishReason(parsed) ?? (sawToolCall ? 'tool_calls' : 'stop'), ...(latestUsage ? { usage: latestUsage } : {}) };
           return;
         }
       }
-      yield { type: 'done', finishReason: 'stop', ...(latestUsage ? { usage: latestUsage } : {}) };
+      for (const toolCall of tools.finish()) {
+        sawToolCall = true;
+        yield { type: 'tool_call', toolCall };
+      }
+      yield { type: 'done', finishReason: sawToolCall ? 'tool_calls' : 'stop', ...(latestUsage ? { usage: latestUsage } : {}) };
+    } catch (error) {
+      lifetime.signal.throwIfAborted();
+      if (error instanceof ChatGptBackendError) throw error;
+      if (error instanceof Error && error.name === 'AbortError') throw abortError();
+      if (httpStatus !== undefined) {
+        throw new ChatGptBackendError('ChatGPT session backend response body could not be read.', error instanceof SyntaxError ? 'invalid_response' : 'network_error', {
+          status: 502, safeDiagnostic: { httpStatus, failurePhase: 'response_body_read' },
+        });
+      }
+      throw error;
     } finally {
       lifetime.dispose();
     }
@@ -209,7 +243,8 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       return await this.fetchImpl(url, { ...init, signal });
     } catch (error) {
       if (signal.aborted) throw error;
-      throw new ChatGptBackendError('ChatGPT session backend network request failed.', 'network_error');
+      if (error instanceof Error && error.name === 'AbortError') throw abortError();
+      throw new ChatGptBackendError('ChatGPT session backend network request failed.', 'network_error', { safeDiagnostic: { failurePhase: 'request_fetch' } });
     }
   }
 
@@ -225,7 +260,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         return { response, payload: await response.json() };
       } catch (error) {
         if (signal.aborted) throw error;
-        throw new ChatGptBackendError(invalidResponseMessage, 'invalid_response', { status: 502, cause: error });
+        throw new ChatGptBackendError(invalidResponseMessage, 'invalid_response', { status: 502, safeDiagnostic: { httpStatus: response.status, failurePhase: 'response_body_read' } });
       }
     }, callerSignal);
   }
@@ -411,7 +446,7 @@ function validateSessionRequest(request: ChatGptCompletionRequest): void {
 }
 
 function httpBackendError(prefix: string, status: number): ChatGptBackendError {
-  return new ChatGptBackendError(`${prefix}: HTTP ${status}`, backendErrorCodeForStatus(status), { status });
+  return new ChatGptBackendError(`${prefix}: HTTP ${status}`, backendErrorCodeForStatus(status), { status, safeDiagnostic: { httpStatus: status, failurePhase: 'response_headers' } });
 }
 
 function backendErrorCodeForStatus(status: number): ChatGptBackendErrorCode {
@@ -652,7 +687,9 @@ async function cancelResponseBody(response: Response): Promise<void> {
 interface SseFrame { event?: string; data: string; }
 
 async function* iterateSseData(response: Response, lifetime: ReturnType<typeof createRequestLifetime>): AsyncIterable<SseFrame> {
-  if (!response.body) return;
+  if (!response.body) throw new ChatGptBackendError('ChatGPT session backend response body was missing.', 'invalid_response', {
+    status: 502, safeDiagnostic: { httpStatus: response.status, failurePhase: 'response_body_read' },
+  });
   const reader = response.body.getReader();
   // Cancel the body itself as well as fetch: custom transports may not bind the body to fetch's signal.
   let cancellation: Promise<void> | undefined;
@@ -766,7 +803,7 @@ function normalizeToolCall(value: unknown): ChatGptToolCall | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const raw = value as JsonObject;
   const functionObject = raw.function && typeof raw.function === 'object' && !Array.isArray(raw.function) ? raw.function as JsonObject : undefined;
-  const id = readNonEmptyString(raw.id) ?? readNonEmptyString(raw.call_id) ?? readNonEmptyString(raw.tool_call_id);
+  const id = readNonEmptyString(raw.call_id) ?? readNonEmptyString(raw.tool_call_id) ?? readNonEmptyString(raw.id);
   const name = readNonEmptyString(raw.name) ?? readNonEmptyString(functionObject?.name);
   if (!name) return undefined;
   const rawInput = raw.input ?? raw.arguments ?? functionObject?.arguments ?? {};
@@ -779,7 +816,7 @@ function parseToolInput(value: unknown): unknown {
 }
 
 function extractFinishReason(value: JsonObject): ChatGptFinishReason | undefined {
-  return readNonEmptyString(value.finish_reason) ?? readNonEmptyString(value.finishReason) ?? readNonEmptyString(readPath(value, ['response', 'finish_reason'])) ?? (isDoneEvent(value) ? 'stop' : undefined);
+  return readNonEmptyString(value.finish_reason) ?? readNonEmptyString(value.finishReason) ?? readNonEmptyString(readPath(value, ['response', 'finish_reason']));
 }
 
 function extractUsage(value: JsonObject): ChatGptUsage | undefined {
@@ -827,13 +864,25 @@ function readPath(value: JsonObject, path: string[]): unknown {
   return current;
 }
 
-function isFailureEvent(event: string | undefined, value: JsonObject | undefined): boolean {
-  const failureTypes = ['error', 'response.error', 'response.failed'];
-  if (failureTypes.includes(event ?? '') || (typeof value?.type === 'string' && failureTypes.includes(value.type))) return true;
+function responseEventError(event: string | undefined, value: JsonObject | undefined, httpStatus: number): ChatGptBackendError | undefined {
+  const type = value?.type ?? event;
   const response = isPlainObject(value?.response) ? value.response : undefined;
-  return value?.status === 'failed' || response?.status === 'failed'
+  const incomplete = type === 'response.incomplete' || event === 'response.incomplete' || response?.status === 'incomplete' || value?.status === 'incomplete';
+  const failureTypes = ['error', 'response.error', 'response.failed'];
+  const failed = failureTypes.includes(event ?? '') || (typeof type === 'string' && failureTypes.includes(type))
+    || value?.status === 'failed' || response?.status === 'failed'
     || (value?.error !== undefined && value.error !== null && value.error !== false)
     || (response?.error !== undefined && response.error !== null && response.error !== false);
+  if (!incomplete && !failed) return undefined;
+  const error = isPlainObject(response?.error) ? response.error : isPlainObject(value?.error) ? value.error : undefined;
+  const details = isPlainObject(response?.incomplete_details) ? response.incomplete_details : undefined;
+  const safeDiagnostic = sanitizeBackendDiagnostic({
+    eventType: type, responseStatus: response?.status ?? value?.status, responseErrorCode: error?.code ?? (type === 'error' || event === 'error' ? value?.code : undefined),
+    ...(incomplete ? { incompleteReason: details?.reason } : {}),
+    httpStatus, failurePhase: incomplete ? 'response_incomplete' : 'response_event',
+  });
+  // Incomplete is a distinct unsuccessful terminal state, never a completed response.
+  return new ChatGptBackendError(incomplete ? 'ChatGPT session backend response was incomplete.' : 'ChatGPT session backend response failed.', incomplete ? 'invalid_response' : 'upstream_error', { status: 502, safeDiagnostic });
 }
 
 function isDoneEvent(value: JsonObject): boolean {

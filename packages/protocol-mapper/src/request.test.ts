@@ -52,10 +52,26 @@ describe('canonical request mapping', () => {
     expect(mapped.backendOptions?.mappingDiagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'unsupported_content_block', path: 'system[1]' })]));
   });
 
-  it('preserves tool_result content instead of silently dropping it', () => {
-    const request = base([{ type: 'tool_result', tool_use_id: 'toolu_1', content: '72F' }]);
-    const mapped = mapClaudeRequestToChatGpt(request);
-    expect(mapped.messages[0].content).toContain('[tool_result:toolu_1] 72F');
+  it('rejects orphan tool_result even when called without the request parser', () => {
+    const request = base([{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'HISTORY_CANARY' }]);
+    expect(() => mapClaudeRequestToChatGpt(request)).toThrow('tool_result');
+  });
+
+  it('rejects invalid strict tools even when called without the request parser', () => {
+    expect(() => mapClaudeRequestToChatGpt({ ...base('hello'), tools: [{ name: 'lookup', strict: true, input_schema: { type: 'object', properties: { SCHEMA_CANARY: { type: 'string' } } } }] })).toThrow('strict');
+  });
+
+  it.each([
+    { properties: {}, required: 'SCHEMA_CANARY' },
+    { properties: {}, required: [123] },
+    { properties: {}, required: undefined },
+    { properties: { SCHEMA_CANARY: { type: 'string' } }, required: ['SCHEMA_CANARY', 123] },
+    { properties: { SCHEMA_CANARY: { type: 'string' } }, required: ['SCHEMA_CANARY', 'SCHEMA_CANARY'] },
+    { properties: { known: { type: 'string' } }, required: ['known', 'SCHEMA_CANARY'] },
+  ])('rejects malformed strict required at the direct mapper boundary (case %#)', (schema) => {
+    const map = () => mapClaudeRequestToChatGpt({ ...base('hello'), tools: [{ name: 'lookup', strict: true, input_schema: { type: 'object', additionalProperties: false, ...schema } }] });
+    expect(map).toThrow('strict tool schema requires object schemas with additionalProperties:false and every property in required');
+    try { map(); } catch (error) { expect(String(error)).not.toContain('SCHEMA_CANARY'); }
   });
 
   it('downgrades image blocks with explicit placeholder and diagnostic', () => {
@@ -105,10 +121,10 @@ describe('canonical request mapping', () => {
   it('maps Claude tools and tool_choice to backend tool request fields', () => {
     const mapped = mapClaudeRequestToChatGpt({
       ...base('use a tool'),
-      tools: [{ name: 'get_weather', description: 'weather', input_schema: { type: 'object', properties: { city: { type: 'string' } } }, strict: true }],
+      tools: [{ name: 'get_weather', description: 'weather', input_schema: { type: 'object', additionalProperties: false, required: ['city'], properties: { city: { type: 'string' } } }, strict: true }],
       tool_choice: { type: 'tool', name: 'get_weather' },
     });
-    expect(mapped.tools).toEqual([{ name: 'get_weather', description: 'weather', inputSchema: { type: 'object', properties: { city: { type: 'string' } } }, strict: true, raw: expect.any(Object) }]);
+    expect(mapped.tools).toEqual([{ name: 'get_weather', description: 'weather', inputSchema: { type: 'object', additionalProperties: false, required: ['city'], properties: { city: { type: 'string' } } }, strict: true, raw: expect.any(Object) }]);
     expect(mapped.toolChoice).toEqual({ type: 'tool', name: 'get_weather' });
   });
 

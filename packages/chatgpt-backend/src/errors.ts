@@ -2,11 +2,39 @@ import type { ChatGptModelDiscoveryDiagnostic } from './client.js';
 
 export type ChatGptBackendErrorCode = 'unauthorized' | 'rate_limited' | 'upstream_error' | 'timeout' | 'network_error' | 'invalid_response' | 'invalid_request';
 
+const DIAGNOSTIC_VALUES = {
+  eventType: ['error', 'response.error', 'response.failed', 'response.incomplete', 'response.completed', 'response.output_item.added', 'response.output_item.done', 'response.function_call_arguments.delta', 'response.function_call_arguments.done'],
+  responseStatus: ['completed', 'failed', 'in_progress', 'cancelled', 'queued', 'incomplete'],
+  responseErrorCode: ['server_error', 'rate_limit_exceeded', 'invalid_prompt', 'data_residency_mismatch', 'bio_policy', 'misalignment_policy_violation', 'vector_store_timeout', 'invalid_image', 'invalid_image_format', 'invalid_base64_image', 'invalid_image_url', 'image_too_large', 'image_too_small', 'image_parse_error', 'image_content_policy_violation', 'invalid_image_mode', 'image_file_too_large', 'unsupported_image_media_type', 'empty_image_file', 'failed_to_download_image', 'image_file_not_found'],
+  incompleteReason: ['max_output_tokens', 'max_messages', 'content_filter', 'steered'],
+  failurePhase: ['request_fetch', 'response_headers', 'response_event', 'response_incomplete', 'response_body_read', 'response_protocol'],
+} as const;
+
+export type ChatGptSafeDiagnostic = Readonly<{
+  [K in keyof typeof DIAGNOSTIC_VALUES]?: typeof DIAGNOSTIC_VALUES[K][number] | 'unknown';
+} & { httpStatus?: number }>;
+
+/** Copy allowlisted primitives only, including at runtime for non-TypeScript callers. */
+export function sanitizeBackendDiagnostic(value: unknown): ChatGptSafeDiagnostic | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Record<string, unknown>;
+  const safe: Record<string, string | number> = {};
+  for (const key of Object.keys(DIAGNOSTIC_VALUES) as Array<keyof typeof DIAGNOSTIC_VALUES>) {
+    if (raw[key] === undefined) continue;
+    const allowed: readonly string[] = DIAGNOSTIC_VALUES[key];
+    if (typeof raw[key] === 'string' && allowed.includes(raw[key])) safe[key] = raw[key];
+    else if (key !== 'failurePhase') safe[key] = 'unknown';
+  }
+  if (typeof raw.httpStatus === 'number' && Number.isInteger(raw.httpStatus) && raw.httpStatus >= 100 && raw.httpStatus <= 599) safe.httpStatus = raw.httpStatus;
+  return Object.freeze(safe) as ChatGptSafeDiagnostic;
+}
+
 export interface ChatGptBackendErrorOptions {
   code?: ChatGptBackendErrorCode;
   status?: number;
   cause?: unknown;
   discoveryDiagnostic?: ChatGptModelDiscoveryDiagnostic;
+  safeDiagnostic?: ChatGptSafeDiagnostic;
 }
 
 export class ChatGptBackendError extends Error {
@@ -14,6 +42,7 @@ export class ChatGptBackendError extends Error {
   public readonly status?: number;
   public override readonly cause?: unknown;
   public readonly discoveryDiagnostic?: ChatGptModelDiscoveryDiagnostic;
+  public readonly safeDiagnostic?: ChatGptSafeDiagnostic;
 
   constructor(message: string, codeOrCause?: ChatGptBackendErrorCode | unknown, options: ChatGptBackendErrorOptions = {}) {
     const code = isBackendErrorCode(codeOrCause) ? codeOrCause : options.code ?? 'upstream_error';
@@ -24,6 +53,7 @@ export class ChatGptBackendError extends Error {
     this.status = options.status;
     this.cause = cause;
     this.discoveryDiagnostic = options.discoveryDiagnostic;
+    this.safeDiagnostic = sanitizeBackendDiagnostic(options.safeDiagnostic);
   }
 }
 
