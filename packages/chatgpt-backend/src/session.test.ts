@@ -1,5 +1,7 @@
 import { CODEX_ORIGINATOR, DEFAULT_CODEX_CLIENT_VERSION, codexUserAgent } from './codex-protocol.js';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 import { ChatGptBackendError, SessionChatGptBackend, type ChatGptCompletionRequest } from './index.js';
 
 const request: ChatGptCompletionRequest = {
@@ -24,6 +26,140 @@ const context = {
 };
 
 describe('SessionChatGptBackend', () => {
+  it.each([
+    'data: {"type":"error","message":"SSE_SECRET_CANARY"}',
+    'data: {"type":"response.error","message":{"content":"SSE_SECRET_CANARY"}}',
+    'data: {"type":"response.failed","response":{"error":{"detail":"SSE_SECRET_CANARY"}}}',
+    'data: {"type":"response.completed","response":{"status":"failed","error":{"message":"SSE_SECRET_CANARY"}}}',
+    'data: {"error":{"message":"SSE_SECRET_CANARY"}}',
+    'data: {"response":{"error":{"detail":"SSE_SECRET_CANARY"}}}',
+    'event: response.failed\ndata: {"detail":"SSE_SECRET_CANARY"}',
+    'event: error\ndata: SSE_SECRET_CANARY',
+  ])('rejects an in-band failure without leaking or emitting done: %s', async (frame) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000,
+      fetch: async () => new Response(`${frame}\n\ndata: {"type":"response.completed"}\n\n`),
+    });
+    const events = [];
+    try {
+      for await (const event of backend.stream(request, context)) events.push(event);
+      expect.fail('Expected backend failure');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ChatGptBackendError);
+      expect(error).toMatchObject({ code: 'upstream_error', status: 502, message: 'ChatGPT session backend response failed.' });
+      expect(String(error) + JSON.stringify(error)).not.toContain('SSE_SECRET_CANARY');
+      expect((error as Error).cause).toBeUndefined();
+    }
+    expect(events).toEqual([]);
+    await expect(backend.complete(request, context)).rejects.toMatchObject({ code: 'upstream_error' });
+  });
+
+  it.each(['abort', 'timeout', 'return', 'done', 'http-error'] as const)('awaits gated async cancel on %s, even when cleanup rejects', async (outcome) => {
+    vi.useFakeTimers();
+    let finishCancel!: () => void;
+    const gate = new Promise<void>((resolve) => { finishCancel = resolve; });
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    let cancelling!: () => void;
+    const cancelled = new Promise<void>((resolve) => { cancelling = resolve; });
+    const cancel = vi.fn(async () => { cancelling(); await gate; throw new Error('cleanup failure'); });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (outcome === 'return') controller.enqueue(new TextEncoder().encode('data: {"delta":"hello"}\n\n'));
+        if (outcome === 'done') controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed"}\n\n'));
+      },
+      pull() { entered(); return new Promise<void>(() => {}); },
+      cancel,
+    }, { highWaterMark: 0 });
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, 'removeEventListener');
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 50,
+      fetch: async () => new Response(body, { status: outcome === 'http-error' ? 401 : 200 }),
+    });
+    const iterator = backend.stream(request, { ...context, signal: controller.signal })[Symbol.asyncIterator]();
+    let operation = iterator.next();
+    if (outcome === 'return' || outcome === 'done') {
+      await operation;
+      operation = outcome === 'return' ? iterator.return!() : iterator.next();
+    }
+    let settled = false;
+    const result = operation.then((value) => { settled = true; return value; }, (error: unknown) => { settled = true; return error; });
+    if (outcome === 'abort' || outcome === 'timeout') {
+      await reading;
+      if (outcome === 'abort') controller.abort();
+      else await vi.advanceTimersByTimeAsync(50);
+    }
+    await cancelled;
+    await vi.advanceTimersByTimeAsync(0);
+    try {
+      expect(settled).toBe(false);
+      if (outcome !== 'http-error') expect(body.locked).toBe(true);
+    } finally { finishCancel(); }
+    const value = await result;
+    if (outcome === 'abort') expect(value).toMatchObject({ name: 'AbortError' });
+    else if (outcome === 'timeout') expect(value).toMatchObject({ code: 'timeout' });
+    else if (outcome === 'http-error') expect(value).toMatchObject({ code: 'unauthorized', status: 401 });
+    else expect(value).toMatchObject({ done: true });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+    expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['abort', 'timeout'] as const)('keeps %s active after headers and interrupts an already-pending body read', async (outcome) => {
+    vi.useFakeTimers();
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      pull() { entered(); return new Promise<void>(() => {}); }, cancel,
+    }, { highWaterMark: 0 });
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, 'removeEventListener');
+    let fetchSignal!: AbortSignal;
+    let calls = 0;
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 50,
+      fetch: async (_url, init) => {
+        fetchSignal = init!.signal!;
+        return ++calls === 1 ? new Response(body) : sseResponse(['{"type":"response.completed"}']);
+      },
+    });
+    const iterator = backend.stream(request, { ...context, signal: controller.signal })[Symbol.asyncIterator]();
+    const next = iterator.next();
+    const rejected = expect(next).rejects.toMatchObject(outcome === 'abort' ? { name: 'AbortError' } : { code: 'timeout', status: 504 });
+    await reading;
+    expect(fetchSignal.aborted).toBe(false);
+    expect(vi.getTimerCount()).toBe(1);
+    if (outcome === 'abort') controller.abort('private reason');
+    else await vi.advanceTimersByTimeAsync(50);
+    await rejected;
+    expect(fetchSignal.aborted).toBe(true);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+    expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
+    expect(vi.getTimerCount()).toBe(0);
+    await expect(backend.complete(request, context)).resolves.toMatchObject({ finishReason: 'stop' });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cancels unread upstream body and clears lifetime resources on iterator return', async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('data: {"delta":"hello"}\n\n')); },
+      cancel,
+    });
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, 'removeEventListener');
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 50, fetch: async () => new Response(body) });
+    const iterator = backend.stream(request, { ...context, signal: controller.signal })[Symbol.asyncIterator]();
+    expect(await iterator.next()).toMatchObject({ value: { type: 'text_delta' } });
+    await iterator.return!();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+    expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('deduplicates tier IDs case-insensitively without merging the Fast family or replacing first metadata', async () => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => Response.json({ models: [{
       id: 'tier-model',
@@ -631,10 +767,58 @@ describe('SessionChatGptBackend', () => {
     await expect(backend.complete(request, context)).rejects.toBeInstanceOf(ChatGptBackendError);
   });
 
+  it.each(['snake', 'camel'])('normalizes dedicated reset credits (%s), retaining adapter IDs and excluding unsupported credits', async (shape) => {
+    const credit = shape === 'snake'
+      ? { reset_type: 'codex_rate_limits', expires_at: '2026-10-01T00:00:00Z', granted_at: '2026-09-01T00:00:00Z' }
+      : { resetType: 'codex_rate_limits', expiresAt: '2026-10-01T00:00:00Z', grantedAt: '2026-09-01T00:00:00Z' };
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (url) => Response.json(String(url).endsWith('/usage')
+      ? { rate_limit: {}, rate_limit_reset_credits: { available_count: 99 } }
+      : { [shape === 'snake' ? 'available_count' : 'availableCount']: '2', credits: [
+        { ...credit, id: 'unsafe-provider-id', status: 'available', secret: 'drop' },
+        { ...credit, status: 'consumed' }, { ...credit, status: 'available', reset_type: 'other' },
+      ] }) });
+    expect((await backend.getAccountQuota(context)).resetCredits).toEqual({ availableCount: 2, credits: [
+      { id: 'unsafe-provider-id', status: 'available', expiresAt: '2026-10-01T00:00:00.000Z', grantedAt: '2026-09-01T00:00:00.000Z' },
+    ] });
+  });
+
+  it.each([null, -1, 1.5, 'invalid', ''])('does not turn invalid credit count %s into zero', async (available_count) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (url) => Response.json(String(url).endsWith('/usage') ? { rate_limit: {} } : { available_count }) });
+    expect((await backend.getAccountQuota(context)).resetCredits).toEqual({ error: 'invalid_response' });
+  });
+
+  it.each([null, [], {}, { rate_limit: null }])('rejects malformed usage as non-authoritative (%s)', async (payload) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => Response.json(payload) });
+    await expect(backend.getAccountQuota(context)).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
+  it('keeps a safe reset-credit fetch failure while retaining successful usage', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (url) => String(url).endsWith('/usage')
+      ? Response.json({ rate_limit: { allowed: true } }) : new Response('provider-secret', { status: 401 }) });
+    expect(await backend.getAccountQuota(context)).toEqual({ allowed: true, windows: [], resetCredits: { error: 'fetch_failed' } });
+  });
+
+  it('consumes with a JSON redemption ID and never returns provider success/error bodies', async () => {
+    const id = '00000000-0000-4000-8000-000000000001';
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    let status = 200;
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (url, init) => {
+      calls.push({ url: String(url), init }); return new Response('provider-secret ' + id, { status });
+    } });
+    await expect(backend.consumeAccountResetCredit(id, context)).resolves.toBeUndefined();
+    expect(calls[0].url).toBe('https://chatgpt.test/backend-api/wham/rate-limit-reset-credits/consume');
+    expect(calls[0].init?.method).toBe('POST');
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ redeem_request_id: id });
+    expect(new Headers(calls[0].init?.headers).get('content-type')).toBe('application/json');
+    status = 429;
+    await expect(backend.consumeAccountResetCredit(id, context)).rejects.toMatchObject({ code: 'rate_limited', message: 'Reset credit request failed: HTTP 429' });
+  });
+
   it('fetches authoritative account quota from /wham/usage with selected account headers', async () => {
     const calls: Array<{ url: string; headers: Headers }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test/backend-api', timeoutMs: 1000, clientVersion: '9.8.7', originator: 'chat2claude', fetch: async (url, init) => {
       calls.push({ url: String(url), headers: new Headers(init?.headers) });
+      if (String(url).endsWith('/rate-limit-reset-credits')) return Response.json({ available_count: 3 });
       return Response.json({
         account_id: 'provider-account', user_id: 'provider-user', plan_type: 'plus',
         rate_limit_reached_type: { type: 'primary_window' },
@@ -666,7 +850,9 @@ describe('SessionChatGptBackend', () => {
       }],
       resetCredits: { availableCount: 3 },
     });
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].url).toBe('https://chatgpt.test/backend-api/wham/rate-limit-reset-credits');
+    expect(calls[1].headers.get('OpenAI-Beta')).toBe('codex-1');
     expect(calls[0].url).toBe('https://chatgpt.test/backend-api/wham/usage');
     expect(calls[0].headers.get('authorization')).toBe('Bearer token-1');
     expect(calls[0].headers.get('chatgpt-account-id')).toBe('acct-1');
@@ -682,13 +868,14 @@ describe('SessionChatGptBackend', () => {
     const backend = new SessionChatGptBackend({
       baseUrl: 'https://chatgpt.test/backend-api',
       timeoutMs: 1000,
-      fetch: async () => Response.json(payloads.shift()),
+      fetch: async (url) => Response.json(String(url).endsWith('/usage') ? payloads.shift() : {}),
     });
 
     await expect(backend.getAccountQuota!(context)).resolves.toEqual({
       windows: [{ position: 'primary', descriptor: 'five-hour', usedPercent: 10, durationSeconds: 18_000 }],
+      resetCredits: { error: 'invalid_response' },
     });
-    await expect(backend.getAccountQuota!(context)).resolves.toEqual({ windows: [] });
+    await expect(backend.getAccountQuota!(context)).resolves.toEqual({ windows: [], resetCredits: { error: 'invalid_response' } });
   });
 
   it('keeps missing quota values unavailable and drops malformed provider numbers and nullable allowance', async () => {
@@ -710,6 +897,7 @@ describe('SessionChatGptBackend', () => {
 
     await expect(backend.getAccountQuota!(context)).resolves.toEqual({
       limitReached: true,
+      resetCredits: { error: 'invalid_response' },
       windows: [
         { position: 'primary', descriptor: 'primary' },
         { position: 'secondary', descriptor: 'secondary-7200-seconds', durationSeconds: 7200, resetAfterSeconds: 0, resetAt: '1970-01-01T00:00:00.000Z' },
@@ -743,8 +931,9 @@ describe('SessionChatGptBackend', () => {
     await expect(backend.getAccountQuota!(context)).rejects.toMatchObject({ code: 'timeout', status: 504 });
     await expect(backend.getAccountQuota!(context)).resolves.toEqual({
       windows: [{ position: 'primary', descriptor: 'primary', usedPercent: 10 }],
+      resetCredits: { error: 'invalid_response' },
     });
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
   }, 500);
 
   it('applies caller cancellation while reading the quota response body', async () => {

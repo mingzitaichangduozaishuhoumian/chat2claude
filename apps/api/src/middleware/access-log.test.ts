@@ -1,21 +1,70 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import type { Logger } from '@chatgpt-to-claude/shared';
+import { createLogger, type Logger } from '@chatgpt-to-claude/shared';
 import { accessLog, normalizeAccessPath, setAccessLogMetadata, summarizeQuery, type HttpAccessLog } from './access-log.js';
 import { apiKeyAuth } from './auth.js';
 import { RuntimeApiKeys } from '../services/runtime-api-keys.js';
 import { createApp } from '../app.js';
 
 function capturedLogger(entries: HttpAccessLog[]): Logger {
-  return {
-    debug: () => undefined,
-    info: (message, meta) => { if (message === 'HTTP access') entries.push(meta as HttpAccessLog); },
-    warn: () => undefined,
-    error: () => undefined,
-  };
+  const capture = (message: string, meta?: unknown) => { if (message === 'HTTP access') entries.push(meta as HttpAccessLog); };
+  return { debug: capture, info: capture, warn: capture, error: capture };
 }
 
 describe('accessLog', () => {
+  it('normalizes dynamic quota active-reset paths without logging IDs', () => {
+    expect(normalizeAccessPath('/admin/api/quotas/private-account/active-reset')).toBe('/admin/api/quotas/:accountId/active-reset');
+    expect(normalizeAccessPath('/admin/api/quotas/private%2Faccount/active-reset')).toBe('/admin/api/quotas/:accountId/active-reset');
+  });
+
+  it.each(['text', 'json'] as const)('keeps %s logs single-line, sanitized and limited to fixed reasons', async (format) => {
+    const sink = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const app = new Hono();
+    app.use('*', accessLog(createLogger(), format));
+    app.post('/admin/api/accounts/:id', (c) => {
+      setAccessLogMetadata(c, { model: 'private-model\ncanary-secret', stream: false });
+      setAccessLogMetadata(c, { reason: 'account_busy_timeout' });
+      return c.json({ error: 'private upstream canary-secret' }, 503);
+    });
+    try {
+      await app.request('/admin/api/accounts/canary-secret?beta=canary-secret&canary-secret=canary-secret', {
+        method: 'POST', headers: { authorization: 'Bearer canary-secret', cookie: 'canary-secret', 'x-forwarded-for': 'canary-secret' }, body: 'canary-secret',
+      }, { incoming: { socket: { remoteAddress: 'bad-ip\ncanary-secret' } } });
+      expect(sink).toHaveBeenCalledTimes(1);
+      const line = String(sink.mock.calls[0][0]);
+      expect(line).not.toMatch(/canary-secret|private|[\r\n]/);
+      if (format === 'text') {
+        expect(line).toMatch(/ERROR 503 \d+ms unknown POST \/admin\/api\/accounts\/:accountId\?beta&other model=<invalid-model-id> reason=account_busy_timeout req=[a-f0-9]{8}$/);
+      } else {
+        expect(JSON.parse(line)).toMatchObject({ level: 'error', message: 'HTTP access', meta: { path: '/admin/api/accounts/:accountId', query: { beta: true, other: true }, reason: 'account_busy_timeout', model: '<invalid-model-id>', durationKind: 'response_ready' } });
+        expect(JSON.parse(line).meta.requestId).toHaveLength(36);
+      }
+    } finally { sink.mockRestore(); }
+  });
+
+  it.each(['text', 'json'] as const)('drops non-enum reasons in %s and does not inspect or delay an SSE body', async (format) => {
+    const sink = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const pull = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ pull }, { highWaterMark: 0 });
+    const response = new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+    const clone = vi.spyOn(response, 'clone');
+    const app = new Hono();
+    app.use('*', accessLog(createLogger(), format));
+    app.get('/v1/messages', (c) => {
+      setAccessLogMetadata(c, { stream: true, reason: 'secret-injected-reason\n' as HttpAccessLog['reason'] });
+      return response;
+    });
+    try {
+      const result = await app.request('/v1/messages');
+      expect(result.body).toBe(body);
+      expect(pull).not.toHaveBeenCalled();
+      expect(clone).not.toHaveBeenCalled();
+      expect(sink).toHaveBeenCalledTimes(1);
+      expect(String(sink.mock.calls[0][0])).not.toContain('reason');
+      await result.body!.cancel();
+    } finally { sink.mockRestore(); }
+  });
+
   it('records response-ready metadata without leaking request secrets or body content', async () => {
     const entries: HttpAccessLog[] = [];
     const app = new Hono();
@@ -55,6 +104,7 @@ describe('accessLog', () => {
     const invalidModels = [
       'model with spaces secret-token',
       'model-with-newline\nsecret-token',
+      'model-with-trailing-newline\n',
       `model-${'x'.repeat(256)}-secret-token`,
     ];
     let requestIndex = 0;
@@ -68,11 +118,7 @@ describe('accessLog', () => {
     }
 
     expect(entries).toHaveLength(invalidModels.length);
-    expect(entries.map((entry) => entry.model)).toEqual([
-      '<invalid-model-id>',
-      '<invalid-model-id>',
-      '<invalid-model-id>',
-    ]);
+    expect(entries.map((entry) => entry.model)).toEqual(invalidModels.map(() => '<invalid-model-id>'));
     for (const [index, model] of invalidModels.entries()) {
       expect(JSON.stringify(entries[index])).not.toContain(model);
     }
@@ -101,16 +147,18 @@ describe('accessLog', () => {
     const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const app = createApp({
       port: 3000, host: '127.0.0.1', apiKeys: ['test-key'], allowAnonymousBootstrap: true, localContainerBootstrap: false,
-      logLevel: 'info', mockResponsePrefix: 'Echo:', mockBackendModelsJson: JSON.stringify([{ id: 'backend-test-model' }]),
+      logLevel: 'info', accessLogFormat: 'json', mockResponsePrefix: 'Echo:', mockBackendModelsJson: JSON.stringify([{ id: 'backend-test-model' }]),
       chatGptBackend: 'mock', chatGptBaseUrl: 'https://chatgpt.com', chatGptRequestTimeoutMs: 60_000,
       defaultReasoningEffort: 'medium', defaultResponseSpeed: 'balanced', dataDir: '', runtimeStatePath: '', operationalStatePath: '',
     });
     const headers = { 'content-type': 'application/json', 'x-api-key': 'test-key' };
 
     try {
-      await app.request('/v1/messages', { method: 'POST', headers, body: JSON.stringify({ model: 'backend-test-model', max_tokens: 1, stream: true, messages: [{ role: 'user', content: 'private Claude prompt' }] }) });
+      const messages = await app.request('/v1/messages', { method: 'POST', headers, body: JSON.stringify({ model: 'backend-test-model', max_tokens: 1, stream: true, messages: [{ role: 'user', content: 'private Claude prompt' }] }) });
+      await messages.text();
       await app.request('/v1/chat/completions', { method: 'POST', headers, body: JSON.stringify({ model: 'backend-test-model', stream: false, messages: [{ role: 'user', content: 'private OpenAI prompt' }] }) });
-      await app.request('/v1/responses', { method: 'POST', headers, body: JSON.stringify({ model: 'backend-test-model', stream: true, input: 'private Responses prompt', tools: [{ type: 'function', name: 'private_tool', parameters: { type: 'object' } }] }) });
+      const responses = await app.request('/v1/responses', { method: 'POST', headers, body: JSON.stringify({ model: 'backend-test-model', stream: true, input: 'private Responses prompt', tools: [{ type: 'function', name: 'private_tool', parameters: { type: 'object' } }] }) });
+      await responses.text();
 
       const entries = consoleLog.mock.calls
         .map(([line]) => JSON.parse(String(line)) as { message?: string; meta?: HttpAccessLog })

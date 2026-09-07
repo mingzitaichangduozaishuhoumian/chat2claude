@@ -56,7 +56,12 @@ export function usageFromBackend(value: { inputTokens?: unknown; outputTokens?: 
   };
 }
 
-export async function* trackStreamStatistics(events: AsyncIterable<ChatGptStreamEvent>, tracker: AccountRequestTracker): AsyncIterable<ChatGptStreamEvent> {
+export function requestErrorOutcome(error: unknown, signal?: AbortSignal): RequestOutcome {
+  // An upstream AbortError alone is not evidence of a client cancellation.
+  return signal?.aborted && error instanceof Error && error.name === 'AbortError' ? 'cancelled' : 'failure';
+}
+
+export async function* trackStreamStatistics(events: AsyncIterable<ChatGptStreamEvent>, tracker: AccountRequestTracker, signal?: AbortSignal): AsyncIterable<ChatGptStreamEvent> {
   let completed = false;
   let usage: RequestUsage | undefined;
   try {
@@ -66,7 +71,7 @@ export async function* trackStreamStatistics(events: AsyncIterable<ChatGptStream
     }
     completed = true;
   } catch (error) {
-    tracker.finish('failure', usage);
+    tracker.finish(requestErrorOutcome(error, signal), usage);
     throw error;
   } finally {
     if (completed) tracker.finish('success', usage);

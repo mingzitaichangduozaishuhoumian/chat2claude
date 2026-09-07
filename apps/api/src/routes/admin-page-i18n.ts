@@ -3,6 +3,38 @@ export type AdminLocale = 'zh-CN' | 'en';
 // Source-language keys keep copy shared by SSR, browser renderers and feedback.
 // Protocol identifiers and provider payloads are not translation keys.
 export const ADMIN_MESSAGES: Record<string, string> = {
+  '上游套餐': 'Provider plan',
+  '套餐未知': 'Plan unknown',
+  '套餐来自陈旧观察': 'Plan from a stale observation',
+  '配额操作': 'Quota actions',
+  '刷新此账号配额': 'Refresh this account quota',
+  '消耗一次上游重置次数': 'Consume one provider reset credit',
+  '主动重置': 'Active reset',
+  '上游重置次数': 'Provider reset credits',
+  '可用重置次数': 'Available reset credits',
+  '缓存到期：': 'Cache expires: ',
+  '重置次数到期：': 'Reset credit expires: ',
+  '· 发放：': ' · Granted: ',
+  '上游未返回重置次数。': 'The provider did not return a reset-credit balance.',
+  '重置次数读取失败，余额未知；请刷新后重试。': 'Reset-credit lookup failed; balance unknown. Refresh and try again.',
+  '主动重置消耗 1 次上游重置次数，不改变本地冷却。缓存到期、配额窗口重置与重置次数到期互不相同。': 'Active reset consumes one provider credit without changing local cooldown. Cache expiry, quota-window reset, and credit expiry are separate.',
+  '确认消耗此账号的 1 次上游重置次数？这将主动重置 Codex 配额，不是清除本地冷却。成功后会重新读取完整上游配额，无法撤销。': 'Consume one provider reset credit for this account? This actively resets Codex quota, not local cooldown. Full provider quota will be fetched after success. This cannot be undone.',
+  '正在消耗上游重置次数并刷新配额。': 'Consuming a provider reset credit and refreshing quota.',
+  '配额管理认证已失效。请重新打开本机 /admin 恢复会话，或自行前往“管理访问”更新 Admin API Key，然后在此重试。': 'Quota admin authentication expired. Reopen local /admin to restore your session, or visit Admin Access yourself to update the Admin API Key, then retry here.',
+  '上游已接受主动重置，但完整配额刷新失败。请先刷新配额，不要重复消耗重置次数。': 'The provider accepted the reset, but full quota refresh failed. Refresh quota before consuming another credit.',
+  '配额操作失败。请刷新配额后重试；缓存未被本地扣减。': 'Quota operation failed. Refresh quota before retrying; no local balance decrement was made.',
+  '直接接入 Claude Code（推荐）': 'Connect directly to Claude Code (recommended)',
+  '通过 CC Switch 接入（可选）': 'Connect via CC Switch (optional)',
+  '复制 Claude Code 配置': 'Copy Claude Code configuration',
+  '复制 CC Switch 配置': 'Copy CC Switch configuration',
+  '无需第三方工具。将以下 env 合并到 Claude Code 的 ~/.claude/settings.json，保留已有设置，然后重启 Claude Code。': 'No third-party tool is required. Merge the env below into ~/.claude/settings.json, preserve existing settings, then restart Claude Code.',
+  'Base URL：': 'Base URL: ',
+  '配置仅使用本次显示的 Runtime API Key；未显示时请替换占位符，不能使用 Admin API Key。清除显示会同时清除下方配置中的 Key。': 'Configuration uses only the Runtime API Key currently shown. Otherwise, replace the placeholder; never use the Admin API Key. Clearing the display also removes the key from the configurations below.',
+  '模型 alias：haiku、sonnet、fable、opus。调用前请在模型映射中绑定后端；可使用 /model fable 切换到 Fable。': 'Model aliases: haiku, sonnet, fable, opus. Bind backends in Models before calling them; use /model fable to select Fable.',
+  'CC Switch 仅是可选配置管理工具，不是必需项，也不是本项目依赖。已有 Claude Code 直连配置时无需安装。': 'CC Switch is an optional configuration manager, not a requirement or a project dependency. No installation is needed if Claude Code is already configured directly.',
+  '在 CC Switch 中选择 Claude Code，新增自定义供应商，将以下 JSON 粘贴到供应商配置编辑器，保存并启用。Base URL 使用站点根地址，不追加 /v1。': 'In CC Switch, select Claude Code, add a custom provider, paste the JSON below into its configuration editor, then save and enable it. Use the site root as Base URL without appending /v1.',
+  '配置已复制；请安全保存，并替换尚未填写的 Runtime Key 占位符。': 'Configuration copied. Save it securely and replace any remaining Runtime Key placeholder.',
+  '复制失败，请手动选中配置并复制。': 'Copy failed. Select and copy the configuration manually.',
   '重置：': 'Reset: ', '上游未返回百分比，不显示零值进度条。重置：': 'No percentage returned upstream; no zero-value progress bar is shown. Reset: ',
   '{0}（陈旧观察）': '{0} (stale observation)',
   'reasoning: {0}; service tiers: 未知': 'reasoning: {0}; service tiers: unknown',
@@ -40,15 +72,16 @@ export const ADMIN_MESSAGES: Record<string, string> = {
   '管理浏览器授权与账号健康。手动凭据导入仅作为专业模式的备用入口。': 'Manage browser authorization and account health. Manual credential import is a professional-mode fallback only.',
   '选择已发现的后端模型，并为客户端配置稳定的 alias。': 'Choose discovered backend models and configure stable client aliases.',
   '使用独立的 Runtime API Key 连接客户端；Base URL 不包含 /v1。': 'Connect clients with a separate Runtime API Key. The Base URL does not include /v1.',
-  '本机可信访问自动使用 HttpOnly 会话。远程管理凭据与客户端 Runtime Key 相互独立。': 'Trusted local access uses an HttpOnly session automatically. Remote admin credentials are separate from client Runtime Keys.',
+  '优先使用本机 HttpOnly 管理会话。Admin API Key 仅用于服务已由操作者自行连通后的外部管理。': 'Prefer the host-local HttpOnly admin session. Use an Admin API Key for external management only after the operator has independently made the service reachable.',
   '客户端配置': 'Client configuration', '将 Base URL 与安全保存的 Runtime API Key 填入客户端，模型可使用 sonnet。': 'Enter the Base URL and your securely saved Runtime API Key in your client. You can use the sonnet model.',
   '添加 ChatGPT 账号': 'Add ChatGPT account', '浏览器授权（Codex OAuth）': 'Browser authorization (Codex OAuth)',
   '不会启动独立 Chrome/新 profile；主按钮会在当前浏览器打开授权页。': 'Opens authorization in your current browser, without a separate Chrome profile.',
   '已配置': 'Configured', '待初始化': 'Not initialized', '检测中': 'Checking',
   '正在验证本地管理会话': 'Verifying local admin session',
-  '本机可信访问会自动使用 HttpOnly 浏览器会话；无需 Admin API Key。': 'Trusted local access automatically uses an HttpOnly browser session; no Admin API Key required.',
-  '高级：远程管理凭据（Admin API Key）': 'Advanced: remote admin credentials (Admin API Key)',
-  '仅用于远程访问、自动化或本地浏览器会话失效后的管理请求；Key 默认只保留在当前页面，勾选后才明确保存到此浏览器（localStorage）。': 'For remote access, automation, or an expired local session. The key stays in this page unless you explicitly opt into browser storage (localStorage).',
+  '推荐在本机浏览器使用 HttpOnly 会话；无需 Admin API Key。': 'Use the HttpOnly session in a host-local browser when possible; no Admin API Key is needed.',
+  '高级：外部管理访问（Admin API Key）': 'Advanced: external management access (Admin API Key)',
+  '优先在本机浏览器使用 HttpOnly 会话。只有操作者自行通过 LAN、VPN/mesh VPN、SSH 隧道、反向隧道/NAT 穿透或反向代理使服务可达后，才从其他浏览器、设备或自动化使用此 Key；本项目不创建隧道、不配置 NAT、也不发布服务。': 'Prefer the HttpOnly session in a host-local browser. Use this key from another browser, device, or automation only after the operator independently makes the service reachable through LAN, VPN/mesh VPN, an SSH tunnel, reverse tunnel/NAT traversal, or reverse proxy; this project creates no tunnel, configures no NAT, and does not publish the service.',
+  'Admin API Key 授予完整管理权限，不要作为普通用户、Claude 或 API 凭据分享；普通客户端应使用 Runtime API Key。当前受保护 Admin API 仍接受有效 Runtime/API_KEYS，因此这是签发/使用区分，不是硬权限边界。Key 默认只保留在当前页面，勾选后才明确保存到此浏览器（localStorage）。': 'An Admin API Key grants full management access. Do not share it as a normal user, Claude, or API credential; normal clients should receive Runtime API Keys. Protected Admin APIs still accept valid Runtime/API_KEYS, so this is an issuance/use distinction, not a hard privilege boundary. The key stays on this page unless you explicitly opt into browser storage (localStorage).',
   '仅本页启用 Key': 'Use key on this page', '明确保存到此浏览器（localStorage）': 'Explicitly save in this browser (localStorage)',
   '当前 backend：': 'Current backend: ', '授权 ChatGPT': 'Authorize ChatGPT', '取消': 'Cancel',
   '打开 Codex OAuth 授权页': 'Open Codex OAuth authorization', '复制授权链接': 'Copy authorization link',
@@ -118,7 +151,7 @@ export const ADMIN_MESSAGES: Record<string, string> = {
   'Backend discovery 暂无模型；不会假设所有控制项都可用。': 'No models in backend discovery; controls are not assumed available.', 'Backend discovery（选项与顺序直接来自 catalog）': 'Backend discovery (options and order come from the catalog)', '未绑定，请在下方模型映射中选择后端模型并保存': 'Unbound; choose and save a backend model below', '暂无内置 alias。': 'No built-in aliases.', '状态': 'Status', '目标能力与默认参数': 'Target capabilities & defaults', '内置': 'Built-in', 'Alias {0} 的 Backend Model': 'Backend model for alias {0}', 'Alias {0} 是否启用': 'Enable alias {0}', '保存': 'Save', '暂无 alias overlay。': 'No alias overlay.', '模型数据加载失败，未加载。': 'Model data failed to load.', '确认删除此自定义模型 alias？删除后无法恢复。': 'Delete this custom model alias? This cannot be undone.',
   '{0}（已失效）': '{0} (no longer available)', '未绑定': 'Unbound', 'Standard（发送 service_tier: default）': 'Standard (sends service_tier: default)', 'Auto（省略 service_tier）': 'Auto (omits service_tier)', 'Fast（配置不受目标支持）': 'Fast (unsupported by target)', '推理': 'Reasoning', '服务层级': 'Service tier', '{0}（配置不受目标支持）': '{0} (unsupported by target)', 'Light（官方 low）': 'Light (official low)', 'Ultra（兼容最高强度）': 'Ultra (compatible maximum effort)',
   '推理元数据：已发现': 'Reasoning metadata: discovered', '推理元数据：未知': 'Reasoning metadata: unknown', '服务层级元数据：已发现': 'Service tier metadata: discovered', '服务层级元数据：未知': 'Service tier metadata: unknown', 'Ultra 会有损映射到 {0}，不会把 ultra 发给上游': 'Ultra maps lossily to {0}; ultra is never sent upstream', 'Ultra 没有安全的非 ultra 映射；显式请求会拒绝，隐式默认会省略': 'Ultra has no safe non-ultra mapping; explicit requests are rejected and implicit defaults omitted', '未知': 'Unknown',
-  '未认证/数据未加载。请使用高级“远程管理凭据（Admin API Key）”后重试。': 'Not authenticated; data not loaded. Use the advanced remote Admin API Key fallback and retry.',
+  '未认证/数据未加载。请使用高级“外部管理访问（Admin API Key）”后重试。': 'Not authenticated; data not loaded. Use Advanced external management access (Admin API Key) and retry.',
   '本地会话已连接': 'Local session connected', '管理操作已通过 HttpOnly 浏览器会话完成': 'Management uses an HttpOnly browser session', '此页面无需 Admin API Key。会话仅适用于本机可信访问，服务重启或会话失效后会自动回退到显式 Key。': 'No Admin API Key needed here. The session is for trusted local access only; server restart or expiry falls back to an explicit key.', '需要显式 Key': 'Explicit key required', '未检测到可用的本地管理会话': 'No usable local admin session detected', '远程访问、自动化或会话失效时，请展开 fallback 并手动提供 Admin API Key。': 'For remote access, automation, or an expired session, expand the fallback and enter an Admin API Key.',
   '账号健康': 'Account health', '已发现模型': 'Discovered models', '可用 alias': 'Available aliases', 'Runtime Key 数量': 'Runtime Key count', '配额缓存': 'Quota cache', '接入状态': 'Access status', '下一步': 'Next step', '最近账号活动': 'Recent account activity', '尚无账号活动。': 'No account activity yet.',
   '尚未加载': 'Not loaded', '加载中': 'Loading', '加载失败；保留上次缓存': 'Load failed; retaining last cache', '已加载': 'Loaded', '无数据': 'No data',
@@ -141,7 +174,9 @@ export function translate(key: string, locale: AdminLocale = 'zh-CN', values: Ar
 export function translateAdminText(text: string, locale: AdminLocale = 'zh-CN'): string {
   if (!text.trim()) return text;
   const value = text.trim();
-  let translated = Object.prototype.hasOwnProperty.call(ADMIN_MESSAGES, value) ? (locale === 'en' ? ADMIN_MESSAGES[value] : value) : undefined;
+  const duration = value.match(/^(\d+(?:\.\d+)?) (周|天|小时|分钟|秒)$/);
+  let translated = duration ? formatAdminDurationUnit(Number(duration[1]), duration[2], locale)
+    : Object.prototype.hasOwnProperty.call(ADMIN_MESSAGES, value) ? (locale === 'en' ? ADMIN_MESSAGES[value] : value) : undefined;
   if (translated === undefined) {
     for (const [key, message] of Object.entries(ADMIN_MESSAGES)) {
       if (!key.includes('{')) continue;
@@ -173,10 +208,18 @@ export function formatAdminNumber(value: number, locale: AdminLocale = 'zh-CN'):
   return new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value);
 }
 
+function formatAdminDurationUnit(value: number, unit: string, locale: AdminLocale): string {
+  const englishUnits: Record<string, string> = { '周': 'week', '天': 'day', '小时': 'hour', '分钟': 'minute', '秒': 'second' };
+  if (locale === 'en') return new Intl.NumberFormat(locale, {
+    style: 'unit', unit: englishUnits[unit], unitDisplay: 'long', maximumFractionDigits: 1,
+  }).format(value);
+  return `${formatAdminNumber(value, locale)} ${unit}`;
+}
+
 export function formatAdminDuration(seconds: number, locale: AdminLocale = 'zh-CN'): string {
-  const units: Array<[number, string]> = [[604800, '{0} 周'], [86400, '{0} 天'], [3600, '{0} 小时'], [60, '{0} 分钟'], [1, '{0} 秒']];
-  const [size, key] = units.find(([size]) => seconds !== 0 && seconds % size === 0) ?? units[4];
-  return translate(key, locale, [formatAdminNumber(seconds / size, locale)]);
+  const units: Array<[number, string]> = [[604800, '周'], [86400, '天'], [3600, '小时'], [60, '分钟'], [1, '秒']];
+  const [size, unit] = units.find(([size]) => seconds !== 0 && seconds % size === 0) ?? units[4];
+  return formatAdminDurationUnit(seconds / size, unit, locale);
 }
 
 export function serializeAdminData(value: unknown): string {
@@ -209,5 +252,5 @@ export function localizeAdminMarkup(html: string, locale: AdminLocale = 'zh-CN')
 
 // All referenced functions are emitted with stable local names, not bundler imports.
 export function adminPageI18nSource(): string {
-  return `let adminLocale = 'zh-CN';\nconst ADMIN_MESSAGES = ${serializeAdminData(ADMIN_MESSAGES)};\n` + [normalizeAdminLocale, translate, translateAdminText, formatAdminDate, formatAdminNumber, formatAdminDuration, renderAdminMarkupText, localizeAdminMarkup].map((fn) => fn.toString()).join('\n');
+  return `let adminLocale = 'zh-CN';\nconst ADMIN_MESSAGES = ${serializeAdminData(ADMIN_MESSAGES)};\n` + [normalizeAdminLocale, translate, translateAdminText, formatAdminDate, formatAdminNumber, formatAdminDurationUnit, formatAdminDuration, renderAdminMarkupText, localizeAdminMarkup].map((fn) => fn.toString()).join('\n');
 }

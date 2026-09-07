@@ -29,6 +29,161 @@ function quotaBackend(handler: (context?: ChatGptBackendRequestContext) => Promi
 }
 
 describe('AccountQuotaService', () => {
+  it('never consumes replacement account credits after an in-flight consume 401', async () => {
+    const pool = sessionPool();
+    const pending = deferred<void>();
+    const targets: string[] = [];
+    let refreshes = 0;
+    const transport = quotaBackend(async () => quota);
+    transport.consumeAccountResetCredit = async (_id, context) => {
+      targets.push(context!.account!.secret!.accountId!);
+      await pending.promise;
+      throw new ChatGptBackendError('private canary', 'unauthorized', { status: 401 });
+    };
+    const oauthClient = new CodexOAuthClient({ fetch: async () => {
+      refreshes++;
+      return Response.json({ access_token: 'rotated', expires_in: 3600 });
+    } });
+    const backend = new RefreshAwareChatGptBackend(transport, new SessionCredentialManager({
+      accountPool: pool, oauthClient, now: () => new Date('2026-09-04T00:00:00Z'),
+    }));
+    const service = new AccountQuotaService({ accountPool: pool, backend });
+    await service.refreshAccount('session');
+    const reset = service.activeReset('session');
+    pool.update('session', { secret: { type: 'chatgpt-session', accessToken: 'replacement', accountId: 'upstream-B' } });
+    pending.resolve();
+    await expect(reset).rejects.toMatchObject({ code: 'reset_failed' });
+    expect(targets).toEqual(['upstream-1']);
+    expect(refreshes).toBe(0);
+  });
+
+  it('strips reset-credit adapter IDs before caching and persistence', async () => {
+    const pool = sessionPool();
+    const operationalState = new AdminOperationalState({ path: 'unused-operational-state.json', debounceMs: 1, fs: failingRenameFs() });
+    const backend = quotaBackend(async () => ({ ...quota, resetCredits: { availableCount: 1, credits: [
+      { id: 'private-credit-id', status: 'available', expiresAt: '2026-10-01T00:00:00.000Z' },
+    ] } }));
+    const service = new AccountQuotaService({ accountPool: pool, backend, operationalState });
+    await service.refreshAccount('session');
+    expect(JSON.stringify(service.getAll())).not.toContain('private-credit-id');
+    expect(JSON.stringify(operationalState.snapshot())).not.toContain('private-credit-id');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+
+  it.each([undefined, 0, -1, 1.5])('rejects reset for unavailable or invalid authoritative count %s', async (availableCount) => {
+    const backend = quotaBackend(async () => ({ ...quota, resetCredits: { availableCount } }));
+    backend.consumeAccountResetCredit = async () => { throw new Error('must not consume'); };
+    const service = new AccountQuotaService({ accountPool: sessionPool(), backend });
+    await service.refreshAccount('session');
+    await expect(service.activeReset('session')).rejects.toMatchObject({ code: 'reset_unavailable' });
+  });
+
+  it('gates reset on a live fresh authoritative balance and the actual backend method', async () => {
+    const pool = sessionPool();
+    let now = new Date('2026-09-04T00:00:00Z');
+    let consumes = 0;
+    const backend = quotaBackend(async () => quota);
+    const service = new AccountQuotaService({ accountPool: pool, backend, now: () => now });
+    await expect(service.activeReset('session')).rejects.toMatchObject({ code: 'reset_unavailable' });
+    await service.refreshAccount('session');
+    expect(service.getAll()[0].canActiveReset).toBe(false);
+    backend.consumeAccountResetCredit = async () => { consumes++; };
+    expect(service.getAll()[0].canActiveReset).toBe(true);
+    now = new Date('2026-09-04T00:06:00Z');
+    await expect(service.activeReset('session')).rejects.toMatchObject({ code: 'reset_unavailable' });
+    expect(consumes).toBe(0);
+  });
+
+  it.each(['consume', 'refresh'])('retains bulk partial results when a joined reset fails during %s', async (failure) => {
+    const pool = sessionPool();
+    pool.add({ id: 'other', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'other' } });
+    const pending = deferred<void>();
+    let consumes = 0;
+    let reads = 0;
+    const backend = quotaBackend(async (context) => {
+      reads++;
+      if (consumes && failure === 'refresh' && context?.account?.id === 'session') throw new Error('private-canary');
+      return quota;
+    });
+    backend.consumeAccountResetCredit = async () => {
+      consumes++;
+      await pending.promise;
+      if (failure === 'consume') throw new Error('private-canary');
+    };
+    const service = new AccountQuotaService({ accountPool: pool, backend });
+    await service.refreshAccount('session');
+    const reset = service.activeReset('session');
+    const assertion = expect(reset).rejects.toMatchObject({ code: failure === 'consume' ? 'reset_failed' : 'reset_refresh_failed' });
+    const bulk = service.refreshAll();
+    pending.resolve();
+    await assertion;
+    const results = await bulk;
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ accountId: 'session', status: 'stale', canActiveReset: false, error: { code: 'unknown', category: 'unknown', message: 'Quota refresh failed.' } }),
+      expect.objectContaining({ accountId: 'other', status: 'fresh' }),
+    ]));
+    expect(JSON.stringify(results)).not.toContain('private-canary');
+    expect(consumes).toBe(1);
+    expect(reads).toBe(failure === 'consume' ? 2 : 3);
+  });
+
+  it('locks consume and refresh together, generates a UUID, and refreshes rather than decrementing', async () => {
+    const pool = sessionPool();
+    const pending = deferred<void>();
+    let reads = 0;
+    let consumes = 0;
+    const backend = quotaBackend(async () => { reads++; return quota; });
+    backend.consumeAccountResetCredit = async (id) => {
+      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      consumes++; await pending.promise;
+    };
+    const service = new AccountQuotaService({ accountPool: pool, backend });
+    await service.refreshAccount('session');
+    const before = pool.get('session');
+    const reset = service.activeReset('session');
+    const refresh = service.refreshAccount('session');
+    await expect(service.activeReset('session')).rejects.toMatchObject({ code: 'quota_busy' });
+    expect(reads).toBe(1);
+    pending.resolve();
+    await expect(reset).resolves.toMatchObject({ status: 'fresh', quota: { resetCredits: { availableCount: 2 } } });
+    await refresh;
+    expect(reads).toBe(2);
+    expect(consumes).toBe(1);
+    expect(pool.get('session')).toEqual(before);
+  });
+
+  it.each(['consume', 'refresh'])('keeps cache unchanged on %s failure and blocks another reset until refresh', async (failure) => {
+    const pool = sessionPool();
+    let fail = false;
+    const backend = quotaBackend(async () => { if (fail && failure === 'refresh') throw new Error('provider-secret'); return quota; });
+    backend.consumeAccountResetCredit = async () => { if (failure === 'consume') throw new Error('provider-secret'); };
+    const service = new AccountQuotaService({ accountPool: pool, backend });
+    await service.refreshAccount('session');
+    const before = service.getAll()[0];
+    fail = true;
+    await expect(service.activeReset('session')).rejects.toMatchObject({ code: failure === 'consume' ? 'reset_failed' : 'reset_refresh_failed' });
+    expect(service.getAll()[0]).toEqual({ ...before, canActiveReset: false });
+    await expect(service.activeReset('session')).rejects.toMatchObject({ code: 'reset_unavailable' });
+  });
+
+  it.each(['recreate', 'credentials', 'settings'])('rejects stale reset completion after %s changes', async (mutation) => {
+    const pool = sessionPool();
+    const pending = deferred<void>();
+    let reads = 0;
+    const backend = quotaBackend(async () => { reads++; return quota; });
+    backend.consumeAccountResetCredit = async () => pending.promise;
+    const service = new AccountQuotaService({ accountPool: pool, backend });
+    await service.refreshAccount('session');
+    const reset = service.activeReset('session');
+    if (mutation === 'recreate') { pool.remove('session'); pool.add({ id: 'session', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'replacement' } }); }
+    else if (mutation === 'credentials') pool.update('session', { secret: { type: 'chatgpt-session', accessToken: 'replacement' } });
+    else pool.update('session', { maxConcurrency: 2 });
+    expect(service.getAll()[0].canActiveReset).toBe(false);
+    pending.resolve();
+    await expect(reset).rejects.toMatchObject({ code: 'account_changed' });
+    expect(reads).toBe(1);
+  });
+
   it('returns unknown cache without fetching, then stores fresh explicit refresh success', async () => {
     const pool = sessionPool();
     let calls = 0;
@@ -116,7 +271,7 @@ describe('AccountQuotaService', () => {
       status: 'fresh',
       quota: { windows: [{ position: 'primary', descriptor: 'primary', usedPercent: 15 }] },
     });
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
   });
 
   it('refresh-all returns partial success and leaves unsupported accounts explicit', async () => {

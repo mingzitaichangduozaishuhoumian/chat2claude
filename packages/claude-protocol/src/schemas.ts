@@ -1,13 +1,22 @@
 import type { ClaudeContentBlock, ClaudeCountTokensRequest, ClaudeMessagesRequest, ClaudeTextBlock } from './types.js';
+import { ClaudeApiError } from './errors.js';
 
 export function parseClaudeMessagesRequest(value: unknown): ClaudeMessagesRequest {
-  const body = parseClaudeRequestBase(value, { requireMaxTokens: true });
-  return body as ClaudeMessagesRequest;
+  return parseClaudeRequest(value, { requireMaxTokens: true }) as ClaudeMessagesRequest;
 }
 
 export function parseClaudeCountTokensRequest(value: unknown): ClaudeCountTokensRequest {
-  const body = parseClaudeRequestBase(value, { requireMaxTokens: false });
-  return body as ClaudeCountTokensRequest;
+  return parseClaudeRequest(value, { requireMaxTokens: false }) as ClaudeCountTokensRequest;
+}
+
+/** Parser failures are the trusted, client-correctable validation boundary. */
+function parseClaudeRequest(value: unknown, options: { requireMaxTokens: boolean }): Record<string, unknown> {
+  try {
+    return parseClaudeRequestBase(value, options);
+  } catch (error) {
+    if (error instanceof ClaudeApiError) throw error;
+    throw new ClaudeApiError(error instanceof Error ? error.message : 'Invalid request');
+  }
 }
 
 function parseClaudeRequestBase(value: unknown, options: { requireMaxTokens: boolean }): Record<string, unknown> {

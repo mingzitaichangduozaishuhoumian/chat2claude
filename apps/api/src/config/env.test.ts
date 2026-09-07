@@ -4,6 +4,20 @@ import { loadEnv } from './env.js';
 import { DEFAULT_CODEX_CLIENT_VERSION } from '@chatgpt-to-claude/chatgpt-backend';
 
 describe('loadEnv', () => {
+  it('defaults access logs to text and acquisition timeout to 30 seconds', () => {
+    expect(loadEnv({})).toMatchObject({ accessLogFormat: 'text', accountAcquireTimeoutMs: 30_000 });
+    expect(loadEnv({ ACCESS_LOG_FORMAT: 'json', ACCOUNT_ACQUIRE_TIMEOUT_MS: '0' })).toMatchObject({ accessLogFormat: 'json', accountAcquireTimeoutMs: 0 });
+    expect(loadEnv({ ACCOUNT_ACQUIRE_TIMEOUT_MS: '1200' }).accountAcquireTimeoutMs).toBe(1200);
+  });
+
+  it.each(['-1', '1.5', 'NaN', 'Infinity', '2147483648', 'secret-value'])('rejects invalid acquisition timeout safely (%s)', (value) => {
+    expect(() => loadEnv({ ACCOUNT_ACQUIRE_TIMEOUT_MS: value })).toThrow('ACCOUNT_ACQUIRE_TIMEOUT_MS must be an integer between 0 and 2147483647 ms.');
+  });
+
+  it('rejects unsupported access log formats without echoing them', () => {
+    expect(() => loadEnv({ ACCESS_LOG_FORMAT: 'secret-value' })).toThrow('ACCESS_LOG_FORMAT must be text or json.');
+  });
+
   it('uses the centralized Codex protocol version and accepts an explicit override', () => {
     expect(loadEnv({}).codexClientVersion).toBe(DEFAULT_CODEX_CLIENT_VERSION);
     expect(loadEnv({ CODEX_CLIENT_VERSION: '2.3.4' }).codexClientVersion).toBe('2.3.4');

@@ -13,6 +13,22 @@ afterEach(() => {
 });
 
 describe('AdminOperationalState', () => {
+  it('roundtrips unknown/error reset credits and independent authoritative credit expiry', async () => {
+    const path = statePath();
+    const state = new AdminOperationalState({ path });
+    const base = { status: 'fresh' as const, fetchedAt: '2026-09-04T00:00:00.000Z', expiresAt: '2026-09-04T00:05:00.000Z' };
+    const credits = { availableCount: 2, credits: [{ status: 'available' as const, grantedAt: '2026-09-01T00:00:00.000Z', expiresAt: '2026-10-01T00:00:00.000Z' }] };
+    for (const [id, resetCredits] of [['known', credits], ['error', { error: 'fetch_failed' as const }], ['unknown', {}]] as const) {
+      state.setQuotaCache({ accountId: id, createdAt: base.fetchedAt }, { ...base, quota: { windows: [], resetCredits } });
+    }
+    await state.dispose();
+    const restored = new AdminOperationalState({ path });
+    expect(restored.hydrate()).toBe(true);
+    expect(restored.snapshot().accounts.map((item) => item.quotaCache.quota?.resetCredits)).toEqual([credits, { error: 'fetch_failed' }, {}]);
+    expect(readFileSync(path, 'utf8')).not.toMatch(/redeem|request_id|stack/);
+    await restored.dispose();
+  });
+
   it('roundtrips safe aggregated account state and resets inFlight on hydration', async () => {
     const path = statePath();
     const identity = { accountId: 'account-1', createdAt: '2026-09-04T00:00:00.000Z' };

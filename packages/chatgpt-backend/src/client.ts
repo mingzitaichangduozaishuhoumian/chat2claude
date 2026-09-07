@@ -82,6 +82,7 @@ export interface ChatGptBackendAccountContext {
 
 export interface ChatGptBackendRequestContext {
   account?: ChatGptBackendAccountContext;
+  /** Cancels the entire operation, including active response-body reads until stream disposal. */
   signal?: AbortSignal;
 }
 
@@ -114,7 +115,11 @@ export interface ChatGptAccountQuota {
   rateLimitReachedType?: string;
   windows: ChatGptQuotaWindow[];
   additionalLimits?: ChatGptAdditionalQuotaLimit[];
-  resetCredits?: { availableCount: number };
+  resetCredits?: {
+    availableCount?: number;
+    credits?: Array<{ id?: string; status: 'available'; grantedAt?: string; expiresAt: string }>;
+    error?: 'fetch_failed' | 'invalid_response';
+  };
 }
 
 export interface ChatGptBackendClient {
@@ -124,4 +129,5 @@ export interface ChatGptBackendClient {
   discoverModels?(context?: ChatGptBackendRequestContext): Promise<ChatGptModelDiscoveryResult>;
   healthCheck?(context?: ChatGptBackendRequestContext): Promise<ChatGptBackendHealthCheckResult>;
   getAccountQuota?(context?: ChatGptBackendRequestContext): Promise<ChatGptAccountQuota>;
+  consumeAccountResetCredit?(redeemRequestId: string, context?: ChatGptBackendRequestContext): Promise<void>;
 }

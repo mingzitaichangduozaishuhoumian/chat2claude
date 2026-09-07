@@ -13,7 +13,7 @@ import { refreshAccountModels } from '../services/account-model-discovery.js';
 import { unknownDiscovery, discoveryMessage } from '../services/model-discovery.js';
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
 import type { LocalAdminSession } from '../services/local-admin-session.js';
-import { AccountQuotaNotFoundError, AccountQuotaService, type AccountQuotaResult } from '../services/account-quota-service.js';
+import { AccountQuotaNotFoundError, AccountQuotaResetError, AccountQuotaService, type AccountQuotaResult } from '../services/account-quota-service.js';
 import { renderAdminPage } from './admin-page.js';
 
 export interface AdminRouteOptions {
@@ -120,13 +120,33 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
 
   app.get('/admin/api/quotas', (c) => c.json({ quotas: quotaService.getAll() }));
   app.post('/admin/api/quotas/refresh', async (c) => {
-    const quotas = await quotaService.refreshAll();
-    return c.json({ quotas, summary: quotaSummary(quotas) });
+    try {
+      const quotas = await quotaService.refreshAll();
+      return c.json({ quotas, summary: quotaSummary(quotas) });
+    } catch (error) {
+      if (error instanceof AccountQuotaResetError) return c.json({ error: error.message, code: error.code }, error.status);
+      throw error;
+    }
+  });
+  app.post('/admin/api/quotas/:accountId/active-reset', async (c) => {
+    const input: unknown = await c.req.json().catch(() => undefined);
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || Object.keys(input).length !== 1 || !('confirm' in input) || input.confirm !== true) {
+      return c.json({ error: 'Explicit confirmation is required.', code: 'confirmation_required' }, 400);
+    }
+    try {
+      return c.json({ quota: await quotaService.activeReset(c.req.param('accountId')) });
+    } catch (error) {
+      if (error instanceof AccountQuotaNotFoundError) return c.json({ error: 'Account not found' }, 404);
+      if (error instanceof AccountQuotaResetError) return c.json({ error: error.message, code: error.code }, error.status);
+      return c.json({ error: 'Active reset failed.', code: 'reset_failed' }, 502);
+    }
   });
   app.post('/admin/api/quotas/:accountId/refresh', async (c) => {
     try {
       return c.json({ quota: await quotaService.refreshAccount(c.req.param('accountId')) });
     } catch (error) {
+      if (error instanceof AccountQuotaResetError) return c.json({ error: error.message, code: error.code }, error.status);
       if (error instanceof AccountQuotaNotFoundError) return c.json({ error: 'Account not found' }, 404);
       throw error;
     }

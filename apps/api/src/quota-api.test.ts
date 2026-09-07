@@ -19,6 +19,87 @@ afterEach(() => {
 });
 
 describe('Admin quota APIs', () => {
+  it('requires explicit confirmation and fresh credits, refreshes fully, and exposes only safe reset failures', async () => {
+    const env = loadEnv({ DATA_DIR: temporaryDirectory(), CHATGPT_BACKEND: 'session', API_KEYS: 'admin-key' });
+    persistAccounts(env.runtimeStatePath, ['session']);
+    let reads = 0;
+    let consumes = 0;
+    let fail = false;
+    let redeemId = '';
+    const transport = backend(async () => { reads++; return { ...quota, resetCredits: { availableCount: 2 } }; });
+    transport.consumeAccountResetCredit = async (id) => { consumes++; redeemId = id; if (fail) throw new Error('synthetic-provider-secret ' + id); };
+    const app = createApp(env, { backend: transport });
+    const headers = { 'x-api-key': 'admin-key', 'content-type': 'application/json' };
+    const url = '/admin/api/quotas/session/active-reset';
+    try {
+      expect((await app.request(url, { method: 'POST', body: '{"confirm":true}' })).status).toBe(401);
+      for (const body of ['{}', '{"confirm":false}', '{"confirm":"true"}', '{"confirm":true,"redeem_request_id":"client-id"}', 'invalid']) {
+        expect((await app.request(url, { method: 'POST', headers, body })).status).toBe(400);
+      }
+      expect((await app.request(url, { method: 'POST', headers, body: '{"confirm":true}' })).status).toBe(409);
+      expect(consumes).toBe(0);
+      await app.request('/admin/api/quotas/session/refresh', { method: 'POST', headers });
+      const success = await app.request(url, { method: 'POST', headers, body: '{"confirm":true}' });
+      expect(success.status).toBe(200);
+      const text = await success.text();
+      expect(text).not.toContain(redeemId);
+      expect(JSON.parse(text)).toMatchObject({ quota: { status: 'fresh', quota: { resetCredits: { availableCount: 2 } } } });
+      expect(reads).toBe(2);
+      expect(consumes).toBe(1);
+      fail = true;
+      const failure = await app.request(url, { method: 'POST', headers, body: '{"confirm":true}' });
+      expect(failure.status).toBe(502);
+      const errorText = await failure.text();
+      expect(errorText).not.toMatch(/synthetic-provider-secret|redeem_request_id/);
+      expect(errorText).not.toContain(redeemId);
+      expect((await app.request('/admin/api/quotas/missing/active-reset', { method: 'POST', headers, body: '{"confirm":true}' })).status).toBe(404);
+    } finally { await app.dispose(); }
+  });
+
+  it.each(['consume', 'refresh'])('returns bulk partial success when a concurrent reset rejects during %s', async (failure) => {
+    const env = loadEnv({ DATA_DIR: temporaryDirectory(), CHATGPT_BACKEND: 'session', API_KEYS: 'admin-key' });
+    persistAccounts(env.runtimeStatePath, ['session', 'other']);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let started!: () => void;
+    const consuming = new Promise<void>((resolve) => { started = resolve; });
+    let joined!: () => void;
+    const otherRead = new Promise<void>((resolve) => { joined = resolve; });
+    let consumes = 0;
+    let reads = 0;
+    const transport = backend(async (context) => {
+      reads++;
+      if (context?.account?.id === 'other') joined();
+      if (consumes && failure === 'refresh' && context?.account?.id === 'session') throw new Error('private-canary');
+      return { ...quota, resetCredits: { availableCount: 2 } };
+    });
+    transport.consumeAccountResetCredit = async () => {
+      consumes++; started(); await gate;
+      if (failure === 'consume') throw new Error('private-canary');
+    };
+    const app = createApp(env, { backend: transport });
+    const headers = { 'x-api-key': 'admin-key', 'content-type': 'application/json' };
+    try {
+      await app.request('/admin/api/quotas/session/refresh', { method: 'POST', headers });
+      const reset = app.request('/admin/api/quotas/session/active-reset', { method: 'POST', headers, body: '{"confirm":true}' });
+      await consuming;
+      const bulk = app.request('/admin/api/quotas/refresh', { method: 'POST', headers });
+      await otherRead;
+      release();
+      expect((await reset).status).toBe(502);
+      const response = await bulk;
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).not.toContain('private-canary');
+      expect(JSON.parse(text)).toMatchObject({ quotas: expect.arrayContaining([
+        expect.objectContaining({ accountId: 'session', status: 'stale', canActiveReset: false, error: expect.any(Object) }),
+        expect.objectContaining({ accountId: 'other', status: 'fresh' }),
+      ]) });
+      expect(consumes).toBe(1);
+      expect(reads).toBe(failure === 'consume' ? 2 : 3);
+    } finally { release(); await app.dispose(); }
+  });
+
   it('keeps GET cache-only, requires auth, and allows API-key or local-session explicit refresh', async () => {
     const dataDir = temporaryDirectory();
     const env = loadEnv({ DATA_DIR: dataDir, CHATGPT_BACKEND: 'session', API_KEYS: 'admin-key' });

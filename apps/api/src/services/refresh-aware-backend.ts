@@ -26,6 +26,7 @@ export function accountQuotaContext(account: NonNullable<ChatGptBackendRequestCo
 
 export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
   readonly discoverModels?: (context?: ChatGptBackendRequestContext) => Promise<ChatGptModelDiscoveryResult>;
+  readonly consumeAccountResetCredit?: NonNullable<ChatGptBackendClient['consumeAccountResetCredit']>;
 
   constructor(
     private readonly transport: ChatGptBackendClient,
@@ -33,6 +34,10 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
   ) {
     const discover = transport.discoverModels?.bind(transport);
     if (discover) this.discoverModels = (context) => this.withOneUnauthorizedRetry(context, discover);
+    const consume = transport.consumeAccountResetCredit?.bind(transport);
+    // A mutation must use the operation's account snapshot. Credential refresh can
+    // return an unrelated replacement account, so neither refresh nor retry here.
+    if (consume) this.consumeAccountResetCredit = consume;
   }
 
   async listModels(context?: ChatGptBackendRequestContext): Promise<ChatGptDiscoveredModel[]> {
@@ -58,11 +63,13 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
   }
 
   async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent> {
+    throwIfCancelled(context);
     if (!context?.account || isCandidateContext(context)) {
       yield* this.transport.stream(request, context);
       return;
     }
     let account = await this.credentials.getFreshAccount(context.account);
+    throwIfCancelled(context);
     let yielded = false;
     try {
       for await (const event of this.transport.stream(request, { ...context, account })) {
@@ -71,11 +78,13 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
       }
       return;
     } catch (error) {
+      throwIfCancelled(context);
       if (yielded || !isUnauthorized(error)) throw markAccountCredentialError(error, account);
     }
 
     const failedAccessToken = account.secret?.accessToken;
     account = await this.credentials.getFreshAccount(context.account, failedAccessToken);
+    throwIfCancelled(context);
     try {
       yield* this.transport.stream(request, { ...context, account });
     } catch (error) {
@@ -84,17 +93,21 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
   }
 
   private async withOneUnauthorizedRetry<T>(context: ChatGptBackendRequestContext | undefined, request: (context: ChatGptBackendRequestContext | undefined) => Promise<T>): Promise<T> {
+    throwIfCancelled(context);
     if (!context?.account || isCandidateContext(context)) return request(context);
     const discoveryOperationId = getDiscoveryOperationId(context);
     const quotaOperationId = getQuotaOperationId(context);
     let account = await this.credentials.getFreshAccount(context.account, undefined, discoveryOperationId, quotaOperationId);
+    throwIfCancelled(context);
     try {
       return await request({ ...context, account });
     } catch (error) {
+      throwIfCancelled(context);
       if (!isUnauthorized(error)) throw markAccountCredentialError(error, account);
     }
     const failedAccessToken = account.secret?.accessToken;
     account = await this.credentials.getFreshAccount(context.account, failedAccessToken, discoveryOperationId, quotaOperationId);
+    throwIfCancelled(context);
     try {
       return await request({ ...context, account });
     } catch (error) {
@@ -113,6 +126,13 @@ function getDiscoveryOperationId(context: ChatGptBackendRequestContext): number 
 
 function getQuotaOperationId(context: ChatGptBackendRequestContext): number | undefined {
   return (context as InternalRequestContext)[QUOTA_OPERATION];
+}
+
+function throwIfCancelled(context?: ChatGptBackendRequestContext): void {
+  if (!context?.signal?.aborted) return;
+  const error = new Error('ChatGPT session backend request was cancelled.');
+  error.name = 'AbortError';
+  throw error;
 }
 
 function isUnauthorized(error: unknown): boolean {

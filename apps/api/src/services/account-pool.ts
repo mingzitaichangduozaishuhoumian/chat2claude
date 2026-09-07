@@ -64,6 +64,15 @@ export interface AccountAcquireOptions {
   eligible?: (account: Account) => boolean;
 }
 
+export const ACCOUNT_UNAVAILABLE_REASONS = [
+  'no_account', 'account_disabled', 'account_unhealthy', 'account_cooldown',
+  'account_busy', 'capability_unavailable', 'model_or_controls_unsupported',
+  'account_busy_timeout', 'request_aborted',
+] as const;
+export type AccountUnavailableReason = typeof ACCOUNT_UNAVAILABLE_REASONS[number];
+export type AccountAcquireResult = { account: Account; reason?: never } | { account?: never; reason: AccountUnavailableReason };
+export interface AccountWaitOptions { timeoutMs?: number; signal?: AbortSignal; }
+
 export interface AccountDiscoveryOperation {
   id: number;
 }
@@ -129,6 +138,8 @@ export class AccountPool {
   private readonly latestDiscoveryOperationIds = new Map<string, number>();
   private readonly quotaOperations = new Map<number, ActiveAccountQuotaOperation>();
   private readonly latestQuotaOperationIds = new Map<string, number>();
+  private readonly acquisitionWaiters = new Set<() => void>();
+  private notificationScheduled = false;
   private nextIncarnation = 1;
   private nextDiscoveryOperationId = 1;
   private nextQuotaOperationId = 1;
@@ -158,16 +169,19 @@ export class AccountPool {
 
   importState(state: AccountPoolState): void {
     this.accounts.splice(0, this.accounts.length, ...state.accounts.map((account) => fromPersistedAccount(account, this.nextIncarnation++)));
+    this.notifyAcquisitionWaiters();
   }
 
   restore(snapshot: AccountPoolSnapshot): void {
     this.accounts.splice(0, this.accounts.length, ...snapshot.accounts.map(cloneAccount));
+    this.notifyAcquisitionWaiters();
   }
 
   add(input: AccountCreateInput): AccountView {
     const account = this.createAccount(input);
     if (this.accounts.some((item) => item.id === account.id)) throw new Error(`Account already exists: ${account.id}`);
     this.accounts.push(account);
+    this.notifyAcquisitionWaiters();
     return toAccountView(account);
   }
 
@@ -205,6 +219,7 @@ export class AccountPool {
     };
     if (existingIndex === -1) this.accounts.push(next);
     else this.accounts[existingIndex] = next;
+    this.notifyAcquisitionWaiters();
     return toAccountView(next);
   }
 
@@ -236,6 +251,7 @@ export class AccountPool {
     };
     if (healthStateChanged(current, next)) next.healthRevision += 1;
     this.accounts[index] = next;
+    this.notifyAcquisitionWaiters();
     return toAccountView(next);
   }
 
@@ -325,6 +341,7 @@ export class AccountPool {
     const index = this.accounts.findIndex((item) => item.id === id);
     if (index === -1) return undefined;
     const [account] = this.accounts.splice(index, 1);
+    this.notifyAcquisitionWaiters();
     return toAccountView(account);
   }
 
@@ -351,6 +368,7 @@ export class AccountPool {
     for (const operation of [...ownedDiscoveryOperations, ...ownedQuotaOperations]) {
       operation.acceptedConfigurationRevision = account.configurationRevision;
     }
+    this.notifyAcquisitionWaiters();
     return cloneAccount(account);
   }
 
@@ -364,6 +382,7 @@ export class AccountPool {
     const account = this.accounts.find((item) => item.id === id);
     if (!account) return undefined;
     this.markHealthyAccount(account);
+    this.notifyAcquisitionWaiters();
     return toAccountView(account);
   }
 
@@ -371,6 +390,7 @@ export class AccountPool {
     const account = this.accounts.find((item) => item.id === id);
     if (!account || (expectedIncarnation !== undefined && account.incarnation !== expectedIncarnation)) return undefined;
     this.markHealthyAccount(account);
+    this.notifyAcquisitionWaiters();
     return toAccountView(account);
   }
 
@@ -378,16 +398,123 @@ export class AccountPool {
     const account = this.accounts.find((item) => item.id === id);
     if (!account || (expectedIncarnation !== undefined && account.incarnation !== expectedIncarnation)) return undefined;
     this.applyReleaseResult(account, error, true);
+    this.notifyAcquisitionWaiters();
     return toAccountView(account);
   }
 
   acquire(options: AccountAcquireOptions = {}): Account | undefined {
+    // Reserve free slots for the oldest compatible waiters before a newcomer.
+    this.drainAcquisitionWaiters();
+    return this.acquireImmediately(options);
+  }
+
+  private acquireImmediately(options: AccountAcquireOptions, deadline?: number): Account | undefined {
     this.refreshExpiredCooldowns();
     const account = this.accounts.find((item) => canAcquire(item, options));
-    if (!account) return undefined;
+    // Eligibility callbacks may themselves consume time; check at the allocation boundary.
+    if (!account || (deadline !== undefined && performance.now() >= deadline)) return undefined;
     account.currentConcurrency += 1;
     account.lastUsedAt = this.now().toISOString();
     return cloneAccount(account);
+  }
+
+  /** Fixed-priority filters diagnose only candidates for this request, never account details. */
+  unavailableReason(options: AccountAcquireOptions = {}): AccountUnavailableReason | undefined {
+    this.refreshExpiredCooldowns();
+    let candidates = this.accounts.filter((account) => !options.provider || account.provider === options.provider);
+    if (!candidates.length) return 'no_account';
+    candidates = candidates.filter((account) => !options.capability || account.capabilities.includes(options.capability));
+    if (!candidates.length) return 'capability_unavailable';
+    candidates = candidates.filter((account) => !options.eligible || options.eligible(cloneAccount(account)));
+    if (!candidates.length) return 'model_or_controls_unsupported';
+    candidates = candidates.filter((account) => account.enabled && account.status !== 'disabled');
+    if (!candidates.length) return 'account_disabled';
+    candidates = candidates.filter((account) => account.status === 'available' || account.status === 'cooldown');
+    if (!candidates.length) return 'account_unhealthy';
+    candidates = candidates.filter((account) => account.status === 'available');
+    if (!candidates.length) return 'account_cooldown';
+    return candidates.some((account) => account.currentConcurrency < account.maxConcurrency) ? undefined : 'account_busy';
+  }
+
+  get pendingAcquisitions(): number { return this.acquisitionWaiters.size; }
+
+  /** No polling: a fixed deadline plus an optional nearest-cooldown wakeup. */
+  async acquireAsync(options: AccountAcquireOptions = {}, wait: AccountWaitOptions = {}): Promise<AccountAcquireResult> {
+    const timeoutMs = wait.timeoutMs ?? 30_000;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2_147_483_647) {
+      throw new Error('Account acquisition timeout must be an integer between 0 and 2147483647 ms.');
+    }
+    if (wait.signal?.aborted) return { reason: 'request_aborted' };
+    const account = this.acquire(options);
+    if (account) return { account };
+    const reason = this.unavailableReason(options);
+    if (reason !== 'account_busy' || timeoutMs === 0) return { reason: reason ?? 'account_busy' };
+
+    const deadline = performance.now() + timeoutMs;
+    return new Promise<AccountAcquireResult>((resolve, reject) => {
+      let settled = false;
+      let cooldownTimer: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = () => {
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(cooldownTimer);
+        this.acquisitionWaiters.delete(retry);
+        wait.signal?.removeEventListener('abort', abort);
+      };
+      const finish = (result: AccountAcquireResult) => {
+        if (settled) return;
+        cleanup();
+        resolve(result);
+      };
+      const abort = () => finish({ reason: 'request_aborted' });
+      const retry = () => {
+        if (settled) return;
+        if (wait.signal?.aborted) return abort();
+        if (performance.now() >= deadline) return finish({ reason: 'account_busy_timeout' });
+        try {
+          const acquired = this.acquireImmediately(options, deadline);
+          if (acquired) return finish({ account: acquired });
+          if (performance.now() >= deadline) return finish({ reason: 'account_busy_timeout' });
+          const unavailable = this.unavailableReason(options);
+          if (unavailable && unavailable !== 'account_busy') return finish({ reason: unavailable });
+          clearTimeout(cooldownTimer);
+          const nowMs = this.now().getTime();
+          const expirations = this.accounts.filter((candidate) =>
+            candidate.enabled && candidate.status === 'cooldown'
+            && (!options.provider || candidate.provider === options.provider)
+            && (!options.capability || candidate.capabilities.includes(options.capability))
+            && (!options.eligible || options.eligible(cloneAccount(candidate))),
+          ).map((candidate) => Date.parse(candidate.cooldownUntil ?? '') - nowMs)
+            .filter((delay) => Number.isFinite(delay) && delay > 0);
+          const delay = Math.min(...expirations);
+          if (delay < deadline - performance.now()) {
+            cooldownTimer = setTimeout(() => this.drainAcquisitionWaiters(), Math.min(delay, 2_147_483_647));
+          }
+        } catch (error) {
+          cleanup();
+          reject(error);
+        }
+      };
+      const timer = setTimeout(() => finish({ reason: 'account_busy_timeout' }), timeoutMs);
+      this.acquisitionWaiters.add(retry);
+      wait.signal?.addEventListener('abort', abort, { once: true });
+      // Register and recheck in the same turn; no release can be lost between them.
+      this.drainAcquisitionWaiters();
+    });
+  }
+
+  private drainAcquisitionWaiters(): void {
+    for (const retry of [...this.acquisitionWaiters]) retry();
+  }
+
+  private notifyAcquisitionWaiters(): void {
+    if (this.notificationScheduled || !this.acquisitionWaiters.size) return;
+    this.notificationScheduled = true;
+    // Let synchronous configuration/transaction updates finish before competing for slots.
+    queueMicrotask(() => {
+      this.notificationScheduled = false;
+      this.drainAcquisitionWaiters();
+    });
   }
 
   release(id: string, error?: unknown): AccountView | undefined {
@@ -395,6 +522,7 @@ export class AccountPool {
     if (!account) return undefined;
     account.currentConcurrency = Math.max(0, account.currentConcurrency - 1);
     this.applyReleaseResult(account, isStaleCredentialError(account, error) ? undefined : error);
+    this.notifyAcquisitionWaiters();
     return toAccountView(account);
   }
 
@@ -449,6 +577,7 @@ export class AccountPool {
         account.lastErrorCode = null;
         account.cooldownUntil = null;
         account.status = account.enabled ? 'available' : 'disabled';
+        this.notifyAcquisitionWaiters();
       }
     }
   }

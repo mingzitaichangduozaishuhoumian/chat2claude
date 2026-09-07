@@ -5,6 +5,23 @@ import { createAccountRequestTracker, trackStreamStatistics } from './request-st
 const identity = { accountId: 'account-1', createdAt: '2026-09-04T00:00:00.000Z' };
 
 describe('per-account request statistics', () => {
+  it.each([
+    { aborted: true, error: new DOMException('client cancelled', 'AbortError'), outcome: 'cancelled' },
+    { aborted: false, error: new DOMException('upstream aborted', 'AbortError'), outcome: 'failure' },
+    { aborted: true, error: new Error('upstream failed'), outcome: 'failure' },
+  ] as const)('records $outcome for aborted=$aborted and $error.name', async ({ aborted, error, outcome }) => {
+    const state = new AdminOperationalState({ path: 'unused.json', debounceMs: 60_000 });
+    const tracker = createAccountRequestTracker(state, identity);
+    const controller = new AbortController();
+    if (aborted) controller.abort();
+    const upstream = (async function* () { throw error; })();
+    await expect(consume(trackStreamStatistics(upstream, tracker, controller.signal))).rejects.toBe(error);
+    expect(state.snapshot().accounts[0]?.requestStats).toMatchObject({
+      totalRequests: 1, successfulRequests: 0, failedRequests: outcome === 'failure' ? 1 : 0,
+      cancelledRequests: outcome === 'cancelled' ? 1 : 0, inFlight: 0,
+    });
+  });
+
   it('records each acquired request exactly once and only accepts finite non-negative integer usage', () => {
     const state = new AdminOperationalState({ path: 'unused.json', debounceMs: 60_000 });
     const tracker = createAccountRequestTracker(state, identity);

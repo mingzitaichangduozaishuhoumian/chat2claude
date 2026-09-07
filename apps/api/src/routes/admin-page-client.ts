@@ -9,6 +9,47 @@ let accountsCache = [];
 let quotasCache = [];
 let modelsCache = { aliases: [], discovered: [] };
 let apiKeysCache = [];
+// Never restore raw credentials from DOM, key metadata or browser storage.
+let currentSetupRuntimeKey = '';
+let runtimeKeyGeneration = 0;
+function clientSetupConfig() {
+  return JSON.stringify({ env: {
+    ANTHROPIC_BASE_URL: window.location.origin,
+    ANTHROPIC_AUTH_TOKEN: '<your-runtime-api-key>',
+    ANTHROPIC_MODEL: 'sonnet',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'haiku',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'sonnet',
+    ANTHROPIC_DEFAULT_FABLE_MODEL: 'fable',
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'opus'
+  } }, null, 2);
+}
+function renderClientSetup() {
+  ['claude-code', 'cc-switch'].forEach((name) => {
+    document.getElementById(name + '-config').textContent = clientSetupConfig();
+    document.getElementById(name + '-copy-status').textContent = '';
+  });
+}
+async function copyClientSetup(name) {
+  const status = document.getElementById(name + '-copy-status');
+  const keyAtCopy = currentSetupRuntimeKey;
+  const generationAtCopy = runtimeKeyGeneration;
+  await Promise.resolve();
+  if (keyAtCopy && (currentSetupRuntimeKey !== keyAtCopy || runtimeKeyGeneration !== generationAtCopy)) return;
+  const copiedConfig = keyAtCopy ? clientSetupConfig().replace('<your-runtime-api-key>', keyAtCopy) : clientSetupConfig();
+  try {
+    await navigator.clipboard.writeText(copiedConfig);
+    if (currentSetupRuntimeKey !== keyAtCopy || runtimeKeyGeneration !== generationAtCopy) return;
+    status.textContent = translateAdminText('配置已复制；请安全保存，并替换尚未填写的 Runtime Key 占位符。', adminLocale);
+  } catch {
+    if (currentSetupRuntimeKey !== keyAtCopy || runtimeKeyGeneration !== generationAtCopy) return;
+    status.textContent = translateAdminText('复制失败，请手动选中配置并复制。', adminLocale);
+  }
+}
+['claude-code', 'cc-switch'].forEach((name) => {
+  document.getElementById('copy-' + name + '-config').addEventListener('click', () => copyClientSetup(name));
+});
+renderClientSetup();
+window.addEventListener('pagehide', () => clearOneTimeRuntimeApiKey());
 const overviewLoadState = { accounts: 'loading', models: 'loading', keys: 'loading' };
 let quotaRequestState = { status: 'idle', error: null };
 const pendingQuotaAccounts = new Set();
@@ -272,6 +313,9 @@ function showOneTimeRuntimeApiKey(value) {
   const status = document.getElementById('runtime-key-copy-status');
   const hasRawKey = typeof value === 'string' && value.length > 0;
   if (!hasRawKey) return false;
+  runtimeKeyGeneration += 1;
+  currentSetupRuntimeKey = value;
+  renderClientSetup();
   apiKey.textContent = value;
   apiKey.dataset.value = value;
   status.textContent = '请立即复制保存；关闭或清除显示后无法恢复原始 Key。';
@@ -279,21 +323,30 @@ function showOneTimeRuntimeApiKey(value) {
   return true;
 }
 async function copyOneTimeRuntimeApiKey(options) {
-  const key = document.getElementById('api-key').dataset.value;
+  const apiKey = document.getElementById('api-key');
+  const key = apiKey.dataset.value;
+  const generationAtCopy = runtimeKeyGeneration;
   const status = document.getElementById('runtime-key-copy-status');
   if (!key) return false;
+  await Promise.resolve();
+  if (apiKey.dataset.value !== key || runtimeKeyGeneration !== generationAtCopy) return false;
   try {
     await navigator.clipboard.writeText(key);
+    if (apiKey.dataset.value !== key || runtimeKeyGeneration !== generationAtCopy) return false;
     status.textContent = '已复制到剪贴板。请立即保存；刷新页面后不会再次显示原始 Key。';
     if (!options?.suppressResult) renderResult({ message: 'Runtime API Key 已复制。' });
     return true;
   } catch {
+    if (apiKey.dataset.value !== key || runtimeKeyGeneration !== generationAtCopy) return false;
     status.textContent = '剪贴板不可用，请手动选中上方完整 Key 并立即保存。';
     if (!options?.suppressResult) renderResult({ error: 'Runtime API Key 复制失败，请手动选中并立即保存。' });
     return false;
   }
 }
 function clearOneTimeRuntimeApiKey() {
+  runtimeKeyGeneration += 1;
+  currentSetupRuntimeKey = '';
+  renderClientSetup();
   const apiKey = document.getElementById('api-key');
   apiKey.textContent = '';
   delete apiKey.dataset.value;
@@ -382,19 +435,40 @@ function renderQuotaPanel() {
     button.disabled = quotaRefreshAllPending || pendingQuotaAccounts.has(accountId);
     button.addEventListener('click', () => refreshQuotaAccount(accountId));
   });
+  document.querySelectorAll('[data-quota-reset]').forEach((button) => {
+    const accountId = button.dataset.quotaReset;
+    button.disabled = quotaRefreshAllPending || pendingQuotaAccounts.has(accountId);
+    button.addEventListener('click', () => refreshQuotaAccount(accountId, true));
+  });
+  document.querySelectorAll('[data-quota-account]').forEach((card) => {
+    card.setAttribute('aria-busy', String(quotaRefreshAllPending || pendingQuotaAccounts.has(card.dataset.quotaAccount)));
+  });
   document.getElementById('refresh-all-quotas').disabled = quotaRefreshAllPending || pendingQuotaAccounts.size > 0;
 }
-async function refreshQuotaAccount(accountId) {
+async function refreshQuotaAccount(accountId, activeReset = false) {
   if (quotaRefreshAllPending || pendingQuotaAccounts.has(accountId)) return;
-  pendingQuotaAccounts.add(accountId); renderQuotaPanel(); announce('正在刷新账号配额。');
+  if (activeReset) {
+    const result = quotasCache.find((item) => item.accountId === accountId);
+    if (!result?.canActiveReset || result.status !== 'fresh' || !result.expiresAt || Date.parse(result.expiresAt) <= Date.now()) return;
+    if (!window.confirm(translateAdminText('确认消耗此账号的 1 次上游重置次数？这将主动重置 Codex 配额，不是清除本地冷却。成功后会重新读取完整上游配额，无法撤销。', adminLocale))) return;
+  }
+  pendingQuotaAccounts.add(accountId);
+  quotaRequestState = { status: 'loaded', error: null };
+  renderQuotaPanel(); announce(activeReset ? '正在消耗上游重置次数并刷新配额。' : '正在刷新账号配额。');
   try {
-    const body = await postJson('/admin/api/quotas/' + encodeURIComponent(accountId) + '/refresh');
+    const body = await postJson('/admin/api/quotas/' + encodeURIComponent(accountId) + (activeReset ? '/active-reset' : '/refresh'), activeReset ? { confirm: true } : undefined);
     const index = quotasCache.findIndex((item) => item.accountId === accountId);
     if (index === -1) quotasCache.push(body.quota); else quotasCache[index] = body.quota;
     const feedback = quotaRefreshFeedback(body.quota);
     renderResult({ ...body, message: feedback }); announce(feedback);
-    await loadAccounts();
-  } catch (error) { renderResult({ error: error.message }); announce('账号配额刷新失败。'); }
+  } catch (error) {
+    quotaRequestState = { status: 'error', error: error.message };
+    if (activeReset) {
+      const result = quotasCache.find((item) => item.accountId === accountId);
+      if (result) result.canActiveReset = false;
+    }
+    announce(error.message);
+  }
   finally { pendingQuotaAccounts.delete(accountId); renderQuotaPanel(); }
 }
 document.getElementById('refresh-all-quotas').addEventListener('click', async () => {
@@ -405,7 +479,6 @@ document.getElementById('refresh-all-quotas').addEventListener('click', async ()
     quotasCache = Array.isArray(body.quotas) ? body.quotas : [];
     quotaRequestState = { status: 'loaded', error: null };
     renderResult(body);
-    await loadAccounts();
     const summary = body.summary || {};
     const fresh = Number(summary.fresh || 0);
     const stale = Number(summary.stale || 0);
@@ -413,7 +486,7 @@ document.getElementById('refresh-all-quotas').addEventListener('click', async ()
     const unknown = Number(summary.unknown || 0);
     const incomplete = stale + error + unknown;
     announce(incomplete > 0 ? '全部配额刷新完成，但结果不完整。新鲜 ' + fresh + '，陈旧 ' + stale + '，错误 ' + error + '，未知 ' + unknown + '。' : '全部账号配额刷新成功。新鲜 ' + fresh + '。');
-  } catch (error) { renderResult({ error: error.message }); announce('全部账号配额刷新失败。'); }
+  } catch (error) { quotaRequestState = { status: 'error', error: error.message }; announce(error.message); }
   finally { quotaRefreshAllPending = false; renderQuotaPanel(); }
 });
 
@@ -530,6 +603,15 @@ async function requestJson(url, init) {
   const response = await fetchWithAdminKey(url, init); let body;
   try { body = await response.json(); } catch { body = {}; }
   if (response.ok) return body;
+  if (url === '/admin/api/quotas' || url.startsWith('/admin/api/quotas/')) {
+    if (response.status === 401) setAdminSessionState(false);
+    const error = new Error(response.status === 401
+      ? '配额管理认证已失效。请重新打开本机 /admin 恢复会话，或自行前往“管理访问”更新 Admin API Key，然后在此重试。'
+      : body?.code === 'reset_refresh_failed'
+        ? '上游已接受主动重置，但完整配额刷新失败。请先刷新配额，不要重复消耗重置次数。'
+        : '配额操作失败。请刷新配额后重试；缓存未被本地扣减。');
+    error.status = response.status; throw error;
+  }
   const message = body?.error?.message || body?.error || body?.message || ('HTTP ' + response.status);
   if (response.status === 401) {
     setAdminSessionState(false);
@@ -539,7 +621,7 @@ async function requestJson(url, init) {
     selectModule('admin-access');
     adminKeyFallback.open = true;
     adminKeyInput.focus();
-    renderResult({ error: '未认证/数据未加载。请使用高级“远程管理凭据（Admin API Key）”后重试。' });
+    renderResult({ error: '未认证/数据未加载。请使用高级“外部管理访问（Admin API Key）”后重试。' });
   }
   const error = new Error(message); error.status = response.status; throw error;
 }

@@ -48,8 +48,63 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
   yield encodeSseEvent({ event: 'message_delta', data: { type: 'message_delta', delta: { stop_reason: mapStopReason(finishReason), stop_sequence: null }, usage: { output_tokens: outputTokens ?? estimateTokens(output) } } });
   yield encodeSseEvent({ event: 'message_stop', data: { type: 'message_stop' } });
 }
-export function readableStreamFromAsyncIterable(iterable: AsyncIterable<string>): ReadableStream<Uint8Array> {
+export interface AsyncIterableStreamOptions {
+  signal?: AbortSignal;
+  /** Interrupt active I/O before waiting for a pending iterator.next() to settle. */
+  onCancel?: (reason: unknown) => void;
+}
+
+export function readableStreamFromAsyncIterable(iterable: AsyncIterable<string>, options: AsyncIterableStreamOptions = {}): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   const iterator = iterable[Symbol.asyncIterator]();
-  return new ReadableStream<Uint8Array>({ async pull(controller) { const next = await iterator.next(); if (next.done) { controller.close(); return; } controller.enqueue(encoder.encode(next.value)); }, async cancel() { await iterator.return?.(); } });
+  let stopped = false;
+  let started = false;
+  let closing: Promise<void> | undefined;
+  let controller: ReadableStreamDefaultController<Uint8Array>;
+  const cleanup = () => options.signal?.removeEventListener('abort', abort);
+  const cancel = (reason: unknown): Promise<void> => {
+    if (closing) return closing;
+    stopped = true;
+    cleanup();
+    options.onCancel?.(reason);
+    // Enter generators even when cancelled before the first pull, so their finally runs.
+    if (!started) {
+      started = true;
+      void iterator.next().catch(() => {});
+    }
+    closing = (async () => { await iterator.return?.(); })();
+    return closing;
+  };
+  const abort = () => {
+    if (stopped) return;
+    controller.error(new DOMException('Request was cancelled.', 'AbortError'));
+    void cancel(options.signal?.reason).catch(() => { /* The stream is already errored. */ });
+  };
+  return new ReadableStream<Uint8Array>({
+    start(value) {
+      controller = value;
+      options.signal?.addEventListener('abort', abort, { once: true });
+      if (options.signal?.aborted) abort();
+    },
+    async pull(controller) {
+      if (stopped) return;
+      started = true;
+      try {
+        const next = await iterator.next();
+        if (stopped) return;
+        if (next.done) {
+          stopped = true;
+          cleanup();
+          controller.close();
+        } else controller.enqueue(encoder.encode(next.value));
+      } catch (error) {
+        if (!stopped) {
+          stopped = true;
+          cleanup();
+          controller.error(error);
+        }
+      }
+    },
+    cancel,
+  });
 }

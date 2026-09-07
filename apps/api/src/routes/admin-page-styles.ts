@@ -74,6 +74,7 @@ pre { margin: 0; max-width: 100%; overflow: auto; white-space: pre-wrap; overflo
 .module-header h2 { margin: 5px 0 8px; font-family: var(--font-display); font-size: clamp(26px, 3vw, 34px); letter-spacing: -0.035em; line-height: 1.2; }
 .module-header p { max-width: 760px; margin: 0; color: var(--ink-soft); }
 .panel { min-width: 0; border: 1px solid var(--line); padding: clamp(16px, 2.4vw, 24px); background: var(--surface); }
+.setup-recommended { border-top: 3px solid var(--accent); }
 .panel h3, .panel h2 { margin: 0 0 6px; font-family: var(--font-display); }
 .panel-heading { display: flex; justify-content: space-between; align-items: start; gap: 16px; margin-bottom: 14px; }
 .row, .card-actions, .form-actions, .stat-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -132,7 +133,23 @@ dd { min-width: 0; margin: 2px 0 0; overflow-wrap: anywhere; }
 .meter-fill { display: block; height: 100%; min-width: 0; background: var(--accent); }
 .meter-unknown { border-style: dashed; }
 .unavailable { color: var(--ink-faint); }
-.quota-footer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 10px; align-items: center; margin-top: 13px; border-top: 1px solid var(--line); padding-top: 12px; color: var(--ink-soft); font-size: 12px; }
+.quota-identity-header { display: flex; flex-wrap: wrap; align-items: center; border-bottom: 2px solid var(--ink); padding-bottom: 18px; }
+.quota-identity-header .identity { flex: 1 1 200px; }
+.quota-identity-header .quota-account-identity { margin: 8px 0 6px; font-size: clamp(22px, 2vw, 28px); font-weight: 800; line-height: 1.2; }
+.quota-plan-badge { display: grid; gap: 2px; min-width: 96px; max-width: 100%; padding: 10px 14px; border: 2px solid var(--ink); background: var(--surface-muted); color: var(--ink); }
+.quota-plan-badge > span { font-size: 11px; font-weight: 700; }
+.quota-plan-badge > strong { font-family: var(--font-mono); font-size: 21px; line-height: 1.2; }
+.quota-observation { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; color: var(--ink-soft); font-size: 12px; }
+.quota-reset-credits { margin-top: 14px; border: 1px solid var(--line); padding: 12px; background: var(--surface); }
+.quota-credit-summary { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; justify-content: space-between; }
+.quota-credit-summary h4 { margin: 0; font-size: 14px; }
+.quota-credit-summary > strong { color: var(--ink); font-family: var(--font-mono); font-size: 26px; font-variant-numeric: tabular-nums; }
+.quota-reset-credits p, .quota-reset-credits li { margin: 8px 0 0; color: var(--ink-soft); font-size: 12px; }
+.quota-reset-credits ul { padding-left: 18px; }
+.quota-footer > div { min-width: 0; }
+.quota-footer > div > span { display: block; }
+.quota-footer .card-actions { grid-column: 1 / -1; }
+.quota-footer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; align-items: center; margin-top: 13px; border-top: 1px solid var(--line); padding-top: 12px; color: var(--ink-soft); font-size: 12px; }
 .quota-request-error { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: center; margin-bottom: 12px; border-left: 4px solid var(--negative); padding: 12px 14px; color: var(--negative); background: var(--negative-soft); }
 .quota-request-error span { grid-column: 1; color: var(--ink-soft); }
 .quota-request-error button { grid-column: 2; grid-row: 1 / span 2; }

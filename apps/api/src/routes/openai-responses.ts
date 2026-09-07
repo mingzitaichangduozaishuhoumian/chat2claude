@@ -7,12 +7,13 @@ import { ResponsesStore } from '../services/responses-store.js';
 import { ModelRegistryError, type ModelRegistry } from '../services/model-registry.js';
 import type { AccountPool, AccountProvider } from '../services/account-pool.js';
 import { accountReleaseError } from './account-release-error.js';
-import { mapChatGptBackendError, mapErrorPayload } from './backend-errors.js';
-import { createAccountRequestTracker, trackStreamStatistics, usageFromBackend } from '../services/request-statistics.js';
+import { mapChatGptBackendError, mapErrorPayload, parseRequestJson, unexpectedApiError } from './backend-errors.js';
+import { createAccountRequestTracker, requestErrorOutcome, trackStreamStatistics, usageFromBackend, type AccountRequestTracker } from '../services/request-statistics.js';
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
 import { setAccessLogMetadata } from '../middleware/access-log.js';
+import { acquireRequestAccount, checkSessionAccountAvailability } from './account-acquisition.js';
 
-export interface OpenAiResponsesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; responsesStore?: ResponsesStore; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; }
+export interface OpenAiResponsesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; responsesStore?: ResponsesStore; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; accountAcquireTimeoutMs?: number; }
 
 export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono {
   const app = new Hono();
@@ -20,7 +21,7 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
   app.post('/v1/responses', async (c) => {
     try {
       if (deps.ready) await deps.ready;
-      const request = parseOpenAiResponsesRequest(await c.req.json());
+      const request = parseOpenAiResponsesRequest(await parseRequestJson(() => c.req.json()));
       setAccessLogMetadata(c, { model: request.model, stream: Boolean(request.stream) });
       const ownerId = String((c as { get: (key: string) => unknown }).get('ownerId') ?? 'anonymous');
       const downstreamRequest = withPreviousResponseContext(ownerId, request, responsesStore);
@@ -29,12 +30,10 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
         serviceTier: request.service_tier ?? request.speed ?? request.response_speed,
       };
       const accountProvider = accountProviderForBackend(deps.backendProvider);
-      if (deps.backendProvider === 'session' && !deps.accountPool.firstAvailable({ provider: accountProvider, capability: 'messages' })) {
-        throw new ClaudeApiError(`No available ${accountProvider} account.`, 503, 'overloaded_error');
-      }
+      if (deps.backendProvider === 'session') checkSessionAccountAvailability(c, deps.accountPool);
       const globalResolution = deps.modelRegistry.resolve(request.model);
       const accountControls = deps.modelRegistry.accountControlRequirements(globalResolution, explicitControls);
-      const account = deps.accountPool.acquire({
+      const account = await acquireRequestAccount(c, deps.accountPool, {
         provider: accountProvider,
         capability: 'messages',
         ...(deps.backendProvider === 'session' ? {
@@ -44,11 +43,11 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
             accountControls,
           ),
         } : {}),
-      });
-      if (!account) throw new ClaudeApiError(`No available ${accountProvider} account supports model ${globalResolution.backendModel} with the requested controls.`, 503, 'overloaded_error');
+      }, deps.accountAcquireTimeoutMs);
 
       const tracker = createAccountRequestTracker(deps.operationalState, account);
-      const backendContext = { account };
+      const streamCancellation = new AbortController();
+      const backendContext = { account, signal: AbortSignal.any([c.req.raw.signal, streamCancellation.signal]) };
       let releaseError: unknown;
       let releaseDeferredToStream = false;
       try {
@@ -63,8 +62,11 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
         deps.requestLog.record({ route: '/v1/responses', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {
-          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToOpenAiResponsesSse(downstreamRequest, trackStreamStatistics(deps.backend.stream(backendRequest, backendContext), tracker), { onCompleted: (response) => { if (request.store === true) responsesStore.put(ownerId, request, response); } }), (error) => openAiResponsesStreamError(error, request.model));
-          const stream = readableStreamFromAsyncIterable(events);
+          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToOpenAiResponsesSse(downstreamRequest, trackStreamStatistics(deps.backend.stream(backendRequest, backendContext), tracker, backendContext.signal), { onCompleted: (response) => { if (request.store === true) responsesStore.put(ownerId, request, response); } }), (error) => openAiResponsesStreamError(error, request.model), tracker, backendContext.signal);
+          const stream = readableStreamFromAsyncIterable(events, {
+            signal: c.req.raw.signal,
+            onCancel: () => streamCancellation.abort(),
+          });
           releaseDeferredToStream = true;
           return new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' } });
         }
@@ -76,13 +78,13 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
         return c.json(response);
       } catch (error) {
         releaseError = error;
-        tracker.finish('failure');
+        tracker.finish(requestErrorOutcome(error, backendContext.signal));
         throw error;
       } finally {
         if (!releaseDeferredToStream) deps.accountPool.release(account.id, accountReleaseError(releaseError));
       }
     } catch (error) {
-      const apiError = error instanceof ClaudeApiError ? error : mapChatGptBackendError(error) ?? (error instanceof ModelRegistryError ? new ClaudeApiError(error.message, error.status, error.status === 404 ? 'not_found_error' : 'invalid_request_error') : new ClaudeApiError(error instanceof Error ? error.message : 'Invalid request'));
+      const apiError = error instanceof ClaudeApiError ? error : mapChatGptBackendError(error) ?? (error instanceof ModelRegistryError ? new ClaudeApiError(error.message, error.status, error.status === 404 ? 'not_found_error' : 'invalid_request_error') : unexpectedApiError());
       return c.json(toOpenAiError(apiError), apiError.status as 400);
     }
   });
@@ -234,14 +236,17 @@ function accountProviderForBackend(backendProvider: OpenAiResponsesRouteDeps['ba
   return backendProvider === 'session' ? 'chatgpt-session' : 'mock';
 }
 
-async function* releaseAccountWhenDone(accountPool: AccountPool, accountId: string, events: AsyncIterable<string>, onError: (error: unknown) => AsyncIterable<string>): AsyncIterable<string> {
+async function* releaseAccountWhenDone(accountPool: AccountPool, accountId: string, events: AsyncIterable<string>, onError: (error: unknown) => AsyncIterable<string>, tracker: AccountRequestTracker, signal: AbortSignal): AsyncIterable<string> {
   let releaseError: unknown;
   try {
     yield* events;
   } catch (error) {
     releaseError = error;
+    tracker.finish(requestErrorOutcome(error, signal));
     yield* onError(error);
   } finally {
+    // The protocol prelude may be cancelled before the backend tracker starts.
+    tracker.finish('cancelled');
     accountPool.release(accountId, accountReleaseError(releaseError));
   }
 }

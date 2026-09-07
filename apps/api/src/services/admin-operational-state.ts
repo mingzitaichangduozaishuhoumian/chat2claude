@@ -637,9 +637,21 @@ function validateQuotaWindow(value: unknown, label: string): ChatGptQuotaWindow 
   };
 }
 
-function validateResetCredits(value: unknown, label: string): { availableCount: number } {
-  const raw = strictObject(value, ['availableCount'], label);
-  return { availableCount: nonNegativeNumber(raw.availableCount, `${label}.availableCount`) };
+function validateResetCredits(value: unknown, label: string): NonNullable<ChatGptAccountQuota['resetCredits']> {
+  const raw = strictObject(value, ['availableCount', 'credits', 'error'], label, ['availableCount', 'credits', 'error']);
+  if (raw.credits !== undefined && !Array.isArray(raw.credits)) throw invalid('reset credits must be an array');
+  return {
+    ...(raw.availableCount === undefined ? {} : { availableCount: nonNegativeInteger(raw.availableCount, `${label}.availableCount`) }),
+    ...(raw.error === undefined ? {} : { error: enumValue(raw.error, ['fetch_failed', 'invalid_response'] as const, 'reset credit error') }),
+    ...(raw.credits === undefined ? {} : { credits: (raw.credits as unknown[]).map((value) => {
+      const credit = strictObject(value, ['status', 'grantedAt', 'expiresAt'], 'reset credit', ['grantedAt']);
+      return {
+        status: enumValue(credit.status, ['available'] as const, 'credit status'),
+        expiresAt: new Date(timestamp(credit.expiresAt, 'credit expiry')).toISOString(),
+        ...(credit.grantedAt === undefined ? {} : { grantedAt: new Date(timestamp(credit.grantedAt, 'credit grant time')).toISOString() }),
+      };
+    }) }),
+  };
 }
 
 function validateQuotaError(value: unknown, label: string): SanitizedQuotaError {

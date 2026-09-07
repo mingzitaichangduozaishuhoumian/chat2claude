@@ -55,7 +55,7 @@ OAuth 不会启动独立 Chrome 或新 profile；浏览器弹窗被拦截时，�
 3. **模型（Models）**：把已发现的 backend model 绑定到 alias，刷新 discovery，调整启用状态和默认控制项；专业模式可管理自定义 alias。
 4. **API 接入（API Access）**：生成、复制和撤销 Runtime API Key，查看根 Base URL、`POST /v1/messages` endpoint 和动态 curl 示例。
 5. **配额（Quotas）**：读取缓存的 provider allowance；按账号或全部刷新，并区分新鲜、陈旧、错误和未知状态。
-6. **管理访问（Admin Access）**：查看本机 HttpOnly 管理会话；专业模式提供远程/自动化使用的 Admin API Key fallback。
+6. **管理访问（Admin Access）**：优先使用本机 HttpOnly 管理会话；专业模式提供在操作者自行连通服务后用于外部管理的 Admin API Key。
 
 控制台默认是简洁模式。专业模式额外显示内部/上游 ID、并发、冷却、安全错误码、发现诊断、完整动态模型、推理/服务层级选项、自定义 alias、手动 session 导入和 Admin API Key fallback。简洁/专业模式偏好保存在当前浏览器的 `localStorage.adminViewMode`；语言偏好保存在 `localStorage.adminLocale`。服务端不把这些 UI 偏好写入 runtime state。
 
@@ -64,7 +64,8 @@ OAuth 不会启动独立 Chrome 或新 profile；浏览器弹窗被拦截时，�
 ## 认证与密钥
 
 - `/v1/*` 使用 Runtime API Key 或预配置的 `API_KEYS`，使用 `x-api-key: <key>` 或 `Authorization: Bearer <key>`。
-- Admin API Key 是远程或自动化管理 `/admin/api/*` 的专用命名；当前服务端认证也会接受有效 Runtime API Key 或 `API_KEYS` 访问 `/admin/api/*`。因此实际部署中应把 Runtime Key 同样视为敏感的管理凭据，不能将两者当作安全隔离边界。
+- 优先在宿主机本地浏览器使用 HttpOnly 管理会话。只有操作者自行经 LAN、VPN/mesh VPN、SSH 隧道、反向隧道/NAT 穿透或反向代理使服务可达后，才从其他浏览器、设备或自动化使用 Admin API Key；本项目不创建隧道、不配置 NAT、也不发布服务。
+- Admin API Key 授予完整管理权限，不要作为普通用户、Claude 或 API 凭据分享；普通客户端应使用 Runtime API Key。当前服务端认证仍会接受有效 Runtime API Key 或 `API_KEYS` 访问 `/admin/api/*`，所以这是签发/使用区分而不是硬权限边界；Runtime Key 也必须按敏感管理凭据保护。
 - Runtime Key 原始值只在创建/生成后的当前页面显示一次。列表只显示稳定 ID、名称、创建时间和安全前缀；遗失后应撤销旧 Key 并生成新 Key。
 - 本机 loopback 访问 `/admin` 会获得仅当前进程有效的 HttpOnly、`SameSite=Strict` cookie。写操作还要求同源 `Origin`。服务重启后 cookie 失效。
 - 非 loopback 启动必须预先配置 `API_KEYS`，除非仅供宿主机回环访问的容器设置 `LOCAL_CONTAINER_BOOTSTRAP=true`。
@@ -114,9 +115,34 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 
 ## 日志与计时边界
 
-HTTP access log 只挂在 `/v1/*` 和 `/admin/api/*`。它记录 request ID、方法、归一化路径、查询参数类别、HTTP 状态、peer IP、已验证的模型 ID/stream 标志，以及 `durationMs`。它不读取或记录 request/response body，也不会记录 token、cookie、Authorization、API Key 或 OAuth 参数；未知路径和动态 ID 会被归一化，查询参数只保留 `beta` 或 `other` 类别。
+HTTP access log 只挂在 `/v1/*` 和 `/admin/api/*`，默认输出专用简洁文本；普通应用日志仍是 JSON。设置 `ACCESS_LOG_FORMAT=json` 可恢复 `{ level, message: "HTTP access", meta, time }` JSON 外壳，保留完整 request ID 和可选安全 `reason`。两种格式均按 HTTP 状态选择等级：2xx/3xx 为 `info`、4xx 为 `warn`、5xx 为 `error`，并遵循 `LOG_LEVEL`。
+
+```text
+17:37:48.754 INFO  200 29ms 127.0.0.1 POST /v1/messages?beta model=opus stream req=ed73cd3b
+17:38:18.754 ERROR 503 30000ms 127.0.0.1 POST /v1/messages model=opus reason=account_busy_timeout req=2aec84fd
+```
+
+文本时间为 UTC，依次显示时间、等级、状态、response-ready 耗时、peer IP、方法、归一化路径/安全 query 类别、model、stream、reason 和 UUID 前 8 位。`stream=false` 和缺失字段不显示。它不读取或记录 request/response body，也不会记录 token、cookie、Authorization、API Key、OAuth 参数或原始异常；未知路径和动态 ID 会被归一化，查询参数只保留 `beta` 或 `other` 类别，peer IP 只来自连接而不是转发头。
 
 `durationKind` 固定为 `response_ready`：普通请求表示响应已准备好；流式请求表示 SSE response 已创建，不表示整个响应体已经发送完成。后台“最近账号活动”和请求结果是累计运营统计，不是完整请求日志。请求统计保存成功、失败、取消、token 总量、最近请求时间和 in-flight 数量；in-flight 不会持久化，重启后恢复为 0。`/metrics` 只返回进程内请求计数。
+
+### 并发等待与安全失败原因
+
+三个完成协议（Messages、Chat Completions、Responses）都在符合 provider、capability、模型和控制项的账号仅因并发已满而不可用时等待释放通知，不轮询。`ACCOUNT_ACQUIRE_TIMEOUT_MS` 默认 `30000`，`0` 表示立即失败；有效范围为 `0..2147483647` 整数毫秒，非法值会阻止启动。通知不会重置等待期限；客户端 AbortSignal 取消会清理等待者、定时器和监听器。其他不可用状态立即失败，不等待冷却结束或健康恢复。
+
+| reason | 含义 |
+| --- | --- |
+| `no_account` | 没有匹配 provider 的账号 |
+| `capability_unavailable` | 账号不具备所需 capability |
+| `model_or_controls_unsupported` | 没有账号支持请求的模型/控制项 |
+| `account_disabled` | 匹配账号均停用 |
+| `account_unhealthy` | 匹配的启用账号均不健康或处于 error |
+| `account_cooldown` | 剩余匹配账号处于冷却 |
+| `account_busy` | 匹配的可用账号并发已满，且配置为立即失败 |
+| `account_busy_timeout` | 等待并发槽位超时 |
+| `request_aborted` | 获取账号期间客户端取消 |
+
+原因仅用于内部调度和 access log，不加入 API/SSE 响应正文。获取失败仍使用原有 503/`overloaded_error` 和各协议错误外壳；已断开的客户端可能无法收到响应。Admin 中的 `maxConcurrency` 仍是账号并发上限，等待不会绕过它。SSE response-ready 的 200 **不会释放槽位**，释放仍由生成器 `finally` 在流完成、错误或取消清理时执行；日志耗时包含获取账号的等待，但不包含完整 SSE 传输时间。详细说明见中英文使用指南。
 
 ## 环境变量
 
@@ -126,6 +152,8 @@ HTTP access log 只挂在 `/v1/*` 和 `/admin/api/*`。它记录 request ID、�
 CHATGPT_BACKEND=session
 CHATGPT_BASE_URL=https://chatgpt.com
 CHATGPT_REQUEST_TIMEOUT_MS=60000
+ACCESS_LOG_FORMAT=text
+ACCOUNT_ACQUIRE_TIMEOUT_MS=30000
 PORT=3000
 HOST=127.0.0.1
 API_KEYS=<admin-or-runtime-key>

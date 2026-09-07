@@ -45,7 +45,7 @@ http://127.0.0.1:3000/admin
 | **模型（Models）** `#models` | 查看 discovery、为 alias 绑定 backend model、启用/停用 alias、设置默认 reasoning/service tier；专业模式支持自定义 alias、refresh 和 reset。 |
 | **API 接入（API Access）** `#api-access` | 创建、复制、查看安全前缀和撤销 Runtime API Key；查看动态 Base URL、endpoint 和 curl 示例。 |
 | **配额（Quotas）** `#quota` | 读取 provider allowance 缓存，按账号或全部刷新；显示五小时、每周及其他上游窗口，缺失百分比不会伪显示为 0%。 |
-| **管理访问（Admin Access）** `#admin-access` | 查看本机 HttpOnly 管理会话；专业模式提供远程/自动化使用的 Admin API Key fallback。 |
+| **管理访问（Admin Access）** `#admin-access` | 优先使用本机 HttpOnly 管理会话；专业模式提供在操作者自行连通服务后用于外部管理的 Admin API Key。 |
 
 ### 简洁模式与专业模式
 
@@ -58,7 +58,7 @@ http://127.0.0.1:3000/admin
 - reasoning effort、service tier、能力元数据和配置问题；
 - 自定义 alias 的创建、更新、删除、reset alias overlay、刷新 backend discovery；
 - 高级手动 `accessToken`/cookie 导入；
-- 远程/自动化用 Admin API Key fallback。
+- 操作者自行连通服务后用于外部管理的 Admin API Key。
 
 模式偏好保存在当前浏览器的 `localStorage.adminViewMode`，只接受 `simple` 或 `professional`。它不是服务端账号配置，换浏览器或清理存储后会回到简洁模式。
 
@@ -100,10 +100,12 @@ OAuth 回跳只会在 `sessionStorage` 保存短期 `{ flowId, origin }` 定位�
 | 凭据 | 主要用途 | 认证位置 |
 | --- | --- | --- |
 | Runtime API Key | 客户端调用 `/v1/*`；当前实现中有效 Runtime Key 也可访问受保护的 `/admin/api/*` | `Authorization: Bearer <key>` 或 `x-api-key: <key>` |
-| Admin API Key | 远程/自动化调用 `/admin/api/*` 的专用命名；使用时应按管理凭据保护 | `Authorization: Bearer <key>` 或 `x-api-key: <key>` |
+| Admin API Key | 操作者自行连通服务后外部调用 `/admin/api/*` 的完整管理凭据；不得作为普通用户、Claude 或 API 凭据分享 | `Authorization: Bearer <key>` 或 `x-api-key: <key>` |
 | `API_KEYS` | 启动前配置的服务端静态允许列表；可作为 `/v1/*` 和远程 Admin API 的 key | 同上 |
 
-因此 Runtime API Key 与 Admin API Key 是用途和管理习惯上的区分，不是当前认证层面的安全隔离；泄露 Runtime Key 也应按可能暴露管理 API 处理。
+因此 Runtime API Key 与 Admin API Key 是签发、用途和管理习惯上的区分，不是当前认证层面的安全隔离；普通客户端应使用 Runtime API Key，泄露 Runtime Key 也应按可能暴露管理 API 处理。
+
+优先在宿主机本地浏览器使用 HttpOnly 管理会话。只有操作者自行通过 LAN、VPN/mesh VPN、SSH 隧道、反向隧道/NAT 穿透或反向代理使服务可达后，才从其他浏览器、设备或自动化使用 Admin API Key；本项目不创建隧道、不配置 NAT、也不发布服务。
 
 本机 loopback 访问 `/admin` 时，服务会签发进程级随机 HttpOnly、`SameSite=Strict`、`Path=/admin` cookie。该 cookie：
 
@@ -242,7 +244,14 @@ curl --fail "$ANTHROPIC_BASE_URL/healthz"
 
 ### HTTP access log
 
-access log 只应用于 `/v1/*` 和 `/admin/api/*`，每条记录包含：
+access log 只应用于 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 为专用简洁单行，普通应用日志仍为 JSON。设置 `ACCESS_LOG_FORMAT=json` 可保留 `{ level, message: "HTTP access", meta, time }` 外壳，含完整 request UUID 和可选安全 `reason`。两种格式均按状态选择等级：2xx/3xx 为 `info`、4xx 为 `warn`、5xx 为 `error`，受 `LOG_LEVEL` 过滤。
+
+```text
+17:37:48.754 INFO  200 29ms 127.0.0.1 POST /v1/messages?beta model=opus stream req=ed73cd3b
+17:38:18.754 ERROR 503 30000ms 127.0.0.1 POST /v1/messages model=opus reason=account_busy_timeout req=2aec84fd
+```
+
+文本顺序固定为 UTC 时间、等级、状态、response-ready 耗时、peer IP、方法、归一化路径/安全 query 类别、model、stream、reason 和 UUID 前 8 位；`stream=false`、空 query 和缺失字段不显示。peer IP 只来自连接，不信任转发头。结构化记录包含：
 
 - request ID、HTTP method、归一化 path；
 - 查询参数类别（只保留 `beta`，其他归为 `other`）；
@@ -253,6 +262,28 @@ access log 只应用于 `/v1/*` 和 `/admin/api/*`，每条记录包含：
 它**不会读取或记录** request body、response body、token、cookie、Authorization、API Key、OAuth code/state/verifier 或完整查询值。动态 flow/account/key/model ID 会被归一化为占位路径；非法或过长模型 ID 会被写成安全占位符。
 
 `response_ready` 的含义是响应已经准备好：普通响应是 handler 返回 response 的时间；流式响应是 SSE response 建立的时间，**不是**流式 body 全部发送完的时间。
+
+### 有界账号并发等待
+
+Messages、Chat Completions 和 Responses 采用相同的通知式获取策略。只要存在匹配 provider、capability、模型和控制项，且除此之外可用、仅并发已满的账号，就等待槽位而不是立即返回 503。`ACCOUNT_ACQUIRE_TIMEOUT_MS` 默认 `30000`，`0` 恢复立即失败行为；接受 `0..2147483647` 整数毫秒，非法值会阻止启动。每个等待者只有一个固定截止时间，不轮询，也不因通知延长期限。
+
+释放、健康恢复、启用、删除和配置更新会通知已有等待者。等待者通过同步获取竞争槽位，仍遵守 Admin 中的 `maxConcurrency`。获取成功、超时、请求 AbortSignal 取消或状态变为非并发不可用时，都会移除等待者、定时器和 abort 监听器。冷却、不健康、停用、无账号和模型不兼容不进入等待，也不会等待重新授权或冷却到期。
+
+| 固定 reason | 含义 |
+| --- | --- |
+| `no_account` | 没有匹配 provider 的账号 |
+| `capability_unavailable` | 匹配 provider 的账号不具备所需 capability |
+| `model_or_controls_unsupported` | 没有候选账号支持请求的模型/控制项 |
+| `account_disabled` | 匹配账号均停用 |
+| `account_unhealthy` | 匹配的启用账号均不健康或处于 error |
+| `account_cooldown` | 剩余匹配账号处于冷却 |
+| `account_busy` | 匹配的可用账号并发已满，且等待配置为 0 |
+| `account_busy_timeout` | 等待槽位超时 |
+| `request_aborted` | 获取账号期间客户端取消 |
+
+诊断依次筛选 provider、capability、模型/控制项、启用、健康、冷却和并发，混合账号池也有确定性结果；空闲但不兼容的账号不会掩盖符合条件的忙账号。session 预检查保留无可用账号时先于全局模型解析返回 503 的行为，但放行忙账号以继续完整模型/控制项筛选。原有模型校验的 400/404 不变。
+
+原因仅用于内部调度和日志，不暴露账号 ID、原始异常、上游正文，也不新增 API/SSE 字段。获取失败仍是原有 503 / `overloaded_error` 和各协议错误外壳；已经断开的客户端可能无法收到响应。SSE 初始 200 **不会释放并发槽**，仍由生成器 `finally` 在流完成、错误或取消清理后释放。访问日志耗时包含账号等待，但不包括完整 SSE 传输时间，也不代表上游延迟或最终流结果。
 
 ### 后台请求统计
 
@@ -284,6 +315,8 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 CHATGPT_BACKEND=session
 CHATGPT_BASE_URL=https://chatgpt.com
 CHATGPT_REQUEST_TIMEOUT_MS=60000
+ACCESS_LOG_FORMAT=text
+ACCOUNT_ACQUIRE_TIMEOUT_MS=30000
 PORT=3000
 HOST=127.0.0.1
 API_KEYS=<key-1>,<key-2>

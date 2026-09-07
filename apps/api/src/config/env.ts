@@ -13,6 +13,9 @@ export interface AppEnv {
   allowAnonymousBootstrap: boolean;
   localContainerBootstrap: boolean;
   logLevel: LogLevel;
+  /** Omitted programmatic configs use text and 30 seconds respectively. */
+  accessLogFormat?: 'text' | 'json';
+  accountAcquireTimeoutMs?: number;
   mockResponsePrefix: string;
   mockBackendModelsJson?: string;
   chatGptBackend: ChatGptBackendProvider;
@@ -44,6 +47,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     allowAnonymousBootstrap,
     localContainerBootstrap,
     logLevel: parseLogLevel(source.LOG_LEVEL),
+    accessLogFormat: parseAccessLogFormat(source.ACCESS_LOG_FORMAT),
+    accountAcquireTimeoutMs: parseAccountAcquireTimeout(source.ACCOUNT_ACQUIRE_TIMEOUT_MS),
     mockResponsePrefix: source.MOCK_RESPONSE_PREFIX ?? 'Echo:',
     mockBackendModelsJson: source.MOCK_BACKEND_MODELS_JSON,
     chatGptBackend: parseBackendProvider(source.CHATGPT_BACKEND),
@@ -62,6 +67,21 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
 export function isLoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
   return normalized === 'localhost' || normalized === '::1' || /^127(?:\.\d{1,3}){3}$/.test(normalized);
+}
+
+function parseAccessLogFormat(value: string | undefined): 'text' | 'json' {
+  if (value === undefined || value === '') return 'text';
+  if (value === 'text' || value === 'json') return value;
+  throw new Error('ACCESS_LOG_FORMAT must be text or json.');
+}
+
+function parseAccountAcquireTimeout(value: string | undefined): number {
+  if (value === undefined || value.trim() === '') return 30_000;
+  const timeout = Number(value);
+  if (!/^\d+$/.test(value.trim()) || !Number.isInteger(timeout) || timeout < 0 || timeout > 2_147_483_647) {
+    throw new Error('ACCOUNT_ACQUIRE_TIMEOUT_MS must be an integer between 0 and 2147483647 ms.');
+  }
+  return timeout;
 }
 
 function parseBoolean(value: string | undefined): boolean { return value?.trim().toLowerCase() === 'true'; }

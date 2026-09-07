@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { ChatGptBackendError, DEFAULT_CODEX_CLIENT_VERSION, SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 import { createApp } from './app.js';
@@ -557,7 +557,7 @@ describe('/v1/chat/completions', () => {
     expect(res.status).toBe(401);
     const body = await res.json() as { error: { type: string; message: string } };
     expect(body.error.type).toBe('authentication_error');
-    expect(body.error.message).toContain('HTTP 401');
+    expect(body.error.message).toBe('Upstream authentication failed.');
   });
 
   it('releases account concurrency after an OpenAI non-streaming chat request', async () => {
@@ -576,7 +576,7 @@ describe('/v1/chat/completions', () => {
     expect(res.status).toBe(200);
     expect(accountPool.list()[0].currentConcurrency).toBe(1);
     const text = await res.text();
-    expect(text).toContain('"error":{"message":"ChatGPT stream rate limited: HTTP 429","type":"rate_limit_error","code":null}');
+    expect(text).toContain('"error":{"message":"Upstream rate limit exceeded.","type":"rate_limit_error","code":null}');
     expect(text).toContain('data: [DONE]');
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
     expect(accountPool.list()[0].status).toBe('cooldown');
@@ -1003,7 +1003,7 @@ describe('/v1/responses', () => {
     expect(text).toContain('"type":"response.failed"');
     expect(text).toContain('"response":{"id":"resp_failed","object":"response"');
     expect(text).toContain('"status":"failed"');
-    expect(text).toContain('"error":{"message":"backend stream boom","type":"api_error","code":null}');
+    expect(text).toContain('"error":{"message":"Upstream request failed.","type":"api_error","code":null}');
     expect(text).toContain('data: [DONE]');
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
     expect(accountPool.list()[0].status).toBe('error');
@@ -1033,7 +1033,7 @@ describe('/v1/responses', () => {
     expect(res.status).toBe(429);
     const body = await res.json() as { error: { type: string; message: string } };
     expect(body.error.type).toBe('rate_limit_error');
-    expect(body.error.message).toContain('HTTP 429');
+    expect(body.error.message).toBe('Upstream rate limit exceeded.');
     expect(accountPool.list()[0].status).toBe('cooldown');
     expect(accountPool.list()[0].lastErrorCode).toBe('rate_limited');
     expect(accountPool.list()[0].cooldownUntil).toEqual(expect.any(String));
@@ -1167,7 +1167,7 @@ describe('/v1/messages', () => {
     const body = await res.json() as { type: string; error: { type: string; message: string } };
     expect(body.type).toBe('error');
     expect(body.error.type).toBe('rate_limit_error');
-    expect(body.error.message).toContain('HTTP 429');
+    expect(body.error.message).toBe('Upstream rate limit exceeded.');
   });
 
   it('returns a Claude error for a disabled alias', async () => {
@@ -1313,7 +1313,7 @@ describe('/v1/messages', () => {
     expect(accountPool.list()[0].currentConcurrency).toBe(1);
     const text = await res.text();
     expect(text).toContain('event: error');
-    expect(text).toContain('"type":"error","error":{"type":"rate_limit_error","message":"ChatGPT stream rate limited: HTTP 429"}');
+    expect(text).toContain('"type":"error","error":{"type":"rate_limit_error","message":"Upstream rate limit exceeded."}');
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
     expect(accountPool.list()[0].status).toBe('cooldown');
     expect(accountPool.list()[0].lastError).toBe('ChatGPT stream rate limited: HTTP 429');
@@ -1345,6 +1345,92 @@ describe('/v1/messages', () => {
     const body = await res.json() as { error: { type: string; message: string } };
     expect(body.error.type).toBe('overloaded_error');
     expect(body.error.message).toContain('No available chatgpt-session account');
+  });
+});
+
+describe('completion protocol public-error boundary', () => {
+  it.each(['/v1/messages', '/v1/chat/completions', '/v1/responses'])('returns a fixed safe 400 for malformed JSON at %s', async (path) => {
+    const app = createApp(env);
+    const canary = 'private-json-canary';
+    try {
+      for (const body of ['{', '', `{${canary}`, `{"secret":"${canary}"`]) {
+        const response = await app.request(path, { method: 'POST', headers: jsonHeaders, body });
+        expect(response.status).toBe(400);
+        const text = await response.text();
+        expect(text).not.toContain(canary);
+        const payload = JSON.parse(text);
+        expect(payload.error).toMatchObject({ type: 'invalid_request_error', message: 'Request body must be valid JSON.' });
+        if (path === '/v1/messages') expect(payload.type).toBe('error');
+      }
+    } finally { await app.dispose(); }
+  });
+
+  it.each(['/v1/messages', '/v1/chat/completions', '/v1/responses'])('does not classify backend SyntaxErrors as body validation at %s', async (path) => {
+    const app = createApp(env, { backend: new ThrowingCompletionBackend(discoveredModels, new SyntaxError('private-json-canary')) });
+    try {
+      const response = await app.request(path, { method: 'POST', headers: jsonHeaders,
+        body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }], input: 'hello' }),
+      });
+      expect(response.status).toBe(500);
+      expect(await response.text()).not.toContain('private-json-canary');
+    } finally { await app.dispose(); }
+  });
+
+  it('sanitizes unexpected failures in non-stream responses, stream preludes, and access logs', async () => {
+    const canary = 'https://provider.test/v1?token=canary-token Authorization: Bearer canary-token account=canary-account';
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const app = createApp(env, { backend: new ThrowingCompletionBackend(discoveredModels, new Error(canary)) });
+    const cases = [
+      {
+        path: '/v1/messages',
+        body: { model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] },
+      },
+      {
+        path: '/v1/chat/completions',
+        body: { model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] },
+      },
+      {
+        path: '/v1/responses',
+        body: { model: 'sonnet', input: 'hello' },
+      },
+    ];
+
+    try {
+      for (const item of cases) {
+        const nonStream = await app.request(item.path, { method: 'POST', headers: jsonHeaders, body: JSON.stringify(item.body) });
+        const nonStreamText = await nonStream.text();
+        expect(nonStream.status).toBe(500);
+        expect(nonStreamText).toContain('Internal server error');
+        expect(nonStreamText).not.toContain(canary);
+
+        const stream = await app.request(item.path, { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ ...item.body, stream: true }) });
+        const streamText = await stream.text();
+        expect(stream.status).toBe(200);
+        expect(streamText).toContain('Internal server error');
+        expect(streamText).not.toContain(canary);
+      }
+
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain(canary);
+    } finally {
+      consoleError.mockRestore();
+      await app.dispose();
+    }
+  });
+
+  it('keeps established validation errors public and specific', async () => {
+    const app = createApp(env);
+    const response = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ model: 'sonnet', max_tokens: 0, messages: [{ role: 'user', content: 'hello' }] }),
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json() as { error: { type: string; message: string } }).error).toMatchObject({
+      type: 'invalid_request_error',
+      message: 'max_tokens must be a positive number',
+    });
+    await app.dispose();
   });
 });
 
@@ -1397,7 +1483,7 @@ class ToolCallBackend extends InspectingBackend {
 }
 
 class ThrowingCompleteBackend extends InspectingBackend {
-  constructor(models: ChatGptDiscoveredModel[], private readonly error: Error) {
+  constructor(models: ChatGptDiscoveredModel[], protected readonly error: Error) {
     super(models);
   }
 
@@ -1413,6 +1499,13 @@ class ThrowingStreamBackend extends InspectingBackend {
     super(models);
   }
 
+  override async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext) {
+    yield* super.stream(request, context);
+    throw this.error;
+  }
+}
+
+class ThrowingCompletionBackend extends ThrowingCompleteBackend {
   override async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext) {
     yield* super.stream(request, context);
     throw this.error;
@@ -1632,7 +1725,7 @@ describe('/admin', () => {
     expect(html).toContain('明确保存到此浏览器（localStorage）');
     expect(html).toContain("saveAdminApiKey(adminKeyInput.value.trim(), rememberAdminKeyInput.checked);");
     expect(html).toContain('<details id="admin-key-fallback" data-professional-only>');
-    expect(html).toContain('高级：远程管理凭据（Admin API Key）');
+    expect(html).toContain('高级：外部管理访问（Admin API Key）');
     expect(html).toContain('生成后的 Key 会固定保存，跨浏览器和服务重启保持有效，直至显式撤销');
     expect(html).toContain('id="generate-runtime-api-key"');
     expect(html).toContain('id="runtime-api-key-once"');

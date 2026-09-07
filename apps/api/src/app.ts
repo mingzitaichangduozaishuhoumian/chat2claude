@@ -92,19 +92,19 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
     onDiagnostic: (diagnostic) => logger.warn(diagnostic.severity === 'warning' ? 'ChatGPT setup provisioning warning' : 'ChatGPT setup provisioning failed', diagnostic),
     onAccountCredentialsReplaced: (account) => quotaService.invalidateAccount(account),
   });
-  app.onError((error, c) => { logger.error('Unhandled API error', { error: error.message }); return c.json({ type: 'error', error: { type: 'internal_server_error', message: 'Internal server error' } }, 500); });
+  app.onError((_error, c) => { logger.error('Unhandled API error'); return c.json({ type: 'error', error: { type: 'internal_server_error', message: 'Internal server error' } }, 500); });
   app.get('/', (c) => c.redirect('/admin'));
   app.get('/favicon.ico', (c) => c.body(null, 204));
   app.route('/', healthRoute);
-  app.use('/v1/*', accessLog(logger));
+  app.use('/v1/*', accessLog(logger, env.accessLogFormat));
   app.use('/v1/*', apiKeyAuth(env.apiKeys, runtimeApiKeys));
   app.route('/', createModelsRoute({ modelRegistry, ready: modelRegistryReady }));
   app.route('/', createCountTokensRoute());
-  app.route('/', createMessagesRoute({ backend, requestLog, modelRegistry, accountPool, operationalState, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
-  app.route('/', createOpenAiChatRoute({ backend, requestLog, modelRegistry, accountPool, operationalState, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
-  app.route('/', createOpenAiResponsesRoute({ backend, requestLog, modelRegistry, accountPool, responsesStore, operationalState, backendProvider: env.chatGptBackend, ready: modelRegistryReady, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
+  app.route('/', createMessagesRoute({ backend, requestLog, modelRegistry, accountPool, operationalState, backendProvider: env.chatGptBackend, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
+  app.route('/', createOpenAiChatRoute({ backend, requestLog, modelRegistry, accountPool, operationalState, backendProvider: env.chatGptBackend, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
+  app.route('/', createOpenAiResponsesRoute({ backend, requestLog, modelRegistry, accountPool, responsesStore, operationalState, backendProvider: env.chatGptBackend, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createMetricsRoute(requestLog));
-  app.use('/admin/api/*', accessLog(logger));
+  app.use('/admin/api/*', accessLog(logger, env.accessLogFormat));
   app.use('/admin/api/*', adminApiAuth(env.apiKeys, runtimeApiKeys, { allowAnonymousBootstrap: env.allowAnonymousBootstrap, localAdminSession }));
   app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, durableState, operationalState, quotaService, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow, setupProvisioner, localAdminSession }));
   app.dispose = async () => {

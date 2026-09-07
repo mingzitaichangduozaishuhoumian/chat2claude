@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ChatGptBackendError, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptCompletionRequest } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptCompletionRequest } from '@chatgpt-to-claude/chatgpt-backend';
 import { AccountPool } from './account-pool.js';
 import { CodexOAuthClient } from './codex-oauth-client.js';
 import { RefreshAwareChatGptBackend } from './refresh-aware-backend.js';
@@ -20,6 +20,133 @@ function setup(backend: ChatGptBackendClient) {
 }
 
 describe('RefreshAwareChatGptBackend', () => {
+  it.each(['stream', 'complete', 'models', 'discover', 'quota'] as const)('does not refresh or dispatch pre-aborted %s with expiring credentials', async (operation) => {
+    let calls = 0;
+    const transport = backendFrom({
+      async complete() { calls++; return { text: '', finishReason: 'stop' }; },
+      async *stream() { calls++; yield { type: 'done' as const }; },
+      async listModels() { calls++; return []; },
+      async discoverModels() { calls++; return { models: [], status: 'empty' }; },
+      async getAccountQuota() { calls++; return { windows: [] }; },
+    });
+    const { wrapper, context, pool, getRefreshes } = setup(transport);
+    pool.update('session', { secret: { ...pool.get('session')!.secret, expiresAt: '2026-08-22T00:00:30.000Z' } });
+    const ctx = { ...context, signal: AbortSignal.abort('sensitive cancellation reason') };
+    await expect((async () => {
+      if (operation === 'stream') for await (const _event of wrapper.stream(request, ctx)) { /* consume */ }
+      else if (operation === 'complete') await wrapper.complete(request, ctx);
+      else if (operation === 'models') await wrapper.listModels(ctx);
+      else if (operation === 'discover') await wrapper.discoverModels!(ctx);
+      else await wrapper.getAccountQuota(ctx);
+    })()).rejects.toMatchObject({ name: 'AbortError' });
+    expect(getRefreshes()).toBe(0);
+    expect(calls).toBe(0);
+  });
+
+  it.each(['stream', 'complete', 'models', 'quota'] as const)('checks cancellation before retrying a transport 401 for %s', async (operation) => {
+    const controller = new AbortController();
+    let calls = 0;
+    const fail = () => { calls++; controller.abort(); throw unauthorized(); };
+    const { wrapper, context, getRefreshes } = setup(backendFrom({
+      async complete() { return fail(); }, async *stream() { fail(); },
+      async listModels() { return fail(); }, async getAccountQuota() { return fail(); },
+    }));
+    const ctx = { ...context, signal: controller.signal };
+    await expect((async () => {
+      if (operation === 'stream') for await (const _event of wrapper.stream(request, ctx)) { /* consume */ }
+      else if (operation === 'complete') await wrapper.complete(request, ctx);
+      else if (operation === 'models') await wrapper.listModels(ctx);
+      else await wrapper.getAccountQuota(ctx);
+    })()).rejects.toMatchObject({ name: 'AbortError' });
+    expect(calls).toBe(1);
+    expect(getRefreshes()).toBe(0);
+  });
+
+  it('advertises reset only for capable transports and never retries a consume 401', async () => {
+    expect(setup(backendFrom({})).wrapper.consumeAccountResetCredit).toBeUndefined();
+    const ids: string[] = [];
+    const transport = backendFrom({ consumeAccountResetCredit: async (id) => {
+      ids.push(id); if (ids.length === 1) throw unauthorized();
+    } });
+    const { wrapper, context, getRefreshes } = setup(transport);
+    await expect(wrapper.consumeAccountResetCredit!('synthetic-id', context)).rejects.toMatchObject({ code: 'unauthorized' });
+    expect(ids).toEqual(['synthetic-id']);
+    expect(getRefreshes()).toBe(0);
+  });
+
+  it.each(['stream', 'complete', 'models', 'quota'] as const)('waits for rejected async 401 body cleanup before refreshing and retrying %s', async (operation) => {
+    let finishCancel!: () => void;
+    const gate = new Promise<void>((resolve) => { finishCancel = resolve; });
+    let cancelling!: () => void;
+    const cancelled = new Promise<void>((resolve) => { cancelling = resolve; });
+    let cancelCalls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      async cancel() { cancelCalls += 1; cancelling(); await gate; throw new Error('cleanup failed'); },
+    });
+    let calls = 0;
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 60_000,
+      fetch: async () => {
+        if (++calls === 1) return new Response(body, { status: 401 });
+        if (operation === 'models') return Response.json({ models: [{ id: 'model' }] });
+        if (operation === 'quota') return Response.json({ rate_limit: {} });
+        return new Response('data: {"type":"response.completed"}\n\n');
+      },
+    });
+    const { wrapper, context, getRefreshes } = setup(backend);
+    let finished = false;
+    const pending = (async () => {
+      if (operation === 'stream') for await (const _event of wrapper.stream(request, context)) { /* consume */ }
+      else if (operation === 'complete') await wrapper.complete(request, context);
+      else if (operation === 'models') await wrapper.listModels(context);
+      else await wrapper.getAccountQuota(context);
+      finished = true;
+    })();
+    await cancelled;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    try {
+      expect(finished).toBe(false);
+      expect(calls).toBe(1);
+      expect(getRefreshes()).toBe(0);
+    } finally { finishCancel(); }
+    await pending;
+    expect(finished).toBe(true);
+    expect(calls).toBe(operation === 'quota' ? 3 : 2);
+    expect(cancelCalls).toBe(1);
+    expect(getRefreshes()).toBe(1);
+    expect(body.locked).toBe(false);
+  });
+
+  it.each(['stream', 'complete', 'models', 'quota', 'consume'] as const)('preserves abort during async 401 cleanup without OAuth refresh for %s', async (operation) => {
+    let finishCancel!: () => void;
+    const gate = new Promise<void>((resolve) => { finishCancel = resolve; });
+    let started!: () => void;
+    const cancelling = new Promise<void>((resolve) => { started = resolve; });
+    let calls = 0;
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 60_000,
+      fetch: async () => {
+        calls++;
+        return new Response(new ReadableStream({ async cancel() { started(); await gate; } }), { status: 401 });
+      },
+    });
+    const { wrapper, context, getRefreshes } = setup(backend);
+    const controller = new AbortController();
+    const ctx = { ...context, signal: controller.signal };
+    const pending = (async () => {
+      if (operation === 'stream') for await (const _event of wrapper.stream(request, ctx)) { /* consume */ }
+      else if (operation === 'complete') await wrapper.complete(request, ctx);
+      else if (operation === 'models') await wrapper.listModels(ctx);
+      else if (operation === 'quota') await wrapper.getAccountQuota(ctx);
+      else await wrapper.consumeAccountResetCredit!('11111111-1111-4111-8111-111111111111', ctx);
+    })();
+    const assertion = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    await cancelling;
+    controller.abort();
+    finishCancel();
+    await assertion;
+    expect(calls).toBe(1);
+    expect(getRefreshes()).toBe(0);
+  });
+
   it('preserves typed discovery results across the existing unauthorized retry', async () => {
     const tokens: string[] = [];
     const result = { models: [{ id: 'synthetic-model' }], status: 'partial' as const, diagnostic: {

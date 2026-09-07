@@ -5,6 +5,26 @@ import { loadEnv } from './config/env.js';
 import { adminPageViewSource, renderAccountCards, renderQuotaCards, renderAdminOverview, type AdminAccountView, type AdminOverviewData } from './routes/admin-page-view.js';
 
 describe('Admin UI redesign contracts', () => {
+  it('places recommended direct setup before optional CC Switch with copyable configurations', async () => {
+    const app = createApp(loadEnv({ NODE_ENV: 'test' }));
+    try {
+      const html = await (await app.request('/admin')).text();
+      const markup = html.slice(html.indexOf('<body>'), html.indexOf('<script>'));
+      expect(markup.indexOf('直接接入 Claude Code（推荐）')).toBeLessThan(markup.indexOf('通过 CC Switch 接入（可选）'));
+      expect(markup).toContain('无需第三方工具');
+      expect(markup).toContain('不是必需项，也不是本项目依赖');
+      for (const name of ['claude-code', 'cc-switch']) {
+        expect(markup).toContain(`id="copy-${name}-config"`);
+        expect(markup).toContain(`<pre id="${name}-config" data-i18n-ignore></pre>`);
+        expect(markup).toContain(`id="${name}-copy-status" role="status" aria-live="polite"`);
+      }
+      const setupClient = adminPageClientScript().slice(0, adminPageClientScript().indexOf('const overviewLoadState'));
+      expect(setupClient).toContain("ANTHROPIC_AUTH_TOKEN: '<your-runtime-api-key>'");
+      expect(setupClient).toContain('const copiedConfig = keyAtCopy ?');
+      expect(setupClient).toContain("window.addEventListener('pagehide', () => clearOneTimeRuntimeApiKey());");
+      expect(setupClient).not.toContain('clientSetupConfig(true)');
+    } finally { await app.dispose(); }
+  });
   it('keeps basic mapping visible and marks static and dynamic advanced controls professional-only', async () => {
     const app = createApp(loadEnv({ NODE_ENV: 'test' }));
     const html = await (await app.request('/admin')).text();
@@ -49,7 +69,12 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     expect(html).toContain('id="dismiss-runtime-api-key"');
     expect(html).toContain('id="runtime-key-copy-status"');
     expect(html).toContain('<details id="admin-key-fallback" data-professional-only>');
-    expect(html).toContain('高级：远程管理凭据（Admin API Key）');
+    expect(html).toContain('高级：外部管理访问（Admin API Key）');
+    expect(html).toContain('优先在本机浏览器使用 HttpOnly 会话');
+    expect(html).toContain('本项目不创建隧道、不配置 NAT、也不发布服务');
+    expect(html).toContain('Admin API Key 授予完整管理权限');
+    expect(html).toContain('普通客户端应使用 Runtime API Key');
+    expect(html).toContain('不是硬权限边界');
     expect(html).toContain('跨浏览器和服务重启保持有效，直至显式撤销');
     expect(html).toContain('[data-admin-mode="simple"] [id="admin-key-fallback"]');
     expect(html).toContain("postJson('/admin/api/api-keys')");
@@ -147,7 +172,7 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
       const html = renderInBrowser([fixture]);
       expect(html).toContain(message);
       expect(html).toContain('ChatGPT Pro 5x');
-      expect(html).toContain('prolite');
+      expect(html).not.toContain('<dd>ChatGPT Pro 5x · prolite');
     }
   });
   it('renders distinct authentication and quota workspaces with independent data calls', async () => {
@@ -163,7 +188,7 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     expect(html).toContain("getJson('/admin/api/accounts')");
     expect(html).toContain("getJson('/admin/api/quotas')");
     expect(html).toContain("postJson('/admin/api/quotas/refresh')");
-    expect(html).toContain("'/admin/api/quotas/' + encodeURIComponent(accountId) + '/refresh'");
+    expect(html).toContain("'/admin/api/quotas/' + encodeURIComponent(accountId) + (activeReset ? '/active-reset' : '/refresh')");
     expect(html).toContain("localStorage.setItem('adminViewMode', mode)");
     expect(html).toContain('aria-live="polite"');
     expect(html).toContain(':focus-visible');
@@ -233,7 +258,7 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     ]);
 
     expect(html).toContain('Primary operator account');
-    expect(html).toContain('plus');
+    expect(html).toContain('ChatGPT Plus');
     expect(html).toContain('健康');
     expect(html).toContain('已停用');
     expect(html).toContain('异常');
@@ -430,6 +455,83 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     listeners[5].keydown({ key: 'ArrowDown', preventDefault: vi.fn() });
     expect(buttons[0].focus).toHaveBeenCalled();
     expect(modules.every((module) => module.draft === 'preserved')).toBe(true);
+  });
+
+  it.each(['/admin/api/quotas', '/admin/api/quotas/refresh', '/admin/api/quotas/session/refresh', '/admin/api/quotas/session/active-reset'])('keeps quota 401 recovery local for %s', async (url) => {
+    const script = adminPageClientScript();
+    const request = script.slice(script.indexOf('async function requestJson('), script.indexOf('function loadFailureHtml('));
+    const selectModule = vi.fn();
+    const setAdminMode = vi.fn();
+    const fallback = { open: false };
+    const input = { focus: vi.fn() };
+    const requestJson = new Function('fetchWithAdminKey', 'document', 'setAdminSessionState', 'setAdminMode', 'selectModule', 'adminKeyFallback', 'adminKeyInput', 'renderResult', `${request}\nreturn requestJson;`)(
+      async () => Response.json({ error: 'provider-raw-secret' }, { status: 401 }),
+      { documentElement: { dataset: { adminMode: 'simple' } } }, vi.fn(), setAdminMode, selectModule, fallback, input, vi.fn(),
+    );
+    await expect(requestJson(url)).rejects.toMatchObject({ status: 401, message: expect.stringContaining('配额管理认证已失效') });
+    expect(selectModule).not.toHaveBeenCalled();
+    expect(setAdminMode).not.toHaveBeenCalled();
+    expect(input.focus).not.toHaveBeenCalled();
+    expect(fallback.open).toBe(false);
+  });
+
+  it('requires confirmation before reset, suppresses double clicks, and retains a local failure', async () => {
+    const script = adminPageClientScript();
+    const action = script.slice(script.indexOf('async function refreshQuotaAccount('), script.indexOf("document.getElementById('refresh-all-quotas').addEventListener"));
+    const confirm = vi.fn(() => false);
+    let reject!: (error: Error) => void;
+    const post = vi.fn(() => new Promise((_resolve, rej) => { reject = rej; }));
+    const fixture = { accountId: 'session', canActiveReset: true, status: 'fresh', expiresAt: '2099-01-01T00:00:00Z', quota: { windows: [], resetCredits: { availableCount: 3 } } };
+    const run = new Function('window', 'postJson', 'fixture', `let quotasCache = [fixture]; const pendingQuotaAccounts = new Set(); let quotaRefreshAllPending = false; let quotaRequestState = {}; const adminLocale = 'en';
+      function translateAdminText(text) { return text; } function renderQuotaPanel() {} function announce() {} function renderResult() {} function quotaRefreshFeedback() {}
+      ${action}\nreturn { refreshQuotaAccount, state: () => quotaRequestState };` )({ confirm }, post, fixture);
+    await run.refreshQuotaAccount('session', true);
+    expect(post).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
+    const pending = run.refreshQuotaAccount('session', true);
+    await run.refreshQuotaAccount('session', true);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledWith('/admin/api/quotas/session/active-reset', { confirm: true });
+    reject(new Error('local authentication recovery'));
+    await pending;
+    expect(run.state()).toEqual({ status: 'error', error: 'local authentication recovery' });
+    expect(fixture.quota.resetCredits.availableCount).toBe(3);
+    expect(fixture.canActiveReset).toBe(false);
+  });
+
+  it('emphasizes provider plan and identity and gates reset independently of missing counts', () => {
+    const fixture = account({ id: 'session', email: 'synthetic@example.test', planType: 'must-not-infer' });
+    const base = { accountId: fixture.id, createdAt: fixture.createdAt, supported: true, status: 'fresh' as const,
+      canActiveReset: true, expiresAt: '2099-01-01T00:00:00Z', quota: { planType: 'plus', windows: [], resetCredits: { availableCount: 3 } } };
+    const html = renderQuotaCards([base], [fixture], 'en');
+    expect(html).toContain('quota-account-identity');
+    expect(html).toContain('synthetic@example.test');
+    expect(html).toContain('quota-plan-badge');
+    expect(html).toContain('<strong data-i18n-ignore>ChatGPT Plus</strong>');
+    expect(html).toContain('Available reset credits');
+    expect(html).toContain('data-admin-number="3"');
+    expect(html).toContain('data-quota-reset="session"');
+    expect(html).toContain('Consume one provider reset credit');
+    expect(html).not.toContain('must-not-infer');
+    for (const result of [
+      { ...base, canActiveReset: false }, { ...base, status: 'stale' as const },
+      { ...base, expiresAt: '2000-01-01T00:00:00Z' }, { ...base, supported: false },
+      { ...base, quota: { windows: [] } },
+      { ...base, quota: { windows: [], resetCredits: { availableCount: 0 } } },
+      { ...base, quota: { windows: [], resetCredits: { error: 'fetch_failed' as const } } },
+    ]) expect(renderQuotaCards([result], [fixture])).not.toContain('data-quota-reset=');
+  });
+
+  it.each(['zh-CN', 'en'] as const)('renders mapped Pro labels prominently in server quota cards for %s', (locale) => {
+    const quotas = ['prolite', 'pro'].map((planType, index) => ({
+      accountId: `plan-${planType}`, createdAt: `2026-09-0${index + 1}T00:00:00.000Z`, supported: true as const, status: 'fresh' as const,
+      quota: { planType, allowed: true, limitReached: false, windows: [], additionalLimits: [] },
+    }));
+    const html = renderQuotaCards(quotas, [], locale);
+    expect(html).toContain('<strong data-i18n-ignore>ChatGPT Pro 5x</strong>');
+    expect(html).toContain('<strong data-i18n-ignore>ChatGPT Pro 20x</strong>');
+    expect(html).not.toContain('<strong data-i18n-ignore>prolite</strong>');
+    expect(html).not.toContain('<strong data-i18n-ignore>pro</strong>');
   });
 
   it.each(['simple', 'professional'])('opens and focuses Admin Access after a 401 in %s mode', async (mode) => {

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { presentPlan, type PlanPresentation } from './plan-presentation.js';
 import { ChatGptBackendError, type ChatGptAccountQuota, type ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import type { Account, AccountPool, AccountQuotaOperation } from './account-pool.js';
@@ -10,6 +11,7 @@ export interface AccountQuotaResult {
   accountId: string;
   createdAt: string;
   supported: boolean;
+  canActiveReset?: boolean;
   plan?: PlanPresentation;
   status: SanitizedQuotaCache['status'];
   fetchedAt?: string;
@@ -44,6 +46,8 @@ export class AccountQuotaService {
   private readonly ttlMs: number;
   private readonly caches = new Map<string, SanitizedQuotaCache>();
   private readonly refreshes = new Map<string, ActiveRefresh>();
+  private readonly resetNeedsRefresh = new Set<string>();
+  private readonly cacheRevisions = new Map<string, { incarnation: number; configurationRevision: number }>();
 
   constructor(private readonly options: AccountQuotaServiceOptions) {
     this.now = options.now ?? (() => new Date());
@@ -58,7 +62,19 @@ export class AccountQuotaService {
   }
 
   async refreshAll(): Promise<AccountQuotaResult[]> {
-    return Promise.all(this.options.accountPool.snapshot().accounts.map((account) => this.refreshAccount(account.id)));
+    return Promise.all(this.options.accountPool.snapshot().accounts.map(async (account) => {
+      try {
+        return await this.refreshAccount(account.id);
+      } catch (error) {
+        // Joining a reset must not lose other accounts' results or retry the mutation.
+        const current = this.options.accountPool.get(account.id);
+        if (!current || current.incarnation !== account.incarnation || current.configurationRevision !== account.configurationRevision) {
+          return this.accountChangedResult(account);
+        }
+        const result = this.resultFor(current);
+        return { ...result, canActiveReset: false, status: result.quota ? 'stale' as const : 'error' as const, error: sanitizeQuotaError(error) };
+      }
+    }));
   }
 
   removeAccount(identity: { id: string; createdAt: string }): void {
@@ -85,7 +101,7 @@ export class AccountQuotaService {
 
     const key = activeRefreshKey(account);
     const existing = this.refreshes.get(key);
-    if (existing && this.options.accountPool.isCurrentQuota(existing.operation)) return existing.promise;
+    if (existing) return existing.promise;
 
     const operation = this.options.accountPool.beginQuota(account);
     if (!operation) return Promise.resolve(this.accountChangedResult(account));
@@ -97,9 +113,37 @@ export class AccountQuotaService {
     return promise;
   }
 
-  private async performRefresh(account: Account, operation: AccountQuotaOperation): Promise<AccountQuotaResult> {
+  activeReset(accountId: string): Promise<AccountQuotaResult> {
+    const account = this.options.accountPool.get(accountId);
+    if (!account) return Promise.reject(new AccountQuotaNotFoundError(accountId));
+    const key = activeRefreshKey(account);
+    if (this.refreshes.has(key)) return Promise.reject(new AccountQuotaResetError('quota_busy', 409));
+    if (!this.resultFor(account).canActiveReset) return Promise.reject(new AccountQuotaResetError('reset_unavailable', 409));
+    const operation = this.options.accountPool.beginQuota(account);
+    if (!operation) return Promise.reject(new AccountQuotaResetError('account_changed', 409));
+    const promise = this.performActiveReset(account, operation).finally(() => {
+      if (this.refreshes.get(key)?.operation.id === operation.id) this.refreshes.delete(key);
+      this.options.accountPool.endQuota(operation);
+    });
+    this.refreshes.set(key, { operation, promise });
+    return promise;
+  }
+
+  private async performActiveReset(account: Account, operation: AccountQuotaOperation): Promise<AccountQuotaResult> {
+    // Even ambiguous transport failures require an authoritative refresh before another redemption.
+    this.resetNeedsRefresh.add(identityKey(account));
     try {
-      const quota = await this.options.backend.getAccountQuota!(accountQuotaContext(account, operation.id));
+      await this.options.backend.consumeAccountResetCredit!(randomUUID(), accountQuotaContext(account, operation.id));
+    } catch {
+      throw new AccountQuotaResetError('reset_failed', 502);
+    }
+    if (!this.options.accountPool.isCurrentQuota(operation)) throw new AccountQuotaResetError('account_changed', 409);
+    return this.performRefresh(account, operation, true);
+  }
+
+  private async performRefresh(account: Account, operation: AccountQuotaOperation, preserveOnFailure = false): Promise<AccountQuotaResult> {
+    try {
+      const quota = cloneQuota(await this.options.backend.getAccountQuota!(accountQuotaContext(account, operation.id)));
       if (!this.options.accountPool.isCurrentQuota(operation)) return this.accountChangedResult(account);
       const fetchedAt = this.now();
       const cache: SanitizedQuotaCache = {
@@ -109,9 +153,13 @@ export class AccountQuotaService {
         quota,
       };
       this.store(account, cache);
-      return this.resultFor(this.options.accountPool.get(account.id) ?? account);
+      const current = this.options.accountPool.get(account.id)!;
+      this.cacheRevisions.set(identityKey(account), { incarnation: current.incarnation, configurationRevision: current.configurationRevision });
+      this.resetNeedsRefresh.delete(identityKey(account));
+      return this.resultFor(current);
     } catch (error) {
       if (!this.options.accountPool.isCurrentQuota(operation)) return this.accountChangedResult(account);
+      if (preserveOnFailure) throw new AccountQuotaResetError('reset_refresh_failed', 502);
       const previous = this.caches.get(identityKey(account));
       const safeError = sanitizeQuotaError(error);
       const cache: SanitizedQuotaCache = previous?.quota
@@ -152,7 +200,13 @@ export class AccountQuotaService {
       accountId: account.id,
       createdAt: account.createdAt,
       supported: true,
-      plan: presentPlan({ ...cache, status }, account.secret?.planType),
+      plan: presentPlan({ ...cache, status }),
+      canActiveReset: status === 'fresh' && !cache.error && !cache.quota?.resetCredits?.error
+        && typeof this.options.backend.consumeAccountResetCredit === 'function'
+        && Number.isSafeInteger(cache.quota?.resetCredits?.availableCount) && (cache.quota?.resetCredits?.availableCount ?? 0) > 0
+        && !this.resetNeedsRefresh.has(identityKey(account))
+        && this.cacheRevisions.get(identityKey(account))?.incarnation === account.incarnation
+        && this.cacheRevisions.get(identityKey(account))?.configurationRevision === account.configurationRevision,
       status,
       ...(cache.fetchedAt ? { fetchedAt: cache.fetchedAt } : {}),
       ...(cache.expiresAt ? { expiresAt: cache.expiresAt } : {}),
@@ -194,6 +248,13 @@ export class AccountQuotaService {
   }
 }
 
+export class AccountQuotaResetError extends Error {
+  constructor(readonly code: 'quota_busy' | 'reset_unavailable' | 'account_changed' | 'reset_failed' | 'reset_refresh_failed', readonly status: 409 | 502) {
+    super(code === 'reset_refresh_failed' ? 'Reset accepted, but authoritative refresh failed. Refresh quota before retrying.' : 'Active reset could not be completed. Refresh quota and check account availability before retrying.');
+    this.name = 'AccountQuotaResetError';
+  }
+}
+
 export class AccountQuotaNotFoundError extends Error {
   constructor(readonly accountId: string) {
     super('Account not found');
@@ -231,7 +292,7 @@ function identityKey(identity: { id?: string; accountId?: string; createdAt: str
 }
 
 function activeRefreshKey(account: Account): string {
-  return JSON.stringify([account.id, account.incarnation, account.createdAt]);
+  return account.id;
 }
 
 function cloneCache(cache: SanitizedQuotaCache): SanitizedQuotaCache {
@@ -247,6 +308,10 @@ function cloneQuota(quota: ChatGptAccountQuota): ChatGptAccountQuota {
     ...quota,
     windows: quota.windows.map((window) => ({ ...window })),
     ...(quota.additionalLimits ? { additionalLimits: quota.additionalLimits.map((limit) => ({ ...limit, windows: limit.windows.map((window) => ({ ...window })) })) } : {}),
-    ...(quota.resetCredits ? { resetCredits: { ...quota.resetCredits } } : {}),
+    ...(quota.resetCredits ? { resetCredits: {
+      ...(Number.isSafeInteger(quota.resetCredits.availableCount) && quota.resetCredits.availableCount! >= 0 ? { availableCount: quota.resetCredits.availableCount } : {}),
+      ...(quota.resetCredits.error ? { error: quota.resetCredits.error === 'invalid_response' ? 'invalid_response' as const : 'fetch_failed' as const } : {}),
+      ...(quota.resetCredits.credits ? { credits: quota.resetCredits.credits.map(({ status, grantedAt, expiresAt }) => ({ status, ...(grantedAt ? { grantedAt } : {}), expiresAt })) } : {}),
+    } } : {}),
   };
 }

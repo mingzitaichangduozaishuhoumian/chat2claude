@@ -47,7 +47,7 @@ The Admin console has six fixed destinations. The selected destination is also r
 | **Models** `#models` | Binds aliases to discovered backend models, changes alias enabled state and defaults, refreshes discovery, and manages custom aliases in Professional mode. |
 | **API access** `#api-access` | Creates, copies, lists, and revokes Runtime API Keys; shows the dynamic Base URL, endpoint, and curl example. |
 | **Quotas** `#quota` | Reads cached provider allowance data and refreshes one or all accounts. It distinguishes fresh, stale, error, and unknown states. |
-| **Admin access** `#admin-access` | Shows the local HttpOnly admin session. Professional mode contains the Admin API Key fallback for remote or automated management. |
+| **Admin access** `#admin-access` | Prefers the host-local HttpOnly admin session. Professional mode provides an Admin API Key for external management after the operator independently makes the service reachable. |
 
 ### Simple and Professional modes
 
@@ -60,7 +60,7 @@ The console opens in **Simple mode**. Simple mode is sufficient for normal OAuth
 - reasoning-effort and service-tier controls, capability metadata, and configuration issues;
 - custom alias creation, editing, deletion, overlay reset, and backend-discovery refresh;
 - advanced manual `accessToken`/cookie import;
-- the remote/automation Admin API Key fallback.
+- external-management Admin API Key access after the operator independently makes the service reachable.
 
 The mode preference is stored in the current browser as `localStorage.adminViewMode` and accepts only `simple` or `professional`. It is not server-side account configuration; another browser or cleared storage returns to Simple mode.
 
@@ -104,10 +104,12 @@ The names describe different primary uses, but the current server does not enfor
 | Credential | Primary use | Accepted authentication |
 | --- | --- | --- |
 | Runtime API Key | Client calls to `/v1/*`; under the current implementation, a valid Runtime Key is also accepted for protected `/admin/api/*` routes | `Authorization: Bearer <key>` or `x-api-key: <key>` |
-| Admin API Key | The name used for remote or automated `/admin/api/*` management; protect it as an administrative credential | `Authorization: Bearer <key>` or `x-api-key: <key>` |
+| Admin API Key | Full-management credential for external `/admin/api/*` access after the operator independently makes the service reachable; never share it as a normal user, Claude, or API credential | `Authorization: Bearer <key>` or `x-api-key: <key>` |
 | `API_KEYS` | Static server-side allow-list configured before startup; usable for `/v1/*` and remote Admin API access | Same headers |
 
-Runtime API Key and Admin API Key are therefore a distinction of purpose and operating practice, not a hard authentication isolation boundary in the current implementation. Treat a leaked Runtime Key as potentially granting Admin API access.
+Runtime API Key and Admin API Key are therefore a distinction of issuance, purpose, and operating practice, not a hard authentication isolation boundary in the current implementation. Normal clients should receive Runtime API Keys. Treat a leaked Runtime Key as potentially granting Admin API access.
+
+Prefer the host-local browser HttpOnly session. Use an Admin API Key from another browser, device, or automation only after the operator independently makes the service reachable through LAN, VPN/mesh VPN, an SSH tunnel, reverse tunnel/NAT traversal, or a reverse proxy. This project does not create tunnels, configure NAT, or publish the service.
 
 On loopback, opening `/admin` issues a process-scoped random HttpOnly, `SameSite=Strict`, `Path=/admin` cookie. The cookie:
 
@@ -248,7 +250,14 @@ Missing or unknown `usedPercent` is not rendered as a zero-value progress bar. T
 
 ### HTTP access logs
 
-Access logging is installed only for `/v1/*` and `/admin/api/*`. Each entry contains:
+Access logging is installed only for `/v1/*` and `/admin/api/*`. The default `ACCESS_LOG_FORMAT=text` is a dedicated concise line; ordinary application logs remain JSON. Set `ACCESS_LOG_FORMAT=json` to retain the `{ level, message: "HTTP access", meta, time }` envelope with a full request UUID and optional safe `reason`. Both formats use `info` for 2xx/3xx, `warn` for 4xx, and `error` for 5xx, filtered by `LOG_LEVEL`.
+
+```text
+17:37:48.754 INFO  200 29ms 127.0.0.1 POST /v1/messages?beta model=opus stream req=ed73cd3b
+17:38:18.754 ERROR 503 30000ms 127.0.0.1 POST /v1/messages model=opus reason=account_busy_timeout req=2aec84fd
+```
+
+Text fields are ordered as UTC time, level, status, response-ready duration, peer IP, method, normalized path/safe query categories, model, stream, reason, and the first eight UUID characters. False stream flags and missing fields are omitted. Peer IP comes only from the connection, not forwarding headers. Structured entries contain:
 
 - request ID, HTTP method, and normalized path;
 - query-parameter categories (`beta` is retained; all other names become `other`);
@@ -259,6 +268,28 @@ Access logging is installed only for `/v1/*` and `/admin/api/*`. Each entry cont
 The logger does **not** read or record request bodies, response bodies, tokens, cookies, Authorization headers, API Keys, OAuth code/state/verifier values, or complete query values. Dynamic flow/account/key/model IDs are normalized to placeholders; invalid or oversized model IDs are replaced with a safe placeholder.
 
 `response_ready` means that the response object is ready: for a non-streaming request, the handler has produced the response; for a streaming request, the SSE response has been created. It does **not** mean that the streaming body has finished sending.
+
+### Bounded account-concurrency waiting
+
+Messages, Chat Completions, and Responses use the same notification-based acquisition policy. If at least one account matches provider, capability, model, and controls and is otherwise available but saturated, the request waits for a slot rather than returning an immediate 503. `ACCOUNT_ACQUIRE_TIMEOUT_MS` defaults to `30000`; `0` restores immediate failure. It accepts integer milliseconds from `0` to `2147483647`; invalid values fail startup. Waiting has one fixed deadline, with no polling and no deadline reset on notification.
+
+Release, health recovery, enablement, removal, and configuration updates notify existing waiters. Each waiter competes through synchronous acquisition, which still enforces Admin's `maxConcurrency` limit. Timeout, acquisition, cancellation via the request's AbortSignal, and a change to a non-busy unavailable state remove the waiter, its timer, and abort listener. The pool does not wait for cooldown expiry, reauthorization, or incompatible models to change.
+
+| Fixed reason | Meaning |
+| --- | --- |
+| `no_account` | No account matches the provider. |
+| `capability_unavailable` | No provider-matching account has the required capability. |
+| `model_or_controls_unsupported` | No candidate supports the requested model/controls. |
+| `account_disabled` | Matching accounts are disabled. |
+| `account_unhealthy` | Enabled matching accounts are unhealthy or in error. |
+| `account_cooldown` | Remaining matching accounts are cooling down. |
+| `account_busy` | Otherwise available matching accounts are saturated and waiting is disabled. |
+| `account_busy_timeout` | The slot-acquisition deadline expired. |
+| `request_aborted` | The client cancelled during acquisition. |
+
+Diagnosis applies provider, capability, eligibility, enabled, health, cooldown, and concurrency filters in that order. This makes mixed-pool failures deterministic: an incompatible idle account cannot hide an eligible busy account. A session preflight preserves the existing no-available-account 503 before global model resolution, but allows busy accounts through for full model/control filtering. Existing model-validation 400/404 responses remain unchanged.
+
+Reasons are internal/log metadata, not account IDs, raw errors, upstream response bodies, or new API/SSE fields. Acquisition failures retain HTTP 503 / `overloaded_error` in each protocol's existing envelope. An already-disconnected client may not receive that response. A streaming response's initial 200 does **not** free the account: its generator's `finally` releases the slot when the SSE finishes, errors, or is cleaned up after cancellation. Access-log duration includes acquisition waiting but excludes full SSE transmission; it is not an upstream latency measurement or final stream-outcome log.
 
 ### Admin request statistics
 
@@ -290,6 +321,8 @@ Common settings:
 CHATGPT_BACKEND=session
 CHATGPT_BASE_URL=https://chatgpt.com
 CHATGPT_REQUEST_TIMEOUT_MS=60000
+ACCESS_LOG_FORMAT=text
+ACCOUNT_ACQUIRE_TIMEOUT_MS=30000
 PORT=3000
 HOST=127.0.0.1
 API_KEYS=<key-1>,<key-2>

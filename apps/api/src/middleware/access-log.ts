@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { Context, MiddlewareHandler } from 'hono';
-import type { Logger } from '@chatgpt-to-claude/shared';
+import { isIP } from 'node:net';
+import { accessLogLevel, type AccessLogFormat, type HttpAccessLogEntry, type Logger } from '@chatgpt-to-claude/shared';
+import { ACCOUNT_UNAVAILABLE_REASONS, type AccountUnavailableReason } from '../services/account-pool.js';
 
 const ACCESS_LOG_METADATA = 'accessLogMetadata';
 const PUBLIC_QUERY_PARAMETERS = new Set(['beta']);
@@ -10,19 +12,11 @@ const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
 export interface AccessLogMetadata {
   model?: string;
   stream?: boolean;
+  reason?: AccountUnavailableReason;
 }
 
-export interface HttpAccessLog {
-  requestId: string;
-  method: string;
-  path: string;
-  query: Record<string, true>;
-  status: number;
-  durationMs: number;
-  durationKind: 'response_ready';
-  peerIp: string;
-  model?: string;
-  stream?: boolean;
+export interface HttpAccessLog extends HttpAccessLogEntry {
+  reason?: AccountUnavailableReason;
 }
 
 /**
@@ -30,7 +24,7 @@ export interface HttpAccessLog {
  * For streaming responses, duration measures when the response is ready, not
  * when its body finishes sending.
  */
-export function accessLog(logger: Logger): MiddlewareHandler {
+export function accessLog(logger: Logger, format: AccessLogFormat = 'text'): MiddlewareHandler {
   return async (c, next) => {
     const requestId = randomUUID();
     const startedAt = performance.now();
@@ -42,7 +36,7 @@ export function accessLog(logger: Logger): MiddlewareHandler {
       const metadata = c.get(ACCESS_LOG_METADATA) as AccessLogMetadata | undefined;
       const entry: HttpAccessLog = {
         requestId,
-        method: c.req.method,
+        method: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'CONNECT', 'TRACE'].includes(c.req.method) ? c.req.method : 'OTHER',
         path: normalizeAccessPath(url.pathname),
         query: summarizeQuery(url.searchParams),
         status: c.res.status,
@@ -51,15 +45,17 @@ export function accessLog(logger: Logger): MiddlewareHandler {
         peerIp: peerIp(c),
         ...(metadata?.model === undefined ? {} : { model: safeModelId(metadata.model) }),
         ...(metadata?.stream === undefined ? {} : { stream: metadata.stream }),
+        ...(metadata?.reason && ACCOUNT_UNAVAILABLE_REASONS.includes(metadata.reason) ? { reason: metadata.reason } : {}),
       };
-      logger.info('HTTP access', entry);
+      if (logger.access) logger.access(entry, format);
+      else logger[accessLogLevel(entry.status)]('HTTP access', entry);
     }
   };
 }
 
 /** Attach only protocol fields which have passed the route's request validation. */
 export function setAccessLogMetadata(c: Context, metadata: AccessLogMetadata): void {
-  c.set(ACCESS_LOG_METADATA, metadata);
+  c.set(ACCESS_LOG_METADATA, { ...c.get(ACCESS_LOG_METADATA), ...metadata });
 }
 
 export function normalizeAccessPath(pathname: string): string {
@@ -70,6 +66,7 @@ export function normalizeAccessPath(pathname: string): string {
   if (/^\/admin\/api\/auth\/chatgpt\/[^/]+$/.test(pathname)) return '/admin/api/auth/chatgpt/:flowId';
   if (/^\/admin\/api\/auth\/chatgpt\/[^/]+\/cancel$/.test(pathname)) return '/admin/api/auth/chatgpt/:flowId/cancel';
   if (/^\/admin\/api\/quotas\/[^/]+\/refresh$/.test(pathname)) return '/admin/api/quotas/:accountId/refresh';
+  if (/^\/admin\/api\/quotas\/[^/]+\/active-reset$/.test(pathname)) return '/admin/api/quotas/:accountId/active-reset';
   if (/^\/admin\/api\/accounts\/[^/]+$/.test(pathname)) return '/admin/api/accounts/:accountId';
   if (/^\/admin\/api\/accounts\/[^/]+\/health-check$/.test(pathname)) return '/admin/api/accounts/:accountId/health-check';
   if (/^\/admin\/api\/api-keys\/[^/]+$/.test(pathname)) return '/admin/api/api-keys/:keyId';
@@ -90,5 +87,6 @@ function safeModelId(model: string): string {
 
 function peerIp(c: Context): string {
   const incoming = (c.env as { incoming?: { socket?: { remoteAddress?: unknown } } } | undefined)?.incoming;
-  return typeof incoming?.socket?.remoteAddress === 'string' && incoming.socket.remoteAddress ? incoming.socket.remoteAddress : 'unknown';
+  const address = incoming?.socket?.remoteAddress;
+  return typeof address === 'string' && isIP(address) ? address : 'unknown';
 }

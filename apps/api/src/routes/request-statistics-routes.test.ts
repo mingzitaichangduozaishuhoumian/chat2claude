@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SessionChatGptBackend } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ChatGptBackendClient, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
 import { createMessagesRoute } from './messages.js';
 import { createOpenAiChatRoute } from './openai-chat.js';
@@ -34,10 +35,40 @@ describe('request-statistics protocol attribution', () => {
     const state = new AdminOperationalState({ path: 'unused.json', debounceMs: 60_000 });
     const app = createRoute({ backend: new FailingBackend(), requestLog: new RequestLog(), modelRegistry: registry(), accountPool: new AccountPool(), operationalState: state });
 
-    expect((await app.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).status).toBe(400);
+    const response = await app.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    expect(response.status).toBe(500);
+    expect(await response.text()).not.toContain('backend failed');
     expect(state.snapshot().accounts[0]?.requestStats).toMatchObject({
       totalRequests: 1, successfulRequests: 0, failedRequests: 1, cancelledRequests: 0, inFlight: 0,
     });
+  });
+
+  it.each([
+    [createMessagesRoute, '/v1/messages', { model: 'sonnet', max_tokens: 16, messages: [{ role: 'user', content: 'hello' }] }],
+    [createOpenAiChatRoute, '/v1/chat/completions', { model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] }],
+    [createOpenAiResponsesRoute, '/v1/responses', { model: 'sonnet', input: 'hello' }],
+  ] as const)('safely maps session SSE failures and releases accounts (case %#)', async (createRoute, path, body) => {
+    for (const stream of [false, true]) for (const partial of [false, true]) {
+      const state = new AdminOperationalState({ path: 'unused.json', debounceMs: 60_000 });
+      const pool = new AccountPool();
+      pool.add({ id: 'session-canary', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token' } });
+      const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000,
+        fetch: async () => new Response((partial ? 'data: {"delta":"safe partial"}\n\n' : '')
+          + 'data: {"type":"response.error","message":{"content":"SSE_SECRET_CANARY"},"detail":"SSE_SECRET_CANARY"}\n\n'
+          + 'data: {"type":"response.completed"}\n\n'),
+      });
+      const modelRegistry = registry();
+      modelRegistry.replaceAccountModels({ accountId: 'session-canary', createdAt: pool.get('session-canary')!.createdAt }, models);
+      const app = createRoute({ backend, requestLog: new RequestLog(), modelRegistry, accountPool: pool, operationalState: state, backendProvider: 'session' });
+      const response = await app.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, stream }) });
+      const text = await response.text();
+      expect(response.status).toBe(stream ? 200 : 502);
+      expect(text).toContain('Upstream request failed.');
+      expect(text).not.toMatch(/SSE_SECRET_CANARY|response\.completed|message_stop|"finish_reason":"stop"/);
+      expect(state.snapshot().accounts[0]?.requestStats).toMatchObject({ totalRequests: 1, successfulRequests: 0, failedRequests: 1, cancelledRequests: 0, inFlight: 0 });
+      expect(pool.get('session-canary')).toMatchObject({ currentConcurrency: 0, status: 'error', cooldownUntil: null, lastErrorCode: 'upstream_error' });
+      expect(JSON.stringify(state.snapshot()) + JSON.stringify(pool.get('session-canary'))).not.toContain('SSE_SECRET_CANARY');
+    }
   });
 
   it('does not create statistics for a pre-acquisition validation failure', async () => {

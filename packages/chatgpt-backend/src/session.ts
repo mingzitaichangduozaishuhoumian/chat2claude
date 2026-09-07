@@ -35,7 +35,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   async discoverModels(context?: ChatGptBackendRequestContext): Promise<ChatGptModelDiscoveryResult> {
     if (!context?.account) return { models: [], status: 'unknown' };
     const secret = requireSessionSecret(context);
-    return this.runWithTimeout(async (signal) => {
+    return this.runWithTimeout(async (signal, cancelBody) => {
       const response = await this.fetchResponse(
         this.backendApiEndpoint('/codex/models', { client_version: this.clientVersion }),
         { method: 'GET', headers: this.headers(secret, false, 'application/json') },
@@ -43,6 +43,8 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       );
       const diagnostic = discoveryDiagnostic(response, this.clientVersion);
       if (!response.ok) {
+        await cancelBody(response);
+        signal.throwIfAborted();
         throw new ChatGptBackendError(`ChatGPT models discovery failed: HTTP ${response.status}`, backendErrorCodeForStatus(response.status), {
           status: response.status, discoveryDiagnostic: diagnostic,
         });
@@ -77,7 +79,39 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       'ChatGPT quota response was not valid JSON.',
     );
     if (!response.ok) throw httpBackendError('ChatGPT quota request failed', response.status);
-    return normalizeAccountQuota(payload);
+    const quota = normalizeAccountQuota(payload);
+    // The dedicated endpoint is authoritative; never substitute an embedded or inferred balance.
+    try {
+      const headers = this.headers(secret, false, 'application/json');
+      headers.set('OpenAI-Beta', 'codex-1');
+      headers.set('Originator', 'Codex Desktop');
+      const credits = await this.fetchJsonWithTimeout(
+        this.backendApiEndpoint('/wham/rate-limit-reset-credits'),
+        { method: 'GET', headers }, context?.signal, 'Invalid reset credit response.',
+      );
+      quota.resetCredits = credits.response.ok ? normalizeResetCredits(credits.payload) : { error: 'fetch_failed' };
+    } catch {
+      context?.signal?.throwIfAborted();
+      quota.resetCredits = { error: 'fetch_failed' };
+    }
+    return quota;
+  }
+
+  async consumeAccountResetCredit(redeemRequestId: string, context?: ChatGptBackendRequestContext): Promise<void> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(redeemRequestId)) {
+      throw new ChatGptBackendError('Invalid reset request.', 'invalid_request');
+    }
+    const secret = requireSessionSecret(context);
+    await this.runWithTimeout(async (signal, cancelBody) => {
+      const response = await this.fetchResponse(this.backendApiEndpoint('/wham/rate-limit-reset-credits/consume'), {
+        method: 'POST', headers: this.headers(secret, true, 'application/json'),
+        body: JSON.stringify({ redeem_request_id: redeemRequestId }),
+      }, signal);
+      // No provider body, including a successful redemption payload, leaves this adapter.
+      await cancelBody(response);
+      signal.throwIfAborted();
+      if (!response.ok) throw httpBackendError('Reset credit request failed', response.status);
+    }, context?.signal);
   }
 
   async complete(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse> {
@@ -99,29 +133,42 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent> {
     validateSessionRequest(request);
     const secret = requireSessionSecret(context);
-    const response = await this.fetchWithTimeout(this.backendApiEndpoint('/codex/responses'), {
-      method: 'POST',
-      headers: this.headers(secret, true),
-      body: JSON.stringify(buildResponsesBody(request)),
-    }, context?.signal);
-    if (!response.ok) throw httpBackendError('ChatGPT responses request failed', response.status);
-
-    let latestUsage: ChatGptUsage | undefined;
-    for await (const data of iterateSseData(response)) {
-      if (data === '[DONE]') break;
-      const parsed = parseJson(data);
-      if (!parsed) continue;
-      latestUsage = mergeUsage(latestUsage, extractUsage(parsed));
-      const delta = extractTextDelta(parsed);
-      if (delta) yield { type: 'text_delta', text: delta };
-      const toolCall = extractToolCall(parsed);
-      if (toolCall) yield { type: 'tool_call', toolCall };
-      if (isDoneEvent(parsed)) {
-        yield { type: 'done', finishReason: extractFinishReason(parsed), ...(latestUsage ? { usage: latestUsage } : {}) };
-        return;
+    const lifetime = createRequestLifetime(this.timeoutMs, context?.signal);
+    try {
+      const response = await lifetime.run(() => this.fetchResponse(this.backendApiEndpoint('/codex/responses'), {
+        method: 'POST',
+        headers: this.headers(secret, true),
+        body: JSON.stringify(buildResponsesBody(request)),
+      }, lifetime.signal));
+      if (!response.ok) {
+        await cancelResponseBody(response);
+        lifetime.signal.throwIfAborted();
+        throw httpBackendError('ChatGPT responses request failed', response.status);
       }
+
+      let latestUsage: ChatGptUsage | undefined;
+      for await (const frame of iterateSseData(response, lifetime)) {
+        const parsed = parseJson(frame.data);
+        if (isFailureEvent(frame.event, parsed)) {
+          // Never retain provider messages, details, codes or payloads in the error.
+          throw new ChatGptBackendError('ChatGPT session backend response failed.', 'upstream_error', { status: 502 });
+        }
+        if (frame.data === '[DONE]') break;
+        if (!parsed) continue;
+        latestUsage = mergeUsage(latestUsage, extractUsage(parsed));
+        const delta = extractTextDelta(parsed);
+        if (delta) yield { type: 'text_delta', text: delta };
+        const toolCall = extractToolCall(parsed);
+        if (toolCall) yield { type: 'tool_call', toolCall };
+        if (isDoneEvent(parsed)) {
+          yield { type: 'done', finishReason: extractFinishReason(parsed), ...(latestUsage ? { usage: latestUsage } : {}) };
+          return;
+        }
+      }
+      yield { type: 'done', finishReason: 'stop', ...(latestUsage ? { usage: latestUsage } : {}) };
+    } finally {
+      lifetime.dispose();
     }
-    yield { type: 'done', finishReason: 'stop', ...(latestUsage ? { usage: latestUsage } : {}) };
   }
 
   private headers(secret: ChatGptSessionSecret, includeContentType: boolean, accept = 'text/event-stream'): Headers {
@@ -144,35 +191,17 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     return url.toString();
   }
 
-  private fetchWithTimeout(url: string, init: RequestInit, callerSignal?: AbortSignal): Promise<Response> {
-    return this.runWithTimeout((signal) => this.fetchResponse(url, init, signal), callerSignal);
-  }
-
-  private runWithTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, callerSignal?: AbortSignal): Promise<T> {
-    if (callerSignal?.aborted) return Promise.reject(abortError());
-    const controller = new AbortController();
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, this.timeoutMs);
-    const cancel = () => controller.abort();
-    callerSignal?.addEventListener('abort', cancel, { once: true });
-    const aborted = new Promise<never>((_resolve, reject) => {
-      controller.signal.addEventListener('abort', () => {
-        reject(callerSignal?.aborted
-          ? abortError()
-          : new ChatGptBackendError('ChatGPT session backend request timed out.', 'timeout', { status: 504 }));
-      }, { once: true });
-    });
-    return Promise.race([operation(controller.signal), aborted]).catch((error) => {
-      if (callerSignal?.aborted) throw abortError();
-      if (timedOut) throw new ChatGptBackendError('ChatGPT session backend request timed out.', 'timeout', { status: 504 });
-      throw error;
-    }).finally(() => {
-      clearTimeout(timeout);
-      callerSignal?.removeEventListener('abort', cancel);
-    });
+  private async runWithTimeout<T>(operation: (signal: AbortSignal, cancelBody: (response: Response) => Promise<void>) => Promise<T>, callerSignal?: AbortSignal): Promise<T> {
+    const lifetime = createRequestLifetime(this.timeoutMs, callerSignal);
+    let cancellation: Promise<void> | undefined;
+    const cancelBody = (response: Response) => cancellation ??= cancelResponseBody(response);
+    try {
+      return await lifetime.run(() => operation(lifetime.signal, cancelBody));
+    } finally {
+      lifetime.dispose();
+      // An abort/timeout may win the race while non-OK body cleanup is still pending.
+      await cancellation;
+    }
   }
 
   private async fetchResponse(url: string, init: RequestInit, signal: AbortSignal): Promise<Response> {
@@ -185,9 +214,13 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   }
 
   private fetchJsonWithTimeout(url: string, init: RequestInit, callerSignal: AbortSignal | undefined, invalidResponseMessage: string): Promise<{ response: Response; payload?: unknown }> {
-    return this.runWithTimeout(async (signal) => {
+    return this.runWithTimeout(async (signal, cancelBody) => {
       const response = await this.fetchResponse(url, init, signal);
-      if (!response.ok) return { response };
+      if (!response.ok) {
+        await cancelBody(response);
+        signal.throwIfAborted();
+        return { response };
+      }
       try {
         return { response, payload: await response.json() };
       } catch (error) {
@@ -198,8 +231,51 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   }
 }
 
+function createRequestLifetime(timeoutMs: number, callerSignal?: AbortSignal) {
+  const controller = new AbortController();
+  const dispose = () => {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener('abort', cancel);
+  };
+  const cancel = () => {
+    controller.abort(abortError());
+    dispose();
+  };
+  const timer = setTimeout(() => {
+    controller.abort(new ChatGptBackendError('ChatGPT session backend request timed out.', 'timeout', { status: 504 }));
+    dispose();
+  }, timeoutMs);
+  callerSignal?.addEventListener('abort', cancel, { once: true });
+  if (callerSignal?.aborted) cancel();
+  return {
+    signal: controller.signal,
+    dispose,
+    async run<T>(operation: () => Promise<T>): Promise<T> {
+      controller.signal.throwIfAborted();
+      let onAbort!: () => void;
+      const aborted = new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(controller.signal.reason);
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+      });
+      try {
+        const result = await Promise.race([operation(), aborted]);
+        controller.signal.throwIfAborted();
+        return result;
+      } catch (error) {
+        controller.signal.throwIfAborted();
+        throw error;
+      } finally {
+        controller.signal.removeEventListener('abort', onAbort);
+      }
+    },
+  };
+}
+
 function normalizeAccountQuota(value: unknown): ChatGptAccountQuota {
-  const raw = isPlainObject(value) ? value : {};
+  if (!isPlainObject(value) || !isPlainObject(value.rate_limit)) {
+    throw new ChatGptBackendError('ChatGPT quota response was invalid.', 'invalid_response');
+  }
+  const raw = value;
   const rateLimit = isPlainObject(raw.rate_limit) ? raw.rate_limit : {};
   const quota: ChatGptAccountQuota = {
     ...optionalString('providerAccountId', raw.account_id),
@@ -213,11 +289,34 @@ function normalizeAccountQuota(value: unknown): ChatGptAccountQuota {
 
   const additionalLimits = normalizeAdditionalQuotaLimits(raw.additional_rate_limits);
   if (additionalLimits.length) quota.additionalLimits = additionalLimits;
-  const availableCount = nonNegativeNumber(isPlainObject(raw.rate_limit_reset_credits)
-    ? raw.rate_limit_reset_credits.available_count
-    : undefined);
-  if (availableCount !== undefined) quota.resetCredits = { availableCount };
   return quota;
+}
+
+function normalizeResetCredits(value: unknown): NonNullable<ChatGptAccountQuota['resetCredits']> {
+  if (!isPlainObject(value)) return { error: 'invalid_response' };
+  const countValue = value.available_count ?? value.availableCount;
+  const count = typeof countValue === 'string' && countValue.trim() ? Number(countValue) : countValue;
+  const availableCount = typeof count === 'number' && Number.isSafeInteger(count) && count >= 0 ? count : undefined;
+  const credits: NonNullable<NonNullable<ChatGptAccountQuota['resetCredits']>['credits']> = [];
+  if (Array.isArray(value.credits)) for (const item of value.credits) {
+    if (!isPlainObject(item) || (item.reset_type ?? item.resetType) !== 'codex_rate_limits' || item.status !== 'available') continue;
+    const expiresAt = resetCreditTimestamp(item.expires_at ?? item.expiresAt);
+    if (!expiresAt) continue;
+    const grantedAt = resetCreditTimestamp(item.granted_at ?? item.grantedAt);
+    // Normalize IDs only inside the adapter; the Admin service strips them before caching/presentation.
+    const id = typeof item.id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(item.id.trim()) ? item.id.trim() : undefined;
+    credits.push({ ...(id ? { id } : {}), status: 'available', expiresAt, ...(grantedAt ? { grantedAt } : {}) });
+  }
+  return {
+    ...(availableCount === undefined ? { error: 'invalid_response' as const } : { availableCount }),
+    ...(Array.isArray(value.credits) ? { credits } : {}),
+  };
+}
+
+function resetCreditTimestamp(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(value)) return undefined;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
 }
 
 function normalizeAdditionalQuotaLimits(value: unknown): ChatGptAdditionalQuotaLimit[] {
@@ -544,26 +643,49 @@ function requireSessionSecret(context?: ChatGptBackendRequestContext): ChatGptSe
   return secret;
 }
 
-async function* iterateSseData(response: Response): AsyncIterable<string> {
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch { /* Cleanup must not replace the HTTP error. */ }
+}
+
+interface SseFrame { event?: string; data: string; }
+
+async function* iterateSseData(response: Response, lifetime: ReturnType<typeof createRequestLifetime>): AsyncIterable<SseFrame> {
   if (!response.body) return;
   const reader = response.body.getReader();
+  // Cancel the body itself as well as fetch: custom transports may not bind the body to fetch's signal.
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => {
+    // The abort listener and finally share one teardown, including its async completion.
+    // Handle rejection immediately so cleanup cannot mask the primary stream error.
+    cancellation ??= Promise.resolve().then(() => reader.cancel(lifetime.signal.reason)).catch(() => {});
+    return cancellation;
+  };
+  lifetime.signal.addEventListener('abort', cancel, { once: true });
+  if (lifetime.signal.aborted) cancel();
   const decoder = new TextDecoder();
   let buffer = '';
   try {
     while (true) {
-      const { value, done } = await reader.read();
+      const { value, done } = await lifetime.run(() => reader.read());
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       yield* drainSseBuffer(buffer, (next) => { buffer = next; });
     }
   } finally {
-    reader.releaseLock();
+    lifetime.signal.removeEventListener('abort', cancel);
+    try {
+      await cancel();
+    } finally {
+      reader.releaseLock();
+    }
   }
   buffer += decoder.decode();
   yield* drainSseBuffer(`${buffer}\n\n`, (next) => { buffer = next; });
 }
 
-function* drainSseBuffer(buffer: string, setBuffer: (value: string) => void): Iterable<string> {
+function* drainSseBuffer(buffer: string, setBuffer: (value: string) => void): Iterable<SseFrame> {
   let boundary = findSseFrameBoundary(buffer);
   while (boundary) {
     const frame = buffer.slice(0, boundary.index);
@@ -573,7 +695,8 @@ function* drainSseBuffer(buffer: string, setBuffer: (value: string) => void): It
       .filter((line): line is string => line !== undefined)
       .join('\n')
       .trim();
-    if (data) yield data;
+    const event = frame.split(/\r?\n/).filter((line) => line.startsWith('event:')).at(-1)?.slice(6).trim();
+    if (data || event) yield { event, data };
     boundary = findSseFrameBoundary(buffer);
   }
   setBuffer(buffer);
@@ -702,6 +825,15 @@ function readPath(value: JsonObject, path: string[]): unknown {
     current = (current as JsonObject)[segment];
   }
   return current;
+}
+
+function isFailureEvent(event: string | undefined, value: JsonObject | undefined): boolean {
+  const failureTypes = ['error', 'response.error', 'response.failed'];
+  if (failureTypes.includes(event ?? '') || (typeof value?.type === 'string' && failureTypes.includes(value.type))) return true;
+  const response = isPlainObject(value?.response) ? value.response : undefined;
+  return value?.status === 'failed' || response?.status === 'failed'
+    || (value?.error !== undefined && value.error !== null && value.error !== false)
+    || (response?.error !== undefined && response.error !== null && response.error !== false);
 }
 
 function isDoneEvent(value: JsonObject): boolean {

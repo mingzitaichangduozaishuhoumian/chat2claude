@@ -22,6 +22,7 @@ export function presentPlan(usage?: { status: string; quota?: { planType?: strin
   };
 }
 
+/** User-facing plan name. Raw upstream IDs belong only in professional diagnostics. */
 export function planPresentationText(plan: PlanPresentation): string {
-  return `${plan.label}${plan.upstreamId ? ` · ${plan.upstreamId}` : ''} · ${plan.source}${plan.stale ? '（陈旧观察）' : ''}`;
+  return plan.label;
 }
