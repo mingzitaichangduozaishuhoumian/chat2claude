@@ -1,0 +1,36 @@
+import { expect, it, vi } from 'vitest';
+import { ChatGptBackendError, type ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
+import { RefreshAwareChatGptBackend } from './refresh-aware-backend.js';
+import { SessionCredentialManager } from './session-credential-manager.js';
+import { AccountPool } from './account-pool.js';
+import { CodexOAuthClient } from './codex-oauth-client.js';
+const request = { model: 'test', maxTokens: 1, messages: [] };
+it('explicit ready closes the unauthorized retry window', async () => {
+  const fresh = vi.fn(async () => ({ id: 'account' }));
+  const stream = vi.fn(async function* () { yield { type: 'upstream_ready' as const }; throw new ChatGptBackendError('CANARY', 'unauthorized'); });
+  const backend = new RefreshAwareChatGptBackend({ stream } as unknown as ChatGptBackendClient, { getFreshAccount: fresh } as unknown as SessionCredentialManager);
+  const iterator = backend.stream(request, { account: { id: 'account' } })[Symbol.asyncIterator]();
+  expect((await iterator.next()).value).toEqual({ type: 'upstream_ready' });
+  await expect(iterator.next()).rejects.toMatchObject({ code: 'unauthorized' });
+  expect(stream).toHaveBeenCalledTimes(1);
+  expect(fresh).toHaveBeenCalledTimes(1);
+});
+it('cancels only one waiter during a shared OAuth refresh', async () => {
+  const pool = new AccountPool();
+  const account = pool.add({ id: 'account', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'old', refreshToken: 'refresh', expiresAt: '2000-01-01T00:00:00Z' } });
+  let resolve!: (response: Response) => void;
+  const fetch = vi.fn(() => new Promise<Response>(r => { resolve = r; }));
+  const credentials = new SessionCredentialManager({ accountPool: pool, oauthClient: new CodexOAuthClient({ fetch }) });
+  const stream = vi.fn(async function* () { yield { type: 'done' as const }; });
+  const backend = new RefreshAwareChatGptBackend({ stream } as unknown as ChatGptBackendClient, credentials);
+  const caller = new AbortController();
+  const a = backend.stream(request, { account, signal: caller.signal })[Symbol.asyncIterator]().next().catch(e => e);
+  const b = backend.stream(request, { account })[Symbol.asyncIterator]().next();
+  caller.abort('CANARY');
+  const cancelled = await Promise.race([a, new Promise(resolve => setTimeout(() => resolve('still pending'), 30))]);
+  resolve(Response.json({ access_token: 'new', refresh_token: 'new-refresh', expires_in: 3600 }));
+  await b;
+  expect(cancelled).toMatchObject({ name: 'AbortError' });
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(stream).toHaveBeenCalledTimes(1);
+});

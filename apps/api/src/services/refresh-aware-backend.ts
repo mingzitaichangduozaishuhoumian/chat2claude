@@ -73,7 +73,7 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
       yield* this.transport.stream(request, context);
       return;
     }
-    let account = await this.credentials.getFreshAccount(context.account);
+    let account = await waitForRefresh(this.credentials.getFreshAccount(context.account), context);
     throwIfCancelled(context);
     assertRequestHistoryBinding(request, { ...context, account });
     let yielded = false;
@@ -89,7 +89,7 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
     }
 
     const failedAccessToken = account.secret?.accessToken;
-    account = await this.credentials.getFreshAccount(context.account, failedAccessToken);
+    account = await waitForRefresh(this.credentials.getFreshAccount(context.account, failedAccessToken), context);
     throwIfCancelled(context);
     assertRequestHistoryBinding(request, { ...context, account });
     try {
@@ -104,7 +104,7 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
     if (!context?.account || isCandidateContext(context)) return request(context);
     const discoveryOperationId = getDiscoveryOperationId(context);
     const quotaOperationId = getQuotaOperationId(context);
-    let account = await this.credentials.getFreshAccount(context.account, undefined, discoveryOperationId, quotaOperationId);
+    let account = await waitForRefresh(this.credentials.getFreshAccount(context.account, undefined, discoveryOperationId, quotaOperationId), context);
     throwIfCancelled(context);
     try {
       return await request({ ...context, account });
@@ -113,7 +113,7 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
       if (!isUnauthorized(error)) throw markAccountCredentialError(error, account);
     }
     const failedAccessToken = account.secret?.accessToken;
-    account = await this.credentials.getFreshAccount(context.account, failedAccessToken, discoveryOperationId, quotaOperationId);
+    account = await waitForRefresh(this.credentials.getFreshAccount(context.account, failedAccessToken, discoveryOperationId, quotaOperationId), context);
     throwIfCancelled(context);
     try {
       return await request({ ...context, account });
@@ -121,6 +121,20 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
       throw markAccountCredentialError(error, account);
     }
   }
+}
+
+/** Shared refresh owns its I/O; a caller may only cancel its own wait. */
+async function waitForRefresh<T>(promise: Promise<T>, context?: ChatGptBackendRequestContext): Promise<T> {
+  const signal = context?.signal;
+  if (!signal) return promise;
+  let onAbort!: () => void;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => { try { throwIfCancelled(context); } catch (error) { reject(error); } };
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  try { return await Promise.race([promise, cancelled]); }
+  finally { signal.removeEventListener('abort', onAbort); }
 }
 
 function isCandidateContext(context: ChatGptBackendRequestContext): boolean {

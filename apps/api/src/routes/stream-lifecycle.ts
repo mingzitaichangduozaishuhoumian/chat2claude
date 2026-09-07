@@ -4,6 +4,7 @@ import { createLogger, type Logger } from '@chatgpt-to-claude/shared';
 import type { Account, AccountPool } from '../services/account-pool.js';
 import { requestErrorOutcome, type AccountRequestTracker } from '../services/request-statistics.js';
 import { accountReleaseError } from './account-release-error.js';
+import { boundedClose } from './prepare-stream.js';
 
 export interface RequestSizeMetrics {
   upstreamBodyBytes?: number;
@@ -62,25 +63,18 @@ export function logHttpRequestFailure(error: unknown, context: StreamLogContext,
   }
 }
 
-/** Observes the existing iterator only; never pulls or clones a response body for logging. */
-export async function* releaseAccountWhenDone(accountPool: AccountPool, lease: Account, events: AsyncIterable<string>, onError: (error: unknown) => AsyncIterable<string>, tracker: AccountRequestTracker, signal: AbortSignal, context: StreamLogContext): AsyncIterable<string> {
+/** One eager owner also covers cancellation before the first body pull. */
+export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account, events: AsyncIterable<string>, onError: (error: unknown) => AsyncIterable<string>, tracker: AccountRequestTracker, signal: AbortSignal, context: StreamLogContext, closeUpstream?: () => Promise<void>): AsyncIterable<string> & { cancel(): Promise<void>; abandon(): void } {
   let releaseError: unknown;
   let failureFields: ReturnType<typeof safeErrorFields> | undefined;
   let outcome: 'success' | 'failure' | 'cancelled' = 'cancelled';
+  let finished = false;
+  let cancelling: Promise<void> | undefined;
   const logger = context.logger ?? createLogger();
   const metadata = { route: context.route, ...(context.requestId ? { requestId: context.requestId } : {}) };
-  try {
-    yield* events;
-    outcome = signal.aborted ? 'cancelled' : 'success';
-  } catch (error) {
-    releaseError = error;
-    outcome = signal.aborted ? 'cancelled' : 'failure';
-    // Snapshot safe diagnostics before yielding; a later return/cancel must retain
-    // the failure without mistaking detection time for terminal cleanup time.
-    if (outcome === 'failure') failureFields = safeErrorFields(error);
-    yield* onError(error);
-  } finally {
-    // The protocol prelude may be cancelled before the backend tracker starts.
+  const finish = () => {
+    if (finished) return;
+    finished = true;
     tracker.finish(outcome);
     accountPool.release(lease, accountReleaseError(releaseError));
     const fields = { ...sanitizeRequestMetrics(context.metrics), outcome, ...failureFields };
@@ -88,5 +82,35 @@ export async function* releaseAccountWhenDone(accountPool: AccountPool, lease: A
       if (context.terminal) context.terminal(fields);
       else logger[outcome === 'failure' ? 'error' : 'info']('HTTP stream terminated', { ...metadata, ...fields });
     } catch { /* observational only; the lease is already released */ }
-  }
+  };
+  const iterator = (async function* () {
+    try {
+      yield* events;
+      if (!finished) outcome = signal.aborted ? 'cancelled' : 'success';
+    } catch (error) {
+      if (!finished) {
+        releaseError = error;
+        outcome = requestErrorOutcome(error, signal);
+        if (outcome === 'failure') failureFields = safeErrorFields(error);
+      }
+      await closeUpstream?.();
+      if (!finished) yield* onError(error);
+    } finally {
+      await closeUpstream?.();
+      finish();
+    }
+  })();
+  return {
+    [Symbol.asyncIterator]: () => iterator,
+    // Response assembly failed: the HTTP catch/finally retains terminal ownership.
+    abandon() { finished = true; },
+    cancel() {
+      return cancelling ??= (async () => {
+        // Abort active I/O before requesting return; neither custom next nor
+        // return is trusted to settle. Both teardown paths share the finalizer.
+        await Promise.all([closeUpstream?.(), boundedClose(() => iterator.return())]);
+        finish();
+      })();
+    },
+  };
 }

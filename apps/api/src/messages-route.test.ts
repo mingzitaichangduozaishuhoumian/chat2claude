@@ -1394,10 +1394,10 @@ describe('completion protocol public-error boundary', () => {
     const app = createMessagesRoute({ backend, accountPool, modelRegistry, requestLog: new RequestLog(), backendProvider: 'session', logger });
     const response = await app.request('/v1/messages', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 64, stream, messages: [{ role: 'user', content: canary }] }) });
     const text = await response.text();
-    expect(response.status).toBe(stream ? 200 : 502);
+    expect(response.status).toBe(502);
     expect(text).toContain('Upstream request failed.');
     expect(text + JSON.stringify(logger.error.mock.calls)).not.toContain(canary);
-    expect(logger.error).toHaveBeenCalledWith(stream ? 'HTTP stream terminated' : 'HTTP request terminated', expect.objectContaining({
+    expect(logger.error).toHaveBeenCalledWith('HTTP request terminated', expect.objectContaining({
       route: '/v1/messages', outcome: 'failure', exceptionFamily: 'ChatGptBackendError', code: 'upstream_error',
       eventType: 'response.failed', responseStatus: 'failed', responseErrorCode: 'misalignment_policy_violation', httpStatus: 200, failurePhase: 'response_event',
     }));

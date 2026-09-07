@@ -41,6 +41,7 @@ describe('session ordered opaque replay', () => {
     const stream = await events(frames);
     const outputItems = [reasoning, { type: 'message', role: 'assistant', status: 'completed', content: [] }, call, output[3]];
     expect(stream).toEqual([
+      { type: 'upstream_ready' },
       { type: 'tool_call', toolCall: { id: 'call_1', name: 'lookup', input: { q: 'x' } } },
       { type: 'done', finishReason: 'tool_calls', replayItems: [reasoning, call, output[3]], replayEligible: false, outputItems },
     ]);
@@ -127,6 +128,7 @@ describe('session ordered opaque replay', () => {
   it('does not commit when caller aborts while a completed tool event is yielded', async () => {
     const controller = new AbortController();
     const iterator = backend([completed([reasoning, call])]).stream(request, { ...context, signal: controller.signal })[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'upstream_ready' });
     expect((await iterator.next()).value).toMatchObject({ type: 'tool_call' });
     controller.abort(new Error(canary));
     await expect(iterator.next()).rejects.toMatchObject({ name: 'AbortError' });

@@ -88,6 +88,15 @@ describe('per-account request statistics', () => {
     });
   });
 
+  it('defers terminal attribution until a downstream mapper has finished', async () => {
+    const state = new AdminOperationalState({ path: 'unused.json', debounceMs: 60_000 });
+    const tracker = createAccountRequestTracker(state, identity);
+    await consume(trackStreamStatistics(events([{ type: 'done', usage: { inputTokens: 2, outputTokens: 3 } }]), tracker, undefined, true));
+    expect(state.snapshot().accounts[0]?.requestStats).toMatchObject({ inFlight: 1, successfulRequests: 0 });
+    tracker.finish('failure');
+    expect(state.snapshot().accounts[0]?.requestStats).toMatchObject({ inFlight: 0, successfulRequests: 0, failedRequests: 1, inputTokens: 2, outputTokens: 3 });
+  });
+
   it('keeps delete-and-recreate account incarnations isolated', () => {
     const state = new AdminOperationalState({ path: 'unused.json', debounceMs: 60_000 });
     const oldIdentity = { accountId: 'reused-id', createdAt: '2026-09-04T00:00:00.000Z' };

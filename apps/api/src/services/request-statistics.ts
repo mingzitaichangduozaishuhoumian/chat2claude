@@ -15,6 +15,7 @@ export interface RequestUsage {
  */
 export interface AccountRequestTracker {
   finish(outcome: RequestOutcome, usage?: RequestUsage): void;
+  observeUsage?(usage: RequestUsage): void;
 }
 
 export function createAccountRequestTracker(
@@ -25,13 +26,15 @@ export function createAccountRequestTracker(
     ? account
     : { accountId: account.id, createdAt: account.createdAt };
   let finished = false;
+  let observedUsage: RequestUsage = {};
 
   // Operational persistence is deliberately best effort: it must never alter
   // a provider response, health result, cooldown, or account release.
   try { operationalState?.recordRequestStarted(identity); } catch { /* isolated */ }
 
   return {
-    finish(outcome, usage = {}) {
+    observeUsage(usage) { observedUsage = usage; },
+    finish(outcome, usage = observedUsage) {
       if (finished) return;
       finished = true;
       const inputTokens = validTokenCount(usage.inputTokens);
@@ -61,21 +64,24 @@ export function requestErrorOutcome(error: unknown, signal?: AbortSignal): Reque
   return signal?.aborted && error instanceof Error && error.name === 'AbortError' ? 'cancelled' : 'failure';
 }
 
-export async function* trackStreamStatistics(events: AsyncIterable<ChatGptStreamEvent>, tracker: AccountRequestTracker, signal?: AbortSignal): AsyncIterable<ChatGptStreamEvent> {
+export async function* trackStreamStatistics(events: AsyncIterable<ChatGptStreamEvent>, tracker: AccountRequestTracker, signal?: AbortSignal, deferTerminal = false): AsyncIterable<ChatGptStreamEvent> {
   let completed = false;
   let usage: RequestUsage | undefined;
   try {
     for await (const event of events) {
-      if (event.type === 'done') usage = usageFromBackend(event.usage);
+      if (event.type === 'upstream_ready') continue;
+      if (event.type === 'done') { usage = usageFromBackend(event.usage); tracker.observeUsage?.(usage); }
       yield event;
     }
     completed = true;
   } catch (error) {
-    tracker.finish(requestErrorOutcome(error, signal), usage);
+    if (!deferTerminal) tracker.finish(requestErrorOutcome(error, signal), usage);
     throw error;
   } finally {
-    if (completed) tracker.finish('success', usage);
-    else tracker.finish('cancelled', usage);
+    if (!deferTerminal) {
+      if (completed) tracker.finish('success', usage);
+      else tracker.finish('cancelled', usage);
+    }
   }
 }
 

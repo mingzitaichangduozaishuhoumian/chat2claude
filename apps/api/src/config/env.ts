@@ -25,6 +25,7 @@ export interface AppEnv {
   chatGptRequestTimeoutMs: number;
   chatGptResponseHeaderTimeoutMs?: number;
   chatGptStreamIdleTimeoutMs?: number;
+  chatGptStreamBootstrapTimeoutMs?: number;
   chatGptStreamTotalTimeoutMs?: number;
   /** loadEnv always supplies this; omitted programmatic configs use the protocol default. */
   codexClientVersion?: string;
@@ -61,6 +62,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     outboundProxyUrl: parseOutboundProxyUrl(source.OUTBOUND_PROXY_URL),
     chatGptRequestTimeoutMs: readNumber(source.CHATGPT_REQUEST_TIMEOUT_MS, 60000),
     chatGptResponseHeaderTimeoutMs: parseStreamTimeout(source, 'CHATGPT_RESPONSE_HEADER_TIMEOUT_MS', 60_000),
+    chatGptStreamBootstrapTimeoutMs: parseStreamTimeout(source, 'CHATGPT_STREAM_BOOTSTRAP_TIMEOUT_MS', 60_000),
     chatGptStreamIdleTimeoutMs: parseStreamTimeout(source, 'CHATGPT_STREAM_IDLE_TIMEOUT_MS', 300_000),
     chatGptStreamTotalTimeoutMs: parseStreamTimeout(source, 'CHATGPT_STREAM_TOTAL_TIMEOUT_MS', 0),
     codexClientVersion: normalizeCodexClientVersion(source.CODEX_CLIENT_VERSION),

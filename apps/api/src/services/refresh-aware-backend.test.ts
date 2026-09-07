@@ -92,7 +92,7 @@ describe('RefreshAwareChatGptBackend', () => {
         if (++calls === 1) return new Response(body, { status: 401 });
         if (operation === 'models') return Response.json({ models: [{ id: 'model' }] });
         if (operation === 'quota') return Response.json({ rate_limit: {} });
-        return new Response('data: {"type":"response.completed"}\n\n');
+        return new Response('data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n');
       },
     });
     const { wrapper, context, getRefreshes } = setup(backend);

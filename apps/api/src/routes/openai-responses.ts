@@ -1,3 +1,4 @@
+import { boundedClose, prepareStream, type PreparedStream } from './prepare-stream.js';
 import { Hono } from 'hono';
 import type { Logger } from '@chatgpt-to-claude/shared';
 import { logHttpRequestFailure, releaseAccountWhenDone } from './stream-lifecycle.js';
@@ -53,6 +54,9 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
       const backendContext = { account, signal: AbortSignal.any([c.req.raw.signal, streamCancellation.signal]) };
       let releaseError: unknown;
       let releaseDeferredToStream = false;
+      let prepared: PreparedStream | undefined;
+      let streamOwner: ReturnType<typeof releaseAccountWhenDone> | undefined;
+      let responseBody: ReadableStream<Uint8Array> | undefined;
       try {
         const resolution = deps.backendProvider === 'session'
           ? deps.modelRegistry.resolveForAccount(request.model, { accountId: account.id, createdAt: account.createdAt })
@@ -79,13 +83,15 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
         deps.requestLog.record({ route: '/v1/responses', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {
-          const events = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToOpenAiResponsesSse(downstreamRequest, trackStreamStatistics(deps.backend.stream(backendRequest, backendContext), tracker, backendContext.signal), { signal: backendContext.signal, onCompleted: commit }), (error) => openAiResponsesStreamError(error, request.model), tracker, backendContext.signal, { route: '/v1/responses', requestId: getAccessLogRequestId(c), logger: deps.logger, terminal: getAccessLogTerminal(c) });
-          const stream = readableStreamFromAsyncIterable(events, {
+          prepared = await prepareStream(deps.backend.stream(backendRequest, backendContext), { signal: backendContext.signal, abort: () => streamCancellation.abort() });
+          const events = streamOwner = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToOpenAiResponsesSse(downstreamRequest, trackStreamStatistics(prepared.events, tracker, backendContext.signal, true), { signal: backendContext.signal, onCompleted: commit }), (error) => openAiResponsesStreamError(error, request.model), tracker, backendContext.signal, { route: '/v1/responses', requestId: getAccessLogRequestId(c), logger: deps.logger, terminal: getAccessLogTerminal(c) }, prepared.close);
+          const stream = responseBody = readableStreamFromAsyncIterable(events, {
             signal: c.req.raw.signal,
-            onCancel: () => streamCancellation.abort(),
+            onCancel: () => { streamCancellation.abort(); return events.cancel(); },
           });
+          const response = new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' } });
           releaseDeferredToStream = true;
-          return new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' } });
+          return response;
         }
 
         const backendResponse = await deps.backend.complete(backendRequest, backendContext);
@@ -95,11 +101,16 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
         tracker.finish('success', usageFromBackend(backendResponse.usage));
         return c.json(response);
       } catch (error) {
+        streamOwner?.abandon();
         releaseError = error;
         tracker.finish(requestErrorOutcome(error, backendContext.signal));
+        if (responseBody) await boundedClose(() => responseBody!.cancel());
         throw error;
       } finally {
-        if (!releaseDeferredToStream) deps.accountPool.release(account, accountReleaseError(releaseError));
+        if (!releaseDeferredToStream) {
+          await prepared?.close();
+          deps.accountPool.release(account, accountReleaseError(releaseError));
+        }
       }
     } catch (error) {
       logHttpRequestFailure(error, { route: '/v1/responses', requestId: getAccessLogRequestId(c), logger: deps.logger, terminal: getAccessLogTerminal(c) }, c.req.raw.signal);

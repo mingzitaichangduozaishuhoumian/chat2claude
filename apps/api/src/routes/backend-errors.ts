@@ -31,7 +31,11 @@ export function mapChatGptBackendError(error: unknown): ClaudeApiError | undefin
       return new ClaudeApiError('Upstream request timed out.', 504, 'api_error');
     case 'network_error':
     case 'invalid_response':
+      return new ClaudeApiError('Upstream request failed.', 502, 'api_error');
     case 'upstream_error':
+      if (error.safeDiagnostic?.failurePhase === 'response_headers' && Number.isInteger(error.status) && error.status! >= 400 && error.status! <= 599) {
+        return new ClaudeApiError('Upstream request failed.', error.status!, 'api_error');
+      }
       return new ClaudeApiError('Upstream request failed.', 502, 'api_error');
   }
 }

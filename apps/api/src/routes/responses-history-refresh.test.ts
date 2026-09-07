@@ -67,11 +67,11 @@ describe('native history affinity across actual credential refresh', () => {
     expect(replacement.incarnation).not.toBe(f.account.incarnation);
     if (cancel) controller.abort();
     gate.resolve();
-    if (cancel && stream) await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    if (cancel) expect((await pending).status).toBe(499);
     else {
       const result = await pending;
       if (!cancel) {
-        expect(result.status).toBe(stream ? 200 : 400);
+        expect(result.status).toBe(400);
         expect(result.body).toContain('invalid_request_error');
         for (const value of [history, id, f.account.id, 'replacement-upstream']) expect(result.body).not.toContain(value);
       }
@@ -93,8 +93,7 @@ describe('native history affinity across actual credential refresh', () => {
     await started.promise;
     abort.abort();
     gate.resolve();
-    if (stream) await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-    else await pending;
+    expect(await pending).toContain('Request cancelled.');
     await vi.waitFor(() => expect(f.pool.get(f.account.id)?.currentConcurrency).toBe(0));
     expect(f.captured).toHaveLength(1);
     expect(f.pool.get(f.account.id)).toMatchObject({ status: 'available', currentConcurrency: 0, cooldownUntil: null });
@@ -137,9 +136,9 @@ describe('native history affinity across actual credential refresh', () => {
         expect(f.pool.get(f.account.id)?.incarnation).toBe(f.account.incarnation);
       } else {
         expect(f.captured).toHaveLength(1);
-        expect(response.status).toBe(stream ? 200 : 400);
+        expect(response.status).toBe(400);
         expect(body).toContain('invalid_request_error');
-        if (stream) { expect(body).toContain('event: response.failed'); expect(body).not.toContain('event: response.completed'); }
+        if (stream) expect(body).not.toMatch(/event:|data:/);
         for (const value of [cipher, history, id, f.account.id, 'old-upstream', 'new-upstream']) expect(body).not.toContain(value);
         expect(f.pool.get(f.account.id)?.incarnation).not.toBe(f.account.incarnation);
       }

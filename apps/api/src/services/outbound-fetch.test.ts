@@ -77,7 +77,7 @@ describe('explicit outbound proxy transport', () => {
       if (url === CODEX_TOKEN_URL) return Response.json({ access_token: 'new-access', refresh_token: 'new-refresh', expires_in: 3600 });
       if (url.includes('/codex/models')) return Response.json({ models: [{ slug: 'test-model' }] });
       if (url.includes('/wham/')) return Response.json({ plan_type: 'plus', rate_limit: { primary_window: { used_percent: 0, limit_window_seconds: 18000 } } });
-      return new Response('data: {"type":"response.completed"}\n\n');
+      return new Response('data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n');
     });
     const transport = createOutboundTransport('http://127.0.0.1:7890', fetchImpl);
     const flow = new ChatGptAuthFlowService({ enableCallbackListener: false, fetch: transport.fetch });

@@ -13,6 +13,7 @@ export interface SessionChatGptBackendOptions {
   requestTimeoutMs?: number;
   responseHeaderTimeoutMs?: number;
   streamIdleTimeoutMs?: number;
+  streamBootstrapTimeoutMs?: number;
   streamTotalTimeoutMs?: number;
   clientVersion?: string;
   /** @deprecated The Codex protocol always uses codex_cli_rs. */
@@ -25,15 +26,16 @@ type JsonObject = Record<string, unknown>;
 export class SessionChatGptBackend implements ChatGptBackendClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
-  private readonly streamTimeouts: { headers: number; idle: number; total: number };
+  private readonly streamTimeouts: { headers: number; idle: number; total: number; bootstrap: number };
   private readonly clientVersion: string;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: SessionChatGptBackendOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.timeoutMs = options.requestTimeoutMs ?? options.timeoutMs ?? 60_000;
-    const legacy = options.requestTimeoutMs === undefined && options.responseHeaderTimeoutMs === undefined && options.streamIdleTimeoutMs === undefined && options.streamTotalTimeoutMs === undefined;
+    const legacy = options.requestTimeoutMs === undefined && options.responseHeaderTimeoutMs === undefined && options.streamIdleTimeoutMs === undefined && options.streamTotalTimeoutMs === undefined && options.streamBootstrapTimeoutMs === undefined;
     this.streamTimeouts = {
+      bootstrap: options.streamBootstrapTimeoutMs ?? 60_000,
       headers: options.responseHeaderTimeoutMs ?? (legacy ? options.timeoutMs ?? 60_000 : 60_000),
       idle: options.streamIdleTimeoutMs ?? (legacy ? options.timeoutMs ?? 300_000 : 300_000),
       total: options.streamTotalTimeoutMs ?? (legacy ? options.timeoutMs ?? 0 : 0),
@@ -187,41 +189,55 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       let sawToolCall = false;
       const tools = new ResponsesToolCalls(httpStatus);
       const replay = new ResponsesReplay();
+      let ready = false;
+      let bootstrapFrames = 0;
       for await (const frame of iterateSseData(response, lifetime)) {
-        const parsed = parseJson(frame.data);
+        if (!ready && ++bootstrapFrames > 256) throw invalidStreamResponse();
+        if (frame.data === '[DONE]') break;
+        const parsed = frame.data ? parseJson(frame.data) : undefined;
+        if (frame.data && !parsed) throw invalidStreamResponse();
         const type = parsed?.type ?? frame.event;
         const terminalError = responseEventError(frame.event, parsed, httpStatus);
         if (terminalError) throw terminalError;
-        if (frame.data === '[DONE]') break;
-        if (!parsed) continue;
+        if (!parsed) {
+          if (isSupportedFrameType(type)) throw invalidStreamResponse();
+          continue;
+        }
+        if (!validateStreamFrame(type, parsed, ready)) continue;
+        // A frame is a transaction: validate replay, all tools and terminal state
+        // before publishing either the readiness barrier or any business event.
+        const pending: ChatGptStreamEvent[] = [];
         const replayResult = replay.accept(type, parsed);
         latestUsage = mergeUsage(latestUsage, extractUsage(parsed));
         for (const toolCall of tools.accept(type, parsed)) {
           sawToolCall = true;
-          yield { type: 'tool_call', toolCall };
+          pending.push({ type: 'tool_call', toolCall });
         }
-        // Standard Responses events are typed. Only text deltas may reach the text mapper.
-        if (typeof type !== 'string' || !type.startsWith('response.') || type === 'response.output_text.delta') {
+        if (type === 'response.output_text.delta') {
           const delta = extractTextDelta(parsed);
-          if (delta) yield { type: 'text_delta', text: delta };
-          const toolCall = extractToolCall(parsed);
-          if (toolCall) {
-            for (const call of tools.compatibility(toolCall)) {
-              sawToolCall = true;
-              yield { type: 'tool_call', toolCall: call };
-            }
-          }
+          if (delta) pending.push({ type: 'text_delta', text: delta });
         }
-        if (isDoneEvent({ ...parsed, type })) {
+        const done = isDoneEvent({ ...parsed, type });
+        if (done) {
           for (const toolCall of tools.finish()) {
             sawToolCall = true;
-            yield { type: 'tool_call', toolCall };
+            pending.push({ type: 'tool_call', toolCall });
           }
-          lifetime.signal.throwIfAborted();
-          yield { type: 'done', finishReason: extractFinishReason(parsed) ?? (sawToolCall ? 'tool_calls' : 'stop'), ...(latestUsage ? { usage: latestUsage } : {}), ...replayResult };
-          return;
+          pending.push({ type: 'done', finishReason: extractFinishReason(parsed) ?? (sawToolCall ? 'tool_calls' : 'stop'), ...(latestUsage ? { usage: latestUsage } : {}), ...replayResult });
         }
+        lifetime.signal.throwIfAborted();
+        if (!ready) {
+          ready = true;
+          lifetime.ready();
+          yield { type: 'upstream_ready' };
+        }
+        for (const event of pending) {
+          lifetime.signal.throwIfAborted();
+          yield event;
+        }
+        if (done) return;
       }
+      if (!ready) throw invalidStreamResponse();
       for (const toolCall of tools.finish()) {
         sawToolCall = true;
         yield { type: 'tool_call', toolCall };
@@ -307,22 +323,131 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   }
 }
 
-function createRequestLifetime(timeoutMs: number, callerSignal?: AbortSignal, stream?: { headers: number; idle: number; total: number }) {
+function invalidStreamResponse(): ChatGptBackendError {
+  return new ChatGptBackendError('ChatGPT session backend response was invalid.', 'invalid_response', {
+    status: 502, safeDiagnostic: { failurePhase: 'response_protocol' },
+  });
+}
+
+const TEXT_FRAME_TYPES = new Set(['response.output_text.delta', 'response.output_text.done', 'response.reasoning_summary_text.delta', 'response.reasoning_summary_text.done', 'response.reasoning_text.delta', 'response.reasoning_text.done', 'response.refusal.delta', 'response.refusal.done']);
+const PART_FRAME_TYPES = new Set(['response.content_part.added', 'response.content_part.done', 'response.reasoning_summary_part.added', 'response.reasoning_summary_part.done']);
+const TOOL_PROGRESS_TYPES = new Set(['response.web_search_call.in_progress', 'response.web_search_call.searching', 'response.web_search_call.completed', 'response.file_search_call.in_progress', 'response.file_search_call.searching', 'response.file_search_call.completed', 'response.code_interpreter_call.in_progress', 'response.code_interpreter_call.interpreting', 'response.code_interpreter_call.completed', 'response.image_generation_call.in_progress', 'response.image_generation_call.generating', 'response.image_generation_call.completed', 'response.mcp_call.in_progress', 'response.mcp_call.completed', 'response.mcp_list_tools.in_progress', 'response.mcp_list_tools.completed']);
+function isSupportedFrameType(type: unknown): type is string {
+  return typeof type === 'string' && (TEXT_FRAME_TYPES.has(type) || PART_FRAME_TYPES.has(type) || TOOL_PROGRESS_TYPES.has(type)
+    || ['response.created', 'response.in_progress', 'response.completed', 'response.output_item.added', 'response.output_item.done', 'response.function_call_arguments.delta', 'response.function_call_arguments.done'].includes(type));
+}
+
+/** Validate the supported wire subset; unknown extensions cannot open the gate. */
+function validateStreamFrame(type: unknown, frame: JsonObject, ready = false): boolean {
+  if (!isSupportedFrameType(type)) return false;
+  const require = (valid: unknown) => { if (!valid) throw invalidStreamResponse(); };
+  for (const key of ['output_index', 'content_index', 'summary_index', 'sequence_number']) {
+    if (frame[key] !== undefined) require(Number.isSafeInteger(frame[key]) && (frame[key] as number) >= 0);
+  }
+  if (frame.item_id !== undefined) require(readNonEmptyString(frame.item_id));
+  if (['response.created', 'response.in_progress', 'response.completed'].includes(type)) {
+    require(isValidResponseLifecycle(type, frame.response) || (ready && isCompatibilityEmptyCompletion(type, frame.response)));
+  } else if (TEXT_FRAME_TYPES.has(type)) {
+    require(typeof frame[type.endsWith('.delta') ? 'delta' : type.startsWith('response.refusal.') ? 'refusal' : 'text'] === 'string');
+  } else if (PART_FRAME_TYPES.has(type)) {
+    require(isValidPartFrame(type, frame.part));
+  } else if (TOOL_PROGRESS_TYPES.has(type)) {
+    require(readNonEmptyString(frame.item_id));
+  } else if (type === 'response.output_item.added' || type === 'response.output_item.done') {
+    require(isPlainObject(frame.item));
+    const item = frame.item as JsonObject;
+    // Unknown provider output-item extensions are deliberately ignored. They may
+    // carry arbitrary opaque fields and must not open the upstream-ready barrier.
+    if (!isKnownOutputItemType(type, item)) return false;
+    require(isValidSupportedOutputItem(type, item));
+  } else {
+    require(typeof frame[type.endsWith('.delta') ? 'delta' : 'arguments'] === 'string');
+  }
+  return true;
+}
+
+function isValidResponseLifecycle(type: string, value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  const response = value;
+  const id = readNonEmptyString(response.id);
+  const status = response.status;
+  const hasOutput = Array.isArray(response.output);
+  if (response.output !== undefined && !hasOutput) return false;
+  if (type === 'response.completed') {
+    // Compatible terminal frames may provide finalized output or accounting
+    // metadata instead of status, but an empty response envelope is never ready.
+    return status === 'completed' || hasOutput || isPlainObject(response.usage);
+  }
+  return Boolean(id) && (status === 'queued' || status === 'in_progress');
+}
+
+function isCompatibilityEmptyCompletion(type: string, value: unknown): boolean {
+  if (type !== 'response.completed' || !isPlainObject(value)) return false;
+  // A terminal after readiness may carry only the normalized finish reason.
+  // Do not admit arbitrary response fields through this compatibility path.
+  return Object.entries(value).every(([key, field]) => (key === 'finish_reason' || key === 'finishReason')
+    && (field === null || typeof field === 'string'));
+}
+
+function isValidPartFrame(type: string, value: unknown): boolean {
+  if (!isPlainObject(value) || typeof value.type !== 'string') return false;
+  if (type.startsWith('response.reasoning_summary_part.')) return value.type === 'summary_text' && typeof value.text === 'string';
+  return (value.type === 'output_text' && typeof value.text === 'string')
+    || (value.type === 'reasoning_text' && typeof value.text === 'string')
+    || (value.type === 'refusal' && typeof value.refusal === 'string');
+}
+
+function isKnownOutputItemType(eventType: string, item: JsonObject): boolean {
+  return item.type === 'message' || item.type === 'reasoning' || item.type === 'function_call'
+    || (eventType.endsWith('.done') && item.type === undefined);
+}
+
+function isValidSupportedOutputItem(eventType: string, item: JsonObject): boolean {
+  const type = item.type;
+  if (type === 'message') {
+    return Array.isArray(item.content) && item.content.every((part) => isValidMessageOutputPart(part));
+  }
+  if (type === 'reasoning') {
+    if (!readNonEmptyString(item.id)) return false;
+    if (item.summary !== undefined && (!Array.isArray(item.summary) || !item.summary.every((part) => isPlainObject(part) && part.type === 'summary_text' && typeof part.text === 'string'))) return false;
+    if (item.encrypted_content !== undefined && item.encrypted_content !== null) parseResponsesReplayItem(item);
+    return true;
+  }
+  if (type === 'function_call') {
+    return readNonEmptyString(item.id) !== undefined && readNonEmptyString(item.call_id) !== undefined
+      && readNonEmptyString(item.name) !== undefined && (typeof item.arguments === 'string' || eventType.endsWith('.done'));
+  }
+  // Compatibility done frames omit type but are function calls only when they
+  // contain the complete canonical function-call identity.
+  return eventType.endsWith('.done') && type === undefined && readNonEmptyString(item.id) !== undefined
+    && readNonEmptyString(item.call_id) !== undefined && readNonEmptyString(item.name) !== undefined && typeof item.arguments === 'string';
+}
+
+function isValidMessageOutputPart(value: unknown): boolean {
+  return isPlainObject(value) && ((value.type === 'output_text' && typeof value.text === 'string')
+    || (value.type === 'refusal' && typeof value.refusal === 'string'));
+}
+
+function createRequestLifetime(timeoutMs: number, callerSignal?: AbortSignal, stream?: { headers: number; idle: number; total: number; bootstrap: number }) {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let phaseTimer: ReturnType<typeof setTimeout> | undefined;
+  let bootstrapTimer: ReturnType<typeof setTimeout> | undefined;
+  let bootstrapReady = false;
+  let bootstrapBytes = 0;
   let disposed = false;
   const dispose = () => {
     disposed = true;
     clearTimeout(timer);
     clearTimeout(phaseTimer);
+    clearTimeout(bootstrapTimer);
     callerSignal?.removeEventListener('abort', cancel);
   };
   const cancel = () => {
     controller.abort(abortError());
     dispose();
   };
-  const expire = (timeoutKind?: 'response_headers' | 'stream_idle' | 'stream_total') => {
+  const expire = (timeoutKind?: 'response_headers' | 'stream_idle' | 'stream_total' | 'stream_bootstrap') => {
     controller.abort(callerSignal?.aborted ? abortError() : new ChatGptBackendError('ChatGPT session backend request timed out.', 'timeout', {
       status: 504, ...(timeoutKind ? { safeDiagnostic: { timeoutKind } } : {}),
     }));
@@ -340,7 +465,14 @@ function createRequestLifetime(timeoutMs: number, callerSignal?: AbortSignal, st
   return {
     signal: controller.signal,
     dispose,
-    headersReceived: activity,
+    headersReceived() {
+      activity();
+      if (stream && !disposed) bootstrapTimer = setTimeout(() => expire('stream_bootstrap'), stream.bootstrap);
+    },
+    ready() { bootstrapReady = true; clearTimeout(bootstrapTimer); },
+    bootstrapChunk(bytes: number) {
+      if (!bootstrapReady && (bootstrapBytes += bytes) > 8 * 1024 * 1024) throw invalidStreamResponse();
+    },
     activity,
     async run<T>(operation: () => Promise<T>): Promise<T> {
       controller.signal.throwIfAborted();
@@ -822,6 +954,7 @@ async function* iterateSseData(response: Response, lifetime: ReturnType<typeof c
       const { value, done } = await lifetime.run(() => reader.read());
       if (done) break;
       if (value.byteLength > 0) lifetime.activity();
+      lifetime.bootstrapChunk(value.byteLength);
       buffer += decoder.decode(value, { stream: true });
       yield* drainSseBuffer(buffer, (next) => { buffer = next; });
     }
@@ -838,7 +971,8 @@ async function* iterateSseData(response: Response, lifetime: ReturnType<typeof c
     }
   }
   buffer += decoder.decode();
-  yield* drainSseBuffer(`${buffer}\n\n`, (next) => { buffer = next; });
+  // EOF is not a frame boundary: never promote an unterminated bootstrap frame.
+  yield* drainSseBuffer(buffer, (next) => { buffer = next; });
 }
 
 function* drainSseBuffer(buffer: string, setBuffer: (value: string) => void): Iterable<SseFrame> {

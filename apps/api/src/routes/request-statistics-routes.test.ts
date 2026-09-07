@@ -55,7 +55,7 @@ describe('request-statistics protocol attribution', () => {
       const pool = new AccountPool();
       pool.add({ id: 'session-canary', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'token' } });
       const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000,
-        fetch: async () => new Response((partial ? 'data: {"delta":"safe partial"}\n\n' : '')
+        fetch: async () => new Response((partial ? 'data: {"type":"response.output_text.delta","delta":"safe partial"}\n\n' : '')
           + 'data: {"type":"response.error","message":{"content":"SSE_SECRET_CANARY"},"detail":"SSE_SECRET_CANARY"}\n\n'
           + 'data: {"type":"response.completed"}\n\n'),
       });
@@ -64,7 +64,7 @@ describe('request-statistics protocol attribution', () => {
       const app = createRoute({ backend, requestLog: new RequestLog(), modelRegistry, accountPool: pool, operationalState: state, backendProvider: 'session' });
       const response = await app.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, stream }) });
       const text = await response.text();
-      expect(response.status).toBe(stream ? 200 : 502);
+      expect(response.status).toBe(stream && partial ? 200 : 502);
       expect(text).toContain('Upstream request failed.');
       expect(text).not.toMatch(/SSE_SECRET_CANARY|response\.completed|message_stop|"finish_reason":"stop"/);
       expect(state.snapshot().accounts[0]?.requestStats).toMatchObject({ totalRequests: 1, successfulRequests: 0, failedRequests: 1, cancelledRequests: 0, inFlight: 0 });

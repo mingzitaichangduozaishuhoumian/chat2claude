@@ -166,6 +166,7 @@ CHATGPT_BACKEND=session
 CHATGPT_BASE_URL=https://chatgpt.com
 CHATGPT_REQUEST_TIMEOUT_MS=60000
 CHATGPT_RESPONSE_HEADER_TIMEOUT_MS=60000
+CHATGPT_STREAM_BOOTSTRAP_TIMEOUT_MS=60000
 CHATGPT_STREAM_IDLE_TIMEOUT_MS=300000
 CHATGPT_STREAM_TOTAL_TIMEOUT_MS=0
 ACCESS_LOG_FORMAT=text
@@ -176,7 +177,11 @@ API_KEYS=<admin-or-runtime-key>
 DATA_DIR=./data
 ```
 
-Session 生成不再使用 OAuth 短请求总时限。`CHATGPT_REQUEST_TIMEOUT_MS` 默认 60000，仅用于 OAuth/token/discovery/配额等短操作。`CHATGPT_RESPONSE_HEADER_TIMEOUT_MS` 默认 60000，限制 fetch 到 headers；`CHATGPT_STREAM_IDLE_TIMEOUT_MS` 默认 300000，从 headers 后等待首个非空 raw body chunk，之后每个非空 chunk 都续期（reasoning、tool、SSE comment、拆分帧均算活动，空 chunk 不算）。`CHATGPT_STREAM_TOTAL_TIMEOUT_MS` 默认 0，明确关闭绝对生成上限；大于 0 时从 fetch 开始计时，即使流活跃也终止。前两项须为 1..2147483647 整数，总上限允许 0；非法配置拒绝启动。超时仍是 backend code=timeout/status=504，安全 timeoutKind 仅为 response_headers / stream_idle / stream_total；调用方取消优先，不计账号失败。reader.cancel 清理最多等待 250ms。
+Session 生成不再使用 OAuth 短请求总时限。`CHATGPT_REQUEST_TIMEOUT_MS` 默认 60000，仅用于 OAuth/token/discovery/配额等短操作。`CHATGPT_RESPONSE_HEADER_TIMEOUT_MS` 默认 60000，限制 fetch 到 headers；`CHATGPT_STREAM_IDLE_TIMEOUT_MS` 默认 300000，从 headers 后等待首个非空 raw body chunk，之后每个非空 chunk 都续期（reasoning、tool、SSE comment、拆分帧均算活动，空 chunk 不算）。`CHATGPT_STREAM_TOTAL_TIMEOUT_MS` 默认 0，明确关闭绝对生成上限；大于 0 时从 fetch 开始计时，即使流活跃也终止。headers、bootstrap、idle 须为 1..2147483647 整数，总上限允许 0；非法配置拒绝启动。超时仍是 backend code=timeout/status=504，安全 timeoutKind 为 response_headers / stream_bootstrap / stream_idle / stream_total；调用方取消优先，不计账号失败。reader.cancel 清理最多等待 250ms。
+
+`CHATGPT_STREAM_BOOTSTRAP_TIMEOUT_MS` 默认 60000，从成功 HTTP headers 开始，到首个完整且结构有效的受支持 Responses SSE frame 为止，是不随 heartbeat/raw chunk 续期的绝对期限。comment、heartbeat、未知扩展、半帧和单独 `[DONE]` 不会开启 gate；bootstrap 输入最多 8 MiB、256 个数据/命名事件帧。created、in_progress、reasoning/tool progress、text/tool 或合法 completed-first 均可开启 gate，且首帧的 replay/tool 校验全部成功后才发布内部 `upstream_ready`。该内部事件不会下发、计入 usage 或 replay。
+
+三个流式端点均在 upstream ready 后才返回 HTTP 200，不以本地 SSE prelude 作为 readiness。ready 前的上游 HTTP 400–599 错误尽量保留原状态码并返回固定安全 JSON；无效首帧/空流为 502，超时为 504，调用方取消在连接可写时为 499。ready 后失败保持 HTTP 200 并发送对应协议的 SSE error terminal。此 gate 不改变 `/v1/responses` 正文 mapper 缓冲至 terminal 的行为，正文增量转发仍是独立改进。
 
 包 API 迁移：旧 `timeoutMs` 单独使用仍保留绝对总时限和短操作时限；它已 deprecated。传入任一新字段即启用新分阶段语义，未指定总上限默认为 0；`requestTimeoutMs` 只管短操作。API app 显式传入所有新字段，不把旧环境变量当作生成上限。
 

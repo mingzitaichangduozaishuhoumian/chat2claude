@@ -14,7 +14,7 @@ it('API factory uses phased generation defaults while retaining short discovery 
   const context = { ...candidateSessionContext({ id: 'test', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'CANARY' } }), onWireMetrics: vi.fn() };
   const result = backend.complete({ model: 'test', maxTokens: 1, messages: [{ role: 'user', content: 'CANARY' }] }, context).catch(error => error);
   for (let i = 0; i < 12; i++) { await vi.advanceTimersByTimeAsync(10); controller.enqueue(new TextEncoder().encode(': heartbeat\n\n')); }
-  controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed"}\n\n'));
+  controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n'));
   expect(await result).toMatchObject({ text: '' });
   expect(context.onWireMetrics).toHaveBeenCalledWith(expect.objectContaining({ upstreamBodyBytes: expect.any(Number) }));
   const discovery = backend.listModels(context).catch(error => error);

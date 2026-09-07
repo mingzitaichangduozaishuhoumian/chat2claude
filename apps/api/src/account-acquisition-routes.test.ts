@@ -30,6 +30,7 @@ for (const protocol of protocols) describe(protocol.path, () => {
       listModels: vi.fn(async () => [{ id: 'test-model' }]),
       complete: vi.fn(async () => ({ text: 'ok', finishReason: 'stop' as const })),
       stream: vi.fn(async function* (): AsyncIterable<ChatGptStreamEvent> {
+        yield { type: 'upstream_ready' };
         await gate;
         if (fail) throw new Error('private stream failure');
         yield { type: 'text_delta', text: 'hello' };
@@ -51,26 +52,28 @@ for (const protocol of protocols) describe(protocol.path, () => {
     return { pool, models, backend, request, logs, streamLogger, operationalState, end: (error = false) => { fail = error; end(); } };
   }
 
-  it('streams for 95 seconds with no premature access line or duplicated chunks', async () => {
+  it('streams for 105 seconds with no premature access line or duplicated chunks', async () => {
     vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] });
     let controller!: ReadableStreamDefaultController<Uint8Array>;
-    const body = new ReadableStream<Uint8Array>({ start(c) { controller = c; } });
+    const body = new ReadableStream<Uint8Array>({ start(c) { controller = c; c.enqueue(new TextEncoder().encode('data: {"type":"response.created","response":{"id":"resp_fixed_1","status":"in_progress"}}\n\n')); } });
     const backend = new SessionChatGptBackend({ baseUrl: 'https://test', requestTimeoutMs: 50_000, responseHeaderTimeoutMs: 50_000, streamIdleTimeoutMs: 15_000, streamTotalTimeoutMs: 0, fetch: async () => new Response(body) });
     const { request, logs, pool } = fixture(undefined, backend);
     const response = await request(true);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
     const pending = response.text();
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < 10; i++) {
       await vi.advanceTimersByTimeAsync(10_000);
       controller.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"UNIQUE_CHUNK"}\n\n'));
       expect(logs).toHaveLength(0);
     }
     await vi.advanceTimersByTimeAsync(5000);
-    controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed"}\n\n'));
+    controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n'));
     const text = await pending;
-    if (protocol.path === '/v1/responses') expect(text).toContain('UNIQUE_CHUNK'.repeat(9));
-    else expect((text.match(/"(?:content|text)":"UNIQUE_CHUNK"/g) ?? []).length).toBe(9);
+    if (protocol.path === '/v1/responses') expect(text).toContain('UNIQUE_CHUNK'.repeat(10));
+    else expect((text.match(/"(?:content|text)":"UNIQUE_CHUNK"/g) ?? []).length).toBe(10);
     expect(logs).toHaveLength(1);
-    expect(logs[0]).toMatchObject({ status: 200, outcome: 'success', durationKind: 'stream_terminal', durationMs: 95_000 });
+    expect(logs[0]).toMatchObject({ status: 200, outcome: 'success', durationKind: 'stream_terminal', durationMs: 105_000 });
     expect(pool.get('session')?.currentConcurrency).toBe(0);
     expect(body.locked).toBe(false);
   });
@@ -94,13 +97,17 @@ for (const protocol of protocols) describe(protocol.path, () => {
     circular.self = circular;
     const backend: ChatGptBackendClient = {
       listModels: async () => [], complete: async () => ({ text: '', finishReason: 'stop' }),
-      stream: async function* () { yield { type: 'tool_call', toolCall: { id: 'call', name: 'tool', input: circular } }; },
+      stream: async function* () {
+        yield { type: 'tool_call', toolCall: { id: 'call', name: 'tool', input: circular } };
+        yield { type: 'done', usage: { inputTokens: 2, outputTokens: 3 } };
+      },
     };
-    const { request, logs, pool } = fixture(undefined, backend);
+    const { request, logs, pool, operationalState } = fixture(undefined, backend);
     if (brokenLogger) vi.spyOn(logs, 'push').mockImplementation(() => { throw new Error('LOGGER_CANARY'); });
     const response = await request(true);
     await response.text();
     expect(pool.get('session')?.currentConcurrency).toBe(0);
+    expect(operationalState.snapshot().accounts[0]?.requestStats).toMatchObject({ totalRequests: 1, inFlight: 0, failedRequests: 1, successfulRequests: 0 });
     if (!brokenLogger) {
       expect(logs).toHaveLength(1);
       expect(logs[0]).toMatchObject({ status: 200, outcome: 'failure', exceptionFamily: 'TypeError' });
@@ -144,7 +151,7 @@ for (const protocol of protocols) describe(protocol.path, () => {
       const { request, logs, streamLogger, operationalState, pool } = fixture(undefined, backend);
       const response = await request(stream);
       const text = await response.text();
-      expect(response.status).toBe(stream ? 200 : 502);
+      expect(response.status).toBe(type === 'http-error' ? 503 : 502);
       const fields = {
         path: protocol.path, requestId: logs[0].requestId, outcome: 'failure', exceptionFamily: 'ChatGptBackendError',
         code: type === 'body-read' ? 'network_error' : type === 'response.incomplete' ? 'invalid_response' : 'upstream_error',
@@ -169,6 +176,7 @@ for (const protocol of protocols) describe(protocol.path, () => {
     const cancelGate = new Promise<void>((resolve) => { finishCancel = resolve; });
     const bodyCancel = vi.fn(() => cancelGate);
     const upstreamBody = new ReadableStream<Uint8Array>({
+      start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"response.created","response":{"id":"resp_fixed_2","status":"in_progress"}}\n\n')); },
       pull() { entered(); return new Promise<void>(() => {}); },
       cancel: bodyCancel,
     }, { highWaterMark: 0 });
@@ -178,13 +186,15 @@ for (const protocol of protocols) describe(protocol.path, () => {
       baseUrl: 'https://chatgpt.test', timeoutMs: 60_000,
       fetch: async (_url, init) => {
         signals.push(init!.signal!);
-        return ++calls === 1 ? new Response(upstreamBody) : new Response('data: {"type":"response.completed"}\n\n');
+        return ++calls === 1 ? new Response(upstreamBody) : new Response('data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n');
       },
     });
     const { pool, request, operationalState } = fixture(undefined, backend);
     const release = vi.spyOn(pool, 'release');
     const requestAbort = new AbortController();
     const first = await request(true, requestAbort.signal);
+    expect(first.status).toBe(200);
+    expect(first.headers.get('content-type')).toContain('text/event-stream');
     const reader = first.body!.getReader();
     const consuming = (async () => { while (!(await reader.read()).done) { /* Drain protocol prelude into the blocking backend read. */ } })();
     const consumed = consuming.catch((error: unknown) => error);
@@ -205,6 +215,7 @@ for (const protocol of protocols) describe(protocol.path, () => {
     expect(pool.pendingAcquisitions).toBe(1);
     expect(calls).toBe(1);
     let teardownFinished = false;
+    expect(bodyCancel).toHaveBeenCalledTimes(0);
     const cancellation = outcome === 'reader-cancel' ? reader.cancel().then(() => { teardownFinished = true; }) : undefined;
     if (outcome === 'request-abort') requestAbort.abort('private cancellation detail');
     await vi.waitFor(() => expect(bodyCancel).toHaveBeenCalledTimes(1));

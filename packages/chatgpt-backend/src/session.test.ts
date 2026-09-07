@@ -95,7 +95,7 @@ describe('SessionChatGptBackend', () => {
     const bodies: Record<string, unknown>[] = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       bodies.push(JSON.parse(String(init?.body)));
-      return sseResponse([{ type: 'response.completed' }]);
+      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
     await backend.complete({ ...request, messages: [{ role: 'system', content: 'rules' }], backendOptions: { responsesBody: { parallel_tool_calls: true } } }, context);
     expect(bodies[0].input).toEqual([{ type: 'message', role: 'developer', content: 'rules' }]);
@@ -122,7 +122,7 @@ describe('SessionChatGptBackend', () => {
         { type: 'response.function_call_arguments.done', item_id: 'fc_1', arguments: '{ "q": "x" }' },
         { type: 'response.output_item.done', output_index: 0, item },
       ] : []),
-      { type: 'response.completed' },
+      { type: 'response.completed', response: { status: 'completed' } },
     ];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse(frames) });
     await expect(backend.complete(request, context)).resolves.toEqual({ text: '', finishReason: 'tool_calls', toolCalls: [{ id: 'call_1', name: 'lookup', input: { q: 'x' } }] });
@@ -131,7 +131,7 @@ describe('SessionChatGptBackend', () => {
   it('does not treat empty added arguments as a complete empty object', async () => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
       { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '' } },
-      { type: 'response.completed' },
+      { type: 'response.completed', response: { status: 'completed' } },
     ]) });
     await expect(backend.complete(request, context)).rejects.toMatchObject({ code: 'invalid_response' });
   });
@@ -145,7 +145,7 @@ describe('SessionChatGptBackend', () => {
       ] : []),
       { type: 'response.output_item.done', output_index: 0, item },
       { type: 'response.output_item.done', output_index: 0, item },
-      { type: 'response.completed', finish_reason: 'stop' },
+      { type: 'response.completed', response: { status: 'completed' }, finish_reason: 'stop' },
     ];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => mode === 'event-only'
       ? new Response(frames.map(({ type, ...frame }) => `event: ${type}\ndata: ${JSON.stringify(frame)}\n\n`).join(''))
@@ -153,6 +153,7 @@ describe('SessionChatGptBackend', () => {
     const events = [];
     for await (const event of backend.stream(request, context)) events.push(event);
     expect(events).toEqual([
+      { type: 'upstream_ready' },
       { type: 'tool_call', toolCall: { id: 'call_1', name: 'lookup', input: { q: 'x' } } },
       { type: 'done', finishReason: 'stop' },
     ]);
@@ -165,22 +166,21 @@ describe('SessionChatGptBackend', () => {
     { id: 'fc_1', call_id: 'call_1', name: 'lookup' },
   ])('does not infer a function call from an unrelated or incomplete done item %#', async (item) => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
-      { type: 'response.output_item.done', item }, { type: 'response.completed' },
+      { type: 'response.output_item.done', item }, { type: 'response.completed', response: { status: 'completed' } },
     ]) });
-    await expect(backend.complete(request, context)).resolves.toEqual({ text: '', finishReason: 'stop' });
+    await expect(backend.complete(request, context)).rejects.toMatchObject({ code: 'invalid_response' });
   });
 
-  it('independently emits mixed compatibility text and tools, but never standard argument deltas', async () => {
+  it('ignores untyped extension text and tools, and never emits standard argument deltas', async () => {
     const tool_call = { id: 'fc_compat', call_id: 'call_compat', name: 'lookup', input: { q: 'x' } };
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
       { delta: 'before ', tool_call },
       { delta: 'after', tool_call },
       { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '' } },
       { type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: '{"q":"x"}' },
-      { type: 'response.completed' },
+      { type: 'response.completed', response: { status: 'completed' } },
     ]) });
-    await expect(backend.complete(request, context)).resolves.toEqual({ text: 'before after', finishReason: 'tool_calls', toolCalls: [
-      { id: 'call_compat', name: 'lookup', input: { q: 'x' } },
+    await expect(backend.complete(request, context)).resolves.toEqual({ text: '', finishReason: 'tool_calls', toolCalls: [
       { id: 'call_1', name: 'lookup', input: { q: 'x' } },
     ] });
   });
@@ -195,7 +195,7 @@ describe('SessionChatGptBackend', () => {
       ...(mode === 'added-duplicate' ? [{ type: 'response.output_item.added', item: { ...item, type: 'function_call', arguments: '{}' } }] : []),
       ...(!added ? [{ type: 'response.output_item.done', output_index: 0, item: { ...item, ...(mode === 'simplified-association' ? { call_id: 'call_other' } : {}) } }] : []),
       ...(mode === 'simplified-duplicate' ? [{ type: 'response.output_item.done', item: { ...item, arguments: '{}' } }] : []),
-      { type: 'response.completed' },
+      { type: 'response.completed', response: { status: 'completed' } },
     ];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse(frames.map((frame) => ({ ...frame, message: 'REGRESSION_CANARY', details: 'REGRESSION_CANARY' }))) });
     // Capture only the error: failed assertions must not print the successful tool payload.
@@ -252,7 +252,7 @@ describe('SessionChatGptBackend', () => {
       ...(conflict === 'association' || conflict === 'duplicate-call-id' ? [{ type: 'response.output_item.added', output_index: 1, item: { ...item, id: 'fc_2', call_id: conflict === 'duplicate-call-id' ? 'call_1' : 'call_2' } }] : []),
       { type: 'response.function_call_arguments.delta', item_id: 'fc_1', output_index: conflict === 'association' ? 1 : 0, delta: '{"secret":"TOOL_CANARY"}' },
       { type: 'response.output_item.done', output_index: 0, item: { ...item, arguments: conflict === 'arguments' ? '{}' : '{"secret":"TOOL_CANARY"}' } },
-      { type: 'response.completed' },
+      { type: 'response.completed', response: { status: 'completed' } },
     ];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse(frames) });
     try { await backend.complete(request, context); expect.fail('Expected protocol conflict'); }
@@ -320,9 +320,9 @@ describe('SessionChatGptBackend', () => {
     await expect(backend.complete(request, context)).resolves.toMatchObject({ finishReason: 'tool_calls' });
   });
 
-  it('continues skipping malformed JSON frames without exposing their raw contents', async () => {
-    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response('data: {MALFORMED_FRAME_CANARY\n\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\ndata: {"type":"response.completed"}\n\n') });
-    await expect(backend.complete(request, context)).resolves.toMatchObject({ text: 'ok', finishReason: 'stop' });
+  it('rejects malformed JSON frames without exposing their raw contents', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response('data: {MALFORMED_FRAME_CANARY\n\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n') });
+    await expect(backend.complete(request, context)).rejects.toMatchObject({ code: 'invalid_response', status: 502 });
   });
 
   it('preserves an upstream reader AbortError without classifying it as a network failure', async () => {
@@ -368,7 +368,7 @@ describe('SessionChatGptBackend', () => {
     'event: error\ndata: SSE_SECRET_CANARY',
   ])('rejects an in-band failure without leaking or emitting done: %s', async (frame) => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000,
-      fetch: async () => new Response(`${frame}\n\ndata: {"type":"response.completed"}\n\n`),
+      fetch: async () => new Response(`${frame}\n\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n`),
     });
     const events = [];
     try {
@@ -376,12 +376,12 @@ describe('SessionChatGptBackend', () => {
       expect.fail('Expected backend failure');
     } catch (error) {
       expect(error).toBeInstanceOf(ChatGptBackendError);
-      expect(error).toMatchObject({ code: 'upstream_error', status: 502, message: 'ChatGPT session backend response failed.' });
+      expect(error).toMatchObject({ code: frame.endsWith('data: SSE_SECRET_CANARY') ? 'invalid_response' : 'upstream_error', status: 502 });
       expect(String(error) + JSON.stringify(error)).not.toContain('SSE_SECRET_CANARY');
       expect((error as Error).cause).toBeUndefined();
     }
     expect(events).toEqual([]);
-    await expect(backend.complete(request, context)).rejects.toMatchObject({ code: 'upstream_error' });
+    await expect(backend.complete(request, context)).rejects.toMatchObject({ code: frame.endsWith('data: SSE_SECRET_CANARY') ? 'invalid_response' : 'upstream_error' });
   });
 
   it.each(['abort', 'timeout', 'return', 'done', 'http-error'] as const)('handles gated async cancel on %s without masking the primary outcome', async (outcome) => {
@@ -395,8 +395,8 @@ describe('SessionChatGptBackend', () => {
     const cancel = vi.fn(async () => { cancelling(); await gate; throw new Error('cleanup failure'); });
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
-        if (outcome === 'return') controller.enqueue(new TextEncoder().encode('data: {"delta":"hello"}\n\n'));
-        if (outcome === 'done') controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed"}\n\n'));
+        if (outcome === 'return') controller.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"hello"}\n\n'));
+        if (outcome === 'done') controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed"}}\n\n'));
       },
       pull() { entered(); return new Promise<void>(() => {}); },
       cancel,
@@ -409,7 +409,8 @@ describe('SessionChatGptBackend', () => {
     const iterator = backend.stream(request, { ...context, signal: controller.signal })[Symbol.asyncIterator]();
     let operation = iterator.next();
     if (outcome === 'return' || outcome === 'done') {
-      await operation;
+      await operation; // readiness
+      if (outcome === 'done') await iterator.next(); // terminal business event
       operation = outcome === 'return' ? iterator.return!() : iterator.next();
     }
     let settled = false;
@@ -451,7 +452,7 @@ describe('SessionChatGptBackend', () => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 50,
       fetch: async (_url, init) => {
         fetchSignal = init!.signal!;
-        return ++calls === 1 ? new Response(body) : sseResponse(['{"type":"response.completed"}']);
+        return ++calls === 1 ? new Response(body) : sseResponse(['{"type":"response.completed","response":{"status":"completed"}}']);
       },
     });
     const iterator = backend.stream(request, { ...context, signal: controller.signal })[Symbol.asyncIterator]();
@@ -459,8 +460,8 @@ describe('SessionChatGptBackend', () => {
     const rejected = expect(next).rejects.toMatchObject(outcome === 'abort' ? { name: 'AbortError' } : { code: 'timeout', status: 504 });
     await reading;
     expect(fetchSignal.aborted).toBe(false);
-    // Legacy absolute limit plus the new body-idle watchdog.
-    expect(vi.getTimerCount()).toBe(2);
+    // Legacy total limit, idle watchdog and independent bootstrap deadline.
+    expect(vi.getTimerCount()).toBe(3);
     if (outcome === 'abort') controller.abort('private reason');
     else await vi.advanceTimersByTimeAsync(50);
     await rejected;
@@ -477,13 +478,14 @@ describe('SessionChatGptBackend', () => {
     vi.useFakeTimers();
     const cancel = vi.fn();
     const body = new ReadableStream<Uint8Array>({
-      start(controller) { controller.enqueue(new TextEncoder().encode('data: {"delta":"hello"}\n\n')); },
+      start(controller) { controller.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"hello"}\n\n')); },
       cancel,
     });
     const controller = new AbortController();
     const remove = vi.spyOn(controller.signal, 'removeEventListener');
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 50, fetch: async () => new Response(body) });
     const iterator = backend.stream(request, { ...context, signal: controller.signal })[Symbol.asyncIterator]();
+    expect(await iterator.next()).toMatchObject({ value: { type: 'upstream_ready' } });
     expect(await iterator.next()).toMatchObject({ value: { type: 'text_delta' } });
     await iterator.return!();
     expect(cancel).toHaveBeenCalledTimes(1);
@@ -509,7 +511,7 @@ describe('SessionChatGptBackend', () => {
     const bodies: unknown[] = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       bodies.push(JSON.parse(String(init?.body)));
-      return sseResponse([{ type: 'response.completed' }]);
+      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
     await backend.complete({ ...request, serviceTier }, context);
     expect(bodies[0]).not.toHaveProperty('service_tier');
@@ -518,7 +520,7 @@ describe('SessionChatGptBackend', () => {
     const calls: Headers[] = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, clientVersion: '2.3.4', fetch: async (url, init) => {
       calls.push(new Headers(init?.headers));
-      return String(url).includes('/models') ? Response.json({ models: [] }) : sseResponse(['[DONE]']);
+      return String(url).includes('/models') ? Response.json({ models: [] }) : sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
     const noAgent = { account: { ...context.account, secret: { ...context.account.secret, userAgent: undefined } } };
     await backend.listModels(noAgent);
@@ -621,7 +623,7 @@ describe('SessionChatGptBackend', () => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test/', timeoutMs: 1000, fetch: async (url, init) => {
       calls.push({ url: String(url), init: init ?? {} });
       return sseResponse([
-        { type: 'response.output_text.delta', output_text_delta: 'hello ' },
+        { type: 'response.output_text.delta', delta: 'hello ' },
         { type: 'response.output_text.delta', delta: 'world' },
         '[DONE]',
       ]);
@@ -644,8 +646,8 @@ describe('SessionChatGptBackend', () => {
   it('aggregates done usage for complete responses', async () => {
     const usage = { input_tokens: 9, output_tokens: 4, total_tokens: 13 };
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
-      { type: 'response.output_text.delta', output_text_delta: 'ok' },
-      { type: 'response.completed', body: { usage } },
+      { type: 'response.output_text.delta', delta: 'ok' },
+      { type: 'response.completed', response: { status: 'completed', usage } },
     ]) });
 
     const response = await backend.complete(request, context);
@@ -663,20 +665,18 @@ describe('SessionChatGptBackend', () => {
     expect(response.usage?.raw).not.toHaveProperty('secret');
   });
 
-  it('streams compatible text delta shapes', async () => {
+  it('ignores unsupported text delta shapes without treating them as readiness', async () => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
       { delta: { content: 'a' } },
       { message: { delta: { content: 'b' } } },
       { content: [{ text: 'c' }] },
-      { type: 'response.completed' },
+      { type: 'response.completed', response: { status: 'completed' } },
     ]) });
 
     const events = [];
     for await (const event of backend.stream(request, context)) events.push(event);
     expect(events).toEqual([
-      { type: 'text_delta', text: 'a' },
-      { type: 'text_delta', text: 'b' },
-      { type: 'text_delta', text: 'c' },
+      { type: 'upstream_ready' },
       { type: 'done', finishReason: 'stop' },
     ]);
   });
@@ -692,6 +692,7 @@ describe('SessionChatGptBackend', () => {
     const events = [];
     for await (const event of backend.stream(request, context)) events.push(event);
     expect(events).toEqual([
+      { type: 'upstream_ready' },
       { type: 'text_delta', text: 'hello' },
       { type: 'done', finishReason: 'stop', usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18, raw: completedUsage } },
     ]);
@@ -701,7 +702,7 @@ describe('SessionChatGptBackend', () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
-      return sseResponse([{ type: 'response.completed' }]);
+      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
 
     await backend.complete({ ...request, temperature: 0.25, topP: 0.75, stopSequences: ['END'] }, context);
@@ -712,7 +713,7 @@ describe('SessionChatGptBackend', () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
-      return sseResponse([{ type: 'response.completed' }]);
+      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
 
     await backend.complete({ ...request, reasoningEffort: 'xhigh', serviceTier: 'priority' }, context);
@@ -725,7 +726,7 @@ describe('SessionChatGptBackend', () => {
     let fetchCalls = 0;
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => {
       fetchCalls += 1;
-      return sseResponse([{ type: 'response.completed' }]);
+      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
 
     await expect(backend.complete({ ...request, reasoningEffort: 'ultra' }, context)).rejects.toMatchObject({
@@ -740,7 +741,7 @@ describe('SessionChatGptBackend', () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
-      return sseResponse([{ type: 'response.completed' }]);
+      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
 
     await backend.complete({ ...request, reasoningEffort: 'none', serviceTier: 'default' }, context);
@@ -752,7 +753,7 @@ describe('SessionChatGptBackend', () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
-      return sseResponse([{ type: 'response.completed' }]);
+      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
 
     await backend.complete(request, context);
@@ -765,7 +766,7 @@ describe('SessionChatGptBackend', () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
-      return sseResponse([{ type: 'response.completed' }]);
+      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
 
     await backend.complete({
@@ -796,7 +797,7 @@ describe('SessionChatGptBackend', () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
-      return sseResponse([{ type: 'response.completed' }]);
+      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
 
     await backend.complete({ ...request, stopSequences: ['END', 'STOP'] }, context);
@@ -807,7 +808,7 @@ describe('SessionChatGptBackend', () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
-      return sseResponse([{ type: 'response.completed' }]);
+      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
 
     await backend.complete({
@@ -833,7 +834,7 @@ describe('SessionChatGptBackend', () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
-      return sseResponse([{ type: 'response.completed' }]);
+      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
 
     await backend.complete({
@@ -850,7 +851,7 @@ describe('SessionChatGptBackend', () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
-      return sseResponse([{ type: 'response.completed' }]);
+      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
 
     await backend.complete({ ...request, toolChoice: { type: 'any' } }, context);
@@ -861,7 +862,7 @@ describe('SessionChatGptBackend', () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
-      return sseResponse([{ type: 'response.completed' }]);
+      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
 
     await backend.complete({
@@ -880,7 +881,7 @@ describe('SessionChatGptBackend', () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
-      return sseResponse([{ type: 'response.completed' }]);
+      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
     } });
 
     await backend.complete({ ...request, backendOptions: { responsesBody: { tool_choice: { type: 'web_search_preview' } } } }, context);
@@ -897,8 +898,8 @@ describe('SessionChatGptBackend', () => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
       return sseResponse([
-        { tool_call: { id: 'call_1', name: 'get_weather', input: { city: 'Paris' } } },
-        { type: 'response.completed', finish_reason: 'tool_calls' },
+        { type: 'response.output_item.done', item: { id: 'fc_1', call_id: 'call_1', name: 'get_weather', arguments: '{"city":"Paris"}' } },
+        { type: 'response.completed', response: { status: 'completed' }, finish_reason: 'tool_calls' },
       ]);
     } });
 
@@ -1009,7 +1010,7 @@ describe('SessionChatGptBackend', () => {
       originator: 'chat2claude',
       fetch: async (url, init) => {
         calls.push({ url: String(url), originator: new Headers(init?.headers).get('originator') });
-        return String(url).includes('/models') ? Response.json({ models: [] }) : sseResponse([{ type: 'response.completed' }]);
+        return String(url).includes('/models') ? Response.json({ models: [] }) : sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
       },
     });
 

@@ -51,7 +51,7 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
 export interface AsyncIterableStreamOptions {
   signal?: AbortSignal;
   /** Interrupt active I/O before waiting for a pending iterator.next() to settle. */
-  onCancel?: (reason: unknown) => void;
+  onCancel?: (reason: unknown) => void | Promise<void>;
 }
 
 export function readableStreamFromAsyncIterable(iterable: AsyncIterable<string>, options: AsyncIterableStreamOptions = {}): ReadableStream<Uint8Array> {
@@ -66,13 +66,21 @@ export function readableStreamFromAsyncIterable(iterable: AsyncIterable<string>,
     if (closing) return closing;
     stopped = true;
     cleanup();
-    options.onCancel?.(reason);
-    // Enter generators even when cancelled before the first pull, so their finally runs.
+    const upstreamCleanup = Promise.resolve().then(() => options.onCancel?.(reason));
+    // Enter legacy generators so their finally runs even before the first pull.
     if (!started) {
       started = true;
       void iterator.next().catch(() => {});
     }
-    closing = (async () => { await iterator.return?.(); })();
+    closing = (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.all([upstreamCleanup, Promise.resolve().then(() => iterator.return?.())]).catch(() => {}),
+          new Promise<void>(resolve => { timer = setTimeout(resolve, 250); }),
+        ]);
+      } finally { clearTimeout(timer); }
+    })();
     return closing;
   };
   const abort = () => {

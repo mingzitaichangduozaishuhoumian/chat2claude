@@ -7,7 +7,11 @@ it('decouples streaming defaults from the short-operation timeout', () => {
 it('accepts explicit zero total and positive overrides', () => {
   expect(loadEnv({ CHATGPT_RESPONSE_HEADER_TIMEOUT_MS: '10', CHATGPT_STREAM_IDLE_TIMEOUT_MS: '20', CHATGPT_STREAM_TOTAL_TIMEOUT_MS: '0' })).toMatchObject({ chatGptResponseHeaderTimeoutMs: 10, chatGptStreamIdleTimeoutMs: 20, chatGptStreamTotalTimeoutMs: 0 });
 });
-for (const name of ['CHATGPT_RESPONSE_HEADER_TIMEOUT_MS', 'CHATGPT_STREAM_IDLE_TIMEOUT_MS', 'CHATGPT_STREAM_TOTAL_TIMEOUT_MS']) {
+it('defaults and configures the independent bootstrap deadline', () => {
+  expect(loadEnv({}).chatGptStreamBootstrapTimeoutMs).toBe(60000);
+  expect(loadEnv({ CHATGPT_STREAM_BOOTSTRAP_TIMEOUT_MS: '25' }).chatGptStreamBootstrapTimeoutMs).toBe(25);
+});
+for (const name of ['CHATGPT_STREAM_BOOTSTRAP_TIMEOUT_MS', 'CHATGPT_RESPONSE_HEADER_TIMEOUT_MS', 'CHATGPT_STREAM_IDLE_TIMEOUT_MS', 'CHATGPT_STREAM_TOTAL_TIMEOUT_MS']) {
   it.each(['-1', '1.5', 'NaN', 'Infinity', 'abc', '2147483648', ''])(`rejects invalid ${name}=%s`, value => {
     expect(() => loadEnv({ [name]: value })).toThrow(name);
   });

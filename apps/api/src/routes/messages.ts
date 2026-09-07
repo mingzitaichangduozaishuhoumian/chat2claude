@@ -1,3 +1,4 @@
+import { boundedClose, prepareStream, type PreparedStream } from './prepare-stream.js';
 import { Hono } from 'hono';
 import type { Logger } from '@chatgpt-to-claude/shared';
 import { logHttpRequestFailure, releaseAccountWhenDone, sanitizeRequestMetrics, type RequestSizeMetrics } from './stream-lifecycle.js';
@@ -57,6 +58,9 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
       const backendContext = { account, signal: AbortSignal.any([c.req.raw.signal, streamCancellation.signal]), onWireMetrics: (wire: unknown) => { Object.assign(metrics, sanitizeRequestMetrics(wire)); } };
       let releaseError: unknown;
       let releaseDeferredToStream = false;
+      let prepared: PreparedStream | undefined;
+      let streamOwner: ReturnType<typeof releaseAccountWhenDone> | undefined;
+      let responseBody: ReadableStream<Uint8Array> | undefined;
       try {
         const resolution = deps.backendProvider === 'session'
           ? deps.modelRegistry.resolveForAccount(request.model, { accountId: account.id, createdAt: account.createdAt })
@@ -70,13 +74,15 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
         deps.requestLog.record({ route: '/v1/messages', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {
-          const events = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToClaudeSse(request, trackStreamStatistics(replay.stream(deps.backend.stream(backendRequest, backendContext), account, backendRequest.model, deps.accountPool, backendContext.signal), tracker, backendContext.signal)), claudeStreamError, tracker, backendContext.signal, { route: '/v1/messages', requestId: getAccessLogRequestId(c), logger: deps.logger, metrics, terminal: getAccessLogTerminal(c) });
-          const stream = readableStreamFromAsyncIterable(events, {
+          prepared = await prepareStream(deps.backend.stream(backendRequest, backendContext), { signal: backendContext.signal, abort: () => streamCancellation.abort() });
+          const events = streamOwner = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToClaudeSse(request, trackStreamStatistics(replay.stream(prepared.events, account, backendRequest.model, deps.accountPool, backendContext.signal), tracker, backendContext.signal, true)), claudeStreamError, tracker, backendContext.signal, { route: '/v1/messages', requestId: getAccessLogRequestId(c), logger: deps.logger, metrics, terminal: getAccessLogTerminal(c) }, prepared.close);
+          const stream = responseBody = readableStreamFromAsyncIterable(events, {
             signal: c.req.raw.signal,
-            onCancel: () => streamCancellation.abort(),
+            onCancel: () => { streamCancellation.abort(); return events.cancel(); },
           });
+          const response = new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' } });
           releaseDeferredToStream = true;
-          return new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' } });
+          return response;
         }
 
         const backendResponse = await deps.backend.complete(backendRequest, backendContext);
@@ -88,11 +94,16 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
         else { try { deps.logger?.info('HTTP request statistics', sanitizeRequestMetrics(metrics)); } catch { /* observational only */ } }
         return response;
       } catch (error) {
+        streamOwner?.abandon();
         releaseError = error;
         tracker.finish(requestErrorOutcome(error, backendContext.signal));
+        if (responseBody) await boundedClose(() => responseBody!.cancel());
         throw error;
       } finally {
-        if (!releaseDeferredToStream) deps.accountPool.release(account, accountReleaseError(releaseError));
+        if (!releaseDeferredToStream) {
+          await prepared?.close();
+          deps.accountPool.release(account, accountReleaseError(releaseError));
+        }
       }
     } catch (error) {
       logHttpRequestFailure(error, { route: '/v1/messages', requestId: getAccessLogRequestId(c), logger: deps.logger, metrics, terminal: getAccessLogTerminal(c) }, c.req.raw.signal);

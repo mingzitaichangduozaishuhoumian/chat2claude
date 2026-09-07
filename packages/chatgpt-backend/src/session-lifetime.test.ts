@@ -26,7 +26,7 @@ it.each(['comment', 'reasoning', 'tool', 'split'] as const)('keeps an active raw
     await vi.advanceTimersByTimeAsync(10);
     f.controller.enqueue(encode(kind === 'comment' ? ': heartbeat\n\n' : kind === 'reasoning' ? 'data: {"type":"response.reasoning_summary_text.delta","delta":"CANARY"}\n\n' : kind === 'tool' ? 'data: {"type":"response.web_search_call.in_progress","item_id":"ws"}\n\n' : ':'));
   }
-  f.controller.enqueue(encode('\n\ndata: {"type":"response.completed"}\n\n'));
+  f.controller.enqueue(encode('\n\ndata: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n'));
   expect(await result).toMatchObject({ text: '', finishReason: 'stop' });
   expect(vi.getTimerCount()).toBe(0);
   expect(f.body.locked).toBe(false);

@@ -20,7 +20,7 @@ function capture() {
   const bodies: Record<string, any>[] = [];
   const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
     bodies.push(JSON.parse(String(init?.body)));
-    return new Response('data: {"type":"response.completed"}\n\n');
+    return new Response('data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n');
   });
   return { bodies, fetch, backend: new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch }) };
 }
@@ -132,7 +132,7 @@ describe('Codex private endpoint cross-layer compatibility', () => {
       app.use('*', accessLog(logger));
       app.route('/', createRoute({ backend, backendProvider: 'session', requestLog: new RequestLog(), modelRegistry: registry, accountPool: pool, operationalState: state, logger }));
       const response = await app.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
-      const status = mode === 'cancelled' ? 499 : mode === 'http-error' ? 502 : 500;
+      const status = mode === 'cancelled' ? 499 : mode === 'http-error' ? 400 : 500;
       expect(response.status).toBe(status);
       expect(logger.access).toHaveBeenCalledWith(expect.objectContaining({ status }), 'text');
       expect(state.snapshot().accounts[0]?.requestStats).toMatchObject({ totalRequests: 1, successfulRequests: 0, failedRequests: mode === 'cancelled' ? 0 : 1, cancelledRequests: mode === 'cancelled' ? 1 : 0, inFlight: 0 });
