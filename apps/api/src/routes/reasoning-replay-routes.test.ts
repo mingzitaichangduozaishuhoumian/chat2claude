@@ -107,6 +107,14 @@ describe.each(['claude', 'chat'] as const)('%s implicit reasoning replay routes'
         const text = await response.text();
         expect(text).not.toMatch(/ROUTE_ENCRYPTED_REPLAY_CANARY|encrypted_content|replayItems|replayEligible|signature/);
         expect(f.captured[round].body.parallel_tool_calls).toBe(parallel);
+        if (protocol === 'claude') expect(f.logs.info).toHaveBeenLastCalledWith(stream ? 'HTTP stream terminated' : 'HTTP request statistics', expect.objectContaining({
+          upstreamBodyBytes: Buffer.byteLength(JSON.stringify(f.captured[round].body), 'utf8'),
+          upstreamInputItemCount: f.captured[round].body.input.length,
+          sourceMessageCount: 1 + round * 2,
+          sourceContentBlockCount: 1 + round * 2 * calls(1, parallel).length,
+          toolCount: 1, toolSchemaBytes: Buffer.byteLength(JSON.stringify({ type: 'object' })),
+          replayItemCount: round ? 1 + calls(round, parallel).length : 0, replayApplied: round > 0,
+        }));
         if (round) {
           const input = f.captured[round].body.input;
           expect(input.filter((item: any) => item.type === 'reasoning')).toEqual([reasoning(round)]);

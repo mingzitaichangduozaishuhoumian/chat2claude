@@ -13,7 +13,7 @@ import { accountReleaseError } from './account-release-error.js';
 import { mapRequestCancellation, mapChatGptBackendError, mapErrorPayload, parseRequestJson, unexpectedApiError } from './backend-errors.js';
 import { createAccountRequestTracker, requestErrorOutcome, trackStreamStatistics, usageFromBackend } from '../services/request-statistics.js';
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
-import { getAccessLogRequestId, setAccessLogMetadata } from '../middleware/access-log.js';
+import { getAccessLogRequestId, getAccessLogTerminal, setAccessLogMetadata } from '../middleware/access-log.js';
 import { acquireRequestAccount, checkSessionAccountAvailability } from './account-acquisition.js';
 
 export interface OpenAiResponsesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; responsesStore?: ResponsesStore; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; accountAcquireTimeoutMs?: number; logger?: Logger; }
@@ -79,7 +79,7 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
         deps.requestLog.record({ route: '/v1/responses', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {
-          const events = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToOpenAiResponsesSse(downstreamRequest, trackStreamStatistics(deps.backend.stream(backendRequest, backendContext), tracker, backendContext.signal), { signal: backendContext.signal, onCompleted: commit }), (error) => openAiResponsesStreamError(error, request.model), tracker, backendContext.signal, { route: '/v1/responses', requestId: getAccessLogRequestId(c), logger: deps.logger });
+          const events = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToOpenAiResponsesSse(downstreamRequest, trackStreamStatistics(deps.backend.stream(backendRequest, backendContext), tracker, backendContext.signal), { signal: backendContext.signal, onCompleted: commit }), (error) => openAiResponsesStreamError(error, request.model), tracker, backendContext.signal, { route: '/v1/responses', requestId: getAccessLogRequestId(c), logger: deps.logger, terminal: getAccessLogTerminal(c) });
           const stream = readableStreamFromAsyncIterable(events, {
             signal: c.req.raw.signal,
             onCancel: () => streamCancellation.abort(),
@@ -102,7 +102,7 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
         if (!releaseDeferredToStream) deps.accountPool.release(account, accountReleaseError(releaseError));
       }
     } catch (error) {
-      logHttpRequestFailure(error, { route: '/v1/responses', requestId: getAccessLogRequestId(c), logger: deps.logger }, c.req.raw.signal);
+      logHttpRequestFailure(error, { route: '/v1/responses', requestId: getAccessLogRequestId(c), logger: deps.logger, terminal: getAccessLogTerminal(c) }, c.req.raw.signal);
       const apiError = mapRequestCancellation(error, c.req.raw.signal) ?? (error instanceof ClaudeApiError ? error : mapChatGptBackendError(error) ?? (error instanceof ModelRegistryError ? new ClaudeApiError(error.message, error.status, error.status === 404 ? 'not_found_error' : 'invalid_request_error') : unexpectedApiError()));
       return c.json(toOpenAiError(apiError), apiError.status as 400);
     }

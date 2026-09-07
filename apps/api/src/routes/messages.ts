@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { Logger } from '@chatgpt-to-claude/shared';
-import { logHttpRequestFailure, releaseAccountWhenDone } from './stream-lifecycle.js';
+import { logHttpRequestFailure, releaseAccountWhenDone, sanitizeRequestMetrics, type RequestSizeMetrics } from './stream-lifecycle.js';
 import type { ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError, parseClaudeMessagesRequest } from '@chatgpt-to-claude/claude-protocol';
 import { mapChatGptResponseToClaude, mapChatGptStreamToClaudeSse, mapClaudeRequestToChatGpt, readableStreamFromAsyncIterable, type ReasoningSpeedDefaults } from '@chatgpt-to-claude/protocol-mapper';
@@ -11,7 +11,7 @@ import { accountReleaseError } from './account-release-error.js';
 import { mapRequestCancellation, mapChatGptBackendError, mapErrorPayload, parseRequestJson, unexpectedApiError } from './backend-errors.js';
 import { createAccountRequestTracker, requestErrorOutcome, trackStreamStatistics, usageFromBackend } from '../services/request-statistics.js';
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
-import { getAccessLogRequestId, setAccessLogMetadata } from '../middleware/access-log.js';
+import { getAccessLogRequestId, getAccessLogTerminal, setAccessLogMetadata } from '../middleware/access-log.js';
 import { acquireRequestAccount, checkSessionAccountAvailability } from './account-acquisition.js';
 import type { ReasoningReplayStore } from '../services/reasoning-replay-store.js';
 import { RequestReasoningReplay } from '../services/request-reasoning-replay.js';
@@ -21,9 +21,12 @@ export interface MessagesRouteDeps { backend: ChatGptBackendClient; requestLog: 
 export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
   const app = new Hono();
   app.post('/v1/messages', async (c) => {
+    const metrics: RequestSizeMetrics = {};
     try {
       if (deps.ready) await deps.ready;
       const request = parseClaudeMessagesRequest(await parseRequestJson(() => c.req.json()));
+      metrics.sourceMessageCount = request.messages.length;
+      metrics.sourceContentBlockCount = request.messages.reduce((sum, message) => sum + (typeof message.content === 'string' ? 1 : message.content.length), 0);
       setAccessLogMetadata(c, { model: request.model, stream: Boolean(request.stream) });
       const explicitControls = {
         reasoningEffort: request.output_config?.effort ?? request.reasoning_effort,
@@ -51,7 +54,7 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
 
       const tracker = createAccountRequestTracker(deps.operationalState, account);
       const streamCancellation = new AbortController();
-      const backendContext = { account, signal: AbortSignal.any([c.req.raw.signal, streamCancellation.signal]) };
+      const backendContext = { account, signal: AbortSignal.any([c.req.raw.signal, streamCancellation.signal]), onWireMetrics: (wire: unknown) => { Object.assign(metrics, sanitizeRequestMetrics(wire)); } };
       let releaseError: unknown;
       let releaseDeferredToStream = false;
       try {
@@ -67,7 +70,7 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
         deps.requestLog.record({ route: '/v1/messages', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {
-          const events = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToClaudeSse(request, trackStreamStatistics(replay.stream(deps.backend.stream(backendRequest, backendContext), account, backendRequest.model, deps.accountPool, backendContext.signal), tracker, backendContext.signal)), claudeStreamError, tracker, backendContext.signal, { route: '/v1/messages', requestId: getAccessLogRequestId(c), logger: deps.logger });
+          const events = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToClaudeSse(request, trackStreamStatistics(replay.stream(deps.backend.stream(backendRequest, backendContext), account, backendRequest.model, deps.accountPool, backendContext.signal), tracker, backendContext.signal)), claudeStreamError, tracker, backendContext.signal, { route: '/v1/messages', requestId: getAccessLogRequestId(c), logger: deps.logger, metrics, terminal: getAccessLogTerminal(c) });
           const stream = readableStreamFromAsyncIterable(events, {
             signal: c.req.raw.signal,
             onCancel: () => streamCancellation.abort(),
@@ -78,9 +81,12 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
 
         const backendResponse = await deps.backend.complete(backendRequest, backendContext);
         replay.complete(backendResponse, account, backendRequest.model, deps.accountPool, backendContext.signal);
-        const response = mapChatGptResponseToClaude(request, backendResponse);
+        const response = c.json(mapChatGptResponseToClaude(request, backendResponse));
         tracker.finish('success', usageFromBackend(backendResponse.usage));
-        return c.json(response);
+        const terminal = getAccessLogTerminal(c);
+        if (terminal) terminal({ ...sanitizeRequestMetrics(metrics), outcome: 'success' });
+        else { try { deps.logger?.info('HTTP request statistics', sanitizeRequestMetrics(metrics)); } catch { /* observational only */ } }
+        return response;
       } catch (error) {
         releaseError = error;
         tracker.finish(requestErrorOutcome(error, backendContext.signal));
@@ -89,7 +95,7 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
         if (!releaseDeferredToStream) deps.accountPool.release(account, accountReleaseError(releaseError));
       }
     } catch (error) {
-      logHttpRequestFailure(error, { route: '/v1/messages', requestId: getAccessLogRequestId(c), logger: deps.logger }, c.req.raw.signal);
+      logHttpRequestFailure(error, { route: '/v1/messages', requestId: getAccessLogRequestId(c), logger: deps.logger, metrics, terminal: getAccessLogTerminal(c) }, c.req.raw.signal);
       const apiError = mapRequestCancellation(error, c.req.raw.signal) ?? (error instanceof ClaudeApiError ? error : mapChatGptBackendError(error) ?? (error instanceof ModelRegistryError ? new ClaudeApiError(error.message, error.status, error.status === 404 ? 'not_found_error' : 'invalid_request_error') : unexpectedApiError()));
       return c.json(apiError.toResponseBody(), apiError.status as 400);
     }

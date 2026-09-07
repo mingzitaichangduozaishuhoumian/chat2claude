@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { createLogger, type Logger } from '@chatgpt-to-claude/shared';
-import { accessLog, normalizeAccessPath, setAccessLogMetadata, summarizeQuery, type HttpAccessLog } from './access-log.js';
+import { accessLog, getAccessLogTerminal, normalizeAccessPath, setAccessLogMetadata, summarizeQuery, type HttpAccessLog } from './access-log.js';
 import { apiKeyAuth } from './auth.js';
 import { RuntimeApiKeys } from '../services/runtime-api-keys.js';
 import { createApp } from '../app.js';
@@ -43,14 +43,16 @@ describe('accessLog', () => {
   });
 
   it.each(['text', 'json'] as const)('drops non-enum reasons in %s and does not inspect or delay an SSE body', async (format) => {
-    const sink = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const sink = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const pull = vi.fn();
-    const body = new ReadableStream<Uint8Array>({ pull }, { highWaterMark: 0 });
+    let terminal: ReturnType<typeof getAccessLogTerminal>;
+    const body = new ReadableStream<Uint8Array>({ pull, cancel() { terminal?.({ outcome: 'cancelled' }); } }, { highWaterMark: 0 });
     const response = new Response(body, { headers: { 'content-type': 'text/event-stream' } });
     const clone = vi.spyOn(response, 'clone');
     const app = new Hono();
     app.use('*', accessLog(createLogger(), format));
     app.get('/v1/messages', (c) => {
+      terminal = getAccessLogTerminal(c);
       setAccessLogMetadata(c, { stream: true, reason: 'secret-injected-reason\n' as HttpAccessLog['reason'] });
       return response;
     });
@@ -59,9 +61,10 @@ describe('accessLog', () => {
       expect(result.body).toBe(body);
       expect(pull).not.toHaveBeenCalled();
       expect(clone).not.toHaveBeenCalled();
+      expect(sink).not.toHaveBeenCalled();
+      await result.body!.cancel();
       expect(sink).toHaveBeenCalledTimes(1);
       expect(String(sink.mock.calls[0][0])).not.toContain('reason');
-      await result.body!.cancel();
     } finally { sink.mockRestore(); }
   });
 

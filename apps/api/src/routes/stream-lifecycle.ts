@@ -5,7 +5,31 @@ import type { Account, AccountPool } from '../services/account-pool.js';
 import { requestErrorOutcome, type AccountRequestTracker } from '../services/request-statistics.js';
 import { accountReleaseError } from './account-release-error.js';
 
+export interface RequestSizeMetrics {
+  upstreamBodyBytes?: number;
+  sourceMessageCount?: number;
+  sourceContentBlockCount?: number;
+  toolCount?: number;
+  toolSchemaBytes?: number;
+  upstreamInputItemCount?: number;
+  replayItemCount?: number;
+  replayApplied?: boolean;
+}
+
+export function sanitizeRequestMetrics(value: unknown): RequestSizeMetrics {
+  if (!value || typeof value !== 'object') return {};
+  const raw = value as Record<string, unknown>;
+  const safe: Record<string, number | boolean> = {};
+  for (const key of ['upstreamBodyBytes', 'sourceMessageCount', 'sourceContentBlockCount', 'toolCount', 'toolSchemaBytes', 'upstreamInputItemCount', 'replayItemCount']) {
+    if (typeof raw[key] === 'number' && Number.isSafeInteger(raw[key]) && raw[key] >= 0) safe[key] = raw[key];
+  }
+  if (typeof raw.replayApplied === 'boolean') safe.replayApplied = raw.replayApplied;
+  return safe;
+}
+
 interface StreamLogContext {
+  metrics?: RequestSizeMetrics;
+  terminal?: (fields: Record<string, unknown>) => void;
   route: '/v1/messages' | '/v1/chat/completions' | '/v1/responses';
   requestId?: string;
   logger?: Logger;
@@ -27,16 +51,21 @@ export function logHttpRequestFailure(error: unknown, context: StreamLogContext,
   const logger = context.logger ?? createLogger();
   const metadata = { route: context.route, ...(context.requestId ? { requestId: context.requestId } : {}) };
   const outcome = requestErrorOutcome(error, signal);
+  if (context.terminal) {
+    context.terminal({ ...sanitizeRequestMetrics(context.metrics), outcome, ...(outcome === 'failure' ? safeErrorFields(error) : {}) });
+    return;
+  }
   if (outcome === 'cancelled') {
-    logger.info('HTTP request terminated', { ...metadata, outcome });
+    logger.info('HTTP request terminated', { ...metadata, ...sanitizeRequestMetrics(context.metrics), outcome });
   } else {
-    logger.error('HTTP request terminated', { ...metadata, outcome, ...safeErrorFields(error) });
+    logger.error('HTTP request terminated', { ...metadata, ...sanitizeRequestMetrics(context.metrics), outcome, ...safeErrorFields(error) });
   }
 }
 
 /** Observes the existing iterator only; never pulls or clones a response body for logging. */
 export async function* releaseAccountWhenDone(accountPool: AccountPool, lease: Account, events: AsyncIterable<string>, onError: (error: unknown) => AsyncIterable<string>, tracker: AccountRequestTracker, signal: AbortSignal, context: StreamLogContext): AsyncIterable<string> {
   let releaseError: unknown;
+  let failureFields: ReturnType<typeof safeErrorFields> | undefined;
   let outcome: 'success' | 'failure' | 'cancelled' = 'cancelled';
   const logger = context.logger ?? createLogger();
   const metadata = { route: context.route, ...(context.requestId ? { requestId: context.requestId } : {}) };
@@ -46,16 +75,18 @@ export async function* releaseAccountWhenDone(accountPool: AccountPool, lease: A
   } catch (error) {
     releaseError = error;
     outcome = signal.aborted ? 'cancelled' : 'failure';
-    tracker.finish(requestErrorOutcome(error, signal));
-    // Log before yielding the error envelope: the client may stop reading it.
-    if (outcome === 'failure') {
-      logger.error('HTTP stream terminated', { ...metadata, outcome, ...safeErrorFields(error) });
-    }
+    // Snapshot safe diagnostics before yielding; a later return/cancel must retain
+    // the failure without mistaking detection time for terminal cleanup time.
+    if (outcome === 'failure') failureFields = safeErrorFields(error);
     yield* onError(error);
   } finally {
     // The protocol prelude may be cancelled before the backend tracker starts.
-    tracker.finish('cancelled');
+    tracker.finish(outcome);
     accountPool.release(lease, accountReleaseError(releaseError));
-    if (outcome !== 'failure') logger.info('HTTP stream terminated', { ...metadata, outcome });
+    const fields = { ...sanitizeRequestMetrics(context.metrics), outcome, ...failureFields };
+    try {
+      if (context.terminal) context.terminal(fields);
+      else logger[outcome === 'failure' ? 'error' : 'info']('HTTP stream terminated', { ...metadata, ...fields });
+    } catch { /* observational only; the lease is already released */ }
   }
 }

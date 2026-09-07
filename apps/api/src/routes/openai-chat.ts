@@ -11,7 +11,7 @@ import { accountReleaseError } from './account-release-error.js';
 import { mapRequestCancellation, mapChatGptBackendError, mapErrorPayload, parseRequestJson, unexpectedApiError } from './backend-errors.js';
 import { createAccountRequestTracker, requestErrorOutcome, trackStreamStatistics, usageFromBackend } from '../services/request-statistics.js';
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
-import { getAccessLogRequestId, setAccessLogMetadata } from '../middleware/access-log.js';
+import { getAccessLogRequestId, getAccessLogTerminal, setAccessLogMetadata } from '../middleware/access-log.js';
 import { acquireRequestAccount, checkSessionAccountAvailability } from './account-acquisition.js';
 import type { ReasoningReplayStore } from '../services/reasoning-replay-store.js';
 import { RequestReasoningReplay } from '../services/request-reasoning-replay.js';
@@ -67,7 +67,7 @@ export function createOpenAiChatRoute(deps: OpenAiChatRouteDeps): Hono {
         deps.requestLog.record({ route: '/v1/chat/completions', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {
-          const events = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToOpenAiChatSse(request, trackStreamStatistics(replay.stream(deps.backend.stream(backendRequest, backendContext), account, backendRequest.model, deps.accountPool, backendContext.signal), tracker, backendContext.signal)), openAiChatStreamError, tracker, backendContext.signal, { route: '/v1/chat/completions', requestId: getAccessLogRequestId(c), logger: deps.logger });
+          const events = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToOpenAiChatSse(request, trackStreamStatistics(replay.stream(deps.backend.stream(backendRequest, backendContext), account, backendRequest.model, deps.accountPool, backendContext.signal), tracker, backendContext.signal)), openAiChatStreamError, tracker, backendContext.signal, { route: '/v1/chat/completions', requestId: getAccessLogRequestId(c), logger: deps.logger, terminal: getAccessLogTerminal(c) });
           const stream = readableStreamFromAsyncIterable(events, {
             signal: c.req.raw.signal,
             onCancel: () => streamCancellation.abort(),
@@ -89,7 +89,7 @@ export function createOpenAiChatRoute(deps: OpenAiChatRouteDeps): Hono {
         if (!releaseDeferredToStream) deps.accountPool.release(account, accountReleaseError(releaseError));
       }
     } catch (error) {
-      logHttpRequestFailure(error, { route: '/v1/chat/completions', requestId: getAccessLogRequestId(c), logger: deps.logger }, c.req.raw.signal);
+      logHttpRequestFailure(error, { route: '/v1/chat/completions', requestId: getAccessLogRequestId(c), logger: deps.logger, terminal: getAccessLogTerminal(c) }, c.req.raw.signal);
       const apiError = mapRequestCancellation(error, c.req.raw.signal) ?? (error instanceof ClaudeApiError ? error : mapChatGptBackendError(error) ?? (error instanceof ModelRegistryError ? new ClaudeApiError(error.message, error.status, error.status === 404 ? 'not_found_error' : 'invalid_request_error') : unexpectedApiError()));
       return c.json(toOpenAiError(apiError), apiError.status as 400);
     }

@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { Context, MiddlewareHandler } from 'hono';
 import { isIP } from 'node:net';
 import { accessLogLevel, type AccessLogFormat, type HttpAccessLogEntry, type Logger } from '@chatgpt-to-claude/shared';
+import { sanitizeBackendDiagnostic } from '@chatgpt-to-claude/chatgpt-backend';
+import { sanitizeRequestMetrics } from '../routes/stream-lifecycle.js';
 import { ACCOUNT_UNAVAILABLE_REASONS, type AccountUnavailableReason } from '../services/account-pool.js';
 
 const ACCESS_LOG_METADATA = 'accessLogMetadata';
@@ -19,11 +21,14 @@ export interface HttpAccessLog extends HttpAccessLogEntry {
   reason?: AccountUnavailableReason;
 }
 
-/**
- * Records request completion without observing request or response bodies.
- * For streaming responses, duration measures when the response is ready, not
- * when its body finishes sending.
- */
+export type AccessLogTerminal = (fields: Record<string, unknown>) => void;
+
+/** Request-scoped internal callback; never sourced from headers or JSON. */
+export function getAccessLogTerminal(c: Context): AccessLogTerminal | undefined {
+  return c.get('accessLogTerminal') as AccessLogTerminal | undefined;
+}
+
+/** Streaming routes finalize through their existing iterator, without reading a second body. */
 export function accessLog(logger: Logger, format: AccessLogFormat = 'text'): MiddlewareHandler {
   return async (c, next) => {
     const requestId = randomUUID();
@@ -31,9 +36,14 @@ export function accessLog(logger: Logger, format: AccessLogFormat = 'text'): Mid
     const startedAt = performance.now();
     const url = new URL(c.req.url);
 
-    try {
-      await next();
-    } finally {
+    let ready = false;
+    let emitted = false;
+    let terminal: Record<string, unknown> | undefined;
+    const emit = () => {
+      if (!ready || emitted) return;
+      const streaming = c.res.headers.get('content-type')?.includes('text/event-stream') ?? false;
+      if (streaming && !terminal) return;
+      emitted = true;
       const metadata = c.get(ACCESS_LOG_METADATA) as AccessLogMetadata | undefined;
       const entry: HttpAccessLog = {
         requestId,
@@ -42,15 +52,42 @@ export function accessLog(logger: Logger, format: AccessLogFormat = 'text'): Mid
         query: summarizeQuery(url.searchParams),
         status: c.res.status,
         durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
-        durationKind: 'response_ready',
+        durationKind: streaming ? 'stream_terminal' : 'response_ready',
+        ...sanitizeAccessTerminal(terminal),
         peerIp: peerIp(c),
         ...(metadata?.model === undefined ? {} : { model: safeModelId(metadata.model) }),
         ...(metadata?.stream === undefined ? {} : { stream: metadata.stream }),
         ...(metadata?.reason && ACCOUNT_UNAVAILABLE_REASONS.includes(metadata.reason) ? { reason: metadata.reason } : {}),
       };
-      if (logger.access) logger.access(entry, format);
-      else logger[accessLogLevel(entry.status)]('HTTP access', entry);
+      // Logging is observational: a broken sink must not prevent stream/account teardown.
+      try {
+        if (logger.access) logger.access(entry, format);
+        else logger[accessLogLevel(entry.status, entry.outcome, entry.durationKind)]('HTTP access', entry);
+      } catch { /* logging cannot change request outcome */ }
+    };
+    c.set('accessLogTerminal', (fields: Record<string, unknown>) => {
+      terminal ??= fields;
+      emit();
+    });
+    try {
+      await next();
+    } finally {
+      ready = true;
+      emit();
     }
+  };
+}
+
+function sanitizeAccessTerminal(value: Record<string, unknown> | undefined) {
+  if (!value) return {};
+  const outcome: HttpAccessLogEntry['outcome'] = value.outcome === 'success' || value.outcome === 'failure' || value.outcome === 'cancelled' ? value.outcome : undefined;
+  const codes = ['unauthorized', 'rate_limited', 'network_error', 'timeout', 'upstream_error', 'invalid_response', 'invalid_request', 'internal_error'];
+  const families = ['ChatGptBackendError', 'ClaudeApiError', 'SyntaxError', 'TypeError', 'Error', 'unknown'];
+  return {
+    ...sanitizeRequestMetrics(value), ...sanitizeBackendDiagnostic(value),
+    ...(outcome ? { outcome } : {}),
+    ...(typeof value.code === 'string' && codes.includes(value.code) ? { code: value.code } : {}),
+    ...(typeof value.exceptionFamily === 'string' && families.includes(value.exceptionFamily) ? { exceptionFamily: value.exceptionFamily } : {}),
   };
 }
 

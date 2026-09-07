@@ -101,14 +101,10 @@ describe('request-statistics protocol attribution', () => {
       expect(release).toHaveBeenCalledWith(expect.objectContaining({ id: expect.any(String), incarnation: expect.any(Number) }), undefined);
       const lease = release.mock.calls[0][0];
       expect(pool.get(typeof lease === 'string' ? lease : lease.id)).toMatchObject({ currentConcurrency: 0, status: 'available', cooldownUntil: null });
-      expect(logger.info.mock.calls.length + logger.error.mock.calls.length).toBe(1);
-      if (aborted) {
-        expect(logger.error).not.toHaveBeenCalled();
-        expect(logger.info).toHaveBeenCalledWith('HTTP request terminated', expect.objectContaining({ route: path, outcome: 'cancelled' }));
-      } else {
-        expect(logger.error).toHaveBeenCalledWith('HTTP request terminated', expect.objectContaining({ route: path, outcome: 'failure' }));
-      }
-      expect(JSON.stringify([logger.info.mock.calls, logger.error.mock.calls, state.snapshot()])).not.toContain('CANARY');
+      expect(logger.info.mock.calls.length + logger.error.mock.calls.length).toBe(0);
+      expect(logger.access).toHaveBeenCalledTimes(1);
+      expect(logger.access).toHaveBeenCalledWith(expect.objectContaining({ path, outcome: aborted ? 'cancelled' : 'failure' }), 'text');
+      expect(JSON.stringify([logger.access.mock.calls, logger.info.mock.calls, logger.error.mock.calls, state.snapshot()])).not.toContain('CANARY');
     }
   });
 

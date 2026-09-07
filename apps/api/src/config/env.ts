@@ -23,6 +23,9 @@ export interface AppEnv {
   /** Private transport configuration; never serialize to logs or Admin responses. */
   outboundProxyUrl?: string;
   chatGptRequestTimeoutMs: number;
+  chatGptResponseHeaderTimeoutMs?: number;
+  chatGptStreamIdleTimeoutMs?: number;
+  chatGptStreamTotalTimeoutMs?: number;
   /** loadEnv always supplies this; omitted programmatic configs use the protocol default. */
   codexClientVersion?: string;
   defaultReasoningEffort: ReasoningEffort;
@@ -57,6 +60,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     chatGptBaseUrl: source.CHATGPT_BASE_URL?.trim() || 'https://chatgpt.com',
     outboundProxyUrl: parseOutboundProxyUrl(source.OUTBOUND_PROXY_URL),
     chatGptRequestTimeoutMs: readNumber(source.CHATGPT_REQUEST_TIMEOUT_MS, 60000),
+    chatGptResponseHeaderTimeoutMs: parseStreamTimeout(source, 'CHATGPT_RESPONSE_HEADER_TIMEOUT_MS', 60_000),
+    chatGptStreamIdleTimeoutMs: parseStreamTimeout(source, 'CHATGPT_STREAM_IDLE_TIMEOUT_MS', 300_000),
+    chatGptStreamTotalTimeoutMs: parseStreamTimeout(source, 'CHATGPT_STREAM_TOTAL_TIMEOUT_MS', 0),
     codexClientVersion: normalizeCodexClientVersion(source.CODEX_CLIENT_VERSION),
     defaultReasoningEffort: normalizeReasoningEffort(source.DEFAULT_REASONING_EFFORT),
     defaultResponseSpeed: normalizeSpeedPreference(source.DEFAULT_RESPONSE_SPEED),
@@ -102,6 +108,17 @@ function parseAccountAcquireTimeout(value: string | undefined): number {
     throw new Error('ACCOUNT_ACQUIRE_TIMEOUT_MS must be an integer between 0 and 2147483647 ms.');
   }
   return timeout;
+}
+
+function parseStreamTimeout(source: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const value = source[name];
+  if (value === undefined) return fallback;
+  const number = Number(value);
+  const minimum = name === 'CHATGPT_STREAM_TOTAL_TIMEOUT_MS' ? 0 : 1;
+  if (!/^\d+$/.test(value.trim()) || !Number.isInteger(number) || number < minimum || number > 2_147_483_647) {
+    throw new Error(`${name} must be an integer between ${minimum} and 2147483647 ms.`);
+  }
+  return number;
 }
 
 function parseBoolean(value: string | undefined): boolean { return value?.trim().toLowerCase() === 'true'; }

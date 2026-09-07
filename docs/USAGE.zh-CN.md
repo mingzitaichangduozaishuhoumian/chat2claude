@@ -253,23 +253,23 @@ curl --fail "$ANTHROPIC_BASE_URL/healthz"
 access log 只应用于 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 为专用简洁单行，普通应用日志仍为 JSON。设置 `ACCESS_LOG_FORMAT=json` 可保留 `{ level, message: "HTTP access", meta, time }` 外壳，含完整 request UUID 和可选安全 `reason`。两种格式均按状态选择等级：2xx/3xx 为 `info`、4xx 为 `warn`、5xx 为 `error`，受 `LOG_LEVEL` 过滤。
 
 ```text
-17:37:48.754 INFO  200 29ms 127.0.0.1 POST /v1/messages?beta model=opus stream req=ed73cd3b
-17:38:18.754 ERROR 503 30000ms 127.0.0.1 POST /v1/messages model=opus reason=account_busy_timeout req=2aec84fd
+17:37:48.754 INFO  200 1m35s 127.0.0.1 POST /v1/messages?beta model=opus stream outcome=success upstreamBodyBytes=12345 req=ed73cd3b
+17:38:18.754 ERROR 503 30s 127.0.0.1 POST /v1/messages model=opus reason=account_busy_timeout req=2aec84fd
 ```
 
-文本时间为运行主机本地时间（固定 `HH:mm:ss.SSS`），JSON 时间仍为 ISO UTC。文本顺序固定为时间、等级、状态、response-ready 耗时、peer IP、方法、归一化路径/安全 query 类别、model、stream、reason 和 UUID 前 8 位；`stream=false`、空 query 和缺失字段不显示。peer IP 只来自连接，不信任转发头。结构化记录包含：
+文本时间为运行主机本地时间（固定 `HH:mm:ss.SSS`），JSON 时间仍为 ISO UTC。文本顺序固定为时间、等级、状态、请求耗时、peer IP、方法、归一化路径/安全 query 类别、model、stream、reason 和 UUID 前 8 位；`stream=false`、空 query 和缺失字段不显示。peer IP 只来自连接，不信任转发头。结构化记录包含：
 
 - request ID、HTTP method、归一化 path；
 - 查询参数类别（只保留 `beta`，其他归为 `other`）；
 - HTTP status、peer IP；
 - 已通过路由校验的 model ID 和 stream 标志；
-- `durationMs` 和固定的 `durationKind: response_ready`。
+- `durationMs` 和 `durationKind: response_ready | stream_terminal`。
 
 它**不会读取或记录** request body、response body、token、cookie、Authorization、API Key、OAuth code/state/verifier 或完整查询值。动态 flow/account/key/model ID 会被归一化为占位路径；非法或过长模型 ID 会被写成安全占位符。
 
-`response_ready` 的含义是响应已经准备好：普通响应是 handler 返回 response 的时间；流式响应是 SSE response 建立的时间，**不是**流式 body 全部发送完的时间。
+普通请求保留 `durationKind: response_ready`。Messages、Chat Completions 和 Responses 的 SSE 仅在迭代器完成、失败或取消清理后输出一次 access log，使用 `durationKind: stream_terminal` 和从请求进入开始的总 `durationMs`，不再提前输出 200 或重复 JSON terminal 事件。已发送 headers 后失败仍真实记录 200，但为 ERROR、outcome=failure 和安全 code/timeoutKind；成功 INFO，取消 WARN、outcome=cancelled。响应建立前调用方取消仍为 499（账号获取期间取消保留原有 503）。时长格式如 32ms、5.333s、1m35s。middleware 不读取、clone 或 tee body；日志异常不影响账号释放。本轮不延迟协议 prelude 到首个有效上游 SSE frame，该握手仍是后续生命周期改进。
 
-Messages、Chat Completions 和 Responses 额外输出独立 JSON 应用日志 `HTTP stream terminated`：失败为 `error` 等级，字段仅含固定 route、`outcome: failure`、白名单 backend `code`（未知异常为 `internal_error`）及可用的既有服务端 request UUID；正常完成/取消以 `info` 记录 `success` / `cancelled`。因此 HTTP 200 后的流失败也可诊断。原有 response-ready access log 仍仅一行，不额外消费或 clone body，不记录账号 ID、原始 message/cause、请求体、凭据或 provider payload。
+Claude 终态仅增加数字/boolean 指标：sourceMessageCount 为 messages 长度，sourceContentBlockCount 为 messages 内容块总数（string 算 1，system 不计入这两项）；upstreamBodyBytes 为发送给 fetch 的唯一最终 JSON 字符串的 UTF-8 精确字节；toolCount、toolSchemaBytes 为工具数量 / schema JSON UTF-8 总字节；upstreamInputItemCount、replayItemCount、replayApplied 描述实际输入和 replay。system、history、工具参数、图片、密文只计字节，不记内容。内部 callback 回传，并由日志 allowlist 再过滤；客户端 JSON 无法伪造。fetch 前计算，因此 timeout 仍保留已知规模。JSON 包含完整指标，文本选择关键字段。无 access middleware 的独立路由保留安全 terminal 应用事件作兼容回退。
 
 请求 release 时，`unauthorized` 保持 unhealthy，需成功健康检查或重新授权恢复；`rate_limited` 保持 cooldown。`network_error`、`timeout`、`upstream_error`、`invalid_response` 仅保留固定本地诊断和安全错误码，原本健康的账号释放后仍 available、可立即重新获取。`invalid_request` 属于请求级错误，会清除临时诊断而不污染健康。成功或请求级错误 release 不会覆盖并发请求已设置的 unhealthy/cooldown。显式健康检查失败仍可能设为 error。
 
@@ -294,7 +294,7 @@ Messages、Chat Completions 和 Responses 采用相同的通知式获取策略�
 
 诊断依次筛选 provider、capability、模型/控制项、启用、健康、冷却和并发，混合账号池也有确定性结果；空闲但不兼容的账号不会掩盖符合条件的忙账号。session 预检查保留无可用账号时先于全局模型解析返回 503 的行为，但放行忙账号以继续完整模型/控制项筛选。原有模型校验的 400/404 不变。
 
-原因仅用于内部调度和日志，不暴露账号 ID、原始异常、上游正文，也不新增 API/SSE 字段。获取失败仍是原有 503 / `overloaded_error` 和各协议错误外壳；已经断开的客户端可能无法收到响应。SSE 初始 200 **不会释放并发槽**，仍由生成器 `finally` 在流完成、错误或取消清理后释放。访问日志耗时包含账号等待，但不包括完整 SSE 传输时间，也不代表上游延迟或最终流结果。
+原因仅用于内部调度和日志，不暴露账号 ID、原始异常、上游正文，也不新增 API/SSE 字段。获取失败仍是原有 503 / `overloaded_error` 和各协议错误外壳；已经断开的客户端可能无法收到响应。SSE 初始 200 **不会释放并发槽**，仍由生成器 `finally` 在流完成、错误或取消清理后释放。访问日志耗时包含账号等待及 SSE 迭代器至终态的全部时间，而非单独的上游延迟。
 
 ### 后台请求统计
 
@@ -326,12 +326,19 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 CHATGPT_BACKEND=session
 CHATGPT_BASE_URL=https://chatgpt.com
 CHATGPT_REQUEST_TIMEOUT_MS=60000
+CHATGPT_RESPONSE_HEADER_TIMEOUT_MS=60000
+CHATGPT_STREAM_IDLE_TIMEOUT_MS=300000
+CHATGPT_STREAM_TOTAL_TIMEOUT_MS=0
 ACCESS_LOG_FORMAT=text
 ACCOUNT_ACQUIRE_TIMEOUT_MS=30000
 PORT=3000
 HOST=127.0.0.1
 API_KEYS=<key-1>,<key-2>
 ```
+
+Session 生成不再使用 OAuth 短请求总时限。`CHATGPT_REQUEST_TIMEOUT_MS` 默认 60000，仅用于 OAuth/token/discovery/配额等短操作。`CHATGPT_RESPONSE_HEADER_TIMEOUT_MS` 默认 60000，限制 fetch 到 headers；`CHATGPT_STREAM_IDLE_TIMEOUT_MS` 默认 300000，从 headers 后等待首个非空 raw body chunk，之后每个非空 chunk 都续期（reasoning、tool、SSE comment、拆分帧均算活动，空 chunk 不算）。`CHATGPT_STREAM_TOTAL_TIMEOUT_MS` 默认 0，明确关闭绝对生成上限；大于 0 时从 fetch 开始计时，即使流活跃也终止。前两项须为 1..2147483647 整数，总上限允许 0；非法配置拒绝启动。超时仍是 backend code=timeout/status=504，安全 timeoutKind 仅为 response_headers / stream_idle / stream_total；调用方取消优先，不计账号失败。reader.cancel 清理最多等待 250ms。
+
+包 API 迁移：旧 `timeoutMs` 单独使用仍保留绝对总时限和短操作时限；它已 deprecated。传入任一新字段即启用新分阶段语义，未指定总上限默认为 0；`requestTimeoutMs` 只管短操作。API app 显式传入所有新字段，不把旧环境变量当作生成上限。
 
 `CHATGPT_BASE_URL` 是 session backend 请求上游 `/backend-api/codex/responses` 和 discovery 的地址，不是 Claude Code 的客户端 Base URL。客户端 Base URL 仍然是服务根 origin，例如 `http://127.0.0.1:3000`。
 

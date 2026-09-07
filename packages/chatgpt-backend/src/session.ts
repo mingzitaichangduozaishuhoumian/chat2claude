@@ -8,7 +8,12 @@ import { parseResponsesReplayItem, ResponsesReplay, ResponsesReplayBudget } from
 
 export interface SessionChatGptBackendOptions {
   baseUrl: string;
-  timeoutMs: number;
+  /** @deprecated Legacy absolute generation and short-operation timeout. New fields take precedence. */
+  timeoutMs?: number;
+  requestTimeoutMs?: number;
+  responseHeaderTimeoutMs?: number;
+  streamIdleTimeoutMs?: number;
+  streamTotalTimeoutMs?: number;
   clientVersion?: string;
   /** @deprecated The Codex protocol always uses codex_cli_rs. */
   originator?: string;
@@ -20,12 +25,19 @@ type JsonObject = Record<string, unknown>;
 export class SessionChatGptBackend implements ChatGptBackendClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  private readonly streamTimeouts: { headers: number; idle: number; total: number };
   private readonly clientVersion: string;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: SessionChatGptBackendOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
-    this.timeoutMs = options.timeoutMs;
+    this.timeoutMs = options.requestTimeoutMs ?? options.timeoutMs ?? 60_000;
+    const legacy = options.requestTimeoutMs === undefined && options.responseHeaderTimeoutMs === undefined && options.streamIdleTimeoutMs === undefined && options.streamTotalTimeoutMs === undefined;
+    this.streamTimeouts = {
+      headers: options.responseHeaderTimeoutMs ?? (legacy ? options.timeoutMs ?? 60_000 : 60_000),
+      idle: options.streamIdleTimeoutMs ?? (legacy ? options.timeoutMs ?? 300_000 : 300_000),
+      total: options.streamTotalTimeoutMs ?? (legacy ? options.timeoutMs ?? 0 : 0),
+    };
     this.clientVersion = normalizeCodexClientVersion(options.clientVersion);
     this.fetchImpl = options.fetch ?? fetch;
   }
@@ -142,14 +154,26 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent> {
     validateSessionRequest(request);
     const secret = requireSessionSecret(context);
-    const lifetime = createRequestLifetime(this.timeoutMs, context?.signal);
+    const body = buildResponsesBody(request);
+    const serialized = JSON.stringify(body);
+    const replayItemCount = request.inputItems?.filter(item => item.type === 'replay').length ?? 0;
+    const tools = Array.isArray(body.tools) ? body.tools : [];
+    context?.onWireMetrics?.({
+      upstreamBodyBytes: Buffer.byteLength(serialized, 'utf8'),
+      upstreamInputItemCount: Array.isArray(body.input) ? body.input.length : 0,
+      replayItemCount, replayApplied: replayItemCount > 0,
+      toolCount: tools.length,
+      toolSchemaBytes: tools.reduce((sum: number, tool: unknown) => sum + (isPlainObject(tool) && tool.parameters !== undefined ? Buffer.byteLength(JSON.stringify(tool.parameters), 'utf8') : 0), 0),
+    });
+    const lifetime = createRequestLifetime(this.streamTimeouts.total, context?.signal, this.streamTimeouts);
     let httpStatus: number | undefined;
     try {
       const response = await lifetime.run(() => this.fetchResponse(this.backendApiEndpoint('/codex/responses'), {
         method: 'POST',
         headers: this.headers(secret, true),
-        body: JSON.stringify(buildResponsesBody(request)),
+        body: serialized,
       }, lifetime.signal));
+      lifetime.headersReceived();
       if (!response.ok) {
         const diagnostic = await readHttpErrorDiagnostic(response, lifetime);
         if (context?.signal?.aborted) throw abortError();
@@ -207,6 +231,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       // Diagnostic reads are best-effort: timeout/read/cleanup failures cannot replace
       // an already received HTTP failure. An actual caller cancellation still wins.
       if (!context?.signal?.aborted && error instanceof ChatGptBackendError && error.safeDiagnostic?.failurePhase === 'response_headers') throw error;
+      if (context?.signal?.aborted) throw abortError();
       lifetime.signal.throwIfAborted();
       if (error instanceof ChatGptBackendError) throw error;
       if (error instanceof Error && error.name === 'AbortError') throw abortError();
@@ -282,25 +307,41 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   }
 }
 
-function createRequestLifetime(timeoutMs: number, callerSignal?: AbortSignal) {
+function createRequestLifetime(timeoutMs: number, callerSignal?: AbortSignal, stream?: { headers: number; idle: number; total: number }) {
   const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let phaseTimer: ReturnType<typeof setTimeout> | undefined;
+  let disposed = false;
   const dispose = () => {
+    disposed = true;
     clearTimeout(timer);
+    clearTimeout(phaseTimer);
     callerSignal?.removeEventListener('abort', cancel);
   };
   const cancel = () => {
     controller.abort(abortError());
     dispose();
   };
-  const timer = setTimeout(() => {
-    controller.abort(new ChatGptBackendError('ChatGPT session backend request timed out.', 'timeout', { status: 504 }));
+  const expire = (timeoutKind?: 'response_headers' | 'stream_idle' | 'stream_total') => {
+    controller.abort(callerSignal?.aborted ? abortError() : new ChatGptBackendError('ChatGPT session backend request timed out.', 'timeout', {
+      status: 504, ...(timeoutKind ? { safeDiagnostic: { timeoutKind } } : {}),
+    }));
     dispose();
-  }, timeoutMs);
+  };
+  const activity = () => {
+    if (!stream || disposed) return;
+    clearTimeout(phaseTimer);
+    phaseTimer = setTimeout(() => expire('stream_idle'), stream.idle);
+  };
+  if (timeoutMs > 0) timer = setTimeout(() => expire(stream ? 'stream_total' : undefined), timeoutMs);
+  if (stream) phaseTimer = setTimeout(() => expire('response_headers'), stream.headers);
   callerSignal?.addEventListener('abort', cancel, { once: true });
   if (callerSignal?.aborted) cancel();
   return {
     signal: controller.signal,
     dispose,
+    headersReceived: activity,
+    activity,
     async run<T>(operation: () => Promise<T>): Promise<T> {
       controller.signal.throwIfAborted();
       let onAbort!: () => void;
@@ -780,14 +821,19 @@ async function* iterateSseData(response: Response, lifetime: ReturnType<typeof c
     while (true) {
       const { value, done } = await lifetime.run(() => reader.read());
       if (done) break;
+      if (value.byteLength > 0) lifetime.activity();
       buffer += decoder.decode(value, { stream: true });
       yield* drainSseBuffer(buffer, (next) => { buffer = next; });
     }
   } finally {
     lifetime.signal.removeEventListener('abort', cancel);
+    // Stop generation timers before bounded teardown, including iterator.return().
+    lifetime.dispose();
+    let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await cancel();
+      await Promise.race([cancel(), new Promise<void>(resolve => { cleanupTimer = setTimeout(resolve, 250); })]);
     } finally {
+      clearTimeout(cleanupTimer);
       reader.releaseLock();
     }
   }

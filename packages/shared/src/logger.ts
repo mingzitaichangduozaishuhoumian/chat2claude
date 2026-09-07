@@ -10,7 +10,11 @@ export interface HttpAccessLogEntry {
   query: Record<string, true>;
   status: number;
   durationMs: number;
-  durationKind: 'response_ready';
+  durationKind: 'response_ready' | 'stream_terminal';
+  outcome?: 'success' | 'failure' | 'cancelled';
+  code?: string;
+  timeoutKind?: string;
+  upstreamBodyBytes?: number;
   peerIp: string;
   model?: string;
   stream?: boolean;
@@ -26,7 +30,9 @@ export interface Logger {
   access?(entry: HttpAccessLogEntry, format?: AccessLogFormat): void;
 }
 
-export function accessLogLevel(status: number): LogLevel {
+export function accessLogLevel(status: number, outcome?: HttpAccessLogEntry['outcome'], durationKind?: HttpAccessLogEntry['durationKind']): LogLevel {
+  if (durationKind === 'stream_terminal' && status === 200 && outcome === 'failure') return 'error';
+  if (outcome === 'cancelled') return 'warn';
   return status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
 }
 
@@ -34,6 +40,12 @@ export function accessLogLevel(status: number): LogLevel {
 export function formatLocalAccessTime(date: Date): string {
   const pad = (value: number, width = 2) => String(value).padStart(width, '0');
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+}
+
+export function formatAccessDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${Number((ms / 1000).toFixed(3))}s`;
+  return `${Math.floor(ms / 60_000)}m${Number(((ms % 60_000) / 1000).toFixed(3))}s`;
 }
 
 export function createLogger(level: LogLevel = 'info'): Logger {
@@ -51,17 +63,21 @@ export function createLogger(level: LogLevel = 'info'): Logger {
     warn: (m, meta) => write('warn', m, meta),
     error: (m, meta) => write('error', m, meta),
     access: (entry, format = 'text') => {
-      const entryLevel = accessLogLevel(entry.status);
+      const entryLevel = accessLogLevel(entry.status, entry.outcome, entry.durationKind);
       if (weights[entryLevel] < weights[level]) return;
       if (format === 'json') return write(entryLevel, 'HTTP access', entry);
       const query = Object.keys(entry.query).sort().join('&');
       const fields = [
         formatLocalAccessTime(new Date()), entryLevel.toUpperCase().padEnd(5),
-        entry.status, `${entry.durationMs}ms`, entry.peerIp, entry.method,
+        entry.status, formatAccessDuration(entry.durationMs), entry.peerIp, entry.method,
         `${entry.path}${query ? `?${query}` : ''}`,
         ...(entry.model ? [`model=${entry.model}`] : []),
         ...(entry.stream ? ['stream'] : []),
         ...(entry.reason ? [`reason=${entry.reason}`] : []),
+        ...(entry.outcome ? [`outcome=${entry.outcome}`] : []),
+        ...(entry.code ? [`code=${entry.code}`] : []),
+        ...(entry.timeoutKind ? [`timeoutKind=${entry.timeoutKind}`] : []),
+        ...(entry.upstreamBodyBytes === undefined ? [] : [`upstreamBodyBytes=${entry.upstreamBodyBytes}`]),
         `req=${entry.requestId.slice(0, 8)}`,
       ];
       // Defense in depth against line/terminal injection; validation is owned by middleware.

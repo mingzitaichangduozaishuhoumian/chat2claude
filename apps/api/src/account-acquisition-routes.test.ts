@@ -15,7 +15,7 @@ const protocols = [
   { path: '/v1/chat/completions', route: createOpenAiChatRoute, body: { messages: [{ role: 'user', content: 'hello' }] } },
   { path: '/v1/responses', route: createOpenAiResponsesRoute, body: { input: 'hello' } },
 ];
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 for (const protocol of protocols) describe(protocol.path, () => {
   function fixture(timeoutMs?: number, backendOverride?: ChatGptBackendClient) {
@@ -41,7 +41,8 @@ for (const protocol of protocols) describe(protocol.path, () => {
     const capture = (_message: string, meta?: unknown) => { logs.push(meta as HttpAccessLog); };
     const app = new Hono();
     app.use('*', accessLog({ debug: capture, info: capture, warn: capture, error: capture }));
-    const operationalState = new AdminOperationalState({ path: 'unused.json', debounceMs: 60_000 });
+    // Keep persistence outside even the 95-second virtual streaming test.
+    const operationalState = new AdminOperationalState({ path: 'unused.json', debounceMs: 120_000 });
     app.route('/', protocol.route({ logger: streamLogger, backend, accountPool: pool, modelRegistry: models, requestLog: new RequestLog(), operationalState, backendProvider: 'session', accountAcquireTimeoutMs: timeoutMs }));
     const request = (stream = false, signal?: AbortSignal) => app.request(protocol.path, {
       method: 'POST', headers: { 'content-type': 'application/json' }, signal,
@@ -49,6 +50,63 @@ for (const protocol of protocols) describe(protocol.path, () => {
     });
     return { pool, models, backend, request, logs, streamLogger, operationalState, end: (error = false) => { fail = error; end(); } };
   }
+
+  it('streams for 95 seconds with no premature access line or duplicated chunks', async () => {
+    vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] });
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({ start(c) { controller = c; } });
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://test', requestTimeoutMs: 50_000, responseHeaderTimeoutMs: 50_000, streamIdleTimeoutMs: 15_000, streamTotalTimeoutMs: 0, fetch: async () => new Response(body) });
+    const { request, logs, pool } = fixture(undefined, backend);
+    const response = await request(true);
+    const pending = response.text();
+    for (let i = 0; i < 9; i++) {
+      await vi.advanceTimersByTimeAsync(10_000);
+      controller.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"UNIQUE_CHUNK"}\n\n'));
+      expect(logs).toHaveLength(0);
+    }
+    await vi.advanceTimersByTimeAsync(5000);
+    controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed"}\n\n'));
+    const text = await pending;
+    if (protocol.path === '/v1/responses') expect(text).toContain('UNIQUE_CHUNK'.repeat(9));
+    else expect((text.match(/"(?:content|text)":"UNIQUE_CHUNK"/g) ?? []).length).toBe(9);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({ status: 200, outcome: 'success', durationKind: 'stream_terminal', durationMs: 95_000 });
+    expect(pool.get('session')?.currentConcurrency).toBe(0);
+    expect(body.locked).toBe(false);
+  });
+
+  it('records non-streaming serialization failure rather than an early success', async () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const backend: ChatGptBackendClient = {
+      listModels: async () => [], stream: async function* () {},
+      complete: async () => ({ text: '', finishReason: 'tool_calls', toolCalls: [{ id: 'call', name: 'tool', input: circular }] }),
+    };
+    const { request, logs, pool } = fixture(undefined, backend);
+    expect((await request()).status).toBe(500);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({ status: 500, outcome: 'failure' });
+    expect(pool.get('session')?.currentConcurrency).toBe(0);
+  });
+
+  it.each([false, true])('releases accounts on mapper errors even when the logging sink throws=%s', async brokenLogger => {
+    const circular: Record<string, unknown> = { secret: 'MAPPER_CANARY' };
+    circular.self = circular;
+    const backend: ChatGptBackendClient = {
+      listModels: async () => [], complete: async () => ({ text: '', finishReason: 'stop' }),
+      stream: async function* () { yield { type: 'tool_call', toolCall: { id: 'call', name: 'tool', input: circular } }; },
+    };
+    const { request, logs, pool } = fixture(undefined, backend);
+    if (brokenLogger) vi.spyOn(logs, 'push').mockImplementation(() => { throw new Error('LOGGER_CANARY'); });
+    const response = await request(true);
+    await response.text();
+    expect(pool.get('session')?.currentConcurrency).toBe(0);
+    if (!brokenLogger) {
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toMatchObject({ status: 200, outcome: 'failure', exceptionFamily: 'TypeError' });
+      expect(JSON.stringify(logs)).not.toContain('MAPPER_CANARY');
+    }
+  });
 
   it.each(['upstream_error', 'internal_error', 'untrusted_code'] as const)('logs safe %s after HTTP 200 without exposing provider details', async (code) => {
     const canary = 'provider-token-cookie-message-cause-canary';
@@ -65,12 +123,11 @@ for (const protocol of protocols) describe(protocol.path, () => {
     expect(response.status).toBe(200);
     await response.text();
     expect(logs).toHaveLength(1);
-    expect(logs[0]).toMatchObject({ status: 200, durationKind: 'response_ready' });
-    expect(streamLogger.error).toHaveBeenCalledTimes(1);
-    expect(streamLogger.error).toHaveBeenCalledWith('HTTP stream terminated', {
-      route: protocol.path, requestId: logs[0].requestId, outcome: 'failure', code: code === 'upstream_error' ? code : 'internal_error',
+    expect(logs[0]).toMatchObject({ status: 200, durationKind: 'stream_terminal',
+      path: protocol.path, outcome: 'failure', code: code === 'upstream_error' ? code : 'internal_error',
       exceptionFamily: code === 'internal_error' ? 'Error' : 'ChatGptBackendError',
     });
+    expect(streamLogger.error).not.toHaveBeenCalled();
     expect(streamLogger.info).not.toHaveBeenCalled();
     expect(JSON.stringify([logs, streamLogger.error.mock.calls, pool.exportState()])).not.toContain(canary);
     expect(pool.acquire()).toBeDefined();
@@ -89,15 +146,16 @@ for (const protocol of protocols) describe(protocol.path, () => {
       const text = await response.text();
       expect(response.status).toBe(stream ? 200 : 502);
       const fields = {
-        route: protocol.path, requestId: logs[0].requestId, outcome: 'failure', exceptionFamily: 'ChatGptBackendError',
+        path: protocol.path, requestId: logs[0].requestId, outcome: 'failure', exceptionFamily: 'ChatGptBackendError',
         code: type === 'body-read' ? 'network_error' : type === 'response.incomplete' ? 'invalid_response' : 'upstream_error',
         httpStatus: type === 'http-error' ? 503 : 200,
         failurePhase: type === 'http-error' ? 'response_headers' : type === 'body-read' ? 'response_body_read' : type === 'response.incomplete' ? 'response_incomplete' : 'response_event',
         ...(type === 'body-read' || type === 'http-error' ? {} : { eventType: type, responseStatus: type === 'response.incomplete' ? 'incomplete' : 'failed', responseErrorCode: 'unknown' }),
         ...(type === 'response.incomplete' ? { incompleteReason: 'max_output_tokens' } : {}),
       };
-      expect(streamLogger.error).toHaveBeenCalledTimes(1);
-      expect(streamLogger.error).toHaveBeenCalledWith(stream ? 'HTTP stream terminated' : 'HTTP request terminated', fields);
+      expect(streamLogger.error).not.toHaveBeenCalled();
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toMatchObject(fields);
       expect(text + JSON.stringify([logs, streamLogger.error.mock.calls, operationalState.snapshot(), pool.exportState()])).not.toContain(canary);
       expect(operationalState.snapshot().accounts[0]?.requestStats).toMatchObject({ totalRequests: 1, failedRequests: 1, successfulRequests: 0, cancelledRequests: 0, inFlight: 0 });
       expect(pool.get('session')?.currentConcurrency).toBe(0);
@@ -196,13 +254,13 @@ for (const protocol of protocols) describe(protocol.path, () => {
     }
     expect((await second).status).toBe(200);
     expect(backend.complete).toHaveBeenCalledTimes(1);
-    const terminalLogger = outcome === 'error' ? streamLogger.error : streamLogger.info;
-    expect(terminalLogger).toHaveBeenCalledTimes(1);
-    expect(terminalLogger).toHaveBeenCalledWith('HTTP stream terminated', {
-      route: protocol.path, requestId: logs[0].requestId,
+    expect(streamLogger.error).not.toHaveBeenCalled();
+    expect(streamLogger.info).not.toHaveBeenCalled();
+    expect(logs.filter(entry => entry.durationKind === 'stream_terminal')).toEqual([expect.objectContaining({
+      path: protocol.path, status: 200,
       outcome: outcome === 'complete' ? 'success' : outcome === 'cancel' ? 'cancelled' : 'failure',
       ...(outcome === 'error' ? { code: 'internal_error', exceptionFamily: 'Error' } : {}),
-    });
+    })]);
     expect(operationalState.snapshot().accounts[0]?.requestStats).toMatchObject({
       totalRequests: 2, successfulRequests: outcome === 'complete' ? 2 : 1,
       cancelledRequests: outcome === 'cancel' ? 1 : 0, failedRequests: outcome === 'error' ? 1 : 0, inFlight: 0,

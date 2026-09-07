@@ -459,7 +459,8 @@ describe('SessionChatGptBackend', () => {
     const rejected = expect(next).rejects.toMatchObject(outcome === 'abort' ? { name: 'AbortError' } : { code: 'timeout', status: 504 });
     await reading;
     expect(fetchSignal.aborted).toBe(false);
-    expect(vi.getTimerCount()).toBe(1);
+    // Legacy absolute limit plus the new body-idle watchdog.
+    expect(vi.getTimerCount()).toBe(2);
     if (outcome === 'abort') controller.abort('private reason');
     else await vi.advanceTimersByTimeAsync(50);
     await rejected;

@@ -111,7 +111,18 @@ export interface ChatGptBackendAccountContext {
   secret?: ChatGptSessionSecret;
 }
 
+export interface ChatGptWireMetrics {
+  upstreamBodyBytes: number;
+  upstreamInputItemCount: number;
+  replayItemCount: number;
+  replayApplied: boolean;
+  toolCount: number;
+  toolSchemaBytes: number;
+}
+
 export interface ChatGptBackendRequestContext {
+  /** Internal observer, supplied by the route, never copied from request JSON. */
+  onWireMetrics?: (metrics: Readonly<ChatGptWireMetrics>) => void;
   account?: ChatGptBackendAccountContext;
   /** Cancels the entire operation, including active response-body reads until stream disposal. */
   signal?: AbortSignal;

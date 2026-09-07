@@ -259,23 +259,23 @@ The app uses external Undici 7 `ProxyAgent`, compatible with Node 22.15, through
 Access logging is installed only for `/v1/*` and `/admin/api/*`. The default `ACCESS_LOG_FORMAT=text` is a dedicated concise line; ordinary application logs remain JSON. Set `ACCESS_LOG_FORMAT=json` to retain the `{ level, message: "HTTP access", meta, time }` envelope with a full request UUID and optional safe `reason`. Both formats use `info` for 2xx/3xx, `warn` for 4xx, and `error` for 5xx, filtered by `LOG_LEVEL`.
 
 ```text
-17:37:48.754 INFO  200 29ms 127.0.0.1 POST /v1/messages?beta model=opus stream req=ed73cd3b
-17:38:18.754 ERROR 503 30000ms 127.0.0.1 POST /v1/messages model=opus reason=account_busy_timeout req=2aec84fd
+17:37:48.754 INFO  200 1m35s 127.0.0.1 POST /v1/messages?beta model=opus stream outcome=success upstreamBodyBytes=12345 req=ed73cd3b
+17:38:18.754 ERROR 503 30s 127.0.0.1 POST /v1/messages model=opus reason=account_busy_timeout req=2aec84fd
 ```
 
-Text uses the running host local time in fixed `HH:mm:ss.SSS` format; JSON timestamps remain ISO UTC. Text fields are ordered as time, level, status, response-ready duration, peer IP, method, normalized path/safe query categories, model, stream, reason, and the first eight UUID characters. False stream flags and missing fields are omitted. Peer IP comes only from the connection, not forwarding headers. Structured entries contain:
+Text uses the running host local time in fixed `HH:mm:ss.SSS` format; JSON timestamps remain ISO UTC. Text fields are ordered as time, level, status, request duration, peer IP, method, normalized path/safe query categories, model, stream, reason, and the first eight UUID characters. False stream flags and missing fields are omitted. Peer IP comes only from the connection, not forwarding headers. Structured entries contain:
 
 - request ID, HTTP method, and normalized path;
 - query-parameter categories (`beta` is retained; all other names become `other`);
 - HTTP status and peer IP;
 - model ID and stream flag only after route validation;
-- `durationMs` and the fixed `durationKind: response_ready`.
+- `durationMs` and `durationKind: response_ready | stream_terminal`.
 
 The logger does **not** read or record request bodies, response bodies, tokens, cookies, Authorization headers, API Keys, OAuth code/state/verifier values, or complete query values. Dynamic flow/account/key/model IDs are normalized to placeholders; invalid or oversized model IDs are replaced with a safe placeholder.
 
-`response_ready` means that the response object is ready: for a non-streaming request, the handler has produced the response; for a streaming request, the SSE response has been created. It does **not** mean that the streaming body has finished sending.
+Non-streaming requests keep `durationKind: response_ready`. Streaming Messages, Chat Completions and Responses emit exactly one access entry at iterator completion, failure or cancellation cleanup, with `durationKind: stream_terminal` and total wall-clock `durationMs` since request entry. No early 200 access line or duplicate JSON terminal event is emitted. A stream failure after headers retains the real HTTP 200 but uses ERROR with outcome=failure and safe code/timeoutKind. Success is INFO; cancellation is WARN with outcome=cancelled. Pre-response caller cancellation remains 499 (account-acquisition cancellation retains its existing 503). Text duration is human-readable: 32ms, 5.333s, 1m35s. The middleware never reads, clones or tees the body; logging failures cannot prevent account release. This change does not delay protocol preludes until the first valid upstream SSE frame; that handshake remains future lifecycle work.
 
-Messages, Chat Completions, and Responses also emit a separate JSON application log, `HTTP stream terminated`: failures use `error` with a fixed route, `outcome: failure`, an allowlisted backend `code` (or `internal_error`), and the existing server-generated request UUID when available. Normal completion and cancellation use `info` with `success` / `cancelled`. This diagnoses failures after HTTP 200 without changing the single response-ready access line or pulling/cloning bodies. No account ID, raw error message/cause, request body, credentials, or provider payload is logged.
+Claude terminal metadata includes only numeric/boolean size metrics: sourceMessageCount (messages length), sourceContentBlockCount (string counts as one block; system excluded), upstreamBodyBytes (exact UTF-8 bytes of the single final JSON string sent to fetch), toolCount, toolSchemaBytes (sum of schema JSON UTF-8 bytes), upstreamInputItemCount, replayItemCount and replayApplied. System/history/tool arguments/images/ciphertext contribute to wire size, never to log content. Internal callbacks carry these fields; client JSON cannot forge them, and the log boundary allowlists them again. Wire sizes are computed before fetch, so failures/timeouts retain known metrics. JSON keeps all numeric metadata; text shows key fields. Standalone routes without access middleware retain safe terminal application events as a compatibility fallback.
 
 Request release keeps `unauthorized` accounts unhealthy until a successful health check or reauthorization, and `rate_limited` accounts in cooldown. `network_error`, `timeout`, `upstream_error`, and `invalid_response` retain only a fixed local diagnostic and safe code; otherwise healthy accounts remain available for immediate reacquisition. `invalid_request` clears transient diagnostics without poisoning health. Successful or request-scoped releases never clear a concurrent unhealthy/cooldown decision. Explicit health-check failures may still set `error`.
 
@@ -300,7 +300,7 @@ Release, health recovery, enablement, removal, and configuration updates notify 
 
 Diagnosis applies provider, capability, eligibility, enabled, health, cooldown, and concurrency filters in that order. This makes mixed-pool failures deterministic: an incompatible idle account cannot hide an eligible busy account. A session preflight preserves the existing no-available-account 503 before global model resolution, but allows busy accounts through for full model/control filtering. Existing model-validation 400/404 responses remain unchanged.
 
-Reasons are internal/log metadata, not account IDs, raw errors, upstream response bodies, or new API/SSE fields. Acquisition failures retain HTTP 503 / `overloaded_error` in each protocol's existing envelope. An already-disconnected client may not receive that response. A streaming response's initial 200 does **not** free the account: its generator's `finally` releases the slot when the SSE finishes, errors, or is cleaned up after cancellation. Access-log duration includes acquisition waiting but excludes full SSE transmission; it is not an upstream latency measurement or final stream-outcome log.
+Reasons are internal/log metadata, not account IDs, raw errors, upstream response bodies, or new API/SSE fields. Acquisition failures retain HTTP 503 / `overloaded_error` in each protocol's existing envelope. An already-disconnected client may not receive that response. A streaming response's initial 200 does **not** free the account: its generator's `finally` releases the slot when the SSE finishes, errors, or is cleaned up after cancellation. Access-log duration includes acquisition waiting and the entire SSE iterator lifetime through terminal cleanup, not just upstream latency.
 
 ### Admin request statistics
 
@@ -332,12 +332,19 @@ Common settings:
 CHATGPT_BACKEND=session
 CHATGPT_BASE_URL=https://chatgpt.com
 CHATGPT_REQUEST_TIMEOUT_MS=60000
+CHATGPT_RESPONSE_HEADER_TIMEOUT_MS=60000
+CHATGPT_STREAM_IDLE_TIMEOUT_MS=300000
+CHATGPT_STREAM_TOTAL_TIMEOUT_MS=0
 ACCESS_LOG_FORMAT=text
 ACCOUNT_ACQUIRE_TIMEOUT_MS=30000
 PORT=3000
 HOST=127.0.0.1
 API_KEYS=<key-1>,<key-2>
 ```
+
+Session generation is decoupled from short operations. `CHATGPT_REQUEST_TIMEOUT_MS` defaults to 60000 and remains for OAuth/token/discovery/quota operations. `CHATGPT_RESPONSE_HEADER_TIMEOUT_MS` defaults to 60000 and bounds fetch-to-headers. `CHATGPT_STREAM_IDLE_TIMEOUT_MS` defaults to 300000: it starts at headers and resets on every nonempty raw body chunk, including reasoning, tools, SSE comments and split frames; empty chunks do not reset it. `CHATGPT_STREAM_TOTAL_TIMEOUT_MS` defaults to 0, explicitly disabling the absolute generation limit; a positive value bounds the entire fetch/generation even while active. Header/idle accept integers 1..2147483647; total also accepts 0. Invalid values fail startup. Timeouts remain backend code=timeout/status=504 with allowlisted timeoutKind=response_headers | stream_idle | stream_total. Caller cancellation wins and does not mark the account failed. Reader cancellation cleanup waits at most 250ms.
+
+Package migration: deprecated `timeoutMs` alone preserves its legacy absolute generation and short-operation limits. Supplying any new field selects phased semantics, with total disabled unless specified; `requestTimeoutMs` affects short operations only. The API explicitly supplies the new fields and never uses the old environment variable as a generation limit.
 
 `CHATGPT_BASE_URL` is the upstream URL used by the session backend for `/backend-api/codex/responses` and model discovery. It is not the client Base URL for Claude Code. Claude Code still uses the service root origin, for example `http://127.0.0.1:3000`.
 
