@@ -13,6 +13,17 @@ describe('ChatGptBackendError discovery metadata', () => {
     expect(JSON.stringify(error)).not.toContain('DIAGNOSTIC_CANARY');
   });
 
+  it('defensively copies and freezes HTTP error code/type/parameter enums', () => {
+    const raw = { responseErrorCode: 'unsupported_parameter', responseErrorType: 'invalid_request_error', responseErrorParam: 'max_output_tokens' };
+    const error = new ChatGptBackendError('Failed', 'upstream_error', { safeDiagnostic: raw as never });
+    raw.responseErrorCode = raw.responseErrorType = raw.responseErrorParam = 'HTTP_CANARY';
+    expect(error.safeDiagnostic).toEqual({ responseErrorCode: 'unsupported_parameter', responseErrorType: 'invalid_request_error', responseErrorParam: 'max_output_tokens' });
+    expect(Object.isFrozen(error.safeDiagnostic)).toBe(true);
+    const unknown = new ChatGptBackendError('Failed', 'upstream_error', { safeDiagnostic: raw as never });
+    expect(unknown.safeDiagnostic).toEqual({ responseErrorCode: 'unknown', responseErrorType: 'unknown', responseErrorParam: 'unknown' });
+    expect(JSON.stringify([error, unknown])).not.toContain('HTTP_CANARY');
+  });
+
   it.each([NaN, Infinity, -1, 200.5, 600, '200'])('discards invalid initial HTTP status %s', (httpStatus) => {
     expect(new ChatGptBackendError('Failed', 'upstream_error', { safeDiagnostic: { httpStatus, failurePhase: 'DIAGNOSTIC_CANARY' } as never }).safeDiagnostic).toEqual({});
   });

@@ -3,6 +3,13 @@ import type { MiddlewareHandler } from 'hono';
 import type { RuntimeApiKeys } from '../services/runtime-api-keys.js';
 import { isTrustedLocalHost, isTrustedLocalRequestHost, type LocalAdminSession } from '../services/local-admin-session.js';
 
+declare module 'hono' {
+  interface ContextVariableMap {
+    /** Present only after successful API-key authentication. */
+    reasoningReplayOwner: string | undefined;
+  }
+}
+
 const PUBLIC_ADMIN_API_PATHS = new Set(['/admin/api/setup/status', '/admin/api/auth/status']);
 const BOOTSTRAP_ADMIN_API_PATTERNS = [
   /^\/admin\/api\/api-keys\/dev-enable$/,
@@ -25,6 +32,12 @@ export function apiKeyAuth(apiKeys: string[], runtimeApiKeys: RuntimeApiKeys): M
       return c.json({ type: 'error', error: { type: 'authentication_error', message: 'Invalid or missing API key' } }, 401);
     }
     c.set('ownerId', ownerId);
+    // Only authenticated middleware supplies this partition for both native and
+    // implicit replay. Keep the existing ownerId contract for other consumers.
+    const runtimeIdentity = runtimeApiKeys.identityForKey(apiKey!);
+    c.set('reasoningReplayOwner', envKeys.has(apiKey!)
+      ? `env:${createHash('sha256').update(apiKey!).digest('hex')}`
+      : runtimeIdentity ? `runtime:${runtimeIdentity}` : undefined);
     return next();
   };
 }

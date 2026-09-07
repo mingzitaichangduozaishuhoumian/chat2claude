@@ -597,29 +597,38 @@ describe('/v1/chat/completions', () => {
   });
 });
 
+function authenticatedResponsesRoute(deps: Parameters<typeof createOpenAiResponsesRoute>[0]): Hono {
+  const app = new Hono();
+  app.use('*', (c, next) => { c.req.raw.headers.set('x-api-key', 'test-owner'); return next(); });
+  app.use('*', apiKeyAuth(['test-owner'], new RuntimeApiKeys()));
+  app.route('/', createOpenAiResponsesRoute(deps));
+  return app;
+}
+
 describe('ResponsesStore', () => {
   it('isolates records by owner and lazily expires or evicts records', () => {
     let now = 1_000;
     const store = new ResponsesStore({ now: () => now, ttlMs: 100, maxRecords: 2 });
     const request = { model: 'sonnet', input: 'hello' } as any;
-    const responseA = { id: 'resp_a', output_text: 'A' } as any;
-    const responseB = { id: 'resp_b', output_text: 'B' } as any;
-    const responseC = { id: 'resp_c', output_text: 'C' } as any;
+    const responseA = { id: 'resp_a', status: 'completed', output: [] } as any;
+    const responseB = { id: 'resp_b', status: 'completed', output: [] } as any;
+    const responseC = { id: 'resp_c', status: 'completed', output: [] } as any;
+    const context = { account: { id: 'a', incarnation: 1, provider: 'mock' as const }, model: 'sonnet', output: [] };
 
-    store.put('owner-a', request, responseA);
-    expect(store.get('owner-a', 'resp_a')?.response.output_text).toBe('A');
+    store.put('owner-a', request, responseA, context);
+    expect(store.get('owner-a', 'resp_a')?.expand('next', context.account, context.model)).toEqual([{ type: 'message', role: 'user', content: 'hello' }, { type: 'message', role: 'user', content: 'next' }]);
     expect(store.get('owner-b', 'resp_a')).toBeUndefined();
 
     now = 1_101;
     expect(store.get('owner-a', 'resp_a')).toBeUndefined();
 
     now = 2_000;
-    store.put('owner-a', request, responseA);
-    store.put('owner-a', request, responseB);
-    store.put('owner-a', request, responseC);
+    store.put('owner-a', request, responseA, context);
+    store.put('owner-a', request, responseB, context);
+    store.put('owner-a', request, responseC, context);
     expect(store.get('owner-a', 'resp_a')).toBeUndefined();
-    expect(store.get('owner-a', 'resp_b')?.response.output_text).toBe('B');
-    expect(store.get('owner-a', 'resp_c')?.response.output_text).toBe('C');
+    expect(store.get('owner-a', 'resp_b')).toBeDefined();
+    expect(store.get('owner-a', 'resp_c')).toBeDefined();
   });
 });
 
@@ -658,7 +667,7 @@ describe('/v1/responses', () => {
     expect(body.object).toBe('response');
     expect(body.model).toBe('sonnet');
     expect(body.status).toBe('completed');
-    expect(body.output).toEqual([{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Echo:[effort=low,speed=priority] hello' }] }]);
+    expect(body.output).toEqual([{ id: expect.any(String), status: 'completed', type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Echo:[effort=low,speed=priority] hello', annotations: [] }] }]);
     expect(body.output_text).toBe('Echo:[effort=low,speed=priority] hello');
     expect(body.usage.total_tokens).toBe(body.usage.input_tokens + body.usage.output_tokens);
   });
@@ -692,7 +701,7 @@ describe('/v1/responses', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { output: Array<Record<string, unknown>>; output_text: string };
     expect(body.output_text).toBe('');
-    expect(body.output).toEqual([{ type: 'function_call', call_id: 'call_mock_get_weather', name: 'get_weather', arguments: '{}' }]);
+    expect(body.output).toEqual([{ id: expect.any(String), status: 'completed', type: 'function_call', call_id: 'call_mock_get_weather', name: 'get_weather', arguments: '{}' }]);
   });
 
   it('prepends responses instructions and maps common input item/content shapes', async () => {
@@ -838,16 +847,18 @@ describe('/v1/responses', () => {
   it('stores a non-stream responses response and prepends it for previous_response_id', async () => {
     const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
     const responsesStore = new ResponsesStore();
-    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool(), responsesStore });
+    const app = authenticatedResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool(), responsesStore });
 
     const firstRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', input: 'first', store: true, metadata: { trace: 'one' } }) });
     expect(firstRes.status).toBe(200);
     const firstBody = await firstRes.json() as { id: string; output_text: string };
-    expect(responsesStore.get('anonymous', firstBody.id)?.metadata).toEqual({ trace: 'one' });
+    expect(responsesStore.count()).toBe(1);
+    expect(JSON.stringify(responsesStore)).not.toContain('trace');
 
     const secondRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', input: 'second', previous_response_id: firstBody.id }) });
     expect(secondRes.status).toBe(200);
     expect(backend.lastRequest?.messages).toEqual([
+      { role: 'user', content: 'first' },
       { role: 'assistant', content: firstBody.output_text },
       { role: 'user', content: 'second' },
     ]);
@@ -857,7 +868,7 @@ describe('/v1/responses', () => {
   it('prepends stored responses function_call before current function_call_output for previous_response_id', async () => {
     const backend = new ToolCallBackend([{ id: 'backend-test-model' }]);
     const responsesStore = new ResponsesStore();
-    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool(), responsesStore });
+    const app = authenticatedResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool(), responsesStore });
 
     const firstRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
       model: 'sonnet',
@@ -868,7 +879,7 @@ describe('/v1/responses', () => {
     expect(firstRes.status).toBe(200);
     const firstBody = await firstRes.json() as { id: string; output_text: string; output: Array<Record<string, unknown>> };
     expect(firstBody.output_text).toBe('');
-    expect(firstBody.output).toEqual([{ type: 'function_call', call_id: 'call_prev_weather', name: 'get_weather', arguments: '{"city":"Paris"}' }]);
+    expect(firstBody.output).toEqual([{ id: expect.any(String), status: 'completed', type: 'function_call', call_id: 'call_prev_weather', name: 'get_weather', arguments: '{"city":"Paris"}' }]);
 
     const secondRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
       model: 'sonnet',
@@ -877,7 +888,8 @@ describe('/v1/responses', () => {
     }) });
     expect(secondRes.status).toBe(200);
     expect(backend.lastRequest?.inputItems).toEqual([
-      { type: 'function_call', callId: 'call_prev_weather', name: 'get_weather', arguments: '{"city":"Paris"}' },
+      { type: 'message', role: 'user', content: 'call weather' },
+      { type: 'replay', item: firstBody.output[0] },
       { type: 'function_call_output', callId: 'call_prev_weather', output: 'sunny' },
     ]);
     expect(backend.lastRequest?.backendOptions).toBeUndefined();
@@ -906,6 +918,7 @@ describe('/v1/responses', () => {
     const sameOwnerRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': keyA }, body: JSON.stringify({ model: 'sonnet', input: 'second', previous_response_id: firstBody.id }) });
     expect(sameOwnerRes.status).toBe(200);
     expect(backend.lastRequest?.messages).toEqual([
+      { role: 'user', content: 'first' },
       { role: 'assistant', content: firstBody.output_text },
       { role: 'user', content: 'second' },
     ]);
@@ -918,7 +931,7 @@ describe('/v1/responses', () => {
     expect(res.status).toBe(404);
     const body = await res.json() as { error: { type: string; message: string } };
     expect(body.error.type).toBe('not_found_error');
-    expect(body.error.message).toBe('Previous response not found: resp_missing');
+    expect(body.error.message).toBe('Previous response not found.');
     expect(accountPool.list()[0].status).toBe('available');
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
   });
@@ -926,17 +939,19 @@ describe('/v1/responses', () => {
   it('stores a completed streaming responses response for previous_response_id continuation', async () => {
     const backend = new InspectingBackend([{ id: 'backend-test-model' }]);
     const responsesStore = new ResponsesStore();
-    const app = createOpenAiResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool(), responsesStore });
+    const app = authenticatedResponsesRoute({ backend, requestLog: new RequestLog(), modelRegistry: new ModelRegistry({ discoveredModels }), accountPool: new AccountPool(), responsesStore });
 
     const firstRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', stream: true, input: 'first', store: true }) });
     expect(firstRes.status).toBe(200);
     const firstText = await firstRes.text();
     const firstId = extractResponsesCompletedId(firstText);
-    expect(responsesStore.get('anonymous', firstId)?.response.output_text).toBe('backend:backend-test-model');
+    expect(responsesStore.count()).toBe(1);
+    expect(responsesStore.get('anonymous', firstId)).toBeUndefined();
 
     const secondRes = await app.request('/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'sonnet', input: 'second', previous_response_id: firstId }) });
     expect(secondRes.status).toBe(200);
     expect(backend.lastRequest?.messages).toEqual([
+      { role: 'user', content: 'first' },
       { role: 'assistant', content: 'backend:backend-test-model' },
       { role: 'user', content: 'second' },
     ]);
@@ -2343,11 +2358,11 @@ describe('session admin model discovery', () => {
     const { app, modelRegistry } = createSessionAdminAppWithAccountPool(backend, accountPool);
     accountPool.add({
       id: 'health-rotation', provider: 'chatgpt-session',
-      secret: { type: 'chatgpt-session', accessToken: 'expired-health', refreshToken: 'health-refresh', expiresAt: '2000-01-01T00:00:00.000Z' },
+      secret: { type: 'chatgpt-session', accountId: 'health-upstream', accessToken: 'expired-health', refreshToken: 'health-refresh', expiresAt: '2000-01-01T00:00:00.000Z' },
     });
     accountPool.add({
       id: 'manual-rotation', provider: 'chatgpt-session',
-      secret: { type: 'chatgpt-session', accessToken: 'expired-manual', refreshToken: 'manual-refresh', expiresAt: '2000-01-01T00:00:00.000Z' },
+      secret: { type: 'chatgpt-session', accountId: 'manual-upstream', accessToken: 'expired-manual', refreshToken: 'manual-refresh', expiresAt: '2000-01-01T00:00:00.000Z' },
     });
 
     const health = await app.request('/admin/api/accounts/health-rotation/health-check', { method: 'POST' });

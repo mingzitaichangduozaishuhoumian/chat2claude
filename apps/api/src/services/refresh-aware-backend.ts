@@ -1,6 +1,7 @@
 import { ChatGptBackendError, type ChatGptAccountQuota, type ChatGptBackendClient, type ChatGptBackendHealthCheckResult, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel, type ChatGptModelDiscoveryResult } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ChatGptStreamEvent } from '@chatgpt-to-claude/chatgpt-backend';
 import { markAccountCredentialError } from './account-pool.js';
+import { assertRequestHistoryBinding } from './request-history-binding.js';
 import type { SessionCredentialManager } from './session-credential-manager.js';
 
 const CANDIDATE_CONTEXT = Symbol('candidateSessionContext');
@@ -59,17 +60,22 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
   }
 
   async complete(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse> {
-    return this.withOneUnauthorizedRetry(context, (freshContext) => this.transport.complete(request, freshContext));
+    return this.withOneUnauthorizedRetry(context, (freshContext) => {
+      assertRequestHistoryBinding(request, freshContext);
+      return this.transport.complete(request, freshContext);
+    });
   }
 
   async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent> {
     throwIfCancelled(context);
     if (!context?.account || isCandidateContext(context)) {
+      assertRequestHistoryBinding(request, context);
       yield* this.transport.stream(request, context);
       return;
     }
     let account = await this.credentials.getFreshAccount(context.account);
     throwIfCancelled(context);
+    assertRequestHistoryBinding(request, { ...context, account });
     let yielded = false;
     try {
       for await (const event of this.transport.stream(request, { ...context, account })) {
@@ -85,6 +91,7 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
     const failedAccessToken = account.secret?.accessToken;
     account = await this.credentials.getFreshAccount(context.account, failedAccessToken);
     throwIfCancelled(context);
+    assertRequestHistoryBinding(request, { ...context, account });
     try {
       yield* this.transport.stream(request, { ...context, account });
     } catch (error) {

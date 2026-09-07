@@ -11,7 +11,7 @@ import { DurableRuntimeState } from './durable-runtime-state.js';
 import { RuntimeStateStore, type RuntimeStateFileSystem } from './runtime-state-store.js';
 
 function addSession(pool: AccountPool, id: string, expiresAt = '2026-08-22T02:00:00.000Z') {
-  pool.add({ id, provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: `${id}-access-1`, refreshToken: `${id}-refresh-1`, expiresAt, email: `${id}@example.test`, cookie: `${id}=cookie` } });
+  pool.add({ id, provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accountId: `${id}-upstream`, accessToken: `${id}-access-1`, refreshToken: `${id}-refresh-1`, expiresAt, email: `${id}@example.test`, cookie: `${id}=cookie` } });
   return pool.get(id)!;
 }
 
@@ -204,7 +204,7 @@ describe('SessionCredentialManager', () => {
     } }) });
     const firstPending = manager.getFreshAccount(first);
     await Promise.resolve();
-    pool.compareAndSwapSessionSecret('session', { accessToken: 'session-access-1', refreshToken: 'session-refresh-1' }, { type: 'chatgpt-session', accessToken: 'access-2', refreshToken: 'refresh-2', expiresAt: '2026-08-22T00:00:00.000Z' });
+    pool.compareAndSwapSessionSecret('session', { accessToken: 'session-access-1', refreshToken: 'session-refresh-1' }, { type: 'chatgpt-session', accountId: 'session-upstream', accessToken: 'access-2', refreshToken: 'refresh-2', expiresAt: '2026-08-22T00:00:00.000Z' });
     const secondPending = manager.getFreshAccount(pool.get('session')!);
     await Promise.resolve();
     expect(requested).toEqual(['session-refresh-1', 'refresh-2']);
@@ -240,7 +240,10 @@ describe('SessionCredentialManager', () => {
     } });
     refresh.resolve(Response.json({ access_token: 'stale-access', refresh_token: 'stale-refresh', expires_in: 3600 }));
 
-    await expect(pending).resolves.toMatchObject({ secret: {
+    // The metadata now identifies a different upstream user; do not return it to
+    // the old in-flight request, even though its token strings were unchanged.
+    await expect(pending).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+    expect(pool.get('session')).toMatchObject({ secret: {
       accessToken: 'session-access-1',
       refreshToken: 'session-refresh-1',
       expiresAt: '2026-08-22T03:00:00.000Z',
@@ -266,7 +269,7 @@ describe('SessionCredentialManager', () => {
     expect(replacement.secret).toMatchObject({ accessToken: 'session-access-1', refreshToken: 'session-refresh-1' });
     refresh.resolve(Response.json({ access_token: 'stale-access', refresh_token: 'stale-refresh' }));
 
-    await expect(pending).rejects.toMatchObject({ code: 'unauthorized' });
+    await expect(pending).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
     expect(pool.get('session')).toMatchObject({ secret: { accessToken: 'session-access-1', refreshToken: 'session-refresh-1' } });
   });
 
@@ -277,7 +280,7 @@ describe('SessionCredentialManager', () => {
     const manager = new SessionCredentialManager({ accountPool: pool, now: () => new Date('2026-08-22T00:00:00.000Z'), oauthClient: new CodexOAuthClient({ fetch: async () => refresh.promise }) });
     const pending = manager.getFreshAccount(stale);
     await Promise.resolve();
-    pool.compareAndSwapSessionSecret('session', { accessToken: 'session-access-1', refreshToken: 'session-refresh-1' }, { type: 'chatgpt-session', accessToken: 'reauthorized-access', refreshToken: 'reauthorized-refresh', expiresAt: '2026-08-22T02:00:00.000Z' });
+    pool.compareAndSwapSessionSecret('session', { accessToken: 'session-access-1', refreshToken: 'session-refresh-1' }, { type: 'chatgpt-session', accountId: 'session-upstream', accessToken: 'reauthorized-access', refreshToken: 'reauthorized-refresh', expiresAt: '2026-08-22T02:00:00.000Z' });
     refresh.reject(new Error('stale refresh failed'));
     await expect(pending).resolves.toMatchObject({ secret: { accessToken: 'reauthorized-access' } });
   });
@@ -285,7 +288,7 @@ describe('SessionCredentialManager', () => {
   it('uses a newer canonical token instead of refreshing again after a stale 401', async () => {
     const pool = new AccountPool();
     const stale = addSession(pool, 'session');
-    pool.compareAndSwapSessionSecret('session', { accessToken: 'session-access-1', refreshToken: 'session-refresh-1' }, { type: 'chatgpt-session', accessToken: 'access-2', refreshToken: 'refresh-2' });
+    pool.compareAndSwapSessionSecret('session', { accessToken: 'session-access-1', refreshToken: 'session-refresh-1' }, { type: 'chatgpt-session', accountId: 'session-upstream', accessToken: 'access-2', refreshToken: 'refresh-2' });
     let refreshes = 0;
     const manager = new SessionCredentialManager({ accountPool: pool, oauthClient: new CodexOAuthClient({ fetch: async () => { refreshes += 1; return Response.json({ access_token: 'access-3' }); } }) });
     const fresh = await manager.getFreshAccount(stale, 'session-access-1');

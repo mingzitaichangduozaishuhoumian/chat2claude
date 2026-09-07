@@ -9,7 +9,7 @@ const request: ChatGptCompletionRequest = { model: 'model', maxTokens: 10, messa
 
 function setup(backend: ChatGptBackendClient) {
   const pool = new AccountPool();
-  pool.add({ id: 'session', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: '2026-08-22T02:00:00.000Z' } });
+  pool.add({ id: 'session', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accountId: 'session-upstream', accessToken: 'access-1', refreshToken: 'refresh-1', expiresAt: '2026-08-22T02:00:00.000Z' } });
   let refreshes = 0;
   const oauthClient = new CodexOAuthClient({ now: () => new Date('2026-08-22T00:00:00.000Z'), fetch: async () => {
     refreshes += 1;
@@ -81,6 +81,9 @@ describe('RefreshAwareChatGptBackend', () => {
     const cancelled = new Promise<void>((resolve) => { cancelling = resolve; });
     let cancelCalls = 0;
     const body = new ReadableStream<Uint8Array>({
+      // End diagnostic reading before its shared deadline so this tests pending
+      // async cleanup, rather than expecting a second budget after a stalled read.
+      start(stream) { stream.enqueue(new Uint8Array(65 * 1024)); },
       async cancel() { cancelCalls += 1; cancelling(); await gate; throw new Error('cleanup failed'); },
     });
     let calls = 0;

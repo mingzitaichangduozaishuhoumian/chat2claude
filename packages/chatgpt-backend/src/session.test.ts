@@ -26,6 +26,90 @@ const context = {
 };
 
 describe('SessionChatGptBackend', () => {
+  it.each(['known', 'unknown', 'invalid-json', 'oversized', 'read-error', 'cancel-error', 'abort'] as const)('reads bounded HTTP diagnostics safely: %s', async (mode) => {
+    const controller = new AbortController();
+    const cancel = vi.fn(() => { if (mode === 'cancel-error') throw new Error('HTTP_CANARY'); });
+    const known = { error: { code: 'unsupported_parameter', type: 'invalid_request_error', param: 'max_output_tokens', message: 'HTTP_CANARY', detail: 'HTTP_CANARY' }, prompt: 'HTTP_CANARY' };
+    const text = mode === 'invalid-json' ? 'HTTP_CANARY' : mode === 'oversized' ? JSON.stringify({ ...known, padding: 'x'.repeat(70_000) })
+      : JSON.stringify(mode === 'unknown' ? { error: { code: 'HTTP_CANARY', type: 'HTTP_CANARY', param: 'tools.HTTP_CANARY', message: 'HTTP_CANARY' } } : known);
+    let sent = false;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      pull(stream) {
+        if (mode === 'read-error') { stream.error(new Error('HTTP_CANARY')); return; }
+        if (mode === 'abort') { controller.abort(); return; }
+        if (!sent) { sent = true; stream.enqueue(new TextEncoder().encode(text)); }
+        else stream.close();
+      }, cancel,
+    }, { highWaterMark: 0 }), { status: 400 });
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => response });
+    const error = await backend.complete(request, { ...context, signal: controller.signal }).catch((error: unknown) => error) as ChatGptBackendError;
+    if (mode === 'abort') expect(error).toMatchObject({ name: 'AbortError' });
+    else {
+      expect(error).toMatchObject({ status: 400, code: 'upstream_error', safeDiagnostic: { httpStatus: 400, failurePhase: 'response_headers' } });
+      if (mode === 'known' || mode === 'cancel-error') expect(error.safeDiagnostic).toMatchObject({ responseErrorCode: 'unsupported_parameter', responseErrorType: 'invalid_request_error', responseErrorParam: 'max_output_tokens' });
+      else if (mode === 'unknown') expect(error.safeDiagnostic).toMatchObject({ responseErrorCode: 'unknown', responseErrorType: 'unknown', responseErrorParam: 'unknown' });
+      else expect(error.safeDiagnostic).toEqual({ httpStatus: 400, failurePhase: 'response_headers' });
+      expect(Object.isFrozen(error.safeDiagnostic)).toBe(true);
+    }
+    expect(error.cause).toBeUndefined();
+    expect(String(error) + JSON.stringify(error)).not.toContain('HTTP_CANARY');
+    if (mode === 'oversized') expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['stalled-read', 'stalled-cleanup'] as const)('bounds diagnostic %s without losing HTTP status', async (mode) => {
+    vi.useFakeTimers();
+    const cancel = vi.fn(() => mode === 'stalled-cleanup' ? new Promise<void>(() => {}) : undefined);
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (mode === 'stalled-cleanup') controller.enqueue(new Uint8Array(65 * 1024));
+        else return new Promise<void>(() => {});
+      }, cancel,
+    }, { highWaterMark: 0 });
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 60_000, fetch: async () => new Response(body, { status: 400 }) });
+    const result = backend.complete(request, context).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(await result).toMatchObject({ status: 400, safeDiagnostic: { httpStatus: 400, failurePhase: 'response_headers' } });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('shares one 250ms deadline between a permanently stalled diagnostic read and cleanup', async () => {
+    const cancel = vi.fn(() => new Promise<void>(() => {}));
+    const body = new ReadableStream<Uint8Array>({
+      pull() { return new Promise<void>(() => {}); },
+      cancel,
+    }, { highWaterMark: 0 });
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 60_000, fetch: async () => new Response(body, { status: 429 }) });
+    const startedAt = performance.now();
+    const error = await backend.complete(request, context).catch((cause: unknown) => cause);
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(error).toMatchObject({ status: 429, code: 'rate_limited', safeDiagnostic: { httpStatus: 429, failurePhase: 'response_headers' } });
+    expect(elapsedMs).toBeLessThanOrEqual(350);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+  });
+
+  it('normalizes fallback system history and structured text roles without tools', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return sseResponse([{ type: 'response.completed' }]);
+    } });
+    await backend.complete({ ...request, messages: [{ role: 'system', content: 'rules' }], backendOptions: { responsesBody: { parallel_tool_calls: true } } }, context);
+    expect(bodies[0].input).toEqual([{ type: 'message', role: 'developer', content: 'rules' }]);
+    expect(bodies[0]).not.toHaveProperty('parallel_tool_calls');
+    await backend.complete({ ...request, inputItems: [
+      { type: 'message', role: 'system', content: [{ type: 'text', text: 'rules' }] },
+      { type: 'message', role: 'assistant', content: [{ type: 'text', text: 'answer' }] },
+    ] }, context);
+    expect(bodies[1].input).toEqual([
+      { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'rules' }] },
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'answer' }] },
+    ]);
+  });
+
   it.each(['added-only', 'delta', 'done', 'delta-and-done'] as const)('preserves nonempty added arguments with %s finalization', async (mode) => {
     const item = { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{"q":"x"}' };
     const frames = [
@@ -300,7 +384,7 @@ describe('SessionChatGptBackend', () => {
     await expect(backend.complete(request, context)).rejects.toMatchObject({ code: 'upstream_error' });
   });
 
-  it.each(['abort', 'timeout', 'return', 'done', 'http-error'] as const)('awaits gated async cancel on %s, even when cleanup rejects', async (outcome) => {
+  it.each(['abort', 'timeout', 'return', 'done', 'http-error'] as const)('handles gated async cancel on %s without masking the primary outcome', async (outcome) => {
     vi.useFakeTimers();
     let finishCancel!: () => void;
     const gate = new Promise<void>((resolve) => { finishCancel = resolve; });
@@ -330,7 +414,7 @@ describe('SessionChatGptBackend', () => {
     }
     let settled = false;
     const result = operation.then((value) => { settled = true; return value; }, (error: unknown) => { settled = true; return error; });
-    if (outcome === 'abort' || outcome === 'timeout') {
+    if (outcome === 'abort' || outcome === 'timeout' || outcome === 'http-error') {
       await reading;
       if (outcome === 'abort') controller.abort();
       else await vi.advanceTimersByTimeAsync(50);
@@ -338,7 +422,7 @@ describe('SessionChatGptBackend', () => {
     await cancelled;
     await vi.advanceTimersByTimeAsync(0);
     try {
-      expect(settled).toBe(false);
+      expect(settled).toBe(outcome === 'http-error');
       if (outcome !== 'http-error') expect(body.locked).toBe(true);
     } finally { finishCancel(); }
     const value = await result;
@@ -420,14 +504,14 @@ describe('SessionChatGptBackend', () => {
     ]);
   });
 
-  it.each(['FaSt', 'FASTEST', 'Priority'])('preserves the resolved provider tier %s in the wire body', async (serviceTier) => {
+  it.each(['FaSt', 'FASTEST', 'Priority'])('omits noncanonical provider tier %s in the private wire body', async (serviceTier) => {
     const bodies: unknown[] = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       bodies.push(JSON.parse(String(init?.body)));
       return sseResponse([{ type: 'response.completed' }]);
     } });
     await backend.complete({ ...request, serviceTier }, context);
-    expect(bodies[0]).toHaveProperty('service_tier', serviceTier);
+    expect(bodies[0]).not.toHaveProperty('service_tier');
   });
   it('uses JSON discovery and SSE Responses with a versioned official default User-Agent', async () => {
     const calls: Headers[] = [];
@@ -543,7 +627,7 @@ describe('SessionChatGptBackend', () => {
     } });
 
     const response = await backend.complete(request, context);
-    expect(response).toEqual({ text: 'hello world', finishReason: 'stop' });
+    expect(response).toEqual({ text: 'hello world', finishReason: 'stop', terminalSuccessful: false });
     expect(calls[0].url).toBe('https://chatgpt.test/backend-api/codex/responses');
     expect(calls[0].init.method).toBe('POST');
     const headers = calls[0].init.headers as Headers;
@@ -553,7 +637,7 @@ describe('SessionChatGptBackend', () => {
     expect(headers.get('user-agent')).toBe('ua-1');
     expect(headers.get('chatgpt-account-id')).toBe('acct-1');
     expect(headers.get('accept')).toBe('text/event-stream');
-    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ model: 'gpt-test', stream: true, store: false, instructions: '', max_output_tokens: 128 });
+    expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ model: 'gpt-test', stream: true, store: false, instructions: '', include: ['reasoning.encrypted_content'] });
   });
 
   it('aggregates done usage for complete responses', async () => {
@@ -612,7 +696,7 @@ describe('SessionChatGptBackend', () => {
     ]);
   });
 
-  it('passes generation controls to the Codex responses body', async () => {
+  it('filters unsupported generation controls from the Codex responses body', async () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
@@ -620,7 +704,7 @@ describe('SessionChatGptBackend', () => {
     } });
 
     await backend.complete({ ...request, temperature: 0.25, topP: 0.75, stopSequences: ['END'] }, context);
-    expect(calls[0].body).toMatchObject({ temperature: 0.25, top_p: 0.75, stop: 'END' });
+    for (const field of ['temperature', 'top_p', 'stop', 'max_output_tokens']) expect(calls[0].body).not.toHaveProperty(field);
   });
 
   it('forwards canonical reasoning effort and service tier to the Codex responses body', async () => {
@@ -651,7 +735,7 @@ describe('SessionChatGptBackend', () => {
     expect(fetchCalls).toBe(0);
   });
 
-  it('forwards explicit neutral reasoning and service-tier sentinels', async () => {
+  it('forwards neutral reasoning but omits the default service tier', async () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
@@ -659,7 +743,8 @@ describe('SessionChatGptBackend', () => {
     } });
 
     await backend.complete({ ...request, reasoningEffort: 'none', serviceTier: 'default' }, context);
-    expect(calls[0].body).toMatchObject({ reasoning: { effort: 'none' }, service_tier: 'default' });
+    expect(calls[0].body).toMatchObject({ reasoning: { effort: 'none' } });
+    expect(calls[0].body).not.toHaveProperty('service_tier');
   });
 
   it('omits generation controls from the Codex responses body when unset', async () => {
@@ -701,14 +786,12 @@ describe('SessionChatGptBackend', () => {
       previous_response_id: 'resp_prev',
       store: false,
       metadata: { trace: 'abc' },
-      parallel_tool_calls: false,
-      truncation: 'auto',
       text: { format: { type: 'json_object' } },
     });
-    expect(calls[0].body).not.toHaveProperty('extra');
+    for (const field of ['extra', 'parallel_tool_calls', 'truncation']) expect(calls[0].body).not.toHaveProperty(field);
   });
 
-  it('passes multiple stop sequences as an array to the Codex responses body', async () => {
+  it('omits multiple stop sequences from the Codex responses body', async () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
       calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
@@ -716,7 +799,7 @@ describe('SessionChatGptBackend', () => {
     } });
 
     await backend.complete({ ...request, stopSequences: ['END', 'STOP'] }, context);
-    expect(calls[0].body.stop).toEqual(['END', 'STOP']);
+    expect(calls[0].body).not.toHaveProperty('stop');
   });
 
   it('prefers structured inputItems when building the Codex responses body', async () => {

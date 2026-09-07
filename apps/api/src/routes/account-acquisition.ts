@@ -20,7 +20,7 @@ export async function acquireRequestAccount(c: Context, pool: AccountPool, optio
   if (!result.account) unavailable(c, result.reason);
   // Cancellation may win after synchronous acquisition but before this continuation.
   if (c.req.raw.signal.aborted) {
-    pool.release(result.account.id);
+    pool.release(result.account);
     unavailable(c, 'request_aborted');
   }
   return result.account;

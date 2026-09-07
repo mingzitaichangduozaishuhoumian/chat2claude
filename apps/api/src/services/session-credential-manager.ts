@@ -87,7 +87,9 @@ export class SessionCredentialManager {
 
   private requireCanonicalAccount(accountId: string, incarnation?: number): Account {
     const account = this.options.accountPool.get(accountId);
-    if (!account || (incarnation !== undefined && account.incarnation !== incarnation)) throw unauthorized('ChatGPT session account is no longer available.');
+    if (!account || (incarnation !== undefined && account.incarnation !== incarnation)) {
+      throw new ChatGptBackendError('Session request is no longer valid.', 'invalid_request', { status: 400 });
+    }
     return account;
   }
 }

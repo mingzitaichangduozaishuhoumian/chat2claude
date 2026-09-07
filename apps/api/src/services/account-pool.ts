@@ -132,6 +132,7 @@ export function markAccountCredentialError<T>(error: T, account: { id: string; s
 
 export class AccountPool {
   private readonly accounts: Account[];
+  private readonly leases = new WeakMap<Account, { id: string; incarnation: number; slots: object }>();
   private readonly now: () => Date;
   private readonly rateLimitCooldownMs: number;
   private readonly discoveryOperations = new Map<number, ActiveAccountDiscoveryOperation>();
@@ -200,7 +201,7 @@ export class AccountPool {
     const enabled = typeof input.enabled === 'boolean' ? input.enabled : true;
     const next: Account = {
       id: input.id,
-      incarnation: existing?.incarnation ?? this.nextIncarnation++,
+      incarnation: existing?.provider === 'chatgpt-session' && sameUpstreamIdentity(existing.secret, secret) ? existing.incarnation : this.nextIncarnation++,
       configurationRevision: existing ? existing.configurationRevision + 1 : 1,
       healthRevision: existing ? existing.healthRevision + 1 : 1,
       label: normalizeString(input.label, 'ChatGPT Session Account'),
@@ -217,6 +218,8 @@ export class AccountPool {
       secret,
       createdAt: existing?.createdAt ?? committedAtIso,
     };
+    // Replacement inherits outstanding slots, but never the old lease's health authority.
+    if (existing) accountSlotGroups.set(next, slotGroup(existing));
     if (existingIndex === -1) this.accounts.push(next);
     else this.accounts[existingIndex] = next;
     this.notifyAcquisitionWaiters();
@@ -249,7 +252,11 @@ export class AccountPool {
       capabilities: normalizeStringArray(patch.capabilities, current.capabilities),
       secret: patch.secret === undefined ? current.secret : normalizeSecret(patch.secret, provider),
     };
+    if (current.provider !== next.provider || (patch.secret !== undefined && !sameUpstreamIdentity(current.secret, next.secret))) {
+      next.incarnation = this.nextIncarnation++;
+    }
     if (healthStateChanged(current, next)) next.healthRevision += 1;
+    accountSlotGroups.set(next, slotGroup(current));
     this.accounts[index] = next;
     this.notifyAcquisitionWaiters();
     return toAccountView(next);
@@ -363,6 +370,7 @@ export class AccountPool {
       this.quotaOperations,
       this.latestQuotaOperationIds,
     );
+    if (!sameUpstreamIdentity(account.secret, normalized)) account.incarnation = this.nextIncarnation++;
     account.secret = normalized;
     account.configurationRevision += 1;
     for (const operation of [...ownedDiscoveryOperations, ...ownedQuotaOperations]) {
@@ -415,7 +423,9 @@ export class AccountPool {
     if (!account || (deadline !== undefined && performance.now() >= deadline)) return undefined;
     account.currentConcurrency += 1;
     account.lastUsedAt = this.now().toISOString();
-    return cloneAccount(account);
+    const lease = cloneAccount(account);
+    this.leases.set(lease, { id: account.id, incarnation: account.incarnation, slots: slotGroup(account) });
+    return lease;
   }
 
   /** Fixed-priority filters diagnose only candidates for this request, never account details. */
@@ -519,13 +529,24 @@ export class AccountPool {
     });
   }
 
-  release(id: string, error?: unknown): AccountView | undefined {
+  /** API callers must return the exact acquired lease; strings retain legacy administrative usage. */
+  release(lease: Account | string, error?: unknown): AccountView | undefined {
+    const ownership = typeof lease === 'string' ? undefined : this.leases.get(lease);
+    if (typeof lease !== 'string') {
+      if (!ownership) return undefined; // Already released or not an acquired lease.
+      this.leases.delete(lease);
+    }
+    const id = typeof lease === 'string' ? lease : ownership!.id;
     const account = this.accounts.find((item) => item.id === id);
-    if (!account) return undefined;
-    account.currentConcurrency = Math.max(0, account.currentConcurrency - 1);
-    this.applyReleaseResult(account, isStaleCredentialError(account, error) ? undefined : error);
+    if (account && (!ownership || ownership.slots === slotGroup(account))) {
+      // In-place replacements retain outstanding slots. Delete/recreate does not.
+      account.currentConcurrency = Math.max(0, account.currentConcurrency - 1);
+      if (!ownership || ownership.incarnation === account.incarnation) {
+        this.applyReleaseResult(account, isStaleCredentialError(account, error) ? undefined : error);
+      }
+    }
     this.notifyAcquisitionWaiters();
-    return toAccountView(account);
+    return account ? toAccountView(account) : undefined;
   }
 
   private markHealthyAccount(account: Account): void {
@@ -657,8 +678,19 @@ function canAcquire(account: Account, options: AccountAcquireOptions): boolean {
   return true;
 }
 
+// Runtime-only slot lineage survives snapshots/rollback and in-place replacement,
+// but a newly created/imported account gets a distinct group even at the same timestamp.
+const accountSlotGroups = new WeakMap<Account, object>();
+function slotGroup(account: Account): object {
+  let group = accountSlotGroups.get(account);
+  if (!group) { group = {}; accountSlotGroups.set(account, group); }
+  return group;
+}
+
 function cloneAccount(account: Account): Account {
-  return { ...account, capabilities: [...account.capabilities], secret: account.secret ? { ...account.secret } : undefined };
+  const clone = { ...account, capabilities: [...account.capabilities], secret: account.secret ? { ...account.secret } : undefined };
+  accountSlotGroups.set(clone, slotGroup(account));
+  return clone;
 }
 
 function toPersistedAccount(account: Account): PersistedAccount {
@@ -723,6 +755,11 @@ function normalizeProvider(value: unknown, fallback: AccountProvider): AccountPr
 function normalizeBackendErrorCode(value: unknown, fallback: ChatGptBackendErrorCode | null): ChatGptBackendErrorCode | null {
   if (value === null) return null;
   return value === 'unauthorized' || value === 'rate_limited' || value === 'upstream_error' || value === 'timeout' || value === 'network_error' || value === 'invalid_response' || value === 'invalid_request' ? value : fallback;
+}
+
+// Missing identity is not evidence that replacement credentials belong to the same user.
+function sameUpstreamIdentity(previous: ChatGptSessionSecret | undefined, next: ChatGptSessionSecret | undefined): boolean {
+  return Boolean(previous?.accountId && next?.accountId && previous.accountId === next.accountId);
 }
 
 function normalizeSecret(value: unknown, provider: AccountProvider): ChatGptSessionSecret | undefined {

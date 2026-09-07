@@ -195,7 +195,7 @@ describe('createApp runtime state hydration', () => {
       id: 'rotating-startup',
       provider: 'chatgpt-session',
       secret: {
-        type: 'chatgpt-session', accessToken: 'expired-access', refreshToken: 'startup-refresh',
+        type: 'chatgpt-session', accountId: 'startup-upstream', accessToken: 'expired-access', refreshToken: 'startup-refresh',
         expiresAt: '2000-01-01T00:00:00.000Z',
       },
     });

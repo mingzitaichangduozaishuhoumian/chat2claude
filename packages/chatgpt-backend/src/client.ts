@@ -11,7 +11,38 @@ export type ChatGptImageDetail = 'auto' | 'low' | 'high';
 export type ChatGptInputContentPart =
   | { type: 'text'; text: string }
   | { type: 'image'; imageUrl: string; detail?: ChatGptImageDetail };
+/** Restricted provider wire shapes, opaque to client-facing protocol mappers.
+ * Keep IDs, text and ciphertext verbatim; never turn these into text/tool events.
+ */
+export type ChatGptReplayItemStatus = 'in_progress' | 'completed' | 'incomplete';
+export interface ChatGptReasoningReplayItem {
+  type: 'reasoning';
+  id: string;
+  summary: Array<{ type: 'summary_text'; text: string }>;
+  content?: Array<{ type: 'reasoning_text'; text: string }>;
+  status?: ChatGptReplayItemStatus;
+  encrypted_content: string;
+}
+export interface ChatGptFunctionCallReplayItem {
+  type: 'function_call';
+  id?: string;
+  call_id: string;
+  name: string;
+  arguments: string;
+  status?: ChatGptReplayItemStatus;
+  async?: boolean;
+  caller?: { type: 'direct' } | { type: 'program'; caller_id: string } | null;
+  namespace?: string;
+}
+export type ChatGptReplayItem = ChatGptReasoningReplayItem | ChatGptFunctionCallReplayItem;
+
+export type ChatGptOutputItem = ChatGptReplayItem | {
+  type: 'message'; id?: string; role: 'assistant'; status?: ChatGptReplayItemStatus;
+  content: Array<{ type: 'output_text'; text: string; annotations: [] }>;
+};
+
 export type ChatGptInputItem =
+  | { type: 'replay'; item: ChatGptReplayItem }
   | { type: 'message'; role: 'user' | 'assistant' | 'system'; content: string | ChatGptInputContentPart[] }
   | { type: 'function_call'; callId: string; name: string; arguments: unknown }
   | { type: 'function_call_output'; callId: string; output: string; isError?: boolean };
@@ -19,8 +50,8 @@ export interface ChatGptTool { name: string; description?: string; inputSchema: 
 export type ChatGptToolChoice = { type: 'auto' | 'any' | 'none' } | { type: 'tool'; name: string };
 export interface ChatGptToolCall { id: string; name: string; input: unknown; }
 export interface ChatGptUsage { inputTokens?: number; outputTokens?: number; totalTokens?: number; raw?: unknown; }
-export interface ChatGptCompletionRequest { messages: ChatGptMessage[]; inputItems?: ChatGptInputItem[]; maxTokens: number; model: string; reasoningEffort?: ChatGptReasoningEffort; serviceTier?: ChatGptServiceTier; /** @deprecated Use serviceTier. */ speedPreference?: ChatGptSpeedPreference; temperature?: number; topP?: number; stopSequences?: string[]; tools?: ChatGptTool[]; toolChoice?: ChatGptToolChoice; backendOptions?: Record<string, unknown>; }
-export interface ChatGptCompletionResponse { text: string; finishReason: ChatGptFinishReason; toolCalls?: ChatGptToolCall[]; usage?: ChatGptUsage; }
+export interface ChatGptCompletionRequest { messages: ChatGptMessage[]; inputItems?: ChatGptInputItem[]; maxTokens: number; model: string; reasoningEffort?: ChatGptReasoningEffort; serviceTier?: ChatGptServiceTier; /** @deprecated Use serviceTier. */ speedPreference?: ChatGptSpeedPreference; temperature?: number; topP?: number; stopSequences?: string[]; parallelToolCalls?: boolean; tools?: ChatGptTool[]; toolChoice?: ChatGptToolChoice; backendOptions?: Record<string, unknown>; }
+export interface ChatGptCompletionResponse { /** False for legacy EOF compatibility; native Responses must reject it. */ terminalSuccessful?: boolean; /** Ordered text/replay projection for native Responses only. */ outputItems?: ChatGptOutputItem[]; text: string; finishReason: ChatGptFinishReason; toolCalls?: ChatGptToolCall[]; usage?: ChatGptUsage; /** Successful provider output order; internal only. */ replayItems?: ChatGptReplayItem[]; /** Entire completed output is replayable reasoning/tools with at least one tool. */ replayEligible?: boolean; }
 export interface ChatGptReasoningLevelOption { effort: string; description?: string; }
 export interface ChatGptServiceTierOption { id: string; name?: string; description?: string; }
 export interface ChatGptModelControlCapabilities {

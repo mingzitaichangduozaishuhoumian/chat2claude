@@ -66,6 +66,8 @@ function parseClaudeRequestBase(value: unknown, options: { requireMaxTokens: boo
 export function validateClaudeToolContract(request: { tools?: unknown; messages?: unknown }): void {
   if (Array.isArray(request.tools)) for (const tool of request.tools) {
     if (!isPlainObject(tool)) throw new ClaudeApiError('tool must be an object');
+    if (typeof tool.name !== 'string' || !tool.name.trim()) throw new ClaudeApiError('tool.name must be a nonempty string');
+    if (!isPlainObject(tool.input_schema)) throw new ClaudeApiError('tool.input_schema must be an object');
     if (tool.strict !== undefined && typeof tool.strict !== 'boolean') throw new ClaudeApiError('tool.strict must be a boolean');
     if (tool.strict === true) validateStrictToolSchema(tool.input_schema);
   }
@@ -76,6 +78,7 @@ export function validateClaudeToolContract(request: { tools?: unknown; messages?
     for (const block of message.content) {
       if (!isPlainObject(block)) continue;
       if (block.type === 'tool_use') {
+        if (!isPlainObject(block.input)) throw new ClaudeApiError('tool_use.input must be an object');
         if (message.role !== 'assistant' || typeof block.id !== 'string' || !block.id || calls.has(block.id)) {
           throw new ClaudeApiError('tool_use must have a unique id and belong to an assistant message');
         }

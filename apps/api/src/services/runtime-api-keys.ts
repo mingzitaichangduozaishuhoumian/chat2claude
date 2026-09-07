@@ -112,6 +112,11 @@ export class RuntimeApiKeys {
     return this.idsByKey.has(key);
   }
 
+  /** Non-secret record identity; revoke/recreate must not inherit replay state. */
+  identityForKey(key: string): string | undefined {
+    return this.idsByKey.get(key);
+  }
+
   hasAny(): boolean {
     return this.records.size > 0;
   }

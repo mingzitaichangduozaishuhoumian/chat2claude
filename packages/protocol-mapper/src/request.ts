@@ -43,6 +43,8 @@ export function mapClaudeRequestToChatGpt(request: ClaudeMessagesRequest, defaul
     stopSequences,
     tools: mapClaudeTools(request.tools),
     toolChoice: mapClaudeToolChoice(request.tool_choice),
+    ...(typeof request.tool_choice?.disable_parallel_tool_use === 'boolean'
+      ? { parallelToolCalls: !request.tool_choice.disable_parallel_tool_use } : {}),
     backendOptions,
   };
 }

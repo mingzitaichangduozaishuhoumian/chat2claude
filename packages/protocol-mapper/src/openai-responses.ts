@@ -1,4 +1,6 @@
 import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptImageDetail, ChatGptInputContentPart, ChatGptInputItem, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, parseResponsesReplayItem, ResponsesReplayBudget } from '@chatgpt-to-claude/chatgpt-backend';
+import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { createMessageId } from '@chatgpt-to-claude/shared';
 import { estimateTokens } from './response.js';
 import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningSpeedDefaults } from './reasoning.js';
@@ -7,6 +9,7 @@ export interface OpenAiResponsesRequest {
   model: string;
   input: string | OpenAiResponsesInputItem[];
   instructions?: string;
+  include?: Array<'reasoning.encrypted_content'>;
   stream?: boolean;
   max_output_tokens?: number;
   max_tokens?: number;
@@ -118,10 +121,29 @@ function normalizeOpenAiResponseFormat(responseFormat: Record<string, unknown>):
 }
 
 export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequest, response: ChatGptCompletionResponse): OpenAiResponsesResponse {
-  const outputText = response.text ?? '';
+  if (response.terminalSuccessful === false) throw invalidNativeOutput();
+  const outputText = response.outputItems ? response.outputItems.filter((item) => item.type === 'message').flatMap((item) => item.content.map((part) => part.text)).join('') : response.text ?? '';
   const output: Array<Record<string, unknown>> = [];
-  if (outputText || !response.toolCalls?.length) output.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: outputText }] });
-  for (const toolCall of response.toolCalls ?? []) output.push({ type: 'function_call', call_id: toolCall.id, name: toolCall.name, arguments: JSON.stringify(toolCall.input ?? {}) });
+  const replay = response.replayItems ?? [];
+  if (outputText || !response.toolCalls?.length && !replay.length) output.push({ id: `msg_${createMessageId()}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: outputText, annotations: [] }] });
+  for (const raw of replay) {
+    const item = parseResponsesReplayItem(raw);
+    if (!item) throw invalidNativeOutput();
+    const visible: Record<string, unknown> = { ...item };
+    if (!request.include?.includes('reasoning.encrypted_content')) delete visible.encrypted_content;
+    if (!visible.id) visible.id = `fc_${createMessageId()}`;
+    output.push(visible);
+  }
+  const replayCalls = new Set(replay.filter((item) => item.type === 'function_call').map((item) => item.call_id));
+  for (const toolCall of response.toolCalls ?? []) if (!replayCalls.has(toolCall.id)) output.push({ id: `fc_${createMessageId()}`, type: 'function_call', status: 'completed', call_id: toolCall.id, name: toolCall.name, arguments: JSON.stringify(toolCall.input ?? {}) });
+  if (response.outputItems) {
+    output.splice(0, output.length, ...response.outputItems.map((item): Record<string, unknown> => {
+      const visible: Record<string, unknown> = { ...structuredClone(item) };
+      if (!request.include?.includes('reasoning.encrypted_content')) delete visible.encrypted_content;
+      visible.id ??= `${item.type === 'message' ? 'msg' : 'fc'}_${createMessageId()}`;
+      return visible;
+    }));
+  }
   const inputTokens = response.usage?.inputTokens ?? estimateTokens(JSON.stringify(request.input));
   const outputTokens = response.usage?.outputTokens ?? estimateTokens(outputText + JSON.stringify(response.toolCalls ?? []));
   const totalTokens = response.usage?.totalTokens ?? inputTokens + outputTokens;
@@ -137,40 +159,83 @@ export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequ
   };
 }
 
-export interface OpenAiResponsesStreamOptions { onCompleted?: (response: OpenAiResponsesResponse) => void | Promise<void>; }
+export interface OpenAiResponsesStreamOptions {
+  signal?: AbortSignal;
+  onCompleted?: (response: OpenAiResponsesResponse, completion: ChatGptCompletionResponse) => void | Promise<void>;
+}
 
+export const NATIVE_RESPONSES_OUTPUT_BYTES = 4 * 1024 * 1024;
+function invalidNativeOutput(): ChatGptBackendError {
+  return new ChatGptBackendError('Invalid Responses backend output.', 'invalid_response', { status: 502 });
+}
+
+/** Buffer until the successful terminal and iterator disposal. No tentative tool
+ * events can escape before the authoritative reasoning/tool ordering is known. */
 export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiResponsesRequest, events: AsyncIterable<ChatGptStreamEvent>, options: OpenAiResponsesStreamOptions = {}): AsyncIterable<string> {
   const id = createResponsesId();
   const createdAt = currentUnixSeconds();
-  const base = { response_id: id, created_at: createdAt, model: request.model };
-  const output: Array<Record<string, unknown>> = [];
-  let outputText = '';
-  let usage: ChatGptUsage | undefined;
-  yield responsesSse('response.created', { ...base, type: 'response.created', response: createMinimalResponse(id, createdAt, request.model, [], '') });
+  let sequence = 0;
+  const emit = (type: string, fields: Record<string, unknown>) => responsesSse(type, { type, sequence_number: sequence++, ...fields });
+  yield emit('response.created', { response: { ...createMinimalResponse(id, createdAt, request.model, [], ''), status: 'in_progress' } });
+  let terminal: Extract<ChatGptStreamEvent, { type: 'done' }> | undefined;
+  let text = '';
+  let bytes = 256; // Fixed counters/array state, independent of discarded envelopes.
+  let lastTextCodeUnit = 0;
+  const toolCalls: NonNullable<ChatGptCompletionResponse['toolCalls']> = [];
   for await (const event of events) {
+    if (terminal) throw invalidNativeOutput();
     if (event.type === 'text_delta') {
-      outputText += event.text;
-      yield responsesSse('response.output_text.delta', { ...base, type: 'response.output_text.delta', delta: event.text });
+      bytes += Buffer.byteLength(event.text, 'utf8');
+      // A surrogate pair can straddle chunks: two isolated replacements cost six
+      // UTF-8 bytes, whereas the concatenated code point costs four.
+      const first = event.text.charCodeAt(0);
+      if (lastTextCodeUnit >= 0xd800 && lastTextCodeUnit <= 0xdbff && first >= 0xdc00 && first <= 0xdfff) bytes -= 2;
+      if (event.text.length) lastTextCodeUnit = event.text.charCodeAt(event.text.length - 1);
+      text += event.text;
     } else if (event.type === 'tool_call') {
-      const item = { type: 'function_call', call_id: event.toolCall.id, name: event.toolCall.name, arguments: JSON.stringify(event.toolCall.input ?? {}) };
-      output.push(item);
-      yield responsesSse('response.output_item.added', { ...base, type: 'response.output_item.added', item: { ...item, arguments: '' } });
-      yield responsesSse('response.function_call_arguments.delta', { ...base, type: 'response.function_call_arguments.delta', call_id: event.toolCall.id, delta: item.arguments });
+      bytes += Buffer.byteLength(JSON.stringify(event.toolCall), 'utf8') + 1;
+      toolCalls.push(event.toolCall);
     } else if (event.type === 'done') {
-      usage = event.usage ?? usage;
+      bytes += Buffer.byteLength(JSON.stringify(event), 'utf8');
+      terminal = event;
     }
+    if (bytes > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
   }
-  if (outputText || !output.length) output.unshift({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: outputText }] });
-  const response = createMinimalResponse(id, createdAt, request.model, output, outputText, usage);
-  await options.onCompleted?.(response);
-  yield responsesSse('response.completed', { ...base, type: 'response.completed', response });
+  if (!terminal) throw invalidNativeOutput();
+  options.signal?.throwIfAborted();
+  const completion: ChatGptCompletionResponse = { text, toolCalls, ...terminal, finishReason: terminal.finishReason ?? 'stop' };
+  const response = { ...mapChatGptResponseToOpenAiResponses(request, completion), id, created_at: createdAt };
+  if (Buffer.byteLength(JSON.stringify(response), 'utf8') > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
+  for (const [output_index, item] of response.output.entries()) {
+    options.signal?.throwIfAborted();
+    const initial: Record<string, unknown> = { ...item, status: 'in_progress', ...(item.type === 'function_call' ? { arguments: '' } : item.type === 'message' ? { content: [] } : {}) };
+    delete initial.encrypted_content;
+    yield emit('response.output_item.added', { output_index, item: initial });
+    const fields = { item_id: item.id, output_index };
+    if (item.type === 'function_call') {
+      yield emit('response.function_call_arguments.delta', { ...fields, delta: item.arguments });
+      yield emit('response.function_call_arguments.done', { ...fields, arguments: item.arguments });
+    } else if (item.type === 'message') {
+      const content = item.content as Array<Record<string, unknown>>;
+      for (const [content_index, part] of content.entries()) {
+        yield emit('response.content_part.added', { ...fields, content_index, part: { ...part, text: '' } });
+        yield emit('response.output_text.delta', { ...fields, content_index, delta: part.text });
+        yield emit('response.output_text.done', { ...fields, content_index, text: part.text });
+        yield emit('response.content_part.done', { ...fields, content_index, part });
+      }
+    }
+    yield emit('response.output_item.done', { output_index, item });
+  }
+  options.signal?.throwIfAborted();
+  await options.onCompleted?.(response, completion);
+  yield emit('response.completed', { response });
   yield 'data: [DONE]\n\n';
 }
 
 function mapResponsesInput(input: OpenAiResponsesRequest['input'], instructions?: string): ChatGptMessage[] {
   const messages = typeof input === 'string'
     ? [{ role: 'user' as const, content: input }]
-    : input.map((item) => {
+    : input.filter((item) => item.type !== 'reasoning').map((item) => {
       const role = normalizeRole(item.role);
       return { role, content: stringifyResponsesInputItem(item) };
     });
@@ -193,8 +258,16 @@ function mapResponsesInputItems(input: OpenAiResponsesRequest['input'], instruct
     inputItems.push({ type: 'message', role: 'user', content: input });
     return inputItems;
   }
+  const budget = new ResponsesReplayBudget();
   for (const item of input) {
-    if (item.type === 'function_call') {
+    if (item.type === 'reasoning' || item.type === 'function_call' && typeof item.arguments === 'string') {
+      try {
+        const replay = parseResponsesReplayItem(item);
+        if (!replay) throw new Error();
+        budget.add(replay);
+        inputItems.push({ type: 'replay', item: replay });
+      } catch { throw new ClaudeApiError('Invalid reasoning input.', 400, 'invalid_request_error'); }
+    } else if (item.type === 'function_call') {
       inputItems.push({ type: 'function_call', callId: String(item.call_id ?? 'unknown'), name: String(item.name ?? 'unknown'), arguments: item.arguments ?? {} });
     } else if (item.type === 'function_call_output') {
       inputItems.push({ type: 'function_call_output', callId: String(item.call_id ?? 'unknown'), output: stringifyUnknown(item.output) });
@@ -291,7 +364,7 @@ function mapResponsesToolChoice(toolChoice: OpenAiResponsesToolChoice | undefine
 }
 
 function normalizeRole(value: unknown): ChatGptMessage['role'] {
-  return value === 'assistant' || value === 'system' ? value : 'user';
+  return value === 'developer' ? 'system' : value === 'assistant' || value === 'system' ? value : 'user';
 }
 
 function normalizeResponsesStop(stop: OpenAiResponsesRequest['stop']): string[] | undefined {

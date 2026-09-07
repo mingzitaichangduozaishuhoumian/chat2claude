@@ -1,15 +1,16 @@
 import { Hono } from 'hono';
 import type { Logger } from '@chatgpt-to-claude/shared';
 import { logHttpRequestFailure, releaseAccountWhenDone } from './stream-lifecycle.js';
-import type { ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
+import { parseResponsesReplayItem, ResponsesReplayBudget, type ChatGptCompletionResponse, type ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
-import { mapChatGptResponseToOpenAiResponses, mapChatGptStreamToOpenAiResponsesSse, mapOpenAiResponsesRequestToChatGpt, readableStreamFromAsyncIterable, type OpenAiResponsesInputItem, type OpenAiResponsesRequest, type ReasoningSpeedDefaults } from '@chatgpt-to-claude/protocol-mapper';
+import { mapChatGptResponseToOpenAiResponses, mapChatGptStreamToOpenAiResponsesSse, mapOpenAiResponsesRequestToChatGpt, readableStreamFromAsyncIterable, type OpenAiResponsesResponse, type OpenAiResponsesRequest, type ReasoningSpeedDefaults } from '@chatgpt-to-claude/protocol-mapper';
 import type { RequestLog } from '../services/request-log.js';
-import { ResponsesStore } from '../services/responses-store.js';
+import { previousResponseNotFound, ResponsesStore } from '../services/responses-store.js';
+import { bindRequestHistory } from '../services/request-history-binding.js';
 import { ModelRegistryError, type ModelRegistry } from '../services/model-registry.js';
 import type { AccountPool, AccountProvider } from '../services/account-pool.js';
 import { accountReleaseError } from './account-release-error.js';
-import { mapChatGptBackendError, mapErrorPayload, parseRequestJson, unexpectedApiError } from './backend-errors.js';
+import { mapRequestCancellation, mapChatGptBackendError, mapErrorPayload, parseRequestJson, unexpectedApiError } from './backend-errors.js';
 import { createAccountRequestTracker, requestErrorOutcome, trackStreamStatistics, usageFromBackend } from '../services/request-statistics.js';
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
 import { getAccessLogRequestId, setAccessLogMetadata } from '../middleware/access-log.js';
@@ -25,8 +26,9 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
       if (deps.ready) await deps.ready;
       const request = parseOpenAiResponsesRequest(await parseRequestJson(() => c.req.json()));
       setAccessLogMetadata(c, { model: request.model, stream: Boolean(request.stream) });
-      const ownerId = String((c as { get: (key: string) => unknown }).get('ownerId') ?? 'anonymous');
-      const downstreamRequest = withPreviousResponseContext(ownerId, request, responsesStore);
+      const ownerId = c.get('reasoningReplayOwner');
+      const previous = request.previous_response_id ? responsesStore.get(ownerId, request.previous_response_id) : undefined;
+      if (request.previous_response_id && !previous) throw previousResponseNotFound();
       const explicitControls = {
         reasoningEffort: request.reasoning?.effort ?? request.reasoning_effort,
         serviceTier: request.service_tier ?? request.speed ?? request.response_speed,
@@ -38,13 +40,12 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
       const account = await acquireRequestAccount(c, deps.accountPool, {
         provider: accountProvider,
         capability: 'messages',
-        ...(deps.backendProvider === 'session' ? {
-          eligible: (candidate) => deps.modelRegistry.supportsAccountRequest(
+        eligible: (candidate) => (!previous || previous.accepts(candidate, globalResolution.backendModel)) &&
+          (deps.backendProvider !== 'session' || deps.modelRegistry.supportsAccountRequest(
             request.model,
             { accountId: candidate.id, createdAt: candidate.createdAt },
             accountControls,
-          ),
-        } : {}),
+          )),
       }, deps.accountAcquireTimeoutMs);
 
       const tracker = createAccountRequestTracker(deps.operationalState, account);
@@ -57,14 +58,28 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
           ? deps.modelRegistry.resolveForAccount(request.model, { accountId: account.id, createdAt: account.createdAt })
           : globalResolution;
         const controls = deps.modelRegistry.resolveControls(resolution, accountControls);
+        const current = deps.accountPool.get(account.id);
+        if (previous && (!current || !current.enabled || current.status !== 'available' || !previous.accepts(current, resolution.backendModel))) throw new ClaudeApiError('No available account supports the requested model and controls.', 503, 'overloaded_error');
+        // Release history only after acquisition, with current affinity and expiry checks.
+        const downstreamRequest = { ...request, input: previous ? previous.expand(request.input, current!, resolution.backendModel) : request.input, previous_response_id: undefined };
         const backendRequest = mapOpenAiResponsesRequestToChatGpt(downstreamRequest, {}, {
           backendModel: resolution.backendModel,
           resolvedControls: controls,
         });
+        if (previous) bindRequestHistory(backendRequest, current!);
+        const commit = (response: OpenAiResponsesResponse, completion: ChatGptCompletionResponse) => {
+          const current = deps.accountPool.get(account.id);
+          if (request.store === false || !ownerId || backendContext.signal.aborted || completion.terminalSuccessful === false
+            || !current || !current.enabled || current.status !== 'available' || current.incarnation !== account.incarnation || current.provider !== account.provider) return;
+          const full = mapChatGptResponseToOpenAiResponses({ ...downstreamRequest, include: ['reasoning.encrypted_content'] }, completion);
+          responsesStore.put(ownerId, downstreamRequest, response, { account: { id: account.id, incarnation: account.incarnation, provider: account.provider }, model: backendRequest.model,
+            output: full.output.map((item, index) => ({ ...item, id: response.output[index]?.id ?? item.id })),
+          });
+        };
         deps.requestLog.record({ route: '/v1/responses', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {
-          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToOpenAiResponsesSse(downstreamRequest, trackStreamStatistics(deps.backend.stream(backendRequest, backendContext), tracker, backendContext.signal), { onCompleted: (response) => { if (request.store === true) responsesStore.put(ownerId, request, response); } }), (error) => openAiResponsesStreamError(error, request.model), tracker, backendContext.signal, { route: '/v1/responses', requestId: getAccessLogRequestId(c), logger: deps.logger });
+          const events = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToOpenAiResponsesSse(downstreamRequest, trackStreamStatistics(deps.backend.stream(backendRequest, backendContext), tracker, backendContext.signal), { signal: backendContext.signal, onCompleted: commit }), (error) => openAiResponsesStreamError(error, request.model), tracker, backendContext.signal, { route: '/v1/responses', requestId: getAccessLogRequestId(c), logger: deps.logger });
           const stream = readableStreamFromAsyncIterable(events, {
             signal: c.req.raw.signal,
             onCancel: () => streamCancellation.abort(),
@@ -75,7 +90,8 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
 
         const backendResponse = await deps.backend.complete(backendRequest, backendContext);
         const response = mapChatGptResponseToOpenAiResponses(downstreamRequest, backendResponse);
-        if (request.store === true) responsesStore.put(ownerId, request, response);
+        backendContext.signal.throwIfAborted();
+        commit(response, backendResponse);
         tracker.finish('success', usageFromBackend(backendResponse.usage));
         return c.json(response);
       } catch (error) {
@@ -83,58 +99,15 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
         tracker.finish(requestErrorOutcome(error, backendContext.signal));
         throw error;
       } finally {
-        if (!releaseDeferredToStream) deps.accountPool.release(account.id, accountReleaseError(releaseError));
+        if (!releaseDeferredToStream) deps.accountPool.release(account, accountReleaseError(releaseError));
       }
     } catch (error) {
       logHttpRequestFailure(error, { route: '/v1/responses', requestId: getAccessLogRequestId(c), logger: deps.logger }, c.req.raw.signal);
-      const apiError = error instanceof ClaudeApiError ? error : mapChatGptBackendError(error) ?? (error instanceof ModelRegistryError ? new ClaudeApiError(error.message, error.status, error.status === 404 ? 'not_found_error' : 'invalid_request_error') : unexpectedApiError());
+      const apiError = mapRequestCancellation(error, c.req.raw.signal) ?? (error instanceof ClaudeApiError ? error : mapChatGptBackendError(error) ?? (error instanceof ModelRegistryError ? new ClaudeApiError(error.message, error.status, error.status === 404 ? 'not_found_error' : 'invalid_request_error') : unexpectedApiError()));
       return c.json(toOpenAiError(apiError), apiError.status as 400);
     }
   });
   return app;
-}
-
-function withPreviousResponseContext(ownerId: string, request: OpenAiResponsesRequest, responsesStore: ResponsesStore): OpenAiResponsesRequest {
-  const previousResponseId = typeof request.previous_response_id === 'string' ? request.previous_response_id : '';
-  if (!previousResponseId) return request;
-  const previous = responsesStore.get(ownerId, previousResponseId);
-  if (!previous) throw new ClaudeApiError(`Previous response not found: ${previousResponseId}`, 404, 'not_found_error');
-  const replayItems = replayablePreviousOutputItems(previous.response.output);
-  const outputText = previous.response.output_text;
-  const input = replayItems.length
-    ? prependInputItems(request.input, replayItems)
-    : outputText ? prependInputItems(request.input, [{ type: 'message', role: 'assistant', content: outputText }]) : request.input;
-  return { ...request, input, previous_response_id: undefined };
-}
-
-function replayablePreviousOutputItems(output: Array<Record<string, unknown>>): OpenAiResponsesInputItem[] {
-  const items: OpenAiResponsesInputItem[] = [];
-  for (const item of output) {
-    if (item.type === 'function_call') {
-      const callId = typeof item.call_id === 'string' ? item.call_id : undefined;
-      const name = typeof item.name === 'string' ? item.name : undefined;
-      if (callId && name) items.push({ type: 'function_call', call_id: callId, name, arguments: item.arguments ?? '' });
-      continue;
-    }
-    if (item.type === 'message') {
-      const content = replayableAssistantMessageContent(item.content);
-      if (content !== undefined) items.push({ type: 'message', role: 'assistant', content });
-    }
-  }
-  return items;
-}
-
-function replayableAssistantMessageContent(content: unknown): string | unknown[] | undefined {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return undefined;
-  const parts = content.filter((part) => typeof part === 'string' || isObject(part));
-  return parts.length ? parts : undefined;
-}
-
-function prependInputItems(input: OpenAiResponsesRequest['input'], items: OpenAiResponsesInputItem[]): OpenAiResponsesInputItem[] {
-  return typeof input === 'string'
-    ? [...items, { type: 'message', role: 'user', content: input }]
-    : [...items, ...input];
 }
 
 function parseOpenAiResponsesRequest(value: unknown): OpenAiResponsesRequest {
@@ -143,6 +116,7 @@ function parseOpenAiResponsesRequest(value: unknown): OpenAiResponsesRequest {
   if (typeof body.model !== 'string' || !body.model) throw new ClaudeApiError('model is required');
   if (typeof body.input !== 'string' && !Array.isArray(body.input)) throw new ClaudeApiError('input must be a string or array');
   validateResponsesInput(body.input);
+  if (body.include !== undefined && (!Array.isArray(body.include) || body.include.length > 1 || body.include.some((value) => value !== 'reasoning.encrypted_content'))) throw new ClaudeApiError('Invalid Responses include.', 400, 'invalid_request_error');
   const maxTokens = body.max_output_tokens ?? body.max_tokens;
   if (maxTokens !== undefined && (typeof maxTokens !== 'number' || !Number.isInteger(maxTokens) || maxTokens < 1)) throw new ClaudeApiError('max_output_tokens/max_tokens must be a positive integer');
   if (body.stream !== undefined && typeof body.stream !== 'boolean') throw new ClaudeApiError('stream must be a boolean');
@@ -160,7 +134,7 @@ function parseOpenAiResponsesRequest(value: unknown): OpenAiResponsesRequest {
   if (body.tools !== undefined && !Array.isArray(body.tools)) throw new ClaudeApiError('tools must be an array');
   validateTools(body.tools);
   validateToolChoice(body.tool_choice, body.tools);
-  if (body.previous_response_id !== undefined && body.previous_response_id !== null && typeof body.previous_response_id !== 'string') throw new ClaudeApiError('previous_response_id must be a string or null');
+  if (body.previous_response_id !== undefined && body.previous_response_id !== null && (typeof body.previous_response_id !== 'string' || !/^resp_[A-Za-z0-9_-]{1,123}$/.test(body.previous_response_id))) throw new ClaudeApiError('Invalid previous_response_id.', 400, 'invalid_request_error');
   if (body.store !== undefined && body.store !== null && typeof body.store !== 'boolean') throw new ClaudeApiError('store must be a boolean or null');
   if (body.metadata !== undefined && body.metadata !== null && !isObject(body.metadata)) throw new ClaudeApiError('metadata must be an object or null');
   if (body.parallel_tool_calls !== undefined && typeof body.parallel_tool_calls !== 'boolean') throw new ClaudeApiError('parallel_tool_calls must be a boolean');
@@ -176,9 +150,19 @@ function validateStop(stop: unknown): void {
 }
 
 function validateResponsesInput(input: unknown): void {
+  if (Buffer.byteLength(JSON.stringify(input), 'utf8') > 8 * 1024 * 1024) throw new ClaudeApiError('Responses input limit exceeded.');
   if (!Array.isArray(input)) return;
+  if (input.length > 4096) throw new ClaudeApiError('Responses input limit exceeded.');
+  const budget = new ResponsesReplayBudget();
   for (const item of input) {
     if (!isObject(item)) throw new ClaudeApiError('input items must be objects');
+    if (item.type === 'reasoning' || item.type === 'function_call' && typeof item.arguments === 'string') {
+      try {
+        const parsed = parseResponsesReplayItem(item);
+        if (!parsed) throw new Error();
+        budget.add(parsed);
+      } catch { throw new ClaudeApiError('Invalid reasoning input.', 400, 'invalid_request_error'); }
+    }
     const content = item.content;
     if (!Array.isArray(content)) continue;
     for (const part of content) {

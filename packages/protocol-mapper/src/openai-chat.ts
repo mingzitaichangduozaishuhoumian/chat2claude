@@ -20,6 +20,7 @@ export interface OpenAiChatCompletionRequest {
   response_speed?: string;
   tools?: OpenAiChatTool[];
   tool_choice?: OpenAiChatToolChoice;
+  parallel_tool_calls?: boolean;
   stream_options?: { include_usage?: boolean };
   response_format?: Record<string, unknown>;
 }
@@ -86,6 +87,7 @@ export function mapOpenAiChatRequestToChatGpt(request: OpenAiChatCompletionReque
     stopSequences,
     tools: mapOpenAiTools(request.tools),
     toolChoice: mapOpenAiToolChoice(request.tool_choice),
+    ...(typeof request.parallel_tool_calls === 'boolean' ? { parallelToolCalls: request.parallel_tool_calls } : {}),
     backendOptions,
   };
 }

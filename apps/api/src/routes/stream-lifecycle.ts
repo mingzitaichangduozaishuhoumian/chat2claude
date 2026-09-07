@@ -1,7 +1,7 @@
 import { ChatGptBackendError, sanitizeBackendDiagnostic } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { createLogger, type Logger } from '@chatgpt-to-claude/shared';
-import type { AccountPool } from '../services/account-pool.js';
+import type { Account, AccountPool } from '../services/account-pool.js';
 import { requestErrorOutcome, type AccountRequestTracker } from '../services/request-statistics.js';
 import { accountReleaseError } from './account-release-error.js';
 
@@ -35,7 +35,7 @@ export function logHttpRequestFailure(error: unknown, context: StreamLogContext,
 }
 
 /** Observes the existing iterator only; never pulls or clones a response body for logging. */
-export async function* releaseAccountWhenDone(accountPool: AccountPool, accountId: string, events: AsyncIterable<string>, onError: (error: unknown) => AsyncIterable<string>, tracker: AccountRequestTracker, signal: AbortSignal, context: StreamLogContext): AsyncIterable<string> {
+export async function* releaseAccountWhenDone(accountPool: AccountPool, lease: Account, events: AsyncIterable<string>, onError: (error: unknown) => AsyncIterable<string>, tracker: AccountRequestTracker, signal: AbortSignal, context: StreamLogContext): AsyncIterable<string> {
   let releaseError: unknown;
   let outcome: 'success' | 'failure' | 'cancelled' = 'cancelled';
   const logger = context.logger ?? createLogger();
@@ -55,7 +55,7 @@ export async function* releaseAccountWhenDone(accountPool: AccountPool, accountI
   } finally {
     // The protocol prelude may be cancelled before the backend tracker starts.
     tracker.finish('cancelled');
-    accountPool.release(accountId, accountReleaseError(releaseError));
+    accountPool.release(lease, accountReleaseError(releaseError));
     if (outcome !== 'failure') logger.info('HTTP stream terminated', { ...metadata, outcome });
   }
 }

@@ -1,9 +1,10 @@
 import { CODEX_ORIGINATOR, codexUserAgent, normalizeCodexClientVersion } from './codex-protocol.js';
-import type { ChatGptModelDiscoveryDiagnostic, ChatGptModelDiscoveryResult } from './client.js';
+import type { ChatGptModelDiscoveryDiagnostic, ChatGptModelDiscoveryResult, ChatGptReplayItem } from './client.js';
 import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputContentPart, ChatGptInputItem, ChatGptModelControlCapabilities, ChatGptQuotaWindow, ChatGptReasoningLevelOption, ChatGptServiceTierOption, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
 import { ChatGptBackendError, sanitizeBackendDiagnostic, type ChatGptBackendErrorCode } from './errors.js';
 import { ResponsesToolCalls } from './responses-tools.js';
+import { parseResponsesReplayItem, ResponsesReplay, ResponsesReplayBudget } from './responses-replay.js';
 
 export interface SessionChatGptBackendOptions {
   baseUrl: string;
@@ -119,6 +120,10 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     let text = '';
     let finishReason: ChatGptFinishReason = 'stop';
     let usage: ChatGptUsage | undefined;
+    let replayItems: ChatGptReplayItem[] | undefined;
+    let replayEligible: boolean | undefined;
+    let outputItems: ChatGptCompletionResponse['outputItems'];
+    let terminalSuccessful: boolean | undefined;
     const toolCalls: ChatGptToolCall[] = [];
     for await (const event of this.stream(request, context)) {
       if (event.type === 'text_delta') text += event.text;
@@ -126,9 +131,12 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       if (event.type === 'done') {
         if (event.finishReason) finishReason = event.finishReason;
         if (event.usage) usage = event.usage;
+        if (event.replayItems) { replayItems = event.replayItems; replayEligible = event.replayEligible; }
+        if (event.outputItems) outputItems = event.outputItems;
+        terminalSuccessful = event.terminalSuccessful;
       }
     }
-    return { text, finishReason, ...(toolCalls.length ? { toolCalls } : {}), ...(usage ? { usage } : {}) };
+    return { text, finishReason, ...(toolCalls.length ? { toolCalls } : {}), ...(usage ? { usage } : {}), ...(replayItems ? { replayItems, replayEligible } : {}), ...(outputItems ? { outputItems } : {}), ...(terminalSuccessful === false ? { terminalSuccessful } : {}) };
   }
 
   async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent> {
@@ -143,15 +151,18 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         body: JSON.stringify(buildResponsesBody(request)),
       }, lifetime.signal));
       if (!response.ok) {
-        await cancelResponseBody(response);
-        lifetime.signal.throwIfAborted();
-        throw httpBackendError('ChatGPT responses request failed', response.status);
+        const diagnostic = await readHttpErrorDiagnostic(response, lifetime);
+        if (context?.signal?.aborted) throw abortError();
+        throw new ChatGptBackendError(`ChatGPT responses request failed: HTTP ${response.status}`, backendErrorCodeForStatus(response.status), {
+          status: response.status, safeDiagnostic: { ...diagnostic, httpStatus: response.status, failurePhase: 'response_headers' },
+        });
       }
 
       httpStatus = response.status;
       let latestUsage: ChatGptUsage | undefined;
       let sawToolCall = false;
       const tools = new ResponsesToolCalls(httpStatus);
+      const replay = new ResponsesReplay();
       for await (const frame of iterateSseData(response, lifetime)) {
         const parsed = parseJson(frame.data);
         const type = parsed?.type ?? frame.event;
@@ -159,6 +170,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         if (terminalError) throw terminalError;
         if (frame.data === '[DONE]') break;
         if (!parsed) continue;
+        const replayResult = replay.accept(type, parsed);
         latestUsage = mergeUsage(latestUsage, extractUsage(parsed));
         for (const toolCall of tools.accept(type, parsed)) {
           sawToolCall = true;
@@ -181,7 +193,8 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
             sawToolCall = true;
             yield { type: 'tool_call', toolCall };
           }
-          yield { type: 'done', finishReason: extractFinishReason(parsed) ?? (sawToolCall ? 'tool_calls' : 'stop'), ...(latestUsage ? { usage: latestUsage } : {}) };
+          lifetime.signal.throwIfAborted();
+          yield { type: 'done', finishReason: extractFinishReason(parsed) ?? (sawToolCall ? 'tool_calls' : 'stop'), ...(latestUsage ? { usage: latestUsage } : {}), ...replayResult };
           return;
         }
       }
@@ -189,8 +202,11 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         sawToolCall = true;
         yield { type: 'tool_call', toolCall };
       }
-      yield { type: 'done', finishReason: sawToolCall ? 'tool_calls' : 'stop', ...(latestUsage ? { usage: latestUsage } : {}) };
+      yield { type: 'done', terminalSuccessful: false, finishReason: sawToolCall ? 'tool_calls' : 'stop', ...(latestUsage ? { usage: latestUsage } : {}) };
     } catch (error) {
+      // Diagnostic reads are best-effort: timeout/read/cleanup failures cannot replace
+      // an already received HTTP failure. An actual caller cancellation still wins.
+      if (!context?.signal?.aborted && error instanceof ChatGptBackendError && error.safeDiagnostic?.failurePhase === 'response_headers') throw error;
       lifetime.signal.throwIfAborted();
       if (error instanceof ChatGptBackendError) throw error;
       if (error instanceof Error && error.name === 'AbortError') throw abortError();
@@ -461,24 +477,32 @@ function abortError(): Error {
   return error;
 }
 
+/** Codex OAuth private endpoint allowlist, deliberately not the public Responses API.
+ * Token limits, sampling, stop, truncation, cache controls and context_management
+ * stay in the IR but must never be serialized here (including via backendOptions).
+ */
 function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {
+  const replayBudget = new ResponsesReplayBudget();
   const body: JsonObject = {
     model: request.model,
-    input: request.inputItems?.length ? request.inputItems.map(toResponsesInputItem) : request.messages.map((message) => ({ type: 'message', role: message.role, content: message.content })),
+    input: request.inputItems?.length ? request.inputItems.map((item) => toResponsesInputItem(item, replayBudget)) : request.messages.map((message) => toResponsesInputItem({ type: 'message', ...message })),
     stream: true,
     store: false,
+    include: ['reasoning.encrypted_content'],
     instructions: '',
-    max_output_tokens: request.maxTokens,
   };
   applyResponsesBodyOptions(body, request.backendOptions?.responsesBody);
   if (request.reasoningEffort) body.reasoning = { effort: request.reasoningEffort };
-  if (request.serviceTier) body.service_tier = request.serviceTier;
-  if (typeof request.temperature === 'number') body.temperature = request.temperature;
-  if (typeof request.topP === 'number') body.top_p = request.topP;
-  if (request.stopSequences?.length) body.stop = request.stopSequences.length === 1 ? request.stopSequences[0] : request.stopSequences;
-  const mappedTools = request.tools?.length ? request.tools.map((tool) => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: tool.strict })) : [];
+  // Discovery can advertise other tiers; only canonical priority is proven compatible.
+  if (request.serviceTier === 'priority') body.service_tier = 'priority';
+  const mappedTools = request.tools?.length ? request.tools.map((tool) => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: tool.strict ?? false })) : [];
   const rawTools = Array.isArray(body.tools) ? body.tools : [];
-  if (mappedTools.length || rawTools.length) body.tools = [...mappedTools, ...rawTools];
+  if (mappedTools.length || rawTools.length) {
+    body.tools = [...mappedTools, ...rawTools].map((tool) => isPlainObject(tool) && tool.type === 'function' ? { ...tool, strict: tool.strict ?? false } : tool);
+    body.parallel_tool_calls = request.parallelToolCalls ?? body.parallel_tool_calls ?? true;
+  } else {
+    delete body.parallel_tool_calls;
+  }
   if (request.toolChoice) body.tool_choice = request.toolChoice.type === 'tool' ? { type: 'function', name: request.toolChoice.name } : request.toolChoice.type === 'any' ? 'required' : request.toolChoice.type;
   return body;
 }
@@ -489,7 +513,6 @@ function applyResponsesBodyOptions(body: JsonObject, value: unknown): void {
   if (typeof raw.previous_response_id === 'string' || raw.previous_response_id === null) body.previous_response_id = raw.previous_response_id;
   if (raw.metadata === null || raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)) body.metadata = raw.metadata;
   if (typeof raw.parallel_tool_calls === 'boolean') body.parallel_tool_calls = raw.parallel_tool_calls;
-  if (typeof raw.truncation === 'string') body.truncation = raw.truncation;
   if (raw.text && typeof raw.text === 'object' && !Array.isArray(raw.text)) body.text = raw.text;
   if (Array.isArray(raw.tools)) body.tools = raw.tools.map((tool) => isPlainObject(tool) ? { ...tool } : tool);
   if (body.tool_choice === undefined && isPlainObject(raw.tool_choice)) body.tool_choice = { ...raw.tool_choice };
@@ -499,16 +522,22 @@ function isPlainObject(value: unknown): value is JsonObject {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function toResponsesInputItem(item: ChatGptInputItem): JsonObject {
-  if (item.type === 'message') return { type: 'message', role: item.role, content: toResponsesContent(item.content) };
+function toResponsesInputItem(item: ChatGptInputItem, replayBudget?: ResponsesReplayBudget): JsonObject {
+  if (item.type === 'replay') {
+    const replay = parseResponsesReplayItem(item.item);
+    if (!replay) throw new ChatGptBackendError('ChatGPT session backend replay input was invalid.', 'invalid_request', { status: 400 });
+    replayBudget?.add(replay);
+    return { ...replay };
+  }
+  if (item.type === 'message') return { type: 'message', role: item.role === 'system' ? 'developer' : item.role, content: toResponsesContent(item.content, item.role) };
   if (item.type === 'function_call') return { type: 'function_call', call_id: item.callId, name: item.name, arguments: stringifyArguments(item.arguments) };
   return { type: 'function_call_output', call_id: item.callId, output: item.output };
 }
 
-function toResponsesContent(content: string | ChatGptInputContentPart[]): string | JsonObject[] {
+function toResponsesContent(content: string | ChatGptInputContentPart[], role: 'system' | 'user' | 'assistant'): string | JsonObject[] {
   if (typeof content === 'string') return content;
   return content.map((part) => part.type === 'text'
-    ? { type: 'input_text', text: part.text }
+    ? { type: role === 'assistant' ? 'output_text' : 'input_text', text: part.text }
     : { type: 'input_image', image_url: part.imageUrl, ...(part.detail ? { detail: part.detail } : {}) });
 }
 
@@ -676,6 +705,50 @@ function requireSessionSecret(context?: ChatGptBackendRequestContext): ChatGptSe
   if (!secret || secret.type !== 'chatgpt-session') throw new Error(`ChatGPT session account ${account.id} is missing a chatgpt-session secret.`);
   if (!secret.accessToken?.trim()) throw new Error(`ChatGPT session account ${account.id} is missing secret.accessToken.`);
   return secret;
+}
+
+/** Read at most 64 KiB; never retain raw provider text or arbitrary parameter paths. */
+async function readHttpErrorDiagnostic(response: Response, lifetime: ReturnType<typeof createRequestLifetime>) {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Reading the diagnostic and releasing the body share this single budget. A
+  // response failure must not spend 250ms reading and another 250ms cleaning up.
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(() => resolve(), 250);
+  });
+  try {
+    reader = response.body?.getReader();
+    if (!reader) return undefined;
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    let bytes = 0;
+    let text = '';
+    while (true) {
+      const chunk = await lifetime.run(() => Promise.race([reader!.read(), deadline]));
+      if (!chunk || chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > 64 * 1024) return undefined;
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    const payload = parseJson(text + decoder.decode());
+    const error = isPlainObject(payload?.error) ? payload.error : undefined;
+    return error ? sanitizeBackendDiagnostic({ responseErrorCode: error.code, responseErrorType: error.type, responseErrorParam: error.param }) : undefined;
+  } catch {
+    // Invalid JSON, transport read errors and a diagnostic timeout preserve HTTP status.
+    return undefined;
+  } finally {
+    if (reader) {
+      // Cleanup is best effort; catch immediately so a late custom rejection is
+      // always observed and cannot replace the already known HTTP failure.
+      try {
+        const cancellation = reader.cancel().catch(() => {});
+        await lifetime.run(() => Promise.race([cancellation, deadline]));
+      } catch { /* best-effort cleanup */ }
+      finally {
+        try { reader.releaseLock(); } catch { /* best-effort cleanup */ }
+      }
+    }
+    clearTimeout(timer);
+  }
 }
 
 async function cancelResponseBody(response: Response): Promise<void> {
@@ -868,9 +941,10 @@ function responseEventError(event: string | undefined, value: JsonObject | undef
   const type = value?.type ?? event;
   const response = isPlainObject(value?.response) ? value.response : undefined;
   const incomplete = type === 'response.incomplete' || event === 'response.incomplete' || response?.status === 'incomplete' || value?.status === 'incomplete';
-  const failureTypes = ['error', 'response.error', 'response.failed'];
+  const failureTypes = ['error', 'response.error', 'response.failed', 'response.cancelled'];
   const failed = failureTypes.includes(event ?? '') || (typeof type === 'string' && failureTypes.includes(type))
     || value?.status === 'failed' || response?.status === 'failed'
+    || value?.status === 'cancelled' || response?.status === 'cancelled'
     || (value?.error !== undefined && value.error !== null && value.error !== false)
     || (response?.error !== undefined && response.error !== null && response.error !== false);
   if (!incomplete && !failed) return undefined;

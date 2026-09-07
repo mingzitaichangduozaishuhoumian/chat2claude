@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
+import { accessLog } from '../middleware/access-log.js';
 import { SessionChatGptBackend } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ChatGptBackendClient, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
 import { createMessagesRoute } from './messages.js';
@@ -86,18 +88,23 @@ describe('request-statistics protocol attribution', () => {
         if (aborted) controller.abort();
         throw new DOMException('PROVIDER_TOKEN_COOKIE_CANARY', 'AbortError');
       });
-      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-      const app = createRoute({ backend, requestLog: new RequestLog(), modelRegistry: registry(), accountPool: pool, operationalState: state, logger });
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), access: vi.fn() };
+      const app = new Hono();
+      app.use('*', accessLog(logger));
+      app.route('/', createRoute({ backend, requestLog: new RequestLog(), modelRegistry: registry(), accountPool: pool, operationalState: state, logger }));
       const response = await app.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
+      expect(response.status).toBe(aborted ? 499 : 500);
+      expect(logger.access).toHaveBeenCalledWith(expect.objectContaining({ status: aborted ? 499 : 500 }), 'text');
       expect(await response.text()).not.toContain('CANARY');
       expect(state.snapshot().accounts[0]?.requestStats).toMatchObject({ totalRequests: 1, successfulRequests: 0, failedRequests: aborted ? 0 : 1, cancelledRequests: aborted ? 1 : 0, inFlight: 0 });
       expect(release).toHaveBeenCalledTimes(1);
-      expect(release).toHaveBeenCalledWith(expect.any(String), undefined);
-      expect(pool.get(release.mock.calls[0][0])).toMatchObject({ currentConcurrency: 0, status: 'available', cooldownUntil: null });
+      expect(release).toHaveBeenCalledWith(expect.objectContaining({ id: expect.any(String), incarnation: expect.any(Number) }), undefined);
+      const lease = release.mock.calls[0][0];
+      expect(pool.get(typeof lease === 'string' ? lease : lease.id)).toMatchObject({ currentConcurrency: 0, status: 'available', cooldownUntil: null });
       expect(logger.info.mock.calls.length + logger.error.mock.calls.length).toBe(1);
       if (aborted) {
         expect(logger.error).not.toHaveBeenCalled();
-        expect(logger.info).toHaveBeenCalledWith('HTTP request terminated', { route: path, outcome: 'cancelled' });
+        expect(logger.info).toHaveBeenCalledWith('HTTP request terminated', expect.objectContaining({ route: path, outcome: 'cancelled' }));
       } else {
         expect(logger.error).toHaveBeenCalledWith('HTTP request terminated', expect.objectContaining({ route: path, outcome: 'failure' }));
       }

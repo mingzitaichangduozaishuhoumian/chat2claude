@@ -36,6 +36,12 @@ export function mapChatGptBackendError(error: unknown): ClaudeApiError | undefin
   }
 }
 
+/** Only a caller-aborted request plus AbortError is a cancellation, not an upstream failure. */
+export function mapRequestCancellation(error: unknown, signal: AbortSignal): ClaudeApiError | undefined {
+  return signal.aborted && error instanceof Error && error.name === 'AbortError'
+    ? new ClaudeApiError('Request cancelled.', 499, 'api_error') : undefined;
+}
+
 /** Return a safe 5xx protocol error for failures outside the trusted boundary. */
 export function unexpectedApiError(): ClaudeApiError {
   return new ClaudeApiError(INTERNAL_SERVER_ERROR_MESSAGE, 500, 'api_error');

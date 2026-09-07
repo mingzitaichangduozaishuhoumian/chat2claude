@@ -396,6 +396,8 @@ function mergeReauthorizationSecret(existing: ChatGptSessionSecret | undefined, 
   for (const [key, value] of Object.entries(incoming) as Array<[keyof ChatGptSessionSecret, ChatGptSessionSecret[keyof ChatGptSessionSecret]]>) {
     if (value !== undefined && value !== '') Object.assign(merged, { [key]: value });
   }
+  // Identity must come from the replacement credentials, never inherited metadata.
+  merged.accountId = clean(incoming.accountId);
   return merged;
 }
 

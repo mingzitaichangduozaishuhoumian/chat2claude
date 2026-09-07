@@ -208,6 +208,17 @@ describe('OpenAI request generation controls mapping', () => {
     expect(mapped.stopSequences).toEqual(['END', 'STOP']);
   });
 
+  it.each([undefined, false, true])('preserves Chat Completions parallel_tool_calls=%s in the backend IR', (parallelToolCalls) => {
+    const mapped = mapOpenAiChatRequestToChatGpt({
+      model: 'gpt-test',
+      messages: [{ role: 'user', content: 'hello' }],
+      tools: [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object' } } }],
+      parallel_tool_calls: parallelToolCalls,
+    });
+
+    expect(mapped.parallelToolCalls).toBe(parallelToolCalls);
+  });
+
   it('maps Responses temperature, top_p, and stop arrays to backend request fields', () => {
     const mapped = mapOpenAiResponsesRequestToChatGpt({
       model: 'gpt-test',
