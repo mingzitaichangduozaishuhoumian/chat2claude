@@ -4,6 +4,21 @@ import { loadEnv } from './env.js';
 import { DEFAULT_CODEX_CLIENT_VERSION } from '@chatgpt-to-claude/chatgpt-backend';
 
 describe('loadEnv', () => {
+  it('uses direct outbound traffic by default and accepts HTTP/HTTPS proxies', () => {
+    expect(loadEnv({}).outboundProxyUrl).toBeUndefined();
+    expect(loadEnv({ OUTBOUND_PROXY_URL: ' ' }).outboundProxyUrl).toBeUndefined();
+    expect(loadEnv({ OUTBOUND_PROXY_URL: 'http://127.0.0.1:7890' }).outboundProxyUrl).toBe('http://127.0.0.1:7890/');
+    expect(loadEnv({ OUTBOUND_PROXY_URL: 'https://user:password@proxy.test:7892' }).outboundProxyUrl).toBe('https://user:password@proxy.test:7892/');
+  });
+
+  it.each(['socks5://canary:secret@localhost:7890', 'ftp://canary.test', 'canary', 'http://', 'http://proxy.test/path', 'http://proxy.test?canary', 'http://proxy.test#canary', 'http://canary:%ZZ@proxy.test', 'http://proxy.\ntest'])('rejects invalid proxy configuration safely (case %#)', (value) => {
+    expect(() => loadEnv({ OUTBOUND_PROXY_URL: value })).toThrow('OUTBOUND_PROXY_URL must be an HTTP or HTTPS proxy URL without a path, query, or fragment.');
+    try { loadEnv({ OUTBOUND_PROXY_URL: value }); } catch (error) {
+      expect(String(error)).not.toContain('canary');
+      expect(error).not.toHaveProperty('cause');
+    }
+  });
+
   it('defaults access logs to text and acquisition timeout to 30 seconds', () => {
     expect(loadEnv({})).toMatchObject({ accessLogFormat: 'text', accountAcquireTimeoutMs: 30_000 });
     expect(loadEnv({ ACCESS_LOG_FORMAT: 'json', ACCOUNT_ACQUIRE_TIMEOUT_MS: '0' })).toMatchObject({ accessLogFormat: 'json', accountAcquireTimeoutMs: 0 });

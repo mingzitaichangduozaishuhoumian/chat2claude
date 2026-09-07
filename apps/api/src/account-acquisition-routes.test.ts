@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import { SessionChatGptBackend, type ChatGptBackendClient, type ChatGptStreamEvent } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, SessionChatGptBackend, type ChatGptBackendClient, type ChatGptStreamEvent } from '@chatgpt-to-claude/chatgpt-backend';
 import { createMessagesRoute } from './routes/messages.js';
 import { createOpenAiChatRoute } from './routes/openai-chat.js';
 import { createOpenAiResponsesRoute } from './routes/openai-responses.js';
@@ -36,18 +36,44 @@ for (const protocol of protocols) describe(protocol.path, () => {
         yield { type: 'done', finishReason: 'stop' };
       }),
     };
+    const streamLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const logs: HttpAccessLog[] = [];
     const capture = (_message: string, meta?: unknown) => { logs.push(meta as HttpAccessLog); };
     const app = new Hono();
     app.use('*', accessLog({ debug: capture, info: capture, warn: capture, error: capture }));
     const operationalState = new AdminOperationalState({ path: 'unused.json', debounceMs: 60_000 });
-    app.route('/', protocol.route({ backend, accountPool: pool, modelRegistry: models, requestLog: new RequestLog(), operationalState, backendProvider: 'session', accountAcquireTimeoutMs: timeoutMs }));
+    app.route('/', protocol.route({ logger: streamLogger, backend, accountPool: pool, modelRegistry: models, requestLog: new RequestLog(), operationalState, backendProvider: 'session', accountAcquireTimeoutMs: timeoutMs }));
     const request = (stream = false, signal?: AbortSignal) => app.request(protocol.path, {
       method: 'POST', headers: { 'content-type': 'application/json' }, signal,
       body: JSON.stringify({ ...protocol.body, model: 'test-model', stream }),
     });
-    return { pool, models, backend, request, logs, operationalState, end: (error = false) => { fail = error; end(); } };
+    return { pool, models, backend, request, logs, streamLogger, operationalState, end: (error = false) => { fail = error; end(); } };
   }
+
+  it.each(['upstream_error', 'internal_error', 'untrusted_code'] as const)('logs safe %s after HTTP 200 without exposing provider details', async (code) => {
+    const canary = 'provider-token-cookie-message-cause-canary';
+    const error = code === 'internal_error' ? new Error(canary, { cause: canary })
+      : new ChatGptBackendError(canary, 'upstream_error', { cause: new Error(canary) });
+    if (code === 'untrusted_code') Object.defineProperty(error, 'code', { value: canary });
+    const backend: ChatGptBackendClient = {
+      listModels: async () => [],
+      complete: async () => ({ text: 'ok', finishReason: 'stop' }),
+      stream: async function* () { yield { type: 'text_delta', text: canary }; throw error; },
+    };
+    const { request, logs, streamLogger, pool } = fixture(undefined, backend);
+    const response = await request(true);
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({ status: 200, durationKind: 'response_ready' });
+    expect(streamLogger.error).toHaveBeenCalledTimes(1);
+    expect(streamLogger.error).toHaveBeenCalledWith('HTTP stream terminated', {
+      route: protocol.path, requestId: logs[0].requestId, outcome: 'failure', code: code === 'upstream_error' ? code : 'internal_error',
+    });
+    expect(streamLogger.info).not.toHaveBeenCalled();
+    expect(JSON.stringify([logs, streamLogger.error.mock.calls, pool.exportState()])).not.toContain(canary);
+    expect(pool.acquire()).toBeDefined();
+  });
 
   it.each(['reader-cancel', 'request-abort'] as const)('interrupts already-blocked upstream I/O on %s and releases for the queued request', async (outcome) => {
     let entered!: () => void;
@@ -125,7 +151,7 @@ for (const protocol of protocols) describe(protocol.path, () => {
   });
 
   it.each(['complete', 'cancel', 'error'])('holds the SSE slot until %s, then wakes the next request', async (outcome) => {
-    const { pool, backend, request, end, operationalState } = fixture();
+    const { pool, backend, request, end, operationalState, streamLogger, logs } = fixture();
     const first = await request(true);
     expect(first.status).toBe(200);
     expect(pool.get('session')?.currentConcurrency).toBe(1);
@@ -141,6 +167,13 @@ for (const protocol of protocols) describe(protocol.path, () => {
     }
     expect((await second).status).toBe(200);
     expect(backend.complete).toHaveBeenCalledTimes(1);
+    const terminalLogger = outcome === 'error' ? streamLogger.error : streamLogger.info;
+    expect(terminalLogger).toHaveBeenCalledTimes(1);
+    expect(terminalLogger).toHaveBeenCalledWith('HTTP stream terminated', {
+      route: protocol.path, requestId: logs[0].requestId,
+      outcome: outcome === 'complete' ? 'success' : outcome === 'cancel' ? 'cancelled' : 'failure',
+      ...(outcome === 'error' ? { code: 'internal_error' } : {}),
+    });
     expect(operationalState.snapshot().accounts[0]?.requestStats).toMatchObject({
       totalRequests: 2, successfulRequests: outcome === 'complete' ? 2 : 1,
       cancelledRequests: outcome === 'cancel' ? 1 : 0, failedRequests: outcome === 'error' ? 1 : 0, inFlight: 0,
@@ -193,7 +226,7 @@ for (const protocol of protocols) describe(protocol.path, () => {
   });
 
   it.each([
-    ['disabled', 'account_disabled'], ['unhealthy', 'account_unhealthy'], ['cooldown', 'account_cooldown'],
+    ['disabled', 'account_disabled'], ['unhealthy', 'account_unhealthy'], ['error', 'account_error'], ['cooldown', 'account_cooldown'],
   ] as const)('does not wait for %s', async (status, reason) => {
     const { pool, request, logs } = fixture();
     pool.update('session', { status });

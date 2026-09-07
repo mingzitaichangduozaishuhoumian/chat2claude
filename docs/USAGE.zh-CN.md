@@ -242,6 +242,12 @@ curl --fail "$ANTHROPIC_BASE_URL/healthz"
 
 未知或缺失的 `usedPercent` 不会显示为 0% 进度条，也不会从套餐名称、429 或请求统计推断剩余额度。配额状态区分 `fresh`、`stale`、`error`、`unknown`；不支持 quota lookup 的账号会明确显示不可用。
 
+### 可选出站代理（Clash）
+
+设置 `OUTBOUND_PROXY_URL=http://127.0.0.1:7890` 使用本机 Clash 混合端口（无需用户认证）；也可用 `http://127.0.0.1:7892` 的 HTTP 端口。未设置或留空时直连。只接受 HTTP/HTTPS 代理 URL；SOCKS、路径、查询参数和 fragment 会被固定安全错误拒绝。支持 URL 用户名/密码，但必须作为密钥保护，不要贴入日志或公开截图。
+
+实现采用兼容 Node 22.15 的外部 Undici 7 `ProxyAgent`，仅显式注入 ChatGPT/Codex 出站 fetch：完成/SSE、模型发现、健康检查、配额/重置额度、OAuth 换码和刷新。不设置全局 dispatcher，不依赖 `NODE_USE_ENV_PROXY`，不代理本地 Hono 请求、OAuth 本地回调或浏览器导航；app dispose 时关闭 dispatcher。代理 URL 不进入日志、Admin API 或 DOM。Docker 中的 loopback 指容器自身，需要改用容器可达的宿主地址（如 Docker Desktop 的 `host.docker.internal`）。
+
 ### HTTP access log
 
 access log 只应用于 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 为专用简洁单行，普通应用日志仍为 JSON。设置 `ACCESS_LOG_FORMAT=json` 可保留 `{ level, message: "HTTP access", meta, time }` 外壳，含完整 request UUID 和可选安全 `reason`。两种格式均按状态选择等级：2xx/3xx 为 `info`、4xx 为 `warn`、5xx 为 `error`，受 `LOG_LEVEL` 过滤。
@@ -251,7 +257,7 @@ access log 只应用于 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=t
 17:38:18.754 ERROR 503 30000ms 127.0.0.1 POST /v1/messages model=opus reason=account_busy_timeout req=2aec84fd
 ```
 
-文本顺序固定为 UTC 时间、等级、状态、response-ready 耗时、peer IP、方法、归一化路径/安全 query 类别、model、stream、reason 和 UUID 前 8 位；`stream=false`、空 query 和缺失字段不显示。peer IP 只来自连接，不信任转发头。结构化记录包含：
+文本时间为运行主机本地时间（固定 `HH:mm:ss.SSS`），JSON 时间仍为 ISO UTC。文本顺序固定为时间、等级、状态、response-ready 耗时、peer IP、方法、归一化路径/安全 query 类别、model、stream、reason 和 UUID 前 8 位；`stream=false`、空 query 和缺失字段不显示。peer IP 只来自连接，不信任转发头。结构化记录包含：
 
 - request ID、HTTP method、归一化 path；
 - 查询参数类别（只保留 `beta`，其他归为 `other`）；
@@ -262,6 +268,10 @@ access log 只应用于 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=t
 它**不会读取或记录** request body、response body、token、cookie、Authorization、API Key、OAuth code/state/verifier 或完整查询值。动态 flow/account/key/model ID 会被归一化为占位路径；非法或过长模型 ID 会被写成安全占位符。
 
 `response_ready` 的含义是响应已经准备好：普通响应是 handler 返回 response 的时间；流式响应是 SSE response 建立的时间，**不是**流式 body 全部发送完的时间。
+
+Messages、Chat Completions 和 Responses 额外输出独立 JSON 应用日志 `HTTP stream terminated`：失败为 `error` 等级，字段仅含固定 route、`outcome: failure`、白名单 backend `code`（未知异常为 `internal_error`）及可用的既有服务端 request UUID；正常完成/取消以 `info` 记录 `success` / `cancelled`。因此 HTTP 200 后的流失败也可诊断。原有 response-ready access log 仍仅一行，不额外消费或 clone body，不记录账号 ID、原始 message/cause、请求体、凭据或 provider payload。
+
+请求 release 时，`unauthorized` 保持 unhealthy，需成功健康检查或重新授权恢复；`rate_limited` 保持 cooldown。`network_error`、`timeout`、`upstream_error`、`invalid_response` 仅保留固定本地诊断和安全错误码，原本健康的账号释放后仍 available、可立即重新获取。`invalid_request` 属于请求级错误，会清除临时诊断而不污染健康。成功或请求级错误 release 不会覆盖并发请求已设置的 unhealthy/cooldown。显式健康检查失败仍可能设为 error。
 
 ### 有界账号并发等待
 
@@ -275,7 +285,8 @@ Messages、Chat Completions 和 Responses 采用相同的通知式获取策略�
 | `capability_unavailable` | 匹配 provider 的账号不具备所需 capability |
 | `model_or_controls_unsupported` | 没有候选账号支持请求的模型/控制项 |
 | `account_disabled` | 匹配账号均停用 |
-| `account_unhealthy` | 匹配的启用账号均不健康或处于 error |
+| `account_unhealthy` | 匹配的启用账号均处于 unhealthy（如凭据未授权） |
+| `account_error` | 排除 unhealthy 后，剩余匹配账号均处于 error（如手动健康检查失败） |
 | `account_cooldown` | 剩余匹配账号处于冷却 |
 | `account_busy` | 匹配的可用账号并发已满，且等待配置为 0 |
 | `account_busy_timeout` | 等待槽位超时 |

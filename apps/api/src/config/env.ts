@@ -20,6 +20,8 @@ export interface AppEnv {
   mockBackendModelsJson?: string;
   chatGptBackend: ChatGptBackendProvider;
   chatGptBaseUrl: string;
+  /** Private transport configuration; never serialize to logs or Admin responses. */
+  outboundProxyUrl?: string;
   chatGptRequestTimeoutMs: number;
   /** loadEnv always supplies this; omitted programmatic configs use the protocol default. */
   codexClientVersion?: string;
@@ -53,6 +55,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     mockBackendModelsJson: source.MOCK_BACKEND_MODELS_JSON,
     chatGptBackend: parseBackendProvider(source.CHATGPT_BACKEND),
     chatGptBaseUrl: source.CHATGPT_BASE_URL?.trim() || 'https://chatgpt.com',
+    outboundProxyUrl: parseOutboundProxyUrl(source.OUTBOUND_PROXY_URL),
     chatGptRequestTimeoutMs: readNumber(source.CHATGPT_REQUEST_TIMEOUT_MS, 60000),
     codexClientVersion: normalizeCodexClientVersion(source.CODEX_CLIENT_VERSION),
     defaultReasoningEffort: normalizeReasoningEffort(source.DEFAULT_REASONING_EFFORT),
@@ -62,6 +65,23 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     operationalStatePath: resolve(dataDir, 'admin-operational-state.json'),
     stateEncryptionKey: parseStateEncryptionKey(source.STATE_ENCRYPTION_KEY),
   };
+}
+
+export function parseOutboundProxyUrl(value: string | undefined): string | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  try {
+    const trimmed = value.trim();
+    const url = new URL(trimmed);
+    if (!/^https?:\/\//i.test(trimmed) || /[\x00-\x20\x7f]/.test(trimmed)
+      || (url.protocol !== 'http:' && url.protocol !== 'https:') || !url.hostname
+      || url.pathname !== '/' || url.search || url.hash) throw new Error();
+    // Reject malformed credential escapes before constructing the dispatcher.
+    decodeURIComponent(url.username);
+    decodeURIComponent(url.password);
+    return url.toString();
+  } catch {
+    throw new Error('OUTBOUND_PROXY_URL must be an HTTP or HTTPS proxy URL without a path, query, or fragment.');
+  }
 }
 
 export function isLoopbackHost(host: string): boolean {

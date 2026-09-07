@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createLogger, type HttpAccessLogEntry } from './logger.js';
+import { createLogger, formatLocalAccessTime, type HttpAccessLogEntry } from './logger.js';
 
 afterEach(() => vi.restoreAllMocks());
 const entry: HttpAccessLogEntry = {
@@ -9,16 +9,27 @@ const entry: HttpAccessLogEntry = {
 };
 
 describe('dedicated access logger', () => {
+  it.each([
+    [new Date(2026, 0, 1, 0, 0, 0, 0), '00:00:00.000'],
+    [new Date(2026, 6, 1, 1, 2, 3, 4), '01:02:03.004'],
+    [new Date(2026, 11, 31, 23, 59, 59, 999), '23:59:59.999'],
+  ] as const)('formats local date fields without locale conversion', (date, expected) => {
+    expect(formatLocalAccessTime(date)).toBe(expected);
+  });
+
   it('defaults to concise text but retains JSON for ordinary application logs', () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-09-03T17:37:48.754Z'));
+    const localDate = new Date(2026, 8, 3, 17, 37, 48, 754);
+    vi.setSystemTime(localDate);
     try {
       const sink = vi.spyOn(console, 'log').mockImplementation(() => undefined);
       const logger = createLogger();
       logger.access!(entry);
       expect(sink).toHaveBeenNthCalledWith(1, '17:37:48.754 INFO  200 29ms 127.0.0.1 POST /v1/messages?beta model=opus stream req=ed73cd3b');
       logger.info('ordinary', { ok: true });
-      expect(JSON.parse(sink.mock.calls[1][0])).toMatchObject({ level: 'info', message: 'ordinary', meta: { ok: true } });
+      expect(JSON.parse(sink.mock.calls[1][0])).toMatchObject({ level: 'info', message: 'ordinary', meta: { ok: true }, time: localDate.toISOString() });
+      logger.access!(entry, 'json');
+      expect(JSON.parse(sink.mock.calls[2][0]).time).toBe(localDate.toISOString());
     } finally { vi.useRealTimers(); }
   });
 

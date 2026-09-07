@@ -65,7 +65,7 @@ export interface AccountAcquireOptions {
 }
 
 export const ACCOUNT_UNAVAILABLE_REASONS = [
-  'no_account', 'account_disabled', 'account_unhealthy', 'account_cooldown',
+  'no_account', 'account_disabled', 'account_unhealthy', 'account_error', 'account_cooldown',
   'account_busy', 'capability_unavailable', 'model_or_controls_unsupported',
   'account_busy_timeout', 'request_aborted',
 ] as const;
@@ -429,8 +429,10 @@ export class AccountPool {
     if (!candidates.length) return 'model_or_controls_unsupported';
     candidates = candidates.filter((account) => account.enabled && account.status !== 'disabled');
     if (!candidates.length) return 'account_disabled';
-    candidates = candidates.filter((account) => account.status === 'available' || account.status === 'cooldown');
+    candidates = candidates.filter((account) => account.status !== 'unhealthy');
     if (!candidates.length) return 'account_unhealthy';
+    candidates = candidates.filter((account) => account.status !== 'error');
+    if (!candidates.length) return 'account_error';
     candidates = candidates.filter((account) => account.status === 'available');
     if (!candidates.length) return 'account_cooldown';
     return candidates.some((account) => account.currentConcurrency < account.maxConcurrency) ? undefined : 'account_busy';
@@ -538,7 +540,8 @@ export class AccountPool {
   private applyReleaseResult(account: Account, error?: unknown, forceHealthMutation = false): void {
     account.lastUsedAt = this.now().toISOString();
     if (forceHealthMutation || error !== undefined) account.healthRevision += 1;
-    if (error === undefined) {
+    const code = error instanceof ChatGptBackendError ? normalizeBackendErrorCode(error.code, null) : null;
+    if (error === undefined || code === 'invalid_request') {
       if (account.status === 'available' || account.status === 'disabled') {
         account.lastError = null;
         account.lastErrorCode = null;
@@ -548,22 +551,21 @@ export class AccountPool {
       return;
     }
 
-    account.lastError = error instanceof Error ? error.message : String(error);
-    if (error instanceof ChatGptBackendError) {
-      account.lastErrorCode = error.code;
-      if (error.code === 'rate_limited') {
-        account.cooldownUntil = new Date(this.now().getTime() + this.rateLimitCooldownMs).toISOString();
-        account.status = account.enabled ? 'cooldown' : 'disabled';
-        return;
-      }
-      account.cooldownUntil = null;
-      account.status = account.enabled ? error.code === 'unauthorized' ? 'unhealthy' : 'error' : 'disabled';
+    // Request-scoped failures must not undo a concurrent health/cooldown decision.
+    // Explicit health checks may still mark temporary provider failures as error.
+    if (!forceHealthMutation && code !== 'unauthorized') {
+      if (account.status === 'unhealthy' || account.status === 'error') return;
+      if (account.status === 'cooldown' && code !== 'rate_limited') return;
+    }
+    account.lastError = forceHealthMutation ? 'Health check request failed.' : 'Account request failed.';
+    account.lastErrorCode = code;
+    if (code === 'rate_limited') {
+      account.cooldownUntil = new Date(this.now().getTime() + this.rateLimitCooldownMs).toISOString();
+      account.status = account.enabled ? 'cooldown' : 'disabled';
       return;
     }
-
-    account.lastErrorCode = null;
     account.cooldownUntil = null;
-    account.status = account.enabled ? 'error' : 'disabled';
+    account.status = !account.enabled ? 'disabled' : code === 'unauthorized' ? 'unhealthy' : forceHealthMutation ? 'error' : 'available';
   }
 
   private refreshExpiredCooldowns(): void {

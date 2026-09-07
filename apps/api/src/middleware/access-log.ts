@@ -27,6 +27,7 @@ export interface HttpAccessLog extends HttpAccessLogEntry {
 export function accessLog(logger: Logger, format: AccessLogFormat = 'text'): MiddlewareHandler {
   return async (c, next) => {
     const requestId = randomUUID();
+    c.set('accessLogRequestId', requestId);
     const startedAt = performance.now();
     const url = new URL(c.req.url);
 
@@ -51,6 +52,12 @@ export function accessLog(logger: Logger, format: AccessLogFormat = 'text'): Mid
       else logger[accessLogLevel(entry.status)]('HTTP access', entry);
     }
   };
+}
+
+/** Server-generated only; never use a client request-ID header in diagnostics. */
+export function getAccessLogRequestId(c: Context): string | undefined {
+  const value: unknown = c.get('accessLogRequestId');
+  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value) ? value : undefined;
 }
 
 /** Attach only protocol fields which have passed the route's request validation. */

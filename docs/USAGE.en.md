@@ -248,6 +248,12 @@ The first quota-panel load reads the local cache and does not call the provider.
 
 Missing or unknown `usedPercent` is not rendered as a zero-value progress bar. The UI does not infer allowance from plan names, 429 responses, or request counts. Quota results are classified as `fresh`, `stale`, `error`, or `unknown`; an account without provider quota support is shown as unsupported.
 
+### Optional outbound proxy (Clash)
+
+Set `OUTBOUND_PROXY_URL=http://127.0.0.1:7890` for the local Clash mixed port (no authentication required); `http://127.0.0.1:7892` can be used for its HTTP port. Leave it unset or empty for direct connections. Only HTTP/HTTPS proxy URLs are accepted; SOCKS URLs, paths, queries, and fragments are rejected with a fixed safe error. URL credentials are supported but must be treated as secrets, never pasted into logs or shared screenshots.
+
+The app uses external Undici 7 `ProxyAgent`, compatible with Node 22.15, through an explicit fetch dispatcher for ChatGPT/Codex requests: completions/SSE, model discovery, health checks, quotas/reset credits, OAuth code exchange and token refresh. It does not set a global dispatcher, depend on `NODE_USE_ENV_PROXY`, or proxy local Hono requests, OAuth loopback callbacks, or browser navigation. The dispatcher closes on app disposal. The proxy URL is not exposed in logs, Admin APIs or the DOM. In Docker, loopback refers to the container; use a reachable host address instead (for example, `host.docker.internal` on Docker Desktop).
+
 ### HTTP access logs
 
 Access logging is installed only for `/v1/*` and `/admin/api/*`. The default `ACCESS_LOG_FORMAT=text` is a dedicated concise line; ordinary application logs remain JSON. Set `ACCESS_LOG_FORMAT=json` to retain the `{ level, message: "HTTP access", meta, time }` envelope with a full request UUID and optional safe `reason`. Both formats use `info` for 2xx/3xx, `warn` for 4xx, and `error` for 5xx, filtered by `LOG_LEVEL`.
@@ -257,7 +263,7 @@ Access logging is installed only for `/v1/*` and `/admin/api/*`. The default `AC
 17:38:18.754 ERROR 503 30000ms 127.0.0.1 POST /v1/messages model=opus reason=account_busy_timeout req=2aec84fd
 ```
 
-Text fields are ordered as UTC time, level, status, response-ready duration, peer IP, method, normalized path/safe query categories, model, stream, reason, and the first eight UUID characters. False stream flags and missing fields are omitted. Peer IP comes only from the connection, not forwarding headers. Structured entries contain:
+Text uses the running host local time in fixed `HH:mm:ss.SSS` format; JSON timestamps remain ISO UTC. Text fields are ordered as time, level, status, response-ready duration, peer IP, method, normalized path/safe query categories, model, stream, reason, and the first eight UUID characters. False stream flags and missing fields are omitted. Peer IP comes only from the connection, not forwarding headers. Structured entries contain:
 
 - request ID, HTTP method, and normalized path;
 - query-parameter categories (`beta` is retained; all other names become `other`);
@@ -268,6 +274,10 @@ Text fields are ordered as UTC time, level, status, response-ready duration, pee
 The logger does **not** read or record request bodies, response bodies, tokens, cookies, Authorization headers, API Keys, OAuth code/state/verifier values, or complete query values. Dynamic flow/account/key/model IDs are normalized to placeholders; invalid or oversized model IDs are replaced with a safe placeholder.
 
 `response_ready` means that the response object is ready: for a non-streaming request, the handler has produced the response; for a streaming request, the SSE response has been created. It does **not** mean that the streaming body has finished sending.
+
+Messages, Chat Completions, and Responses also emit a separate JSON application log, `HTTP stream terminated`: failures use `error` with a fixed route, `outcome: failure`, an allowlisted backend `code` (or `internal_error`), and the existing server-generated request UUID when available. Normal completion and cancellation use `info` with `success` / `cancelled`. This diagnoses failures after HTTP 200 without changing the single response-ready access line or pulling/cloning bodies. No account ID, raw error message/cause, request body, credentials, or provider payload is logged.
+
+Request release keeps `unauthorized` accounts unhealthy until a successful health check or reauthorization, and `rate_limited` accounts in cooldown. `network_error`, `timeout`, `upstream_error`, and `invalid_response` retain only a fixed local diagnostic and safe code; otherwise healthy accounts remain available for immediate reacquisition. `invalid_request` clears transient diagnostics without poisoning health. Successful or request-scoped releases never clear a concurrent unhealthy/cooldown decision. Explicit health-check failures may still set `error`.
 
 ### Bounded account-concurrency waiting
 
@@ -281,7 +291,8 @@ Release, health recovery, enablement, removal, and configuration updates notify 
 | `capability_unavailable` | No provider-matching account has the required capability. |
 | `model_or_controls_unsupported` | No candidate supports the requested model/controls. |
 | `account_disabled` | Matching accounts are disabled. |
-| `account_unhealthy` | Enabled matching accounts are unhealthy or in error. |
+| `account_unhealthy` | Enabled matching accounts are unhealthy (for example, unauthorized credentials). |
+| `account_error` | After excluding unhealthy accounts, remaining matching accounts are in error (for example, a failed manual health check). |
 | `account_cooldown` | Remaining matching accounts are cooling down. |
 | `account_busy` | Otherwise available matching accounts are saturated and waiting is disabled. |
 | `account_busy_timeout` | The slot-acquisition deadline expired. |

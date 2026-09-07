@@ -109,7 +109,7 @@ describe('AccountPool notification acquisition', () => {
 
   it.each([
     ['disabled', 'account_disabled'], ['unhealthy', 'account_unhealthy'],
-    ['error', 'account_unhealthy'], ['cooldown', 'account_cooldown'],
+    ['error', 'account_error'], ['cooldown', 'account_cooldown'],
   ] as const)('fails immediately for %s, including saturated accounts', async (status, reason) => {
     vi.useFakeTimers();
     const pool = new AccountPool();

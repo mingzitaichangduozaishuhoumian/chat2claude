@@ -30,6 +30,12 @@ export function accessLogLevel(status: number): LogLevel {
   return status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
 }
 
+/** Fixed-width host-local time, independent of locale and UTC offset. */
+export function formatLocalAccessTime(date: Date): string {
+  const pad = (value: number, width = 2) => String(value).padStart(width, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+}
+
 export function createLogger(level: LogLevel = 'info'): Logger {
   const emit = (entryLevel: LogLevel, line: string) => {
     const sink = entryLevel === 'error' ? console.error : entryLevel === 'warn' ? console.warn : console.log;
@@ -50,7 +56,7 @@ export function createLogger(level: LogLevel = 'info'): Logger {
       if (format === 'json') return write(entryLevel, 'HTTP access', entry);
       const query = Object.keys(entry.query).sort().join('&');
       const fields = [
-        new Date().toISOString().slice(11, 23), entryLevel.toUpperCase().padEnd(5),
+        formatLocalAccessTime(new Date()), entryLevel.toUpperCase().padEnd(5),
         entry.status, `${entry.durationMs}ms`, entry.peerIp, entry.method,
         `${entry.path}${query ? `?${query}` : ''}`,
         ...(entry.model ? [`model=${entry.model}`] : []),

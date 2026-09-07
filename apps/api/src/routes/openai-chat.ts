@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import type { Logger } from '@chatgpt-to-claude/shared';
+import { releaseAccountWhenDone } from './stream-lifecycle.js';
 import type { ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { mapChatGptResponseToOpenAiChat, mapChatGptStreamToOpenAiChatSse, mapOpenAiChatRequestToChatGpt, readableStreamFromAsyncIterable, type OpenAiChatCompletionRequest, type ReasoningSpeedDefaults } from '@chatgpt-to-claude/protocol-mapper';
@@ -7,12 +9,12 @@ import { ModelRegistryError, type ModelRegistry } from '../services/model-regist
 import type { AccountPool, AccountProvider } from '../services/account-pool.js';
 import { accountReleaseError } from './account-release-error.js';
 import { mapChatGptBackendError, mapErrorPayload, parseRequestJson, unexpectedApiError } from './backend-errors.js';
-import { createAccountRequestTracker, requestErrorOutcome, trackStreamStatistics, usageFromBackend, type AccountRequestTracker } from '../services/request-statistics.js';
+import { createAccountRequestTracker, requestErrorOutcome, trackStreamStatistics, usageFromBackend } from '../services/request-statistics.js';
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
-import { setAccessLogMetadata } from '../middleware/access-log.js';
+import { getAccessLogRequestId, setAccessLogMetadata } from '../middleware/access-log.js';
 import { acquireRequestAccount, checkSessionAccountAvailability } from './account-acquisition.js';
 
-export interface OpenAiChatRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; accountAcquireTimeoutMs?: number; }
+export interface OpenAiChatRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; accountAcquireTimeoutMs?: number; logger?: Logger; }
 
 export function createOpenAiChatRoute(deps: OpenAiChatRouteDeps): Hono {
   const app = new Hono();
@@ -58,7 +60,7 @@ export function createOpenAiChatRoute(deps: OpenAiChatRouteDeps): Hono {
         deps.requestLog.record({ route: '/v1/chat/completions', stream: Boolean(request.stream), model: request.model });
 
         if (request.stream) {
-          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToOpenAiChatSse(request, trackStreamStatistics(deps.backend.stream(backendRequest, backendContext), tracker, backendContext.signal)), openAiChatStreamError, tracker, backendContext.signal);
+          const events = releaseAccountWhenDone(deps.accountPool, account.id, mapChatGptStreamToOpenAiChatSse(request, trackStreamStatistics(deps.backend.stream(backendRequest, backendContext), tracker, backendContext.signal)), openAiChatStreamError, tracker, backendContext.signal, { route: '/v1/chat/completions', requestId: getAccessLogRequestId(c), logger: deps.logger });
           const stream = readableStreamFromAsyncIterable(events, {
             signal: c.req.raw.signal,
             onCancel: () => streamCancellation.abort(),
@@ -175,21 +177,6 @@ function toOpenAiError(error: ClaudeApiError) {
 
 function accountProviderForBackend(backendProvider: OpenAiChatRouteDeps['backendProvider']): AccountProvider {
   return backendProvider === 'session' ? 'chatgpt-session' : 'mock';
-}
-
-async function* releaseAccountWhenDone(accountPool: AccountPool, accountId: string, events: AsyncIterable<string>, onError: (error: unknown) => AsyncIterable<string>, tracker: AccountRequestTracker, signal: AbortSignal): AsyncIterable<string> {
-  let releaseError: unknown;
-  try {
-    yield* events;
-  } catch (error) {
-    releaseError = error;
-    tracker.finish(requestErrorOutcome(error, signal));
-    yield* onError(error);
-  } finally {
-    // The protocol prelude may be cancelled before the backend tracker starts.
-    tracker.finish('cancelled');
-    accountPool.release(accountId, accountReleaseError(releaseError));
-  }
 }
 
 async function* openAiChatStreamError(error: unknown): AsyncIterable<string> {

@@ -66,7 +66,7 @@ describe('request-statistics protocol attribution', () => {
       expect(text).toContain('Upstream request failed.');
       expect(text).not.toMatch(/SSE_SECRET_CANARY|response\.completed|message_stop|"finish_reason":"stop"/);
       expect(state.snapshot().accounts[0]?.requestStats).toMatchObject({ totalRequests: 1, successfulRequests: 0, failedRequests: 1, cancelledRequests: 0, inFlight: 0 });
-      expect(pool.get('session-canary')).toMatchObject({ currentConcurrency: 0, status: 'error', cooldownUntil: null, lastErrorCode: 'upstream_error' });
+      expect(pool.get('session-canary')).toMatchObject({ currentConcurrency: 0, status: 'available', cooldownUntil: null, lastErrorCode: 'upstream_error' });
       expect(JSON.stringify(state.snapshot()) + JSON.stringify(pool.get('session-canary'))).not.toContain('SSE_SECRET_CANARY');
     }
   });

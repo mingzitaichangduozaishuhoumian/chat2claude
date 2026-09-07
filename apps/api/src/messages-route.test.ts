@@ -199,7 +199,7 @@ describe('AccountPool', () => {
     expect(account?.id).toBe('mock-account');
 
     const released = accountPool.release('mock-account', new ChatGptBackendError('HTTP 429', 'rate_limited', { status: 429 }));
-    expect(released).toMatchObject({ status: 'cooldown', lastError: 'HTTP 429', lastErrorCode: 'rate_limited' });
+    expect(released).toMatchObject({ status: 'cooldown', lastError: 'Account request failed.', lastErrorCode: 'rate_limited' });
     expect(released?.cooldownUntil).toBe('2026-08-17T00:00:01.000Z');
     expect(accountPool.acquire()).toBeUndefined();
 
@@ -222,7 +222,7 @@ describe('AccountPool', () => {
 
     accountPool.release('mock-account', new ChatGptBackendError('HTTP 429', 'rate_limited', { status: 429 }));
     const released = accountPool.release('mock-account');
-    expect(released).toMatchObject({ status: 'cooldown', lastError: 'HTTP 429', lastErrorCode: 'rate_limited' });
+    expect(released).toMatchObject({ status: 'cooldown', lastError: 'Account request failed.', lastErrorCode: 'rate_limited' });
     expect(released?.cooldownUntil).toBe('2026-08-17T00:00:01.000Z');
     expect(accountPool.acquire()).toBeUndefined();
 
@@ -239,7 +239,7 @@ describe('AccountPool', () => {
 
     accountPool.release('mock-account', new ChatGptBackendError('HTTP 401', 'unauthorized', { status: 401 }));
     const released = accountPool.release('mock-account');
-    expect(released).toMatchObject({ status: 'unhealthy', lastError: 'HTTP 401', lastErrorCode: 'unauthorized' });
+    expect(released).toMatchObject({ status: 'unhealthy', lastError: 'Account request failed.', lastErrorCode: 'unauthorized' });
     expect(released?.cooldownUntil).toBeNull();
     expect(accountPool.acquire()).toBeUndefined();
   });
@@ -255,16 +255,16 @@ describe('AccountPool', () => {
     expect(accountPool.acquire()).toBeUndefined();
   });
 
-  it('records ordinary backend error codes as error status', () => {
+  it('records safe transient error codes without disabling the account', () => {
     const accountPool = new AccountPool();
     accountPool.release('mock-account', new ChatGptBackendError('upstream failed', 'upstream_error'));
 
     const view = accountPool.list()[0];
-    expect(view.status).toBe('error');
-    expect(view.lastError).toBe('upstream failed');
+    expect(view.status).toBe('available');
+    expect(view.lastError).toBe('Account request failed.');
     expect(view.lastErrorCode).toBe('upstream_error');
     expect(view.cooldownUntil).toBeNull();
-    expect(accountPool.acquire()).toBeUndefined();
+    expect(accountPool.acquire()).toBeDefined();
   });
 });
 
@@ -580,7 +580,7 @@ describe('/v1/chat/completions', () => {
     expect(text).toContain('data: [DONE]');
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
     expect(accountPool.list()[0].status).toBe('cooldown');
-    expect(accountPool.list()[0].lastError).toBe('ChatGPT stream rate limited: HTTP 429');
+    expect(accountPool.list()[0].lastError).toBe('Account request failed.');
     expect(accountPool.list()[0].lastErrorCode).toBe('rate_limited');
     expect(accountPool.list()[0].cooldownUntil).toEqual(expect.any(String));
   });
@@ -1006,8 +1006,8 @@ describe('/v1/responses', () => {
     expect(text).toContain('"error":{"message":"Upstream request failed.","type":"api_error","code":null}');
     expect(text).toContain('data: [DONE]');
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
-    expect(accountPool.list()[0].status).toBe('error');
-    expect(accountPool.list()[0].lastError).toBe('backend stream boom');
+    expect(accountPool.list()[0].status).toBe('available');
+    expect(accountPool.list()[0].lastError).toBe('Account request failed.');
   });
 
   it('returns an OpenAI error for an unknown responses model without poisoning the account', async () => {
@@ -1316,7 +1316,7 @@ describe('/v1/messages', () => {
     expect(text).toContain('"type":"error","error":{"type":"rate_limit_error","message":"Upstream rate limit exceeded."}');
     expect(accountPool.list()[0].currentConcurrency).toBe(0);
     expect(accountPool.list()[0].status).toBe('cooldown');
-    expect(accountPool.list()[0].lastError).toBe('ChatGPT stream rate limited: HTTP 429');
+    expect(accountPool.list()[0].lastError).toBe('Account request failed.');
     expect(accountPool.list()[0].lastErrorCode).toBe('rate_limited');
     expect(accountPool.list()[0].cooldownUntil).toEqual(expect.any(String));
   });
