@@ -83,7 +83,8 @@ export function createLogger(level: LogLevel = 'info'): Logger {
         ...(entry.downstreamEventCount === undefined ? [] : [`downstreamEvents=${entry.downstreamEventCount}`]),
         ...(entry.downstreamBodyBytes === undefined ? [] : [`downstreamBytes=${entry.downstreamBodyBytes}`]),
       );
-      else if (phase === 'stream_terminal' && entry.outcome === 'failure') fields.push(...(entry.code ? [`| ${entry.code}`] : []), ...(entry.timeoutKind ? [`timeoutKind=${entry.timeoutKind}`] : []));
+      else if (phase === 'stream_terminal' && entry.outcome === 'failure') fields.push(...(entry.code ? [`| ${entry.code}`] : []),
+        ...(['protocolReason', 'timeoutKind', 'incompleteReason'] as const).flatMap(key => entry[key] === undefined ? [] : [`${key}=${entry[key]}`]));
       emit(entryLevel, safeAccessText(fields.join(' ')));
     },
   };

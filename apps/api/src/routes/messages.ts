@@ -17,7 +17,7 @@ import { acquireRequestAccount, checkSessionAccountAvailability } from './accoun
 import type { ReasoningReplayStore } from '../services/reasoning-replay-store.js';
 import { RequestReasoningReplay } from '../services/request-reasoning-replay.js';
 
-export interface MessagesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; accountAcquireTimeoutMs?: number; logger?: Logger; reasoningReplayStore?: ReasoningReplayStore; }
+export interface MessagesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; accountAcquireTimeoutMs?: number; sseKeepaliveIntervalMs?: number; logger?: Logger; reasoningReplayStore?: ReasoningReplayStore; }
 
 export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
   const app = new Hono();
@@ -79,6 +79,7 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
           const stream = responseBody = readableStreamFromAsyncIterable(events, {
             signal: c.req.raw.signal,
             gracefulAbort: true,
+            sseKeepaliveIntervalMs: deps.sseKeepaliveIntervalMs,
             onCancel: () => events.cancel(),
           });
           const response = new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' } });

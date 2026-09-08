@@ -17,7 +17,7 @@ import type { AdminOperationalState } from '../services/admin-operational-state.
 import { getAccessLogRequestId, getAccessLogTerminal, setAccessLogMetadata } from '../middleware/access-log.js';
 import { acquireRequestAccount, checkSessionAccountAvailability } from './account-acquisition.js';
 
-export interface OpenAiResponsesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; responsesStore?: ResponsesStore; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; accountAcquireTimeoutMs?: number; logger?: Logger; }
+export interface OpenAiResponsesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; responsesStore?: ResponsesStore; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; accountAcquireTimeoutMs?: number; sseKeepaliveIntervalMs?: number; logger?: Logger; }
 
 export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono {
   const app = new Hono();
@@ -88,6 +88,7 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
           const stream = responseBody = readableStreamFromAsyncIterable(events, {
             signal: c.req.raw.signal,
             gracefulAbort: true,
+            sseKeepaliveIntervalMs: deps.sseKeepaliveIntervalMs,
             onCancel: () => events.cancel(),
           });
           const response = new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' } });

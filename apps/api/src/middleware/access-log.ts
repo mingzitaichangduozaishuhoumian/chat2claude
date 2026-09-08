@@ -32,6 +32,7 @@ export function accessLog(logger: Logger, format: AccessLogFormat = 'text'): Mid
     let terminalEmitted = false;
     let terminal: Record<string, unknown> | undefined;
     const emit = (entry: HttpAccessLog) => {
+      if (format === 'text' && isReadOnlyAdminPoll(entry) && (entry.phase === 'request_started' || entry.status < 400)) return;
       // Legacy injected structured loggers cannot render arrow phases. Preserve their
       // terminal-only stream contract while the application logger emits both arrows.
       if (!logger.access && entry.phase === 'request_started') return;
@@ -113,4 +114,5 @@ export function normalizeAccessPath(pathname: string): string {
 }
 export function summarizeQuery(searchParams: URLSearchParams): Record<string, true> { const summary: Record<string, true> = {}; for (const name of searchParams.keys()) summary[PUBLIC_QUERY_PARAMETERS.has(name) ? name : 'other'] = true; return summary; }
 function safeModelId(model: string): string { return MODEL_ID_PATTERN.test(model) ? model : INVALID_MODEL_ID; }
+function isReadOnlyAdminPoll(entry: Pick<HttpAccessLog, 'method' | 'path'>): boolean { return (entry.method === 'GET' || entry.method === 'HEAD') && entry.path.startsWith('/admin/api/'); }
 function peerIp(c: Context): string { const incoming = (c.env as { incoming?: { socket?: { remoteAddress?: unknown } } } | undefined)?.incoming; const address = incoming?.socket?.remoteAddress; return typeof address === 'string' && isIP(address) ? address : 'unknown'; }

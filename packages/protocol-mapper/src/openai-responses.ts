@@ -169,8 +169,6 @@ function invalidNativeOutput(): ChatGptBackendError {
   return new ChatGptBackendError('Invalid Responses backend output.', 'invalid_response', { status: 502 });
 }
 
-/** Buffer until the successful terminal and iterator disposal. No tentative tool
- * events can escape before the authoritative reasoning/tool ordering is known. */
 export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiResponsesRequest, events: AsyncIterable<ChatGptStreamEvent>, options: OpenAiResponsesStreamOptions = {}): AsyncIterable<string> {
   const id = createResponsesId();
   const createdAt = currentUnixSeconds();
@@ -182,34 +180,16 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
   let bytes = 256; // Fixed counters/array state, independent of discarded envelopes.
   let lastTextCodeUnit = 0;
   const toolCalls: NonNullable<ChatGptCompletionResponse['toolCalls']> = [];
-  for await (const event of events) {
-    if (terminal) throw invalidNativeOutput();
-    if (event.type === 'text_delta') {
-      bytes += Buffer.byteLength(event.text, 'utf8');
-      // A surrogate pair can straddle chunks: two isolated replacements cost six
-      // UTF-8 bytes, whereas the concatenated code point costs four.
-      const first = event.text.charCodeAt(0);
-      if (lastTextCodeUnit >= 0xd800 && lastTextCodeUnit <= 0xdbff && first >= 0xdc00 && first <= 0xdfff) bytes -= 2;
-      if (event.text.length) lastTextCodeUnit = event.text.charCodeAt(event.text.length - 1);
-      text += event.text;
-    } else if (event.type === 'tool_call') {
-      bytes += Buffer.byteLength(JSON.stringify(event.toolCall), 'utf8') + 1;
-      toolCalls.push(event.toolCall);
-    } else if (event.type === 'done') {
-      bytes += Buffer.byteLength(JSON.stringify(event), 'utf8');
-      terminal = event;
-    }
-    if (bytes > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
-  }
-  if (!terminal) throw invalidNativeOutput();
-  options.signal?.throwIfAborted();
-  const completion: ChatGptCompletionResponse = { text, toolCalls, ...terminal, finishReason: terminal.finishReason ?? 'stop' };
-  const response = { ...mapChatGptResponseToOpenAiResponses(request, completion), id, created_at: createdAt };
-  if (Buffer.byteLength(JSON.stringify(response), 'utf8') > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
-  for (const [output_index, item] of response.output.entries()) {
-    options.signal?.throwIfAborted();
+  const output: Array<Record<string, unknown>> = [];
+  let textOutput: Record<string, unknown> | undefined;
+  let textOpen = false;
+  let contentOpen = false;
+  const addedIndexes = new Set<number>();
+  const doneIndexes = new Set<number>();
+  const emitFinalItem = function* (item: Record<string, unknown>, output_index: number) {
     const initial: Record<string, unknown> = { ...item, status: 'in_progress', ...(item.type === 'function_call' ? { arguments: '' } : item.type === 'message' ? { content: [] } : {}) };
     delete initial.encrypted_content;
+    addedIndexes.add(output_index);
     yield emit('response.output_item.added', { output_index, item: initial });
     const fields = { item_id: item.id, output_index };
     if (item.type === 'function_call') {
@@ -224,8 +204,79 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
         yield emit('response.content_part.done', { ...fields, content_index, part });
       }
     }
+    doneIndexes.add(output_index);
     yield emit('response.output_item.done', { output_index, item });
+  };
+  const finalizeIncrementalText = function* (finalItem?: Record<string, unknown>) {
+    if (!textOutput || !textOpen) return;
+    const output_index = output.indexOf(textOutput);
+    const fields = { item_id: textOutput.id, output_index, content_index: 0 };
+    const part = { type: 'output_text', text, annotations: [] };
+    const completed = finalItem ?? { ...textOutput, content: [part], status: 'completed' };
+    if (contentOpen) {
+      yield emit('response.output_text.done', { ...fields, text });
+      yield emit('response.content_part.done', { ...fields, part });
+      contentOpen = false;
+    }
+    output[output_index] = completed;
+    doneIndexes.add(output_index);
+    yield emit('response.output_item.done', { output_index, item: completed });
+    textOpen = false;
+  };
+  for await (const event of events) {
+    if (terminal) throw invalidNativeOutput();
+    if (event.type === 'text_delta') {
+      bytes += Buffer.byteLength(event.text, 'utf8');
+      // A surrogate pair can straddle chunks: two isolated replacements cost six
+      // UTF-8 bytes, whereas the concatenated code point costs four.
+      const first = event.text.charCodeAt(0);
+      if (lastTextCodeUnit >= 0xd800 && lastTextCodeUnit <= 0xdbff && first >= 0xdc00 && first <= 0xdfff) bytes -= 2;
+      if (event.text.length) lastTextCodeUnit = event.text.charCodeAt(event.text.length - 1);
+      if (!textOutput) {
+        textOutput = { id: `msg_${createMessageId()}`, type: 'message', role: 'assistant', status: 'in_progress', content: [] };
+        output.push(textOutput);
+        addedIndexes.add(output.length - 1);
+        yield emit('response.output_item.added', { output_index: output.length - 1, item: textOutput });
+        yield emit('response.content_part.added', { item_id: textOutput.id, output_index: output.length - 1, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } });
+        textOpen = true;
+        contentOpen = true;
+      }
+      text += event.text;
+      yield emit('response.output_text.delta', { item_id: textOutput.id, output_index: output.indexOf(textOutput), content_index: 0, delta: event.text });
+    } else if (event.type === 'tool_call') {
+      const argumentsText = JSON.stringify(event.toolCall.input ?? {});
+      bytes += Buffer.byteLength(argumentsText, 'utf8') + Buffer.byteLength(event.toolCall.name, 'utf8') + event.toolCall.id.length;
+      toolCalls.push(event.toolCall);
+    } else if (event.type === 'done') {
+      bytes += Buffer.byteLength(JSON.stringify(event), 'utf8');
+      terminal = event;
+    }
+    if (bytes > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
   }
+  if (!terminal) throw invalidNativeOutput();
+  options.signal?.throwIfAborted();
+  const completion: ChatGptCompletionResponse = { text, toolCalls, ...terminal, finishReason: terminal.finishReason ?? 'stop' };
+  const response = { ...mapChatGptResponseToOpenAiResponses(request, completion), id, created_at: createdAt };
+  const authoritative = [...response.output];
+  const consumed = new Set<number>();
+  const takeMessage = () => {
+    if (!textOutput) return undefined;
+    const index = authoritative.findIndex((item, i) => !consumed.has(i) && item.type === 'message' && messageText(item) === text);
+    if (index < 0) throw invalidNativeOutput();
+    consumed.add(index);
+    return { ...structuredClone(authoritative[index]), id: textOutput.id };
+  };
+  if (textOutput) yield* finalizeIncrementalText(takeMessage());
+  for (const [sourceIndex, item] of authoritative.entries()) {
+    if (consumed.has(sourceIndex)) continue;
+    const output_index = output.push(item) - 1;
+    yield* emitFinalItem(item, output_index);
+  }
+  if (!output.length) output.push({ id: `msg_${createMessageId()}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: '', annotations: [] }] });
+  response.output = output;
+  if (textOutput) response.output_text = text;
+  for (const index of addedIndexes) if (!doneIndexes.has(index)) throw invalidNativeOutput();
+  if (Buffer.byteLength(JSON.stringify(response), 'utf8') > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
   options.signal?.throwIfAborted();
   await options.onCompleted?.(response, completion);
   yield emit('response.completed', { response });
@@ -378,6 +429,10 @@ function stringifyUnknown(value: unknown): string {
   if (value === undefined || value === null) return '';
   if (typeof value === 'string') return value;
   try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+function messageText(item: Record<string, unknown>): string {
+  return Array.isArray(item.content) ? item.content.map((part) => isPlainObject(part) && typeof part.text === 'string' ? part.text : '').join('') : '';
 }
 
 function createMinimalResponse(id: string, createdAt: number, model: string, output: Array<Record<string, unknown>>, outputText: string, usage?: ChatGptUsage): OpenAiResponsesResponse {

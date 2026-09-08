@@ -71,6 +71,33 @@ describe('accessLog', () => {
     } finally { sink.mockRestore(); }
   });
 
+  it('suppresses successful read-only Admin polling only in concise text mode', async () => {
+    for (const format of ['text', 'detailed', 'json'] as const) {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const app = new Hono();
+      app.use('/admin/api/*', accessLog(createLogger(), format));
+      app.get('/admin/api/setup/status', c => c.json({ ok: true }));
+      app.on('HEAD', '/admin/api/setup/status', c => c.body(null, 204));
+      app.post('/admin/api/setup/status', c => c.json({ ok: true }));
+      app.get('/admin/api/auth/status', c => c.json({ error: 'safe' }, 503));
+      try {
+        await app.request('/admin/api/setup/status');
+        await app.request('/admin/api/setup/status', { method: 'HEAD' });
+        await app.request('/admin/api/setup/status', { method: 'POST' });
+        await app.request('/admin/api/auth/status');
+        if (format === 'text') {
+          expect(log).toHaveBeenCalledTimes(2); // POST start + success; GET/HEAD 2xx are suppressed.
+          expect(error).toHaveBeenCalledTimes(1); // Admin error preserved.
+          expect(String(error.mock.calls[0][0])).toContain('--> 503 |');
+        } else {
+          expect(log.mock.calls.length + warn.mock.calls.length + error.mock.calls.length).toBeGreaterThanOrEqual(7);
+        }
+      } finally { log.mockRestore(); warn.mockRestore(); error.mockRestore(); }
+    }
+  });
+
   it('records response-ready metadata without leaking request secrets or body content', async () => {
     const entries: HttpAccessLog[] = [];
     const app = new Hono();

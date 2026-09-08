@@ -35,7 +35,7 @@ const created = frame({ type: 'response.created', response: { id: 'resp_1', stat
 const completed = frame({ type: 'response.completed', response: { status: 'completed', output: [] } });
 const encode = (text: string) => new TextEncoder().encode(text);
 const logger = () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), access: vi.fn() });
-function fixture(createRoute: typeof createMessagesRoute | typeof createOpenAiChatRoute | typeof createOpenAiResponsesRoute, backend: ChatGptBackendClient) {
+function fixture(createRoute: typeof createMessagesRoute | typeof createOpenAiChatRoute | typeof createOpenAiResponsesRoute, backend: ChatGptBackendClient, extra: Partial<Parameters<typeof createMessagesRoute>[0] & Parameters<typeof createOpenAiChatRoute>[0] & Parameters<typeof createOpenAiResponsesRoute>[0]> = {}) {
   const pool = new AccountPool();
   pool.add({ id: 'session', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'CANARY' } });
   const modelRegistry = new ModelRegistry({ discoveredModels: [{ id: 'model' }] });
@@ -45,7 +45,7 @@ function fixture(createRoute: typeof createMessagesRoute | typeof createOpenAiCh
   const log = logger();
   const app = new Hono();
   app.use('*', accessLog(log));
-  app.route('/', createRoute({ backend, accountPool: pool, modelRegistry, requestLog: new RequestLog(), operationalState: state, logger: log, backendProvider: 'session' }));
+  app.route('/', createRoute({ backend, accountPool: pool, modelRegistry, requestLog: new RequestLog(), operationalState: state, logger: log, backendProvider: 'session', ...extra }));
   return { app, pool, state, log, release: vi.spyOn(pool, 'release') };
 }
 function post(app: Hono, path: string, body: unknown, signal?: AbortSignal) {
@@ -67,7 +67,104 @@ function assertTerminal(f: ReturnType<typeof fixture>, outcome: string, status: 
   else if (entries[1].status !== 200) expect(entries[1]).toMatchObject({ status, outcome });
   expect(JSON.stringify(f.log.access.mock.calls)).not.toContain('CANARY');
 }
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+it('real node /v1/messages delivers content_block_delta before terminal through route wrappers', async () => {
+  await assertRealNodeIncrementalDelivery(createMessagesRoute, '/v1/messages', { model: 'sonnet', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }], stream: true }, 'content_block_delta', 'message_stop');
+});
+
+it('real node /v1/chat/completions delivers delta before delayed terminal through route wrappers', async () => {
+  await assertRealNodeIncrementalDelivery(createOpenAiChatRoute, '/v1/chat/completions', { model: 'sonnet', messages: [{ role: 'user', content: 'hi' }], stream: true }, '"content":"incremental-token"', '"finish_reason":"stop"');
+});
+
+it('real node /v1/responses delivers output_text delta before delayed terminal through route wrappers', async () => {
+  await assertRealNodeIncrementalDelivery(createOpenAiResponsesRoute, '/v1/responses', { model: 'sonnet', input: 'hi', stream: true }, 'response.output_text.delta', 'response.completed');
+});
+
+it('real node /v1/responses reconciles mixed authoritative output after incremental text', async () => {
+  const output = [
+    { type: 'message', id: 'msg_authoritative_route', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'incremental-token', annotations: [] }] },
+    { type: 'reasoning', id: 'rs_authoritative_route', summary: [], encrypted_content: 'CANARY' },
+    { type: 'function_call', id: 'fc_authoritative_route', call_id: 'call_authoritative_route', name: 'lookup_route', arguments: '{"ok":true}' },
+  ];
+  const backend = { stream: async function* () {
+    yield { type: 'upstream_ready' };
+    await new Promise(resolve => setTimeout(resolve, 20));
+    yield { type: 'text_delta', text: 'incremental-token' };
+    yield { type: 'tool_call', toolCall: { id: 'call_authoritative_route', name: 'lookup_route', input: { ok: true } } };
+    await new Promise(resolve => setTimeout(resolve, 60));
+    yield { type: 'done', finishReason: 'tool_calls', outputItems: output, replayItems: output.slice(1) };
+  } } as unknown as ChatGptBackendClient;
+  const f = fixture(createOpenAiResponsesRoute, backend);
+  const server = serve({ fetch: f.app.fetch, hostname: '127.0.0.1', port: 0 });
+  await new Promise<void>(r => server.listening ? r() : server.once('listening', r));
+  const chunks: Array<{ text: string; at: number }> = [];
+  const started = Date.now();
+  const client = httpRequest({ hostname: '127.0.0.1', port: (server.address() as { port: number }).port, path: '/v1/responses', method: 'POST', headers: { 'content-type': 'application/json' } });
+  const finished = new Promise<string>((resolve, reject) => {
+    client.on('response', response => { let text = ''; response.on('data', c => { const chunk = String(c); text += chunk; chunks.push({ text: chunk, at: Date.now() - started }); }); response.on('end', () => resolve(text)); response.on('error', reject); });
+    client.on('error', reject);
+  });
+  client.end(JSON.stringify({ model: 'sonnet', input: 'hi', stream: true }));
+  try {
+    const text = await finished;
+    const events = text.split('\n\n').filter((x) => x.startsWith('event:')).map((x) => JSON.parse(x.split('\ndata: ')[1]));
+    const completed = events.find((x) => x.type === 'response.completed');
+    const added = events.filter((x) => x.type === 'response.output_item.added');
+    const done = events.filter((x) => x.type === 'response.output_item.done');
+    expect(completed.response.output.map((item: { type: string }) => item.type)).toEqual(['message', 'reasoning', 'function_call']);
+    expect(done).toHaveLength(added.length);
+    for (const itemAdded of added) {
+      const itemDone = done.find((x) => x.output_index === itemAdded.output_index);
+      expect(itemDone).toBeTruthy();
+      expect(itemDone!.item.id).toBe(itemAdded.item.id);
+      expect(completed.response.output[itemDone!.output_index]).toMatchObject({ id: itemDone!.item.id, type: itemDone!.item.type });
+    }
+    expect(added.filter((x) => x.item.type === 'message')).toHaveLength(1);
+    expect(completed.response.output.filter((item: { type: string }) => item.type === 'message')).toHaveLength(1);
+    const deltaAt = chunks.find(chunk => chunk.text.includes('response.output_text.delta'))?.at;
+    const terminalAt = chunks.find(chunk => chunk.text.includes('response.completed'))?.at;
+    expect(deltaAt).toEqual(expect.any(Number));
+    expect(terminalAt).toEqual(expect.any(Number));
+    expect(deltaAt!).toBeLessThan(terminalAt!);
+    expect(terminalAt! - deltaAt!).toBeGreaterThanOrEqual(40);
+    expect(text).not.toContain('CANARY');
+    assertTerminal(f, 'success', 200);
+  } finally { client.destroy(); (server as import('node:http').Server).closeAllConnections(); await new Promise<void>(r => server.close(() => r())); }
+});
+
+async function assertRealNodeIncrementalDelivery(createRoute: typeof createMessagesRoute | typeof createOpenAiChatRoute | typeof createOpenAiResponsesRoute, path: string, body: unknown, deltaMarker: string, terminalMarker: string) {
+  const backend = { stream: async function* () {
+    yield { type: 'upstream_ready' };
+    await new Promise(resolve => setTimeout(resolve, 20));
+    yield { type: 'text_delta', text: 'incremental-token' };
+    await new Promise(resolve => setTimeout(resolve, 60));
+    yield { type: 'done', finishReason: 'stop' };
+  } } as unknown as ChatGptBackendClient;
+  const f = fixture(createRoute, backend);
+  const server = serve({ fetch: f.app.fetch, hostname: '127.0.0.1', port: 0 });
+  await new Promise<void>(r => server.listening ? r() : server.once('listening', r));
+  const chunks: Array<{ text: string; at: number }> = [];
+  const started = Date.now();
+  const client = httpRequest({ hostname: '127.0.0.1', port: (server.address() as { port: number }).port, path, method: 'POST', headers: { 'content-type': 'application/json' } });
+  const finished = new Promise<string>((resolve, reject) => {
+    client.on('response', response => { let text = ''; response.on('data', c => { const chunk = String(c); text += chunk; chunks.push({ text: chunk, at: Date.now() - started }); }); response.on('end', () => resolve(text)); response.on('error', reject); });
+    client.on('error', reject);
+  });
+  client.end(JSON.stringify(body));
+  try {
+    const text = await finished;
+    const deltaAt = chunks.find(chunk => chunk.text.includes(deltaMarker))?.at;
+    const terminalAt = chunks.find(chunk => chunk.text.includes(terminalMarker))?.at;
+    expect(text).toContain('incremental-token');
+    expect(deltaAt).toEqual(expect.any(Number));
+    expect(terminalAt).toEqual(expect.any(Number));
+    expect(deltaAt!).toBeLessThan(terminalAt!);
+    expect(terminalAt! - deltaAt!).toBeGreaterThanOrEqual(40);
+    assertTerminal(f, 'success', 200);
+  } finally { client.destroy(); (server as import('node:http').Server).closeAllConnections(); await new Promise<void>(r => server.close(() => r())); }
+}
+
 for (const [createRoute, path, body] of routes) {
   it.each([false, true])(`${path}: upstream AbortError remains failure before/after readiness (%s)`, async ready => {
     const caller = new AbortController();
@@ -118,7 +215,26 @@ for (const [createRoute, path, body] of routes) {
     assertTerminal(f, 'success', 200);
   });
 
-  it(`${path}: real node client disconnect is graceful without AbortError stderr`, async () => {
+  it(`${path}: configured keepalive comments flow during silence and stop at terminal`, async () => {
+    const backend = { stream: async function* () {
+      yield { type: 'upstream_ready' };
+      await new Promise(resolve => setTimeout(resolve, 35));
+      yield { type: 'text_delta', text: 'after-silence' };
+      await new Promise(resolve => setTimeout(resolve, 35));
+      yield { type: 'done', finishReason: 'stop' };
+    } } as unknown as ChatGptBackendClient;
+    const f = fixture(createRoute, backend, { sseKeepaliveIntervalMs: 10 });
+    const response = await post(f.app, path, body);
+    const text = await response.text();
+    expect(text).toContain(': keepalive\n\n');
+    expect(text).toContain('after-silence');
+    const terminalIndex = Math.max(text.lastIndexOf('message_stop'), text.lastIndexOf('[DONE]'), text.lastIndexOf('response.completed'));
+    expect(terminalIndex).toBeGreaterThan(-1);
+    expect(text.slice(terminalIndex)).not.toContain(': keepalive');
+    assertTerminal(f, 'success', 200);
+  });
+
+  it(`${path}: real silent-stream client disconnect is graceful without AbortError stderr`, async () => {
     const cancel = vi.fn();
     const stderr: string[] = [];
     // Vitest virtualizes console; capture that path as well as actual process stderr.

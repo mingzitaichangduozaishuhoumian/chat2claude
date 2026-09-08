@@ -25,10 +25,16 @@ describe('loadEnv', () => {
     expect(loadEnv({ ACCESS_LOG_FORMAT: 'detailed' }).accessLogFormat).toBe('detailed');
     expect(loadEnv({ ACCESS_LOG_FORMAT: 'simple' }).accessLogFormat).toBe('text');
     expect(loadEnv({ ACCOUNT_ACQUIRE_TIMEOUT_MS: '1200' }).accountAcquireTimeoutMs).toBe(1200);
+    expect(loadEnv({ SSE_KEEPALIVE_INTERVAL_MS: '1500' }).sseKeepaliveIntervalMs).toBe(1500);
+    expect(loadEnv({ SSE_KEEPALIVE_INTERVAL_MS: '0' }).sseKeepaliveIntervalMs).toBe(0);
   });
 
   it.each(['-1', '1.5', 'NaN', 'Infinity', '2147483648', 'secret-value'])('rejects invalid acquisition timeout safely (%s)', (value) => {
     expect(() => loadEnv({ ACCOUNT_ACQUIRE_TIMEOUT_MS: value })).toThrow('ACCOUNT_ACQUIRE_TIMEOUT_MS must be an integer between 0 and 2147483647 ms.');
+  });
+
+  it.each(['-1', '1.5', 'NaN', 'Infinity', '2147483648', 'secret-value'])('rejects invalid SSE keepalive safely (%s)', (value) => {
+    expect(() => loadEnv({ SSE_KEEPALIVE_INTERVAL_MS: value })).toThrow('SSE_KEEPALIVE_INTERVAL_MS must be an integer between 0 and 2147483647 ms.');
   });
 
   it('rejects unsupported access log formats without echoing them', () => {

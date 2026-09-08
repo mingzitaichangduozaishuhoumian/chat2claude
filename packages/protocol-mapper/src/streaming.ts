@@ -52,6 +52,8 @@ export interface AsyncIterableStreamOptions {
   signal?: AbortSignal;
   /** HTTP-only: close delivery on downstream abort instead of erroring the response writer. */
   gracefulAbort?: boolean;
+  /** Emit SSE comment frames while a pending next() is silent; 0 disables. */
+  sseKeepaliveIntervalMs?: number;
   /** Interrupt active I/O before waiting for a pending iterator.next() to settle. */
   onCancel?: (reason: unknown) => void | Promise<void>;
 }
@@ -63,7 +65,14 @@ export function readableStreamFromAsyncIterable(iterable: AsyncIterable<string>,
   let started = false;
   let closing: Promise<void> | undefined;
   let controller: ReadableStreamDefaultController<Uint8Array>;
-  const cleanup = () => options.signal?.removeEventListener('abort', abort);
+  let pendingNext: Promise<IteratorResult<string>> | undefined;
+  let keepaliveTimer: ReturnType<typeof setTimeout> | undefined;
+  const keepaliveIntervalMs = options.sseKeepaliveIntervalMs && options.sseKeepaliveIntervalMs > 0 ? options.sseKeepaliveIntervalMs : 0;
+  const clearKeepaliveTimer = () => {
+    clearTimeout(keepaliveTimer);
+    keepaliveTimer = undefined;
+  };
+  const cleanup = () => { clearKeepaliveTimer(); options.signal?.removeEventListener('abort', abort); };
   const cancel = (reason: unknown): Promise<void> => {
     if (closing) return closing;
     stopped = true;
@@ -75,10 +84,15 @@ export function readableStreamFromAsyncIterable(iterable: AsyncIterable<string>,
       void iterator.next().catch(() => {});
     }
     closing = (async () => {
+      const iteratorReturn = iterator.return;
+      if (!iteratorReturn) {
+        await upstreamCleanup.catch(() => {});
+        return;
+      }
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
-          Promise.all([upstreamCleanup, Promise.resolve().then(() => iterator.return?.())]).catch(() => {}),
+          Promise.all([upstreamCleanup, Promise.resolve().then(() => iteratorReturn.call(iterator))]).catch(() => {}),
           new Promise<void>(resolve => { timer = setTimeout(resolve, 250); }),
         ]);
       } finally { clearTimeout(timer); }
@@ -101,7 +115,14 @@ export function readableStreamFromAsyncIterable(iterable: AsyncIterable<string>,
       if (stopped) return;
       started = true;
       try {
-        const next = await iterator.next();
+        pendingNext ??= Promise.resolve().then(() => iterator.next());
+        clearKeepaliveTimer();
+        const keepalive = keepaliveIntervalMs > 0
+          ? new Promise<IteratorResult<string>>(resolve => { keepaliveTimer = setTimeout(() => resolve({ done: false, value: ': keepalive\n\n' }), keepaliveIntervalMs); })
+          : undefined;
+        const next = keepalive ? await Promise.race([pendingNext, keepalive]) : await pendingNext;
+        clearKeepaliveTimer();
+        if (next.value !== ': keepalive\n\n') pendingNext = undefined;
         if (stopped) return;
         if (next.done) {
           stopped = true;
@@ -109,6 +130,7 @@ export function readableStreamFromAsyncIterable(iterable: AsyncIterable<string>,
           controller.close();
         } else controller.enqueue(encoder.encode(next.value));
       } catch (error) {
+        pendingNext = undefined;
         if (!stopped) {
           stopped = true;
           cleanup();

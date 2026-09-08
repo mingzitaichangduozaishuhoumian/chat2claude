@@ -27,6 +27,8 @@ it('aligns text columns, outgoing query, and failure-only terminal', () => {
     expect(warn).not.toHaveBeenCalled();
     expect(error).toHaveBeenCalledTimes(1);
     expect(error).toHaveBeenCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [ERROR] [opus   ] --> STREAM FAILED | 17.598s | invalid_response');
+    logger.access!({ ...entry, durationKind: 'stream_terminal', phase: 'stream_terminal', outcome: 'failure', durationMs: 120000, code: 'invalid_response', protocolReason: 'missing_terminal', timeoutKind: 'stream_total', incompleteReason: 'max_output_tokens' });
+    expect(error).toHaveBeenLastCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [ERROR] [opus   ] --> STREAM FAILED | 120.000s | invalid_response protocolReason=missing_terminal timeoutKind=stream_total incompleteReason=max_output_tokens');
     logger.access!({ ...entry, model: 'long-model\n\x1b[31m', requestId: '1234567\nINJECT' });
     expect(log.mock.calls[2][0]).toContain('[1234567?] [INFO ] [long-mo]');
     expect(log.mock.calls[2][0]).not.toMatch(/[\r\n\x1b]/);

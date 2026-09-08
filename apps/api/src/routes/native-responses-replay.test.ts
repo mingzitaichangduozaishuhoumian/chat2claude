@@ -48,7 +48,17 @@ async function responseBody(response: Response, stream: boolean) {
   const text = await response.text();
   const events = text.split('\n\n').filter((x) => x.startsWith('event:')).map((x) => JSON.parse(x.split('\ndata: ')[1]));
   const completed = events.find((x) => x.type === 'response.completed');
-  expect(completed.response.output).toEqual(events.filter((x) => x.type === 'response.output_item.done').map((x) => x.item));
+  expect(completed).toBeTruthy();
+  expect(Array.isArray(completed.response.output)).toBe(true);
+  const added = events.filter((x) => x.type === 'response.output_item.added');
+  const done = events.filter((x) => x.type === 'response.output_item.done');
+  expect(done).toHaveLength(added.length);
+  for (const itemAdded of added) {
+    const itemDone = done.find((x) => x.output_index === itemAdded.output_index);
+    expect(itemDone).toBeTruthy();
+    expect(itemDone!.item.id).toBe(itemAdded.item.id);
+    expect(completed.response.output[itemDone!.output_index]).toMatchObject({ id: itemDone!.item.id, type: itemDone!.item.type });
+  }
   return completed.response;
 }
 

@@ -16,6 +16,7 @@ export interface AppEnv {
   /** Omitted programmatic configs use text and 30 seconds respectively. */
   accessLogFormat?: 'text' | 'detailed' | 'json';
   accountAcquireTimeoutMs?: number;
+  sseKeepaliveIntervalMs?: number;
   mockResponsePrefix: string;
   mockBackendModelsJson?: string;
   chatGptBackend: ChatGptBackendProvider;
@@ -55,6 +56,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     logLevel: parseLogLevel(source.LOG_LEVEL),
     accessLogFormat: parseAccessLogFormat(source.ACCESS_LOG_FORMAT),
     accountAcquireTimeoutMs: parseAccountAcquireTimeout(source.ACCOUNT_ACQUIRE_TIMEOUT_MS),
+    sseKeepaliveIntervalMs: parseSseKeepaliveInterval(source.SSE_KEEPALIVE_INTERVAL_MS),
     mockResponsePrefix: source.MOCK_RESPONSE_PREFIX ?? 'Echo:',
     mockBackendModelsJson: source.MOCK_BACKEND_MODELS_JSON,
     chatGptBackend: parseBackendProvider(source.CHATGPT_BACKEND),
@@ -110,6 +112,15 @@ function parseAccountAcquireTimeout(value: string | undefined): number {
     throw new Error('ACCOUNT_ACQUIRE_TIMEOUT_MS must be an integer between 0 and 2147483647 ms.');
   }
   return timeout;
+}
+
+function parseSseKeepaliveInterval(value: string | undefined): number {
+  if (value === undefined || value.trim() === '') return 15_000;
+  const interval = Number(value);
+  if (!/^\d+$/.test(value.trim()) || !Number.isInteger(interval) || interval < 0 || interval > 2_147_483_647) {
+    throw new Error('SSE_KEEPALIVE_INTERVAL_MS must be an integer between 0 and 2147483647 ms.');
+  }
+  return interval;
 }
 
 function parseStreamTimeout(source: NodeJS.ProcessEnv, name: string, fallback: number): number {

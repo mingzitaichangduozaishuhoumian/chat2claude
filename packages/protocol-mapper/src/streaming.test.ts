@@ -125,6 +125,64 @@ describe('mapChatGptStreamToClaudeSse', () => {
 });
 
 describe('readableStreamFromAsyncIterable lifecycle', () => {
+  it('emits configured SSE keepalives only while upstream is silent', async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const upstream = new Promise<IteratorResult<string>>(resolve => { release = () => resolve({ done: false, value: 'data: real\n\n' }); });
+    let nextCalls = 0;
+    const stream = readableStreamFromAsyncIterable({ [Symbol.asyncIterator]: () => ({ next: () => ++nextCalls === 1 ? upstream : Promise.resolve({ done: true as const, value: undefined }) }) }, { sseKeepaliveIntervalMs: 25 });
+    const reader = stream.getReader();
+    const first = reader.read();
+    await vi.advanceTimersByTimeAsync(24);
+    await expect(Promise.race([first.then(() => 'settled'), Promise.resolve('pending')])).resolves.toBe('pending');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(new TextDecoder().decode((await first).value)).toBe(': keepalive\n\n');
+    const second = reader.read();
+    release();
+    expect(new TextDecoder().decode((await second).value)).toBe('data: real\n\n');
+    expect(await reader.read()).toEqual({ done: true, value: undefined });
+  });
+
+  it.each(['upstream-win', 'completion', 'cancel', 'upstream-rejection', 'signal-abort'] as const)('clears keepalive timers after %s', async outcome => {
+    vi.useFakeTimers();
+    let release!: (value: IteratorResult<string>) => void;
+    let reject!: (reason?: unknown) => void;
+    const pending = new Promise<IteratorResult<string>>((resolve, fail) => { release = resolve; reject = fail; });
+    let nextCalls = 0;
+    const controller = new AbortController();
+    const stream = readableStreamFromAsyncIterable({ [Symbol.asyncIterator]: () => ({
+      next: () => {
+        nextCalls += 1;
+        if (outcome === 'completion') return Promise.resolve({ done: true as const, value: undefined });
+        if (outcome === 'upstream-rejection') return Promise.reject(new Error('upstream failed'));
+        return nextCalls === 1 ? pending : Promise.resolve({ done: true as const, value: undefined });
+      },
+    }) }, { signal: controller.signal, sseKeepaliveIntervalMs: 100 });
+    const reader = stream.getReader();
+    const first = reader.read();
+    if (outcome === 'upstream-win') {
+      release({ done: false, value: 'data: real\n\n' });
+      expect(new TextDecoder().decode((await first).value)).toBe('data: real\n\n');
+      expect(vi.getTimerCount()).toBe(0);
+      expect(await reader.read()).toEqual({ done: true, value: undefined });
+    } else if (outcome === 'completion') {
+      expect(await first).toEqual({ done: true, value: undefined });
+    } else if (outcome === 'upstream-rejection') {
+      await expect(first).rejects.toThrow('upstream failed');
+    } else if (outcome === 'signal-abort') {
+      controller.abort('client gone');
+      reject(new Error('late upstream failure'));
+      await first.catch(() => undefined);
+    } else {
+      const cancelled = reader.cancel('client gone');
+      release({ done: false, value: 'data: late\n\n' });
+      await cancelled;
+      await first.catch(() => undefined);
+    }
+    await Promise.resolve();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each([false, true])('gracefulAbort=%s changes only downstream abort delivery', async gracefulAbort => {
     const caller = new AbortController();
     const onCancel = vi.fn();
