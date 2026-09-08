@@ -125,6 +125,17 @@ describe('mapChatGptStreamToClaudeSse', () => {
 });
 
 describe('readableStreamFromAsyncIterable lifecycle', () => {
+  it.each([false, true])('gracefulAbort=%s changes only downstream abort delivery', async gracefulAbort => {
+    const caller = new AbortController();
+    const onCancel = vi.fn();
+    const stream = readableStreamFromAsyncIterable((async function* () { yield 'hello'; })(), { signal: caller.signal, gracefulAbort, onCancel });
+    caller.abort();
+    if (gracefulAbort) await expect(new Response(stream).text()).resolves.toBe('');
+    else await expect(new Response(stream).text()).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
+    const failed = readableStreamFromAsyncIterable((async function* () { throw new DOMException('upstream failed', 'AbortError'); })(), { signal: new AbortController().signal, gracefulAbort });
+    await expect(new Response(failed).text()).rejects.toMatchObject({ name: 'AbortError', message: 'upstream failed' });
+  });
   it.each(['cancel', 'abort'] as const)('interrupts pending next before awaiting return on %s', async (outcome) => {
     let entered!: () => void;
     const reading = new Promise<void>((resolve) => { entered = resolve; });

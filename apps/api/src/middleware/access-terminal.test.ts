@@ -38,7 +38,7 @@ it('keeps text success and cancellation terminal-silent but reports a safe failu
   expect(logger.error).toHaveBeenCalledTimes(0); // terminal ownership is idempotent
   const direct = (await import('@chatgpt-to-claude/shared')).createLogger();
   direct.access!({ requestId: '12345678', method: 'POST', path: '/v1/messages', query: {}, status: 200, durationMs: 32, durationKind: 'stream_terminal', phase: 'stream_terminal', peerIp: 'unknown', outcome: 'failure', code: 'timeout' });
-  expect(sink).toHaveBeenCalledWith(expect.stringContaining('--> STREAM failure 32ms code=timeout'));
+  expect(sink).toHaveBeenCalledWith(expect.stringContaining('--> STREAM FAILED | 0.032s | timeout'));
 });
 
 it.each([
@@ -116,12 +116,32 @@ it.each([
       expect(warn.mock.calls.length + error.mock.calls.length).toBe(1);
       const line = (status >= 500 ? error : warn).mock.calls[0][0];
       if (mode === 'json') expect(JSON.parse(line)).toMatchObject({ level: expectedLevel, message: 'HTTP access', meta: { phase: 'response_ready', status, outcome: 'failure' } });
-      else expect(line).toContain(`--> GET ${path} ${status}`);
+      else expect(line).toContain(`--> ${status} |`);
       expect(line).not.toContain('STREAM');
     }
     warn.mockRestore();
     error.mockRestore();
   }
+});
+
+it.each(['detailed', 'json'] as const)('allowlists protocol diagnostics at the access boundary in %s', async format => {
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const app = new Hono();
+  app.use('*', accessLog(createLogger(), format));
+  let terminal!: ReturnType<typeof getAccessLogTerminal>;
+  app.get('/v1/messages', c => {
+    terminal = getAccessLogTerminal(c);
+    return new Response(new ReadableStream(), { headers: { 'content-type': 'text/event-stream' } });
+  });
+  await app.request('/v1/messages?beta=CANARY&token=CANARY');
+  terminal!({ outcome: 'failure', code: 'invalid_response', protocolStage: 'sse_decode', protocolReason: 'malformed_sse_json', message: 'CANARY', detail: 'CANARY', param: 'CANARY', raw: 'CANARY', args: 'CANARY' });
+  terminal!({ outcome: 'failure', protocolReason: 'CANARY' });
+  expect(error).toHaveBeenCalledTimes(1);
+  const line = String(error.mock.calls[0][0]);
+  if (format === 'json') expect(JSON.parse(line).meta).toMatchObject({ protocolStage: 'sse_decode', protocolReason: 'malformed_sse_json' });
+  else expect(line).toContain('protocolStage=sse_decode protocolReason=malformed_sse_json');
+  expect(JSON.stringify([...log.mock.calls, ...error.mock.calls])).not.toContain('CANARY');
 });
 
 it('swallows an access sink failure without changing the response', async () => {

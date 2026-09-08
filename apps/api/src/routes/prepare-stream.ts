@@ -74,6 +74,11 @@ export async function prepareStream(source: AsyncIterable<ChatGptStreamEvent>, o
                 const result = await next();
                 if (result.done) { exhausted = true; return; }
                 if (result.value.type === 'upstream_ready') continue;
+                if (result.value.type === 'done' && result.value.terminalSuccessful === false) {
+                  throw new ChatGptBackendError('Upstream response did not complete successfully.', 'invalid_response', {
+                    status: 502, safeDiagnostic: { failurePhase: 'response_protocol', protocolStage: 'terminal', protocolReason: 'missing_terminal' },
+                  });
+                }
                 yield result.value;
               }
             } finally {

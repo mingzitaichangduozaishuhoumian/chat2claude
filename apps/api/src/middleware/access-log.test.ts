@@ -34,7 +34,7 @@ describe('accessLog', () => {
       const line = String(sink.mock.calls[0][0]);
       expect(line).not.toMatch(/canary-secret|private|[\r\n]/);
       if (format === 'text') {
-        expect(line).toMatch(/^\[<invalid-model-id>\] \d{2}:\d{2}:\d{2}\.\d{3} --> POST \/admin\/api\/accounts\/:accountId 503 \d+ms$/);
+        expect(line).toMatch(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[[a-f0-9]{8}\] \[ERROR\] \[<invali\] --> 503 \| \d+\.\d{3}s \| POST \/admin\/api\/accounts\/:accountId\?beta&other$/);
       } else {
         expect(JSON.parse(line)).toMatchObject({ level: 'error', message: 'HTTP access', meta: { path: '/admin/api/accounts/:accountId', query: { beta: true, other: true }, reason: 'account_busy_timeout', model: '<invalid-model-id>', durationKind: 'response_ready' } });
         expect(JSON.parse(line).meta.requestId).toHaveLength(36);

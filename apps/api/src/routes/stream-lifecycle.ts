@@ -54,15 +54,15 @@ export function logHttpRequestFailure(error: unknown, context: StreamLogContext,
   const logger = context.logger ?? createLogger();
   const metadata = { route: context.route, ...(context.requestId ? { requestId: context.requestId } : {}) };
   const outcome = requestErrorOutcome(error, signal);
-  if (context.terminal) {
-    context.terminal({ ...sanitizeRequestMetrics(context.metrics), outcome, ...(outcome === 'failure' ? safeErrorFields(error) : {}) });
-    return;
-  }
-  if (outcome === 'cancelled') {
-    logger.info('HTTP request terminated', { ...metadata, ...sanitizeRequestMetrics(context.metrics), outcome });
-  } else {
-    logger.error('HTTP request terminated', { ...metadata, ...sanitizeRequestMetrics(context.metrics), outcome, ...safeErrorFields(error) });
-  }
+  try {
+    if (context.terminal) {
+      context.terminal({ ...sanitizeRequestMetrics(context.metrics), outcome, ...(outcome === 'failure' ? safeErrorFields(error) : {}) });
+    } else if (outcome === 'cancelled') {
+      logger.info('HTTP request terminated', { ...metadata, ...sanitizeRequestMetrics(context.metrics), outcome });
+    } else {
+      logger.error('HTTP request terminated', { ...metadata, ...sanitizeRequestMetrics(context.metrics), outcome, ...safeErrorFields(error) });
+    }
+  } catch { /* Logging must never replace the original HTTP failure. */ }
 }
 
 /** One eager owner also covers cancellation before the first body pull. */
@@ -78,13 +78,16 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
     downstreamBodyBytes += Buffer.byteLength(event, 'utf8');
   };
   let cancelling: Promise<void> | undefined;
+  // Body cancellation is distinct from prepared.close()'s internal I/O abort.
+  const bodyCancellation = new AbortController();
+  const callerSignal = AbortSignal.any([signal, bodyCancellation.signal]);
   const logger = context.logger ?? createLogger();
   const metadata = { route: context.route, ...(context.requestId ? { requestId: context.requestId } : {}) };
   const finish = () => {
     if (finished) return;
     finished = true;
-    tracker.finish(outcome);
-    accountPool.release(lease, accountReleaseError(releaseError));
+    try { tracker.finish(outcome); } catch { /* Statistics are observational too. */ }
+    finally { accountPool.release(lease, accountReleaseError(releaseError)); }
     const fields = { ...sanitizeRequestMetrics(context.metrics), downstreamEventCount, downstreamBodyBytes, outcome, ...failureFields };
     try {
       if (context.terminal) context.terminal(fields);
@@ -98,11 +101,11 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
         countDownstreamEvent(event);
         yield event;
       }
-      if (!finished) outcome = signal.aborted ? 'cancelled' : 'success';
+      if (!finished) outcome = callerSignal.aborted ? 'cancelled' : 'success';
     } catch (error) {
       if (!finished) {
         releaseError = error;
-        outcome = requestErrorOutcome(error, signal);
+        outcome = requestErrorOutcome(error, callerSignal);
         if (outcome === 'failure') failureFields = safeErrorFields(error);
       }
       await closeUpstream?.();
@@ -123,6 +126,7 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
     // Response assembly failed: the HTTP catch/finally retains terminal ownership.
     abandon() { finished = true; },
     cancel() {
+      bodyCancellation.abort();
       return cancelling ??= (async () => {
         // Abort active I/O before requesting return; neither custom next nor
         // return is trusted to settle. Both teardown paths share the finalizer.

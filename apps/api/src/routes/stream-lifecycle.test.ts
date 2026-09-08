@@ -46,6 +46,22 @@ for (const route of ['/v1/messages', '/v1/chat/completions', '/v1/responses'] as
   });
 }
 
+it('releases once and emits terminal even when tracker.finish throws', async () => {
+  const release = vi.fn();
+  const finish = vi.fn(() => { throw new Error('TRACKER_CANARY'); });
+  const terminal = vi.fn();
+  const owner = releaseAccountWhenDone({ release } as never, {} as never,
+    (async function* () { yield 'data: ok\n\n'; })(), async function* () {}, { finish },
+    new AbortController().signal, { route: '/v1/messages', terminal });
+  const consume = async () => { for await (const _ of owner) { /* drain */ } };
+  await expect(consume()).resolves.toBeUndefined();
+  await owner.cancel();
+  expect(finish).toHaveBeenCalledTimes(1);
+  expect(release).toHaveBeenCalledTimes(1);
+  expect(terminal).toHaveBeenCalledTimes(1);
+  expect(terminal).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'success' }));
+});
+
 describe('releaseAccountWhenDone downstream metrics', () => {
   it('counts yielded SSE events and UTF-8 bytes without inspecting content', async () => {
     const terminal = vi.fn();

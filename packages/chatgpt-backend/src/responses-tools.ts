@@ -109,7 +109,7 @@ export class ResponsesToolCalls {
 
   private invalid(): ChatGptBackendError {
     return new ChatGptBackendError('ChatGPT session backend tool response was invalid.', 'invalid_response', {
-      status: 502, safeDiagnostic: { httpStatus: this.httpStatus, failurePhase: 'response_protocol' },
+      status: 502, safeDiagnostic: { httpStatus: this.httpStatus, failurePhase: 'response_protocol', protocolStage: 'tool_finalization', protocolReason: 'tool_finalization' },
     });
   }
 }

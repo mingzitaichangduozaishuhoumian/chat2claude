@@ -312,12 +312,12 @@ describe('SessionChatGptBackend', () => {
     expect((error as Error).cause).toBeUndefined();
   });
 
-  it.each(['eof', 'done-marker'] as const)('defaults emitted tools to tool_calls at %s', async (terminal) => {
+  it.each(['eof', 'done-marker'] as const)('rejects emitted tools without successful provider terminal at %s', async (terminal) => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response(
       'data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":"{}"}}\n\n'
       + (terminal === 'done-marker' ? 'data: [DONE]\n\n' : ''),
     ) });
-    await expect(backend.complete(request, context)).resolves.toMatchObject({ finishReason: 'tool_calls' });
+    await expect(backend.complete(request, context)).rejects.toMatchObject({ code: 'invalid_response', safeDiagnostic: { protocolStage: 'terminal', protocolReason: 'missing_terminal' } });
   });
 
   it('rejects malformed JSON frames without exposing their raw contents', async () => {
@@ -625,12 +625,13 @@ describe('SessionChatGptBackend', () => {
       return sseResponse([
         { type: 'response.output_text.delta', delta: 'hello ' },
         { type: 'response.output_text.delta', delta: 'world' },
+        { type: 'response.completed', response: { status: 'completed' } },
         '[DONE]',
       ]);
     } });
 
     const response = await backend.complete(request, context);
-    expect(response).toEqual({ text: 'hello world', finishReason: 'stop', terminalSuccessful: false });
+    expect(response).toEqual({ text: 'hello world', finishReason: 'stop' });
     expect(calls[0].url).toBe('https://chatgpt.test/backend-api/codex/responses');
     expect(calls[0].init.method).toBe('POST');
     const headers = calls[0].init.headers as Headers;

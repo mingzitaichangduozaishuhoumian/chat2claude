@@ -9,7 +9,7 @@ export const RESPONSES_REPLAY_LIMITS = Object.freeze({ itemBytes: 256 * 1024, bu
 function invalidReplay(): ChatGptBackendError {
   // Do not interpolate provider values or retain a cause (including parser errors).
   return new ChatGptBackendError('ChatGPT session backend replay response was invalid.', 'invalid_response', {
-    status: 502, safeDiagnostic: { httpStatus: 200, failurePhase: 'response_protocol' },
+    status: 502, safeDiagnostic: { httpStatus: 200, failurePhase: 'response_protocol', protocolStage: 'replay_snapshot', protocolReason: 'replay_snapshot' },
   });
 }
 

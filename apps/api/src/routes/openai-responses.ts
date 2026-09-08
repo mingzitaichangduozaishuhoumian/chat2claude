@@ -84,10 +84,11 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
 
         if (request.stream) {
           prepared = await prepareStream(deps.backend.stream(backendRequest, backendContext), { signal: backendContext.signal, abort: () => streamCancellation.abort() });
-          const events = streamOwner = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToOpenAiResponsesSse(downstreamRequest, trackStreamStatistics(prepared.events, tracker, backendContext.signal, true), { signal: backendContext.signal, onCompleted: commit }), (error) => openAiResponsesStreamError(error, request.model), tracker, backendContext.signal, { route: '/v1/responses', requestId: getAccessLogRequestId(c), logger: deps.logger, terminal: getAccessLogTerminal(c) }, prepared.close);
+          const events = streamOwner = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToOpenAiResponsesSse(downstreamRequest, trackStreamStatistics(prepared.events, tracker, c.req.raw.signal, true), { signal: backendContext.signal, onCompleted: commit }), (error) => openAiResponsesStreamError(error, request.model), tracker, c.req.raw.signal, { route: '/v1/responses', requestId: getAccessLogRequestId(c), logger: deps.logger, terminal: getAccessLogTerminal(c) }, prepared.close);
           const stream = responseBody = readableStreamFromAsyncIterable(events, {
             signal: c.req.raw.signal,
-            onCancel: () => { streamCancellation.abort(); return events.cancel(); },
+            gracefulAbort: true,
+            onCancel: () => events.cancel(),
           });
           const response = new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' } });
           releaseDeferredToStream = true;
@@ -103,7 +104,7 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
       } catch (error) {
         streamOwner?.abandon();
         releaseError = error;
-        tracker.finish(requestErrorOutcome(error, backendContext.signal));
+        tracker.finish(requestErrorOutcome(error, c.req.raw.signal));
         if (responseBody) await boundedClose(() => responseBody!.cancel());
         throw error;
       } finally {

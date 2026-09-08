@@ -2,7 +2,7 @@ import { CODEX_ORIGINATOR, codexUserAgent, normalizeCodexClientVersion } from '.
 import type { ChatGptModelDiscoveryDiagnostic, ChatGptModelDiscoveryResult, ChatGptReplayItem } from './client.js';
 import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputContentPart, ChatGptInputItem, ChatGptModelControlCapabilities, ChatGptQuotaWindow, ChatGptReasoningLevelOption, ChatGptServiceTierOption, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
 import type { ChatGptStreamEvent } from './events.js';
-import { ChatGptBackendError, sanitizeBackendDiagnostic, type ChatGptBackendErrorCode } from './errors.js';
+import { ChatGptBackendError, sanitizeBackendDiagnostic, type ChatGptBackendErrorCode, type ChatGptSafeDiagnostic } from './errors.js';
 import { ResponsesToolCalls } from './responses-tools.js';
 import { parseResponsesReplayItem, ResponsesReplay, ResponsesReplayBudget } from './responses-replay.js';
 
@@ -195,7 +195,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         if (!ready && ++bootstrapFrames > 256) throw invalidStreamResponse();
         if (frame.data === '[DONE]') break;
         const parsed = frame.data ? parseJson(frame.data) : undefined;
-        if (frame.data && !parsed) throw invalidStreamResponse();
+        if (frame.data && !parsed) throw invalidStreamResponse('malformed_sse_json', 'sse_decode');
         const type = parsed?.type ?? frame.event;
         const terminalError = responseEventError(frame.event, parsed, httpStatus);
         if (terminalError) throw terminalError;
@@ -237,12 +237,8 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         }
         if (done) return;
       }
-      if (!ready) throw invalidStreamResponse();
-      for (const toolCall of tools.finish()) {
-        sawToolCall = true;
-        yield { type: 'tool_call', toolCall };
-      }
-      yield { type: 'done', terminalSuccessful: false, finishReason: sawToolCall ? 'tool_calls' : 'stop', ...(latestUsage ? { usage: latestUsage } : {}) };
+      // EOF/[DONE] is transport termination, not successful provider completion.
+      throw invalidStreamResponse('missing_terminal', 'terminal');
     } catch (error) {
       // Diagnostic reads are best-effort: timeout/read/cleanup failures cannot replace
       // an already received HTTP failure. An actual caller cancellation still wins.
@@ -323,9 +319,9 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   }
 }
 
-function invalidStreamResponse(): ChatGptBackendError {
+function invalidStreamResponse(protocolReason: ChatGptSafeDiagnostic['protocolReason'] = 'invalid_frame', protocolStage: ChatGptSafeDiagnostic['protocolStage'] = 'frame_validation'): ChatGptBackendError {
   return new ChatGptBackendError('ChatGPT session backend response was invalid.', 'invalid_response', {
-    status: 502, safeDiagnostic: { failurePhase: 'response_protocol' },
+    status: 502, safeDiagnostic: { failurePhase: 'response_protocol', protocolStage, protocolReason },
   });
 }
 
@@ -340,7 +336,10 @@ function isSupportedFrameType(type: unknown): type is string {
 /** Validate the supported wire subset; unknown extensions cannot open the gate. */
 function validateStreamFrame(type: unknown, frame: JsonObject, ready = false): boolean {
   if (!isSupportedFrameType(type)) return false;
-  const require = (valid: unknown) => { if (!valid) throw invalidStreamResponse(); };
+  const reason = TEXT_FRAME_TYPES.has(type) ? 'invalid_text' : PART_FRAME_TYPES.has(type) ? 'invalid_part'
+    : type.startsWith('response.output_item.') ? 'invalid_output_item'
+    : ['response.created', 'response.in_progress', 'response.completed'].includes(type) ? 'invalid_lifecycle' : 'invalid_frame';
+  const require = (valid: unknown) => { if (!valid) throw invalidStreamResponse(reason); };
   for (const key of ['output_index', 'content_index', 'summary_index', 'sequence_number']) {
     if (frame[key] !== undefined) require(Number.isSafeInteger(frame[key]) && (frame[key] as number) >= 0);
   }
@@ -1132,7 +1131,7 @@ function responseEventError(event: string | undefined, value: JsonObject | undef
   const details = isPlainObject(response?.incomplete_details) ? response.incomplete_details : undefined;
   const safeDiagnostic = sanitizeBackendDiagnostic({
     eventType: type, responseStatus: response?.status ?? value?.status, responseErrorCode: error?.code ?? (type === 'error' || event === 'error' ? value?.code : undefined),
-    ...(incomplete ? { incompleteReason: details?.reason } : {}),
+    ...(incomplete ? { incompleteReason: details?.reason, protocolStage: 'terminal', protocolReason: 'response_incomplete' } : {}),
     httpStatus, failurePhase: incomplete ? 'response_incomplete' : 'response_event',
   });
   // Incomplete is a distinct unsuccessful terminal state, never a completed response.

@@ -69,6 +69,88 @@ function assertTerminal(f: ReturnType<typeof fixture>, outcome: string, status: 
 }
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 for (const [createRoute, path, body] of routes) {
+  it.each([false, true])(`${path}: upstream AbortError remains failure before/after readiness (%s)`, async ready => {
+    const caller = new AbortController();
+    const backend = { stream: async function* () {
+      if (ready) yield { type: 'upstream_ready' };
+      throw new DOMException('CANARY', 'AbortError');
+    } } as unknown as ChatGptBackendClient;
+    const f = fixture(createRoute, backend);
+    const response = await post(f.app, path, body, caller.signal);
+    await response.text();
+    expect(caller.signal.aborted).toBe(false);
+    assertTerminal(f, 'failure', ready ? 200 : 500);
+  });
+
+  it(`${path}: explicit unsuccessful done cannot emit successful finish`, async () => {
+    const backend = { stream: async function* () {
+      yield { type: 'text_delta', text: 'hello' };
+      yield { type: 'done', terminalSuccessful: false };
+    } } as unknown as ChatGptBackendClient;
+    const f = fixture(createRoute, backend);
+    const response = await post(f.app, path, body);
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).not.toMatch(/event: message_stop|"finish_reason":"stop"|event: response.completed/);
+    assertTerminal(f, 'failure', 200);
+    expect(f.log.access).toHaveBeenCalledWith(expect.objectContaining({ code: 'invalid_response' }), 'text');
+  });
+
+  it.each([
+    ['data: {CANARY\n\n', 'malformed_sse_json'],
+    [frame({ type: 'response.incomplete', response: { status: 'incomplete', incomplete_details: { reason: 'CANARY' } } }), 'response_incomplete'],
+    ['', 'missing_terminal'],
+    ['data: [DONE]\n\n', 'missing_terminal'],
+  ])(`${path}: late protocol failure is actionable (%s)`, async (suffix, protocolReason) => {
+    const f = fixture(createRoute, new SessionChatGptBackend({ baseUrl: 'https://test', fetch: async () => new Response(created + suffix) }));
+    const response = await post(f.app, path, body);
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).not.toMatch(/CANARY|event: message_stop|event: response.completed|"finish_reason":"stop"/);
+    assertTerminal(f, 'failure', 200);
+    expect(f.log.access).toHaveBeenCalledWith(expect.objectContaining({ code: 'invalid_response', protocolStage: expect.any(String), protocolReason }), 'text');
+  });
+
+  it(`${path}: unknown future event after readiness stays ignored`, async () => {
+    const f = fixture(createRoute, new SessionChatGptBackend({ baseUrl: 'https://test', fetch: async () => new Response(created + frame({ type: 'response.future_event', detail: 'CANARY' }) + completed) }));
+    const response = await post(f.app, path, body);
+    expect(await response.text()).not.toContain('CANARY');
+    assertTerminal(f, 'success', 200);
+  });
+
+  it(`${path}: real node client disconnect is graceful without AbortError stderr`, async () => {
+    const cancel = vi.fn();
+    const stderr: string[] = [];
+    // Vitest virtualizes console; capture that path as well as actual process stderr.
+    const errorLog = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { stderr.push(args.map(String).join(' ')); });
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      stderr.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://test', fetch: async () => new Response(new ReadableStream({ start(c) { c.enqueue(encode(created)); }, cancel })) });
+    const f = fixture(createRoute, backend);
+    const server = serve({ fetch: f.app.fetch, hostname: '127.0.0.1', port: 0 });
+    await new Promise<void>(r => server.listening ? r() : server.once('listening', r));
+    const client = httpRequest({ hostname: '127.0.0.1', port: (server.address() as { port: number }).port, path, method: 'POST', headers: { 'content-type': 'application/json' } });
+    const received = new Promise<import('node:http').IncomingMessage>((resolve, reject) => { client.on('response', resolve); client.on('error', reject); });
+    client.end(JSON.stringify(body));
+    try {
+      const response = await received;
+      await new Promise<void>(resolve => response.once('data', () => resolve()));
+      response.destroy(); client.destroy();
+      await vi.waitFor(() => expect(f.release).toHaveBeenCalledTimes(1));
+      await new Promise(r => setTimeout(r, 30));
+      assertTerminal(f, 'cancelled', 200);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(stderr.join('')).not.toMatch(/AbortError|DOMException|Request was cancelled/);
+    } finally {
+      client.destroy();
+      (server as import('node:http').Server).closeAllConnections();
+      await new Promise<void>(r => server.close(() => r()));
+      write.mockRestore();
+      errorLog.mockRestore();
+    }
+  });
   it(`${path}: real node-server sends no headers until valid created, then 200 before terminal`, async () => {
     let upstream!: ReadableStreamDefaultController<Uint8Array>;
     let fetched!: () => void;

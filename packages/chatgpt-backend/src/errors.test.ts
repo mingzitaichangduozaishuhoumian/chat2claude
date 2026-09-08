@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { ChatGptBackendError, type ChatGptModelDiscoveryDiagnostic } from './index.js';
 
 describe('ChatGptBackendError discovery metadata', () => {
+  it('retains only fixed protocol diagnostics, never arbitrary values', () => {
+    const raw = { protocolStage: 'sse_decode', protocolReason: 'malformed_sse_json', raw: 'CANARY', message: 'CANARY', param: 'CANARY', ciphertext: 'CANARY' };
+    const error = new ChatGptBackendError('Invalid response', 'invalid_response', { safeDiagnostic: raw as never });
+    expect(error.safeDiagnostic).toEqual({ protocolStage: 'sse_decode', protocolReason: 'malformed_sse_json' });
+    raw.protocolStage = raw.protocolReason = 'CANARY';
+    const unknown = new ChatGptBackendError('Invalid response', 'invalid_response', { safeDiagnostic: raw as never });
+    expect(unknown.safeDiagnostic).toEqual({ protocolStage: 'unknown', protocolReason: 'unknown' });
+    expect(JSON.stringify([error, unknown])).not.toContain('CANARY');
+  });
   it('copies and freezes allowlisted diagnostic primitives, dropping arbitrary provider fields', () => {
     const raw = { eventType: 'DIAGNOSTIC_CANARY', responseStatus: 'DIAGNOSTIC_CANARY', responseErrorCode: 'DIAGNOSTIC_CANARY', incompleteReason: 'DIAGNOSTIC_CANARY', failurePhase: 'response_event', httpStatus: 200,
       message: 'DIAGNOSTIC_CANARY', param: 'DIAGNOSTIC_CANARY', detail: 'DIAGNOSTIC_CANARY', details: { explanation: 'DIAGNOSTIC_CANARY' }, raw: 'DIAGNOSTIC_CANARY' };

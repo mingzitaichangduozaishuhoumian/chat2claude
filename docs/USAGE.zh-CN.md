@@ -250,14 +250,15 @@ curl --fail "$ANTHROPIC_BASE_URL/healthz"
 
 ### HTTP access log
 
-access log 只应用于 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 输出 Copilot API Plus 风格双箭头：请求开始时 `[...] <-- METHOD path`，响应就绪时 `[...] --> METHOD path STATUS duration`。SSE 在响应就绪时立即记录，不读取、clone、tee 或延迟 body。`detailed` 在箭头行追加 allowlist 安全元数据，并在流终态输出 `--> STREAM` 摘要；`simple` 兼容归一化为 `text`。`json` 保留 `{ level, message: "HTTP access", meta, time }` 结构化外壳和延迟流失败。日志不会记录 prompt、工具参数/结果、加密内容、provider 原始 payload、header、token、cookie、会话或代理凭据。
+access log 只应用于 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 输出 对齐的双箭头：请求开始时 `[...] <-- METHOD path`，响应就绪时 `[...] --> STATUS | duration | METHOD path?query`。SSE 在响应就绪时立即记录，不读取、clone、tee 或延迟 body。`detailed` 在箭头行追加 allowlist 安全元数据，并在流终态输出 `--> STREAM` 摘要；`simple` 兼容归一化为 `text`。`json` 保留 `{ level, message: "HTTP access", meta, time }` 结构化外壳和延迟流失败。日志不会记录 prompt、工具参数/结果、加密内容、provider 原始 payload、header、token、cookie、会话或代理凭据。
 
 ```text
-17:37:48.754 INFO  200 1m35s 127.0.0.1 POST /v1/messages?beta model=opus stream outcome=success upstreamBodyBytes=12345 req=ed73cd3b
-17:38:18.754 ERROR 503 30s 127.0.0.1 POST /v1/messages model=opus reason=account_busy_timeout req=2aec84fd
+[2026-09-08 13:12:03] [c6a432ed] [INFO ] [—      ] <-- POST /v1/messages?beta
+[2026-09-08 13:12:08] [c6a432ed] [INFO ] [opus   ] --> 200 | 4.681s | POST /v1/messages?beta
+[2026-09-08 13:12:21] [c6a432ed] [ERROR] [opus   ] --> STREAM FAILED | 17.598s | invalid_response
 ```
 
-文本时间为运行主机本地时间（固定 `HH:mm:ss.SSS`），JSON 时间仍为 ISO UTC。文本顺序固定为时间、等级、状态、请求耗时、peer IP、方法、归一化路径/安全 query 类别、model、stream、reason 和 UUID 前 8 位；`stream=false`、空 query 和缺失字段不显示。peer IP 只来自连接，不信任转发头。结构化记录包含：
+文本使用主机本地完整日期时间 `YYYY-MM-DD HH:mm:ss`；JSON 时间仍为 ISO UTC。固定列依次为时间、服务端 UUID 前 8 位、5 字符大写等级、7 字符 model、箭头。model 先清理控制字符再截断/补空格；请求开始尚未解析 model 时使用 `—`。耗时以秒表示并保留三位小数；两个方向都包含安全 query 类别（`beta` / `other`，不含值）。文本不含源码文件名或 IP；结构化 peer IP 仅来自连接，不信任转发头。结构化记录包含：
 
 - request ID、HTTP method、归一化 path；
 - 查询参数类别（只保留 `beta`，其他归为 `other`）；
@@ -267,9 +268,9 @@ access log 只应用于 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=t
 
 它**不会读取或记录** request body、response body、token、cookie、Authorization、API Key、OAuth code/state/verifier 或完整查询值。动态 flow/account/key/model ID 会被归一化为占位路径；非法或过长模型 ID 会被写成安全占位符。
 
-普通请求保留 `durationKind: response_ready`。Messages、Chat Completions 和 Responses 的 SSE 仅在迭代器完成、失败或取消清理后输出一次 access log，使用 `durationKind: stream_terminal` 和从请求进入开始的总 `durationMs`，不再提前输出 200 或重复 JSON terminal 事件。已发送 headers 后失败仍真实记录 200，但为 ERROR、outcome=failure 和安全 code/timeoutKind；成功 INFO，取消 WARN、outcome=cancelled。响应建立前调用方取消仍为 499（账号获取期间取消保留原有 503）。时长格式如 32ms、5.333s、1m35s。middleware 不读取、clone 或 tee body；日志异常不影响账号释放。本轮不延迟协议 prelude 到首个有效上游 SSE frame，该握手仍是后续生命周期改进。
+三个协议保留现有 readiness barrier：有效上游帧通过校验后才发送 SSE 200/prelude；该 200 表示响应就绪，不保证最终成功。普通请求使用 `durationKind: response_ready`。流在清理后恰好确定一个终态；默认 text 对正常成功和取消不追加终态行，真正的延迟失败追加一条 `STREAM FAILED`。detailed/JSON 保留成功、失败、取消终态及完整安全指标，`durationKind: stream_terminal` 的耗时从请求进入开始（包含账号等待）。headers 发出后的失败仍保留 HTTP 200。`invalid_response` 的 detailed/JSON 诊断仅包含固定 allowlist 的 `protocolStage` / `protocolReason`，区分 SSE JSON、lifecycle/text/part/output item、incomplete、缺失成功终态、工具收尾和 replay snapshot；不记录 provider message/detail/原始 param 或 payload。EOF/`[DONE]` 不等于成功，custom backend 的 done 省略 `terminalSuccessful` 仍兼容，仅显式 false 被拒绝。实际客户端断开会静默关闭 HTTP body、取消上游并释放账号，不产生新的 AbortError 写入栈；内部 teardown abort 不作为客户端取消证据。上游 AbortError、超时和协议错误仍计为失败。响应前取消保留 499（账号获取期间仍为原有 503）。日志/统计异常不能阻止账号释放；middleware 不读取、clone 或 tee body。
 
-Claude 终态仅增加数字/boolean 指标：sourceMessageCount 为 messages 长度，sourceContentBlockCount 为 messages 内容块总数（string 算 1，system 不计入这两项）；upstreamBodyBytes 为发送给 fetch 的唯一最终 JSON 字符串的 UTF-8 精确字节；toolCount、toolSchemaBytes 为工具数量 / schema JSON UTF-8 总字节；upstreamInputItemCount、replayItemCount、replayApplied 描述实际输入和 replay。system、history、工具参数、图片、密文只计字节，不记内容。内部 callback 回传，并由日志 allowlist 再过滤；客户端 JSON 无法伪造。fetch 前计算，因此 timeout 仍保留已知规模。JSON 包含完整指标，文本选择关键字段。无 access middleware 的独立路由保留安全 terminal 应用事件作兼容回退。
+Claude 终态仅增加数字/boolean 指标：sourceMessageCount 为 messages 长度，sourceContentBlockCount 为 messages 内容块总数（string 算 1，system 不计入这两项）；upstreamBodyBytes 为发送给 fetch 的唯一最终 JSON 字符串的 UTF-8 精确字节；toolCount、toolSchemaBytes 为工具数量 / schema JSON UTF-8 总字节；upstreamInputItemCount、replayItemCount、replayApplied 描述实际输入和 replay。system、history、工具参数、图片、密文只计字节，不记内容。内部 callback 回传，并由日志 allowlist 再过滤；客户端 JSON 无法伪造。fetch 前计算，因此 timeout 仍保留已知规模。JSON 包含完整指标，detailed 显示关键字段。无 access middleware 的独立路由保留安全 terminal 应用事件作兼容回退。
 
 请求 release 时，`unauthorized` 保持 unhealthy，需成功健康检查或重新授权恢复；`rate_limited` 保持 cooldown。`network_error`、`timeout`、`upstream_error`、`invalid_response` 仅保留固定本地诊断和安全错误码，原本健康的账号释放后仍 available、可立即重新获取。`invalid_request` 属于请求级错误，会清除临时诊断而不污染健康。成功或请求级错误 release 不会覆盖并发请求已设置的 unhealthy/cooldown。显式健康检查失败仍可能设为 error。
 

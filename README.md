@@ -121,18 +121,19 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 
 ## 日志与计时边界
 
-HTTP access log 只挂在 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 输出 Copilot API Plus 风格的双箭头行：请求开始时 `[...] <-- METHOD path`，响应就绪时 `[...] --> METHOD path STATUS duration`；SSE 不读取、clone 或延迟 body。`detailed` 在安全 allowlist 元数据后追加终态 `--> STREAM` 摘要；`simple` 是 `text` 的兼容别名。`json` 保留 `{ level, message: "HTTP access", meta, time }` 结构化外壳并保留延迟流失败。所有格式只记录已规范化路径、查询参数名称及安全元数据，绝不记录 prompt、工具参数/结果、原始 provider payload、header、token、cookie、会话或代理凭据。
+HTTP access log 只挂在 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 输出 对齐的双箭头行：请求开始时 `[...] <-- METHOD path`，响应就绪时 `[...] --> STATUS | duration | METHOD path?query`；SSE 不读取、clone 或延迟 body。`detailed` 在安全 allowlist 元数据后追加终态 `--> STREAM` 摘要；`simple` 是 `text` 的兼容别名。`json` 保留 `{ level, message: "HTTP access", meta, time }` 结构化外壳并保留延迟流失败。所有格式只记录已规范化路径、查询参数名称及安全元数据，绝不记录 prompt、工具参数/结果、原始 provider payload、header、token、cookie、会话或代理凭据。
 
 ```text
-17:37:48.754 INFO  200 1m35s 127.0.0.1 POST /v1/messages?beta model=opus stream outcome=success upstreamBodyBytes=12345 req=ed73cd3b
-17:38:18.754 ERROR 503 30s 127.0.0.1 POST /v1/messages model=opus reason=account_busy_timeout req=2aec84fd
+[2026-09-08 13:12:03] [c6a432ed] [INFO ] [—      ] <-- POST /v1/messages?beta
+[2026-09-08 13:12:08] [c6a432ed] [INFO ] [opus   ] --> 200 | 4.681s | POST /v1/messages?beta
+[2026-09-08 13:12:21] [c6a432ed] [ERROR] [opus   ] --> STREAM FAILED | 17.598s | invalid_response
 ```
 
-文本时间为运行主机本地时间（固定 `HH:mm:ss.SSS`），JSON 时间仍为 ISO UTC，依次显示时间、等级、状态、请求耗时、peer IP、方法、归一化路径/安全 query 类别、model、stream、reason 和 UUID 前 8 位。`stream=false` 和缺失字段不显示。它不读取或记录 request/response body，也不会记录 token、cookie、Authorization、API Key、OAuth 参数或原始异常；未知路径和动态 ID 会被归一化，查询参数只保留 `beta` 或 `other` 类别，peer IP 只来自连接而不是转发头。
+文本使用主机本地完整日期时间 `YYYY-MM-DD HH:mm:ss`；JSON 时间仍为 ISO UTC。固定列依次为时间、服务端 UUID 前 8 位、5 字符大写等级、7 字符 model、箭头。model 先清理控制字符再截断/补空格；请求开始尚未解析 model 时使用 `—`。耗时以秒表示并保留三位小数；两个方向都包含安全 query 类别（`beta` / `other`，不含值）。文本不含源码文件名或 IP；结构化 peer IP 仅来自连接，不信任转发头。
 
-普通请求保留 `durationKind: response_ready`。Messages、Chat Completions 和 Responses 的 SSE 只在现有迭代器完成、失败或取消清理后输出一次 `HTTP access`，`durationKind: stream_terminal` 和 `durationMs` 是从请求进入到终态的总耗时（包含账号等待）。不再提前输出 response-ready 200，也不重复输出 JSON terminal 事件；不预读、clone 或 tee body。已发送 headers 的流内失败保留真实 HTTP 200，但使用 ERROR、`outcome=failure` 和安全 `code` / `timeoutKind`；成功 INFO，取消 WARN、`outcome=cancelled`。响应建立前的调用方取消仍为 499；获取账号期间的取消保留原有 503。日志异常不会阻止账号释放。本轮不改变协议 prelude/首帧握手，200 不承诺上游已有有效首帧。
+三个协议保留现有 readiness barrier：有效上游帧通过校验后才发送 SSE 200/prelude；该 200 表示响应就绪，不保证最终成功。普通请求使用 `durationKind: response_ready`。流在清理后恰好确定一个终态；默认 text 对正常成功和取消不追加终态行，真正的延迟失败追加一条 `STREAM FAILED`。detailed/JSON 保留成功、失败、取消终态及完整安全指标，`durationKind: stream_terminal` 的耗时从请求进入开始（包含账号等待）。headers 发出后的失败仍保留 HTTP 200。`invalid_response` 的 detailed/JSON 诊断仅包含固定 allowlist 的 `protocolStage` / `protocolReason`，区分 SSE JSON、lifecycle/text/part/output item、incomplete、缺失成功终态、工具收尾和 replay snapshot；不记录 provider message/detail/原始 param 或 payload。EOF/`[DONE]` 不等于成功，custom backend 的 done 省略 `terminalSuccessful` 仍兼容，仅显式 false 被拒绝。实际客户端断开会静默关闭 HTTP body、取消上游并释放账号，不产生新的 AbortError 写入栈；内部 teardown abort 不作为客户端取消证据。上游 AbortError、超时和协议错误仍计为失败。响应前取消保留 499（账号获取期间仍为原有 503）。日志/统计异常不能阻止账号释放；middleware 不读取、clone 或 tee body。
 
-Claude 终态结构只增加数字/boolean 指标：`sourceMessageCount` 为 messages 长度，`sourceContentBlockCount` 为 messages 中内容块总数（string 算 1，system 不计入这两项）；`upstreamBodyBytes` 为最终唯一一次 JSON.stringify 的 UTF-8 精确字节；`toolCount` / `toolSchemaBytes` 为最终工具数量 / schema JSON UTF-8 字节总和；`upstreamInputItemCount`、`replayItemCount`、`replayApplied` 描述实际发送输入和 replay。system、history、工具参数、图像、密文均计入 wire 总字节，但不记录内容。字段由内部 callback 回传并经过日志 allowlist，客户端同名字段不能注入。fetch 前就计算 wire 指标，因此超时/失败仍有已知规模。文本显示 wire 字节等关键项，JSON metadata 保留完整指标。
+Claude 终态结构只增加数字/boolean 指标：`sourceMessageCount` 为 messages 长度，`sourceContentBlockCount` 为 messages 中内容块总数（string 算 1，system 不计入这两项）；`upstreamBodyBytes` 为最终唯一一次 JSON.stringify 的 UTF-8 精确字节；`toolCount` / `toolSchemaBytes` 为最终工具数量 / schema JSON UTF-8 字节总和；`upstreamInputItemCount`、`replayItemCount`、`replayApplied` 描述实际发送输入和 replay。system、history、工具参数、图像、密文均计入 wire 总字节，但不记录内容。字段由内部 callback 回传并经过日志 allowlist，客户端同名字段不能注入。fetch 前就计算 wire 指标，因此超时/失败仍有已知规模。detailed 显示 wire 字节等关键项，JSON metadata 保留完整指标。
 
 后台运营统计与 access log 独立；in-flight 不持久化，重启恢复为 0，`/metrics` 只返回进程内请求计数。未安装 access middleware 的独立路由保留安全 terminal 应用事件作为兼容回退。
 

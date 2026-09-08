@@ -12,6 +12,22 @@ function backend(body: string | ReadableStream<Uint8Array>, options: Partial<Ses
 afterEach(() => vi.useRealTimers());
 
 it.each([
+  [{ type: 'response.created', response: 'CANARY' }, 'frame_validation', 'invalid_lifecycle'],
+  [{ type: 'response.output_text.delta', delta: { secret: 'CANARY' } }, 'frame_validation', 'invalid_text'],
+  [{ type: 'response.content_part.done', part: { type: 'output_text', text: 42 } }, 'frame_validation', 'invalid_part'],
+  [{ type: 'response.output_item.added', item: null }, 'frame_validation', 'invalid_output_item'],
+  [{ type: 'response.output_item.done', item: { type: 'function_call', id: 'fc', call_id: 'call', name: 'f', arguments: 'CANARY' } }, 'tool_finalization', 'tool_finalization'],
+  [{ type: 'response.completed', response: { status: 'completed', output: [{ type: 'reasoning', id: 'rs', summary: [], encrypted_content: 42 }] } }, 'replay_snapshot', 'replay_snapshot'],
+] as const)('classifies late invalid frame without retaining content: %s', async (value, protocolStage, protocolReason) => {
+  const iterator = backend(frame(created) + frame(value)).stream(request, context)[Symbol.asyncIterator]();
+  expect((await iterator.next()).value).toEqual({ type: 'upstream_ready' });
+  const error = await iterator.next().catch(error => error);
+  expect(error).toMatchObject({ code: 'invalid_response', safeDiagnostic: { protocolStage, protocolReason } });
+  expect(JSON.stringify(error) + String(error)).not.toContain('CANARY');
+  expect(error.cause).toBeUndefined();
+});
+
+it.each([
   created,
   { type: 'response.in_progress', response: { id: 'resp_1', status: 'in_progress' } },
   { type: 'response.reasoning_summary_text.delta', delta: 'thinking' },

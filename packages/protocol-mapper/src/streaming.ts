@@ -50,6 +50,8 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
 }
 export interface AsyncIterableStreamOptions {
   signal?: AbortSignal;
+  /** HTTP-only: close delivery on downstream abort instead of erroring the response writer. */
+  gracefulAbort?: boolean;
   /** Interrupt active I/O before waiting for a pending iterator.next() to settle. */
   onCancel?: (reason: unknown) => void | Promise<void>;
 }
@@ -85,8 +87,9 @@ export function readableStreamFromAsyncIterable(iterable: AsyncIterable<string>,
   };
   const abort = () => {
     if (stopped) return;
-    controller.error(new DOMException('Request was cancelled.', 'AbortError'));
-    void cancel(options.signal?.reason).catch(() => { /* The stream is already errored. */ });
+    if (options.gracefulAbort) controller.close();
+    else controller.error(new DOMException('Request was cancelled.', 'AbortError'));
+    void cancel(options.signal?.reason).catch(() => { /* Delivery has already stopped. */ });
   };
   return new ReadableStream<Uint8Array>({
     start(value) {

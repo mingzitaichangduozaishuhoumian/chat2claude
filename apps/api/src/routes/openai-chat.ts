@@ -72,10 +72,11 @@ export function createOpenAiChatRoute(deps: OpenAiChatRouteDeps): Hono {
 
         if (request.stream) {
           prepared = await prepareStream(deps.backend.stream(backendRequest, backendContext), { signal: backendContext.signal, abort: () => streamCancellation.abort() });
-          const events = streamOwner = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToOpenAiChatSse(request, trackStreamStatistics(replay.stream(prepared.events, account, backendRequest.model, deps.accountPool, backendContext.signal), tracker, backendContext.signal, true)), openAiChatStreamError, tracker, backendContext.signal, { route: '/v1/chat/completions', requestId: getAccessLogRequestId(c), logger: deps.logger, terminal: getAccessLogTerminal(c) }, prepared.close);
+          const events = streamOwner = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToOpenAiChatSse(request, trackStreamStatistics(replay.stream(prepared.events, account, backendRequest.model, deps.accountPool, backendContext.signal), tracker, c.req.raw.signal, true)), openAiChatStreamError, tracker, c.req.raw.signal, { route: '/v1/chat/completions', requestId: getAccessLogRequestId(c), logger: deps.logger, terminal: getAccessLogTerminal(c) }, prepared.close);
           const stream = responseBody = readableStreamFromAsyncIterable(events, {
             signal: c.req.raw.signal,
-            onCancel: () => { streamCancellation.abort(); return events.cancel(); },
+            gracefulAbort: true,
+            onCancel: () => events.cancel(),
           });
           const response = new Response(stream, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' } });
           releaseDeferredToStream = true;
@@ -90,7 +91,7 @@ export function createOpenAiChatRoute(deps: OpenAiChatRouteDeps): Hono {
       } catch (error) {
         streamOwner?.abandon();
         releaseError = error;
-        tracker.finish(requestErrorOutcome(error, backendContext.signal));
+        tracker.finish(requestErrorOutcome(error, c.req.raw.signal));
         if (responseBody) await boundedClose(() => responseBody!.cancel());
         throw error;
       } finally {
