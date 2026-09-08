@@ -7,7 +7,7 @@ import { RuntimeApiKeys } from '../services/runtime-api-keys.js';
 import { createApp } from '../app.js';
 
 function capturedLogger(entries: HttpAccessLog[]): Logger {
-  const capture = (message: string, meta?: unknown) => { if (message === 'HTTP access') entries.push(meta as HttpAccessLog); };
+  const capture = (message: string, meta?: unknown) => { if (message === 'HTTP access' && (meta as HttpAccessLog).phase !== 'request_started') entries.push(meta as HttpAccessLog); };
   return { debug: capture, info: capture, warn: capture, error: capture };
 }
 
@@ -34,7 +34,7 @@ describe('accessLog', () => {
       const line = String(sink.mock.calls[0][0]);
       expect(line).not.toMatch(/canary-secret|private|[\r\n]/);
       if (format === 'text') {
-        expect(line).toMatch(/ERROR 503 \d+ms unknown POST \/admin\/api\/accounts\/:accountId\?beta&other model=<invalid-model-id> reason=account_busy_timeout req=[a-f0-9]{8}$/);
+        expect(line).toMatch(/^\[<invalid-model-id>\] \d{2}:\d{2}:\d{2}\.\d{3} --> POST \/admin\/api\/accounts\/:accountId 503 \d+ms$/);
       } else {
         expect(JSON.parse(line)).toMatchObject({ level: 'error', message: 'HTTP access', meta: { path: '/admin/api/accounts/:accountId', query: { beta: true, other: true }, reason: 'account_busy_timeout', model: '<invalid-model-id>', durationKind: 'response_ready' } });
         expect(JSON.parse(line).meta.requestId).toHaveLength(36);
@@ -63,8 +63,11 @@ describe('accessLog', () => {
       expect(clone).not.toHaveBeenCalled();
       expect(sink).not.toHaveBeenCalled();
       await result.body!.cancel();
-      expect(sink).toHaveBeenCalledTimes(1);
-      expect(String(sink.mock.calls[0][0])).not.toContain('reason');
+      if (format === 'text') expect(sink).not.toHaveBeenCalled();
+      else {
+        expect(sink).toHaveBeenCalledTimes(1);
+        expect(String(sink.mock.calls[0][0])).not.toContain('reason');
+      }
     } finally { sink.mockRestore(); }
   });
 

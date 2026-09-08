@@ -4,65 +4,129 @@ import { accessLog, getAccessLogTerminal } from './access-log.js';
 import { createLogger } from '@chatgpt-to-claude/shared';
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
-it.each(['success', 'failure', 'cancelled'] as const)('emits exactly one terminal access line for %s, never response-ready', async outcome => {
+
+it('emits response readiness before a later SSE terminal failure, once per phase', async () => {
   vi.useFakeTimers({ toFake: ['performance', 'setTimeout'] });
+  const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  const app = new Hono();
+  let terminal!: ReturnType<typeof getAccessLogTerminal>;
+  app.use('*', accessLog(logger, 'detailed'));
+  app.get('/v1/messages', c => { terminal = getAccessLogTerminal(c); return new Response(new ReadableStream(), { headers: { 'content-type': 'text/event-stream' } }); });
+  await app.request('/v1/messages');
+  expect(logger.info).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(12);
+  terminal!({ outcome: 'failure', code: 'timeout', upstreamBodyBytes: 12, body: 'CANARY' });
+  terminal!({ outcome: 'success' });
+  expect(logger.error).toHaveBeenCalledTimes(1);
+  expect(logger.error).toHaveBeenCalledWith('HTTP access', expect.objectContaining({ phase: 'stream_terminal', outcome: 'failure', code: 'timeout', upstreamBodyBytes: 12 }));
+  expect(JSON.stringify(logger.error.mock.calls)).not.toContain('CANARY');
+});
+
+it('keeps text success and cancellation terminal-silent but reports a safe failure', async () => {
+  const sink = vi.spyOn(console, 'error').mockImplementation(() => undefined);
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const app = new Hono();
   let terminal!: ReturnType<typeof getAccessLogTerminal>;
   app.use('*', accessLog(logger));
   app.get('/v1/messages', c => { terminal = getAccessLogTerminal(c); return new Response(new ReadableStream(), { headers: { 'content-type': 'text/event-stream' } }); });
-  const response = await app.request('/v1/messages');
-  expect(logger.info).not.toHaveBeenCalled();
-  await vi.advanceTimersByTimeAsync(95_000);
-  terminal!({ outcome, ...(outcome === 'failure' ? { code: 'timeout', timeoutKind: 'stream_idle' } : {}), upstreamBodyBytes: 123 });
-  terminal!({ outcome: 'success' });
-  const calls = [...logger.info.mock.calls, ...logger.error.mock.calls, ...logger.warn.mock.calls];
-  expect(calls).toHaveLength(1);
-  expect(calls[0]).toEqual(['HTTP access', expect.objectContaining({ status: 200, durationMs: 95000, durationKind: 'stream_terminal', outcome, upstreamBodyBytes: 123 })]);
-  expect(response.status).toBe(200);
-  if (outcome === 'failure') expect(logger.error).toHaveBeenCalledTimes(1);
-});
-
-it('allowlists terminal metadata and cannot leak injected fields', async () => {
-  const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-  const app = new Hono();
-  app.use('*', accessLog(logger));
-  app.get('/v1/messages', c => {
-    getAccessLogTerminal(c)!({ outcome: 'failure', timeoutKind: 'CANARY', code: 'CANARY', body: 'CANARY', schema: 'CANARY', upstreamBodyBytes: 123, toolCount: 'CANARY', replayApplied: false });
-    return c.json({ ok: false }, 500);
-  });
   await app.request('/v1/messages');
-  expect(logger.error).toHaveBeenCalledTimes(1);
-  expect(logger.error).toHaveBeenCalledWith('HTTP access', expect.objectContaining({ upstreamBodyBytes: 123, replayApplied: false }));
-  expect(JSON.stringify(logger.error.mock.calls)).not.toContain('CANARY');
+  terminal!({ outcome: 'success' });
+  terminal!({ outcome: 'cancelled' });
+  expect(logger.info).toHaveBeenCalledTimes(1);
+  expect(logger.warn).not.toHaveBeenCalled();
+  terminal!({ outcome: 'failure', code: 'timeout', message: 'CANARY' });
+  expect(logger.error).toHaveBeenCalledTimes(0); // terminal ownership is idempotent
+  const direct = (await import('@chatgpt-to-claude/shared')).createLogger();
+  direct.access!({ requestId: '12345678', method: 'POST', path: '/v1/messages', query: {}, status: 200, durationMs: 32, durationKind: 'stream_terminal', phase: 'stream_terminal', peerIp: 'unknown', outcome: 'failure', code: 'timeout' });
+  expect(sink).toHaveBeenCalledWith(expect.stringContaining('--> STREAM failure 32ms code=timeout'));
 });
 
-for (const path of ['/v1/messages', '/v1/chat/completions', '/v1/responses']) {
-  it.each([400, 404, 500])(`${path} uses HTTP severity for non-streaming failure %s in all logger modes`, async status => {
-    for (const format of ['text', 'json', 'injected'] as const) {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const injected = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-      const app = new Hono();
-      app.use('*', accessLog(format === 'injected' ? injected : createLogger(), format === 'json' ? 'json' : 'text'));
-      app.get(path, c => {
-        getAccessLogTerminal(c)!({ outcome: 'failure', code: 'invalid_request' });
-        return c.json({ error: 'safe' }, status as 400);
-      });
-      await app.request(path);
-      const expected = format === 'injected' ? (status < 500 ? injected.warn : injected.error) : (status < 500 ? warn : error);
-      const unexpected = format === 'injected' ? (status < 500 ? injected.error : injected.warn) : (status < 500 ? error : warn);
-      expect(expected).toHaveBeenCalledTimes(1);
-      expect(unexpected).not.toHaveBeenCalled();
-      if (format === 'json') expect(JSON.parse(String(expected.mock.calls[0][0]))).toMatchObject({ level: status < 500 ? 'warn' : 'error', meta: { durationKind: 'response_ready', status, outcome: 'failure' } });
-      warn.mockRestore(); error.mockRestore();
-    }
+it.each([
+  ['/v1/messages', 400], ['/v1/messages', 404], ['/v1/messages', 500],
+  ['/v1/chat/completions', 400], ['/v1/chat/completions', 404], ['/v1/chat/completions', 500],
+  ['/v1/responses', 400], ['/v1/responses', 404], ['/v1/responses', 500],
+] as const)('merges a non-stream terminal into one response-ready access record for %s (%i)', async (path, status) => {
+  const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), access: vi.fn() };
+  const app = new Hono();
+  app.use('*', accessLog(logger, 'detailed'));
+  app.get(path, c => {
+    getAccessLogTerminal(c)!({ outcome: 'failure', code: 'internal_error', sourceMessageCount: 1 });
+    return c.json({ error: 'safe' }, status);
   });
-}
 
-it.each([[32, '32ms'], [5333, '5.333s'], [95000, '1m35s']])('formats duration %s as %s and escalates stream failure despite HTTP 200', (durationMs, text) => {
-  const sink = vi.spyOn(console, 'error').mockImplementation(() => {});
-  createLogger().access!({ requestId: '12345678', method: 'POST', path: '/v1/messages', query: {}, status: 200, durationMs: durationMs as number, durationKind: 'stream_terminal', peerIp: 'unknown', outcome: 'failure', code: 'timeout', timeoutKind: 'stream_idle' });
-  expect(sink).toHaveBeenCalledWith(expect.stringContaining(`200 ${text}`));
-  expect(sink).toHaveBeenCalledWith(expect.stringContaining('outcome=failure code=timeout timeoutKind=stream_idle'));
+  expect((await app.request(path)).status).toBe(status);
+  expect(logger.access.mock.calls.map(([entry]) => (entry as { phase: string }).phase)).toEqual(['request_started', 'response_ready']);
+  expect(logger.access.mock.calls[1][0]).toMatchObject({ phase: 'response_ready', status, outcome: 'failure', code: 'internal_error', sourceMessageCount: 1 });
+});
+
+it.each(['success', 'failure', 'cancelled'] as const)('merges non-stream %s terminal state into response readiness', async outcome => {
+  const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), access: vi.fn() };
+  const app = new Hono();
+  app.use('*', accessLog(logger, 'detailed'));
+  app.get('/v1/messages', c => {
+    getAccessLogTerminal(c)!({ outcome, ...(outcome === 'failure' ? { code: 'timeout' } : {}) });
+    return c.json({ ok: true });
+  });
+
+  await app.request('/v1/messages');
+  expect(logger.access.mock.calls.map(([entry]) => (entry as { phase: string }).phase)).toEqual(['request_started', 'response_ready']);
+  expect(logger.access.mock.calls[1][0]).toMatchObject({ phase: 'response_ready', outcome });
+});
+
+it('records cancellation-first terminal ownership independently from duplicate terminal calls', async () => {
+  const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), access: vi.fn() };
+  const app = new Hono();
+  app.use('*', accessLog(logger, 'detailed'));
+  app.get('/v1/messages', c => {
+    const terminal = getAccessLogTerminal(c)!;
+    terminal({ outcome: 'cancelled' });
+    terminal({ outcome: 'failure', code: 'timeout' });
+    return c.json({ ok: true });
+  });
+
+  await app.request('/v1/messages');
+  expect(logger.access.mock.calls.map(([entry]) => (entry as { phase: string }).phase)).toEqual(['request_started', 'response_ready']);
+  expect(logger.access.mock.calls[1][0]).toMatchObject({ outcome: 'cancelled' });
+  expect(logger.access.mock.calls[1][0]).not.toHaveProperty('code');
+});
+
+it.each([
+  ['/v1/messages', 400], ['/v1/messages', 404], ['/v1/messages', 500],
+  ['/v1/chat/completions', 400], ['/v1/chat/completions', 404], ['/v1/chat/completions', 500],
+  ['/v1/responses', 400], ['/v1/responses', 404], ['/v1/responses', 500],
+] as const)('keeps one non-stream terminal outgoing log for %s (%i) in text, JSON, and injected modes', async (path, status) => {
+  for (const mode of ['text', 'json', 'injected'] as const) {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const injected = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const logger = mode === 'injected' ? injected : createLogger();
+    const app = new Hono();
+    app.use('*', accessLog(logger, mode === 'json' ? 'json' : 'text'));
+    app.get(path, c => {
+      getAccessLogTerminal(c)!({ outcome: 'failure', code: 'internal_error' });
+      return c.json({ error: 'safe' }, status);
+    });
+
+    expect((await app.request(path)).status).toBe(status);
+    const expectedLevel = status >= 500 ? 'error' : 'warn';
+    if (mode === 'injected') {
+      expect(injected.warn.mock.calls.length + injected.error.mock.calls.length).toBe(1);
+      expect(injected[expectedLevel]).toHaveBeenCalledWith('HTTP access', expect.objectContaining({ phase: 'response_ready', status, outcome: 'failure' }));
+    } else {
+      expect(warn.mock.calls.length + error.mock.calls.length).toBe(1);
+      const line = (status >= 500 ? error : warn).mock.calls[0][0];
+      if (mode === 'json') expect(JSON.parse(line)).toMatchObject({ level: expectedLevel, message: 'HTTP access', meta: { phase: 'response_ready', status, outcome: 'failure' } });
+      else expect(line).toContain(`--> GET ${path} ${status}`);
+      expect(line).not.toContain('STREAM');
+    }
+    warn.mockRestore();
+    error.mockRestore();
+  }
+});
+
+it('swallows an access sink failure without changing the response', async () => {
+  const app = new Hono();
+  app.use('*', accessLog({ debug: vi.fn(), info: vi.fn(() => { throw new Error('CANARY'); }), warn: vi.fn(), error: vi.fn() }));
+  app.get('/v1/messages', c => c.json({ ok: true }));
+  expect((await app.request('/v1/messages')).status).toBe(200);
 });

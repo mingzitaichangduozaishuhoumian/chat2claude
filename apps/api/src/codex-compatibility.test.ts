@@ -134,12 +134,12 @@ describe('Codex private endpoint cross-layer compatibility', () => {
       const response = await app.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
       const status = mode === 'cancelled' ? 499 : mode === 'http-error' ? 400 : 500;
       expect(response.status).toBe(status);
-      expect(logger.access).toHaveBeenCalledWith(expect.objectContaining({ status }), 'text');
+      const entries = logger.access.mock.calls.map(([entry]) => entry as { phase?: string; status: number; outcome?: string });
+      expect(entries.map(entry => entry.phase)).toEqual(['request_started', 'response_ready']);
+      expect(entries[1]).toMatchObject({ phase: 'response_ready', status, outcome: mode === 'cancelled' ? 'cancelled' : 'failure' });
       expect(state.snapshot().accounts[0]?.requestStats).toMatchObject({ totalRequests: 1, successfulRequests: 0, failedRequests: mode === 'cancelled' ? 0 : 1, cancelledRequests: mode === 'cancelled' ? 1 : 0, inFlight: 0 });
       expect(release).toHaveBeenCalledTimes(1);
-      if (mode === 'http-error') expect(logger.access).toHaveBeenCalledWith(expect.objectContaining({ httpStatus: 400, failurePhase: 'response_headers', responseErrorCode: 'unsupported_parameter', responseErrorType: 'invalid_request_error', responseErrorParam: 'max_output_tokens' }), 'text');
-      if (mode === 'cancelled') expect(logger.access).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'cancelled' }), 'text');
-      expect(logger.access).toHaveBeenCalledTimes(1);
+      if (mode === 'http-error') expect(entries[1]).toMatchObject({ httpStatus: 400, failurePhase: 'response_headers', responseErrorCode: 'unsupported_parameter', responseErrorType: 'invalid_request_error', responseErrorParam: 'max_output_tokens' });
       expect(logger.error).not.toHaveBeenCalled();
       expect(await response.text() + JSON.stringify([logger.info.mock.calls, logger.error.mock.calls, logger.access.mock.calls, state.snapshot()])).not.toContain('CANARY');
     }

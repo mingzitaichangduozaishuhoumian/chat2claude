@@ -256,7 +256,7 @@ The app uses external Undici 7 `ProxyAgent`, compatible with Node 22.15, through
 
 ### HTTP access logs
 
-Access logging is installed only for `/v1/*` and `/admin/api/*`. The default `ACCESS_LOG_FORMAT=text` is a dedicated concise line; ordinary application logs remain JSON. Set `ACCESS_LOG_FORMAT=json` to retain the `{ level, message: "HTTP access", meta, time }` envelope with a full request UUID and optional safe `reason`. Both formats use `info` for 2xx/3xx, `warn` for 4xx, and `error` for 5xx, filtered by `LOG_LEVEL`.
+Access logging is installed only for `/v1/*` and `/admin/api/*`. The default `ACCESS_LOG_FORMAT=text` emits Copilot API Plus-style arrows: `[...] <-- METHOD path` at request start and `[...] --> METHOD path STATUS duration` when the response is ready. SSE is logged at readiness without reading, cloning, teeing, or delaying the body. `detailed` appends allowlisted safe metadata and emits a terminal `--> STREAM` summary; `simple` normalizes to `text`. `json` retains the `{ level, message: "HTTP access", meta, time }` envelope and late stream failures. Logs never contain prompts, tool arguments/results, encrypted content, raw provider payloads, headers, tokens, cookies, session, or proxy credentials.
 
 ```text
 17:37:48.754 INFO  200 1m35s 127.0.0.1 POST /v1/messages?beta model=opus stream outcome=success upstreamBodyBytes=12345 req=ed73cd3b

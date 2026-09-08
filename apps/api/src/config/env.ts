@@ -14,7 +14,7 @@ export interface AppEnv {
   localContainerBootstrap: boolean;
   logLevel: LogLevel;
   /** Omitted programmatic configs use text and 30 seconds respectively. */
-  accessLogFormat?: 'text' | 'json';
+  accessLogFormat?: 'text' | 'detailed' | 'json';
   accountAcquireTimeoutMs?: number;
   mockResponsePrefix: string;
   mockBackendModelsJson?: string;
@@ -97,10 +97,10 @@ export function isLoopbackHost(host: string): boolean {
   return normalized === 'localhost' || normalized === '::1' || /^127(?:\.\d{1,3}){3}$/.test(normalized);
 }
 
-function parseAccessLogFormat(value: string | undefined): 'text' | 'json' {
-  if (value === undefined || value === '') return 'text';
-  if (value === 'text' || value === 'json') return value;
-  throw new Error('ACCESS_LOG_FORMAT must be text or json.');
+function parseAccessLogFormat(value: string | undefined): 'text' | 'detailed' | 'json' {
+  if (value === undefined || value === '' || value === 'simple') return 'text';
+  if (value === 'text' || value === 'detailed' || value === 'json') return value;
+  throw new Error('ACCESS_LOG_FORMAT must be text, detailed, or json.');
 }
 
 function parseAccountAcquireTimeout(value: string | undefined): number {

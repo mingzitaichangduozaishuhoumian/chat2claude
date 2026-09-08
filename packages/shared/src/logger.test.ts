@@ -25,7 +25,7 @@ describe('dedicated access logger', () => {
       const sink = vi.spyOn(console, 'log').mockImplementation(() => undefined);
       const logger = createLogger();
       logger.access!(entry);
-      expect(sink).toHaveBeenNthCalledWith(1, '17:37:48.754 INFO  200 29ms 127.0.0.1 POST /v1/messages?beta model=opus stream req=ed73cd3b');
+      expect(sink).toHaveBeenNthCalledWith(1, '[opus] 17:37:48.754 --> POST /v1/messages 200 29ms');
       logger.info('ordinary', { ok: true });
       expect(JSON.parse(sink.mock.calls[1][0])).toMatchObject({ level: 'info', message: 'ordinary', meta: { ok: true }, time: localDate.toISOString() });
       logger.access!(entry, 'json');
@@ -43,8 +43,8 @@ describe('dedicated access logger', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(error).toHaveBeenCalledTimes(1);
     if (format === 'text') {
-      expect(warn.mock.calls[0][0]).toContain('WARN  404');
-      expect(error.mock.calls[0][0]).toContain('ERROR 503');
+      expect(warn.mock.calls[0][0]).toContain('--> POST /v1/messages 404');
+      expect(error.mock.calls[0][0]).toContain('--> POST /v1/messages 503');
     } else {
       expect(JSON.parse(error.mock.calls[0][0])).toMatchObject({ level: 'error', message: 'HTTP access', meta: { status: 503, requestId: entry.requestId } });
     }
@@ -53,7 +53,38 @@ describe('dedicated access logger', () => {
   it('omits empty optional fields and false stream, and adds safe reason', () => {
     const sink = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     createLogger().access!({ ...entry, status: 503, query: {}, model: undefined, stream: false, reason: 'account_busy_timeout' });
-    expect(sink.mock.calls[0][0]).toMatch(/ERROR 503 29ms 127\.0\.0\.1 POST \/v1\/messages reason=account_busy_timeout req=ed73cd3b$/);
-    expect(sink.mock.calls[0][0]).not.toMatch(/stream|model=|durationKind|\?/);
+    expect(sink.mock.calls[0][0]).toMatch(/^\[\?\] \d{2}:\d{2}:\d{2}\.\d{3} --> POST \/v1\/messages 503 29ms$/);
+    expect(sink.mock.calls[0][0]).not.toMatch(/stream|model=|durationKind|reason=/);
+  });
+
+  it('renders Copilot-style arrow phases and detailed stream summaries without request content', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 3, 17, 37, 48, 754));
+    const sink = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const logger = createLogger();
+      logger.access!({ ...entry, phase: 'request_started', model: undefined });
+      logger.access!({ ...entry, phase: 'response_ready', model: 'opus' });
+      logger.access!({ ...entry, phase: 'stream_terminal', outcome: 'success', downstreamEventCount: 2, downstreamBodyBytes: Buffer.byteLength('中文😀'), stream: true }, 'detailed');
+      expect(sink.mock.calls.map(([line]) => line)).toEqual([
+        '[?] 17:37:48.754 <-- POST /v1/messages?beta',
+        '[opus] 17:37:48.754 --> POST /v1/messages 200 29ms',
+        '[opus] 17:37:48.754 --> STREAM success 29ms stream downstreamEvents=2 downstreamBytes=10 req=ed73cd3b',
+      ]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('renders every sanitized request metric in detailed output', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 3, 17, 37, 48, 754));
+    const sink = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      createLogger().access!({
+        ...entry, phase: 'response_ready', sourceMessageCount: 2, sourceContentBlockCount: 3,
+        toolCount: 4, toolSchemaBytes: 5, upstreamInputItemCount: 6, replayItemCount: 7,
+        replayApplied: true, upstreamBodyBytes: 8, downstreamEventCount: 9, downstreamBodyBytes: 10,
+      } as HttpAccessLogEntry, 'detailed');
+      expect(sink.mock.calls[0][0]).toContain('messages=2 content=3 tools=4 schemaBytes=5 inputItems=6 replayItems=7 replayApplied=true upstreamBytes=8 downstreamEvents=9 downstreamBytes=10');
+    } finally { vi.useRealTimers(); }
   });
 });

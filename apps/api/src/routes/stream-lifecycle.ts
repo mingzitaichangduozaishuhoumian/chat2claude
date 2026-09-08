@@ -8,6 +8,8 @@ import { boundedClose } from './prepare-stream.js';
 
 export interface RequestSizeMetrics {
   upstreamBodyBytes?: number;
+  downstreamEventCount?: number;
+  downstreamBodyBytes?: number;
   sourceMessageCount?: number;
   sourceContentBlockCount?: number;
   toolCount?: number;
@@ -21,7 +23,7 @@ export function sanitizeRequestMetrics(value: unknown): RequestSizeMetrics {
   if (!value || typeof value !== 'object') return {};
   const raw = value as Record<string, unknown>;
   const safe: Record<string, number | boolean> = {};
-  for (const key of ['upstreamBodyBytes', 'sourceMessageCount', 'sourceContentBlockCount', 'toolCount', 'toolSchemaBytes', 'upstreamInputItemCount', 'replayItemCount']) {
+  for (const key of ['upstreamBodyBytes', 'downstreamEventCount', 'downstreamBodyBytes', 'sourceMessageCount', 'sourceContentBlockCount', 'toolCount', 'toolSchemaBytes', 'upstreamInputItemCount', 'replayItemCount']) {
     if (typeof raw[key] === 'number' && Number.isSafeInteger(raw[key]) && raw[key] >= 0) safe[key] = raw[key];
   }
   if (typeof raw.replayApplied === 'boolean') safe.replayApplied = raw.replayApplied;
@@ -69,6 +71,12 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
   let failureFields: ReturnType<typeof safeErrorFields> | undefined;
   let outcome: 'success' | 'failure' | 'cancelled' = 'cancelled';
   let finished = false;
+  let downstreamEventCount = 0;
+  let downstreamBodyBytes = 0;
+  const countDownstreamEvent = (event: string) => {
+    downstreamEventCount += 1;
+    downstreamBodyBytes += Buffer.byteLength(event, 'utf8');
+  };
   let cancelling: Promise<void> | undefined;
   const logger = context.logger ?? createLogger();
   const metadata = { route: context.route, ...(context.requestId ? { requestId: context.requestId } : {}) };
@@ -77,7 +85,7 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
     finished = true;
     tracker.finish(outcome);
     accountPool.release(lease, accountReleaseError(releaseError));
-    const fields = { ...sanitizeRequestMetrics(context.metrics), outcome, ...failureFields };
+    const fields = { ...sanitizeRequestMetrics(context.metrics), downstreamEventCount, downstreamBodyBytes, outcome, ...failureFields };
     try {
       if (context.terminal) context.terminal(fields);
       else logger[outcome === 'failure' ? 'error' : 'info']('HTTP stream terminated', { ...metadata, ...fields });
@@ -85,7 +93,11 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
   };
   const iterator = (async function* () {
     try {
-      yield* events;
+      for await (const event of events) {
+        // Count the already mapped downstream payload only; do not parse, clone, or buffer it.
+        countDownstreamEvent(event);
+        yield event;
+      }
       if (!finished) outcome = signal.aborted ? 'cancelled' : 'success';
     } catch (error) {
       if (!finished) {
@@ -94,7 +106,13 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
         if (outcome === 'failure') failureFields = safeErrorFields(error);
       }
       await closeUpstream?.();
-      if (!finished) yield* onError(error);
+      if (!finished) {
+        for await (const event of onError(error)) {
+          // Error envelopes are mapped downstream payloads too; count them exactly once.
+          countDownstreamEvent(event);
+          yield event;
+        }
+      }
     } finally {
       await closeUpstream?.();
       finish();

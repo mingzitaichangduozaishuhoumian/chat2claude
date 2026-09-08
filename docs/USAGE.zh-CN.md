@@ -250,7 +250,7 @@ curl --fail "$ANTHROPIC_BASE_URL/healthz"
 
 ### HTTP access log
 
-access log 只应用于 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 为专用简洁单行，普通应用日志仍为 JSON。设置 `ACCESS_LOG_FORMAT=json` 可保留 `{ level, message: "HTTP access", meta, time }` 外壳，含完整 request UUID 和可选安全 `reason`。两种格式均按状态选择等级：2xx/3xx 为 `info`、4xx 为 `warn`、5xx 为 `error`，受 `LOG_LEVEL` 过滤。
+access log 只应用于 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 输出 Copilot API Plus 风格双箭头：请求开始时 `[...] <-- METHOD path`，响应就绪时 `[...] --> METHOD path STATUS duration`。SSE 在响应就绪时立即记录，不读取、clone、tee 或延迟 body。`detailed` 在箭头行追加 allowlist 安全元数据，并在流终态输出 `--> STREAM` 摘要；`simple` 兼容归一化为 `text`。`json` 保留 `{ level, message: "HTTP access", meta, time }` 结构化外壳和延迟流失败。日志不会记录 prompt、工具参数/结果、加密内容、provider 原始 payload、header、token、cookie、会话或代理凭据。
 
 ```text
 17:37:48.754 INFO  200 1m35s 127.0.0.1 POST /v1/messages?beta model=opus stream outcome=success upstreamBodyBytes=12345 req=ed73cd3b

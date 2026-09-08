@@ -39,7 +39,7 @@ for (const protocol of protocols) describe(protocol.path, () => {
     };
     const streamLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const logs: HttpAccessLog[] = [];
-    const capture = (_message: string, meta?: unknown) => { logs.push(meta as HttpAccessLog); };
+    const capture = (_message: string, meta?: unknown) => { if ((meta as HttpAccessLog).outcome !== undefined) logs.push(meta as HttpAccessLog); };
     const app = new Hono();
     app.use('*', accessLog({ debug: capture, info: capture, warn: capture, error: capture }));
     // Keep persistence outside even the 95-second virtual streaming test.

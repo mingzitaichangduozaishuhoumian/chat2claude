@@ -121,7 +121,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 
 ## 日志与计时边界
 
-HTTP access log 只挂在 `/v1/*` 和 `/admin/api/*`，默认输出专用简洁文本；普通应用日志仍是 JSON。设置 `ACCESS_LOG_FORMAT=json` 可恢复 `{ level, message: "HTTP access", meta, time }` JSON 外壳，保留完整 request ID 和可选安全 `reason`。两种格式均按 HTTP 状态选择等级：2xx/3xx 为 `info`、4xx 为 `warn`、5xx 为 `error`，并遵循 `LOG_LEVEL`。
+HTTP access log 只挂在 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 输出 Copilot API Plus 风格的双箭头行：请求开始时 `[...] <-- METHOD path`，响应就绪时 `[...] --> METHOD path STATUS duration`；SSE 不读取、clone 或延迟 body。`detailed` 在安全 allowlist 元数据后追加终态 `--> STREAM` 摘要；`simple` 是 `text` 的兼容别名。`json` 保留 `{ level, message: "HTTP access", meta, time }` 结构化外壳并保留延迟流失败。所有格式只记录已规范化路径、查询参数名称及安全元数据，绝不记录 prompt、工具参数/结果、原始 provider payload、header、token、cookie、会话或代理凭据。
 
 ```text
 17:37:48.754 INFO  200 1m35s 127.0.0.1 POST /v1/messages?beta model=opus stream outcome=success upstreamBodyBytes=12345 req=ed73cd3b

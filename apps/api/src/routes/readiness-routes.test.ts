@@ -55,8 +55,16 @@ function assertTerminal(f: ReturnType<typeof fixture>, outcome: string, status: 
   expect(f.release).toHaveBeenCalledTimes(1);
   expect(f.pool.get('session')?.currentConcurrency).toBe(0);
   expect(f.state.snapshot().accounts[0]?.requestStats).toMatchObject({ totalRequests: 1, inFlight: 0, successfulRequests: outcome === 'success' ? 1 : 0, failedRequests: outcome === 'failure' ? 1 : 0, cancelledRequests: outcome === 'cancelled' ? 1 : 0 });
-  expect(f.log.access).toHaveBeenCalledTimes(1);
-  expect(f.log.access).toHaveBeenCalledWith(expect.objectContaining({ outcome, status }), 'text');
+  const entries = f.log.access.mock.calls.map(([entry]) => entry as { phase?: string; outcome?: string; status: number });
+  const hasStreamTerminal = entries.length === 3;
+  expect(entries.map(entry => entry.phase)).toEqual(hasStreamTerminal
+    ? ['request_started', 'response_ready', 'stream_terminal']
+    : ['request_started', 'response_ready']);
+  expect(entries[1]).toMatchObject({ phase: 'response_ready' });
+  if (hasStreamTerminal) expect(entries[2]).toMatchObject({ phase: 'stream_terminal', outcome });
+  // A JSON non-stream failure carries terminal diagnostics on response readiness.
+  // Normal SSE success/cancellation stays terminal-silent in text mode.
+  else if (entries[1].status !== 200) expect(entries[1]).toMatchObject({ status, outcome });
   expect(JSON.stringify(f.log.access.mock.calls)).not.toContain('CANARY');
 }
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });

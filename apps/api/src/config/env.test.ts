@@ -22,6 +22,8 @@ describe('loadEnv', () => {
   it('defaults access logs to text and acquisition timeout to 30 seconds', () => {
     expect(loadEnv({})).toMatchObject({ accessLogFormat: 'text', accountAcquireTimeoutMs: 30_000 });
     expect(loadEnv({ ACCESS_LOG_FORMAT: 'json', ACCOUNT_ACQUIRE_TIMEOUT_MS: '0' })).toMatchObject({ accessLogFormat: 'json', accountAcquireTimeoutMs: 0 });
+    expect(loadEnv({ ACCESS_LOG_FORMAT: 'detailed' }).accessLogFormat).toBe('detailed');
+    expect(loadEnv({ ACCESS_LOG_FORMAT: 'simple' }).accessLogFormat).toBe('text');
     expect(loadEnv({ ACCOUNT_ACQUIRE_TIMEOUT_MS: '1200' }).accountAcquireTimeoutMs).toBe(1200);
   });
 
@@ -30,7 +32,7 @@ describe('loadEnv', () => {
   });
 
   it('rejects unsupported access log formats without echoing them', () => {
-    expect(() => loadEnv({ ACCESS_LOG_FORMAT: 'secret-value' })).toThrow('ACCESS_LOG_FORMAT must be text or json.');
+    expect(() => loadEnv({ ACCESS_LOG_FORMAT: 'secret-value' })).toThrow('ACCESS_LOG_FORMAT must be text, detailed, or json.');
   });
 
   it('uses the centralized Codex protocol version and accepts an explicit override', () => {

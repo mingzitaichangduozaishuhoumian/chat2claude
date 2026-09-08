@@ -94,7 +94,9 @@ describe('request-statistics protocol attribution', () => {
       app.route('/', createRoute({ backend, requestLog: new RequestLog(), modelRegistry: registry(), accountPool: pool, operationalState: state, logger }));
       const response = await app.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
       expect(response.status).toBe(aborted ? 499 : 500);
-      expect(logger.access).toHaveBeenCalledWith(expect.objectContaining({ status: aborted ? 499 : 500 }), 'text');
+      const entries = logger.access.mock.calls.map(([entry]) => entry as { phase?: string; path: string; status: number; outcome?: string });
+      expect(entries.map(entry => entry.phase)).toEqual(['request_started', 'response_ready']);
+      expect(entries[1]).toMatchObject({ phase: 'response_ready', path, status: aborted ? 499 : 500, outcome: aborted ? 'cancelled' : 'failure' });
       expect(await response.text()).not.toContain('CANARY');
       expect(state.snapshot().accounts[0]?.requestStats).toMatchObject({ totalRequests: 1, successfulRequests: 0, failedRequests: aborted ? 0 : 1, cancelledRequests: aborted ? 1 : 0, inFlight: 0 });
       expect(release).toHaveBeenCalledTimes(1);
@@ -102,8 +104,6 @@ describe('request-statistics protocol attribution', () => {
       const lease = release.mock.calls[0][0];
       expect(pool.get(typeof lease === 'string' ? lease : lease.id)).toMatchObject({ currentConcurrency: 0, status: 'available', cooldownUntil: null });
       expect(logger.info.mock.calls.length + logger.error.mock.calls.length).toBe(0);
-      expect(logger.access).toHaveBeenCalledTimes(1);
-      expect(logger.access).toHaveBeenCalledWith(expect.objectContaining({ path, outcome: aborted ? 'cancelled' : 'failure' }), 'text');
       expect(JSON.stringify([logger.access.mock.calls, logger.info.mock.calls, logger.error.mock.calls, state.snapshot()])).not.toContain('CANARY');
     }
   });

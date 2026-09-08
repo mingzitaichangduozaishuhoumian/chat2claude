@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { releaseAccountWhenDone } from './stream-lifecycle.js';
 import { ChatGptBackendError } from '@chatgpt-to-claude/chatgpt-backend';
@@ -45,3 +45,37 @@ for (const route of ['/v1/messages', '/v1/chat/completions', '/v1/responses'] as
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain('CANARY');
   });
 }
+
+describe('releaseAccountWhenDone downstream metrics', () => {
+  it('counts yielded SSE events and UTF-8 bytes without inspecting content', async () => {
+    const terminal = vi.fn();
+    const events = (async function* () { yield 'data: 中文\n\n'; yield 'data: 😀\n\n'; })();
+    const owner = releaseAccountWhenDone(
+      { release: vi.fn() } as never, {} as never, events, async function* () {}, { finish: vi.fn() } as never,
+      new AbortController().signal, { route: '/v1/messages', terminal },
+    );
+    const output: string[] = [];
+    for await (const event of owner) output.push(event);
+    expect(output).toEqual(['data: 中文\n\n', 'data: 😀\n\n']);
+    expect(terminal).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: 'success', downstreamEventCount: 2,
+      downstreamBodyBytes: Buffer.byteLength('data: 中文\n\ndata: 😀\n\n'),
+    }));
+  });
+
+  it('counts error SSE payloads through the same UTF-8 downstream accounting path', async () => {
+    const terminal = vi.fn();
+    const events = (async function* () { yield 'data: normal 中文\n\n'; throw new Error('boom'); })();
+    const owner = releaseAccountWhenDone(
+      { release: vi.fn() } as never, {} as never, events, async function* () { yield 'data: error 😀\n\n'; }, { finish: vi.fn() } as never,
+      new AbortController().signal, { route: '/v1/messages', terminal },
+    );
+    const output: string[] = [];
+    for await (const event of owner) output.push(event);
+    expect(output).toEqual(['data: normal 中文\n\n', 'data: error 😀\n\n']);
+    expect(terminal).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: 'failure', downstreamEventCount: 2,
+      downstreamBodyBytes: Buffer.byteLength(output.join(''), 'utf8'),
+    }));
+  });
+});
