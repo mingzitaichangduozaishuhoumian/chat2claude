@@ -1,3 +1,4 @@
+import { setImmediate, clearImmediate } from 'node:timers';
 import { ChatGptBackendError, sanitizeBackendDiagnostic } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { createLogger, type Logger } from '@chatgpt-to-claude/shared';
@@ -33,6 +34,7 @@ export function sanitizeRequestMetrics(value: unknown): RequestSizeMetrics {
 interface StreamLogContext {
   metrics?: RequestSizeMetrics;
   terminal?: (fields: Record<string, unknown>) => void;
+  lifecycle?: (fields: Record<string, unknown> & { lifecycle: 'start' | 'active' }) => void;
   route: '/v1/messages' | '/v1/chat/completions' | '/v1/responses';
   requestId?: string;
   logger?: Logger;
@@ -73,9 +75,56 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
   let finished = false;
   let downstreamEventCount = 0;
   let downstreamBodyBytes = 0;
+  let lifecycleStarted = false;
+  let lastActiveLogAt = 0;
+  let lifecycleClosed = false;
+  let lifecycleHandle: ReturnType<typeof setImmediate> | undefined;
+  let pendingStartLifecycle: (Record<string, unknown> & { lifecycle: 'start' }) | undefined;
+  let pendingActiveLifecycle: (Record<string, unknown> & { lifecycle: 'active' }) | undefined;
+  const clearLifecycle = () => {
+    lifecycleClosed = true;
+    pendingStartLifecycle = undefined;
+    pendingActiveLifecycle = undefined;
+    if (lifecycleHandle) clearImmediate(lifecycleHandle);
+    lifecycleHandle = undefined;
+  };
+  const scheduleLifecycle = (lifecycle: 'start' | 'active') => {
+    if (!context.lifecycle || lifecycleClosed) return;
+    const fields = { ...sanitizeRequestMetrics(context.metrics), lifecycle, downstreamEventCount, downstreamBodyBytes };
+    if (lifecycle === 'start') pendingStartLifecycle ??= fields as Record<string, unknown> & { lifecycle: 'start' };
+    else pendingActiveLifecycle = fields as Record<string, unknown> & { lifecycle: 'active' };
+    if (lifecycleHandle) return;
+    lifecycleHandle = setImmediate(() => {
+      lifecycleHandle = undefined;
+      const startFields = pendingStartLifecycle;
+      const activeFields = pendingActiveLifecycle;
+      pendingStartLifecycle = undefined;
+      pendingActiveLifecycle = undefined;
+      if (lifecycleClosed) return;
+      if (startFields) {
+        try { context.lifecycle?.(startFields); }
+        catch { /* Logging must never affect stream delivery, backpressure, or release. */ }
+      }
+      if (activeFields && !lifecycleClosed) {
+        try { context.lifecycle?.(activeFields); }
+        catch { /* Logging must never affect stream delivery, backpressure, or release. */ }
+      }
+    });
+  };
   const countDownstreamEvent = (event: string) => {
     downstreamEventCount += 1;
     downstreamBodyBytes += Buffer.byteLength(event, 'utf8');
+    if (!lifecycleStarted) {
+      lifecycleStarted = true;
+      lastActiveLogAt = performance.now();
+      scheduleLifecycle('start');
+      return;
+    }
+    const now = performance.now();
+    if (now - lastActiveLogAt >= 5_000) {
+      lastActiveLogAt = now;
+      scheduleLifecycle('active');
+    }
   };
   let cancelling: Promise<void> | undefined;
   // Body cancellation is distinct from prepared.close()'s internal I/O abort.
@@ -86,6 +135,7 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
   const finish = () => {
     if (finished) return;
     finished = true;
+    clearLifecycle();
     try { tracker.finish(outcome); } catch { /* Statistics are observational too. */ }
     finally { accountPool.release(lease, accountReleaseError(releaseError)); }
     const fields = { ...sanitizeRequestMetrics(context.metrics), downstreamEventCount, downstreamBodyBytes, outcome, ...failureFields };

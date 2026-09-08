@@ -137,6 +137,7 @@ describe('readableStreamFromAsyncIterable lifecycle', () => {
     await expect(Promise.race([first.then(() => 'settled'), Promise.resolve('pending')])).resolves.toBe('pending');
     await vi.advanceTimersByTimeAsync(1);
     expect(new TextDecoder().decode((await first).value)).toBe(': keepalive\n\n');
+    expect(nextCalls).toBe(1);
     const second = reader.read();
     release();
     expect(new TextDecoder().decode((await second).value)).toBe('data: real\n\n');

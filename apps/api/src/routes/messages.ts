@@ -12,7 +12,7 @@ import { accountReleaseError } from './account-release-error.js';
 import { mapRequestCancellation, mapChatGptBackendError, mapErrorPayload, parseRequestJson, unexpectedApiError } from './backend-errors.js';
 import { createAccountRequestTracker, requestErrorOutcome, trackStreamStatistics, usageFromBackend } from '../services/request-statistics.js';
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
-import { getAccessLogRequestId, getAccessLogTerminal, setAccessLogMetadata } from '../middleware/access-log.js';
+import { getAccessLogRequestId, getAccessLogStreamLifecycle, getAccessLogTerminal, setAccessLogMetadata } from '../middleware/access-log.js';
 import { acquireRequestAccount, checkSessionAccountAvailability } from './account-acquisition.js';
 import type { ReasoningReplayStore } from '../services/reasoning-replay-store.js';
 import { RequestReasoningReplay } from '../services/request-reasoning-replay.js';
@@ -75,7 +75,7 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
 
         if (request.stream) {
           prepared = await prepareStream(deps.backend.stream(backendRequest, backendContext), { signal: backendContext.signal, abort: () => streamCancellation.abort() });
-          const events = streamOwner = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToClaudeSse(request, trackStreamStatistics(replay.stream(prepared.events, account, backendRequest.model, deps.accountPool, backendContext.signal), tracker, c.req.raw.signal, true)), claudeStreamError, tracker, c.req.raw.signal, { route: '/v1/messages', requestId: getAccessLogRequestId(c), logger: deps.logger, metrics, terminal: getAccessLogTerminal(c) }, prepared.close);
+          const events = streamOwner = releaseAccountWhenDone(deps.accountPool, account, mapChatGptStreamToClaudeSse(request, trackStreamStatistics(replay.stream(prepared.events, account, backendRequest.model, deps.accountPool, backendContext.signal), tracker, c.req.raw.signal, true)), claudeStreamError, tracker, c.req.raw.signal, { route: '/v1/messages', requestId: getAccessLogRequestId(c), logger: deps.logger, metrics, terminal: getAccessLogTerminal(c), lifecycle: getAccessLogStreamLifecycle(c) }, prepared.close);
           const stream = responseBody = readableStreamFromAsyncIterable(events, {
             signal: c.req.raw.signal,
             gracefulAbort: true,

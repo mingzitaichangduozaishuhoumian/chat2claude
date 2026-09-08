@@ -19,19 +19,20 @@ it('aligns text columns, outgoing query, and failure-only terminal', () => {
     logger.access!({ ...entry, phase: 'request_started', model: undefined });
     logger.access!({ ...entry, durationMs: 4681 });
     expect(log.mock.calls.map(([line]) => line)).toEqual([
-      '[2026-09-08 13:12:21] [ed73cd3b] [INFO ] [—      ] <-- POST /v1/messages?beta',
-      '[2026-09-08 13:12:21] [ed73cd3b] [INFO ] [opus   ] --> 200 | 4.681s | POST /v1/messages?beta',
+      '[2026-09-08 13:12:21] [ed73cd3b] [INFO ] [  api  ] <-- POST /v1/messages?beta',
+      '[2026-09-08 13:12:21] [ed73cd3b] [INFO ] [ opus  ] --> 200 STREAMING | 4.681s | POST /v1/messages?beta',
     ]);
     for (const outcome of ['success', 'cancelled', 'failure'] as const) logger.access!({ ...entry, durationKind: 'stream_terminal', phase: 'stream_terminal', outcome, durationMs: 17598, code: 'invalid_response' });
-    expect(log).toHaveBeenCalledTimes(2);
-    expect(warn).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledTimes(3);
+    expect(log.mock.calls[2][0]).toContain('--> STREAM DONE | 17.598s | events=0 bytes=0');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('--> STREAM CANCELLED | 17.598s | events=0 bytes=0'));
     expect(error).toHaveBeenCalledTimes(1);
-    expect(error).toHaveBeenCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [ERROR] [opus   ] --> STREAM FAILED | 17.598s | invalid_response');
+    expect(error).toHaveBeenCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [ERROR] [ opus  ] --> STREAM FAILED | 17.598s | events=0 bytes=0 | invalid_response');
     logger.access!({ ...entry, durationKind: 'stream_terminal', phase: 'stream_terminal', outcome: 'failure', durationMs: 120000, code: 'invalid_response', protocolReason: 'missing_terminal', timeoutKind: 'stream_total', incompleteReason: 'max_output_tokens' });
-    expect(error).toHaveBeenLastCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [ERROR] [opus   ] --> STREAM FAILED | 120.000s | invalid_response protocolReason=missing_terminal timeoutKind=stream_total incompleteReason=max_output_tokens');
+    expect(error).toHaveBeenLastCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [ERROR] [ opus  ] --> STREAM FAILED | 120.000s | events=0 bytes=0 | invalid_response protocolReason=missing_terminal timeoutKind=stream_total incompleteReason=max_output_tokens');
     logger.access!({ ...entry, model: 'long-model\n\x1b[31m', requestId: '1234567\nINJECT' });
-    expect(log.mock.calls[2][0]).toContain('[1234567?] [INFO ] [long-mo]');
-    expect(log.mock.calls[2][0]).not.toMatch(/[\r\n\x1b]/);
+    expect(log.mock.calls[3][0]).toContain('[1234567?] [INFO ] [long-mo]');
+    expect(log.mock.calls[3][0]).not.toMatch(/[\r\n\x1b]/);
   } finally { vi.useRealTimers(); }
 });
 
@@ -52,7 +53,7 @@ describe('dedicated access logger', () => {
       const sink = vi.spyOn(console, 'log').mockImplementation(() => undefined);
       const logger = createLogger();
       logger.access!(entry);
-      expect(sink).toHaveBeenNthCalledWith(1, '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [opus   ] --> 200 | 0.029s | POST /v1/messages?beta');
+      expect(sink).toHaveBeenNthCalledWith(1, '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> 200 STREAMING | 0.029s | POST /v1/messages?beta');
       logger.info('ordinary', { ok: true });
       expect(JSON.parse(sink.mock.calls[1][0])).toMatchObject({ level: 'info', message: 'ordinary', meta: { ok: true }, time: localDate.toISOString() });
       logger.access!(entry, 'json');
@@ -70,8 +71,8 @@ describe('dedicated access logger', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(error).toHaveBeenCalledTimes(1);
     if (format === 'text') {
-      expect(warn.mock.calls[0][0]).toContain('--> 404 | 0.029s | POST /v1/messages?beta');
-      expect(error.mock.calls[0][0]).toContain('--> 503 | 0.029s | POST /v1/messages?beta');
+      expect(warn.mock.calls[0][0]).toContain('--> 404 STREAMING | 0.029s | POST /v1/messages?beta');
+      expect(error.mock.calls[0][0]).toContain('--> 503 STREAMING | 0.029s | POST /v1/messages?beta');
     } else {
       expect(JSON.parse(error.mock.calls[0][0])).toMatchObject({ level: 'error', message: 'HTTP access', meta: { status: 503, requestId: entry.requestId } });
     }
@@ -79,8 +80,8 @@ describe('dedicated access logger', () => {
 
   it('omits empty optional fields and false stream, and adds safe reason', () => {
     const sink = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    createLogger().access!({ ...entry, status: 503, query: {}, model: undefined, stream: false, reason: 'account_busy_timeout' });
-    expect(sink.mock.calls[0][0]).toMatch(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[ed73cd3b\] \[ERROR\] \[—      \] --> 503 \| 0\.029s \| POST \/v1\/messages$/);
+    createLogger().access!({ ...entry, status: 503, query: {}, path: '/admin/api/setup/status', model: undefined, stream: false, reason: 'account_busy_timeout' });
+    expect(sink.mock.calls[0][0]).toMatch(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[ed73cd3b\] \[ERROR\] \[ admin \] --> 503 \| 0\.029s \| POST \/admin\/api\/setup\/status$/);
     expect(sink.mock.calls[0][0]).not.toMatch(/stream|model=|durationKind|reason=/);
   });
 
@@ -92,11 +93,15 @@ describe('dedicated access logger', () => {
       const logger = createLogger();
       logger.access!({ ...entry, phase: 'request_started', model: undefined });
       logger.access!({ ...entry, phase: 'response_ready', model: 'opus' });
+      logger.access!({ ...entry, phase: 'stream_lifecycle', lifecycle: 'start', downstreamEventCount: 1, downstreamBodyBytes: 12, stream: true }, 'detailed');
+      logger.access!({ ...entry, phase: 'stream_lifecycle', lifecycle: 'active', durationMs: 5123, downstreamEventCount: 3, downstreamBodyBytes: 40, stream: true }, 'detailed');
       logger.access!({ ...entry, phase: 'stream_terminal', outcome: 'success', downstreamEventCount: 2, downstreamBodyBytes: Buffer.byteLength('中文😀'), stream: true }, 'detailed');
       expect(sink.mock.calls.map(([line]) => line)).toEqual([
-        '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [—      ] <-- POST /v1/messages?beta',
-        '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [opus   ] --> 200 | 0.029s | POST /v1/messages?beta',
-        '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [opus   ] --> STREAM SUCCESS | 0.029s stream downstreamEvents=2 downstreamBytes=10',
+        '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [  api  ] <-- POST /v1/messages?beta',
+        '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> 200 STREAMING | 0.029s | POST /v1/messages?beta',
+        '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> STREAM START | 0.029s | events=1 bytes=12',
+        '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> STREAM ACTIVE | 5.123s | events=3 bytes=40',
+        '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> STREAM DONE | 0.029s | events=2 bytes=10',
       ]);
     } finally { vi.useRealTimers(); }
   });

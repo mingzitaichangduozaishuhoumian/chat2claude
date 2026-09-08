@@ -250,25 +250,26 @@ curl --fail "$ANTHROPIC_BASE_URL/healthz"
 
 ### HTTP access log
 
-access log 只应用于 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 输出 对齐的双箭头：请求开始时 `[...] <-- METHOD path`，响应就绪时 `[...] --> STATUS | duration | METHOD path?query`。SSE 在响应就绪时立即记录，不读取、clone、tee 或延迟 body；静默上游期间按 `SSE_KEEPALIVE_INTERVAL_MS` 发送注释 keepalive。`detailed` 在箭头行追加 allowlist 安全元数据，并在流终态输出 `--> STREAM` 摘要；`simple` 兼容归一化为 `text`。`json` 保留 `{ level, message: "HTTP access", meta, time }` 结构化外壳和延迟流失败。日志不会记录 prompt、工具参数/结果、加密内容、provider 原始 payload、header、token、cookie、会话或代理凭据。
+access log 只应用于 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 输出对齐的双箭头：请求开始时 `[...] <-- METHOD path`，响应就绪时 `[...] --> STATUS [STREAMING] | duration | METHOD path?query`。SSE 在响应就绪时立即记录，不读取、clone、tee 或延迟 body。首个实际下游映射事件立即记录 `STREAM START`；后续活动最多每 5 秒聚合记录一次 `STREAM ACTIVE`，只含 counts/bytes/duration。SSE keepalive 注释帧按设计不经过该生命周期计数边界。`simple` 兼容归一化为 `text`；`detailed`/`json` 保留安全结构化生命周期和终态字段。日志不会记录 prompt、工具参数/结果、加密内容、provider 原始 payload、header、token、cookie、会话或代理凭据。
 
 ```text
-[2026-09-08 13:12:03] [c6a432ed] [INFO ] [—      ] <-- POST /v1/messages?beta
-[2026-09-08 13:12:08] [c6a432ed] [INFO ] [opus   ] --> 200 | 4.681s | POST /v1/messages?beta
-[2026-09-08 13:12:21] [c6a432ed] [ERROR] [opus   ] --> STREAM FAILED | 17.598s | invalid_response
+[2026-09-08 13:12:03] [c6a432ed] [INFO ] [  api  ] <-- POST /v1/messages?beta
+[2026-09-08 13:12:08] [c6a432ed] [INFO ] [ opus  ] --> 200 STREAMING | 4.681s | POST /v1/messages?beta
+[2026-09-08 13:12:08] [c6a432ed] [INFO ] [ opus  ] --> STREAM START | 4.682s | events=1 bytes=321
+[2026-09-08 13:12:21] [c6a432ed] [ERROR] [ opus  ] --> STREAM FAILED | 17.598s | events=42 bytes=8192 | invalid_response
 ```
 
-文本使用主机本地完整日期时间 `YYYY-MM-DD HH:mm:ss`；JSON 时间仍为 ISO UTC。固定列依次为时间、服务端 UUID 前 8 位、5 字符大写等级、7 字符 model、箭头。model 先清理控制字符再截断/补空格；请求开始尚未解析 model 时使用 `—`。耗时以秒表示并保留三位小数；两个方向都包含安全 query 类别（`beta` / `other`，不含值）。文本不含源码文件名或 IP；结构化 peer IP 仅来自连接，不信任转发头。结构化记录包含：
+文本使用主机本地完整日期时间 `YYYY-MM-DD HH:mm:ss`；JSON 时间仍为 ISO UTC。固定列依次为时间、服务端 UUID 前 8 位、5 字符大写等级、居中的 7 字符 model/类别、箭头。model 先清理控制字符再截断；未知 model 时按规范化 path 显示安全类别：`/v1/*` 为 `api`、`/admin/*` 为 `admin`、其他为 `system`。耗时以秒表示并保留三位小数；两个方向都包含安全 query 类别（`beta` / `other`，不含值）。文本不含源码文件名或 IP；结构化 peer IP 仅来自连接，不信任转发头。结构化记录包含：
 
 - request ID、HTTP method、归一化 path；
 - 查询参数类别（只保留 `beta`，其他归为 `other`）；
 - HTTP status、peer IP；
 - 已通过路由校验的 model ID 和 stream 标志；
-- `durationMs` 和 `durationKind: response_ready | stream_terminal`。
+- `durationMs` 和 `durationKind: response_ready | stream_lifecycle | stream_terminal`。
 
 它**不会读取或记录** request body、response body、token、cookie、Authorization、API Key、OAuth code/state/verifier 或完整查询值。动态 flow/account/key/model ID 会被归一化为占位路径；非法或过长模型 ID 会被写成安全占位符。
 
-三个协议保留现有 readiness barrier：有效上游帧通过校验后才发送 SSE 200/prelude；该 200 表示响应就绪，不保证最终成功。普通请求使用 `durationKind: response_ready`。流在清理后恰好确定一个终态；默认 text 对正常成功和取消不追加终态行，真正的延迟失败追加一条 `STREAM FAILED`。detailed/JSON 保留成功、失败、取消终态及完整安全指标，`durationKind: stream_terminal` 的耗时从请求进入开始（包含账号等待）。headers 发出后的失败仍保留 HTTP 200。`invalid_response` 的 detailed/JSON 诊断仅包含固定 allowlist 的 `protocolStage` / `protocolReason`，区分 SSE JSON、lifecycle/text/part/output item、incomplete、缺失成功终态、工具收尾和 replay snapshot；不记录 provider message/detail/原始 param 或 payload。EOF/`[DONE]` 不等于成功，custom backend 的 done 省略 `terminalSuccessful` 仍兼容，仅显式 false 被拒绝。静默上游期间默认每 15 秒发送 `: keepalive` SSE 注释（`SSE_KEEPALIVE_INTERVAL_MS=0` 可关闭），成功终态、取消或错误会停止 keepalive。实际客户端断开会静默关闭 HTTP body、取消上游并释放账号，不产生新的 AbortError 写入栈；内部 teardown abort 不作为客户端取消证据。上游 AbortError、超时和协议错误仍计为失败。响应前取消保留 499（账号获取期间仍为原有 503）。日志/统计异常不能阻止账号释放；middleware 不读取、clone 或 tee body。
+三个协议保留现有 readiness barrier：有效上游帧通过校验后才发送 SSE 200/prelude；该 200 表示响应就绪，不保证最终成功。普通请求使用 `durationKind: response_ready`。流在清理后恰好确定一个终态；默认 text 恰好输出一条终态行：`STREAM DONE`、`STREAM CANCELLED` 或安全的 `STREAM FAILED`。detailed/JSON 保留成功、失败、取消终态及完整安全指标，`durationKind: stream_terminal` 的耗时从请求进入开始（包含账号等待）。headers 发出后的失败仍保留 HTTP 200。`invalid_response` 的 detailed/JSON 诊断仅包含固定 allowlist 的 `protocolStage` / `protocolReason`，区分 SSE JSON、lifecycle/text/part/output item、incomplete、缺失成功终态、工具收尾和 replay snapshot；不记录 provider message/detail/原始 param 或 payload。EOF/`[DONE]` 不等于成功，custom backend 的 done 省略 `terminalSuccessful` 仍兼容，仅显式 false 被拒绝。静默上游期间默认每 15 秒发送 `: keepalive` SSE 注释（`SSE_KEEPALIVE_INTERVAL_MS=0` 可关闭），成功终态、取消或错误会停止 keepalive。实际客户端断开会静默关闭 HTTP body、取消上游并释放账号，不产生新的 AbortError 写入栈；内部 teardown abort 不作为客户端取消证据。上游 AbortError、超时和协议错误仍计为失败。响应前取消保留 499（账号获取期间仍为原有 503）。日志/统计异常不能阻止账号释放；middleware 不读取、clone 或 tee body。
 
 Claude 终态仅增加数字/boolean 指标：sourceMessageCount 为 messages 长度，sourceContentBlockCount 为 messages 内容块总数（string 算 1，system 不计入这两项）；upstreamBodyBytes 为发送给 fetch 的唯一最终 JSON 字符串的 UTF-8 精确字节；toolCount、toolSchemaBytes 为工具数量 / schema JSON UTF-8 总字节；upstreamInputItemCount、replayItemCount、replayApplied 描述实际输入和 replay。system、history、工具参数、图片、密文只计字节，不记内容。内部 callback 回传，并由日志 allowlist 再过滤；客户端 JSON 无法伪造。fetch 前计算，因此 timeout 仍保留已知规模。JSON 包含完整指标，detailed 显示关键字段。无 access middleware 的独立路由保留安全 terminal 应用事件作兼容回退。
 

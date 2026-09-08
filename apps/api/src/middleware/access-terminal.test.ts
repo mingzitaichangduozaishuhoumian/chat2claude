@@ -22,7 +22,7 @@ it('emits response readiness before a later SSE terminal failure, once per phase
   expect(JSON.stringify(logger.error.mock.calls)).not.toContain('CANARY');
 });
 
-it('keeps text success and cancellation terminal-silent but reports a safe failure', async () => {
+it('emits exactly one safe text terminal for success, cancellation, and failure', async () => {
   const sink = vi.spyOn(console, 'error').mockImplementation(() => undefined);
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const app = new Hono();
@@ -38,7 +38,7 @@ it('keeps text success and cancellation terminal-silent but reports a safe failu
   expect(logger.error).toHaveBeenCalledTimes(0); // terminal ownership is idempotent
   const direct = (await import('@chatgpt-to-claude/shared')).createLogger();
   direct.access!({ requestId: '12345678', method: 'POST', path: '/v1/messages', query: {}, status: 200, durationMs: 32, durationKind: 'stream_terminal', phase: 'stream_terminal', peerIp: 'unknown', outcome: 'failure', code: 'timeout' });
-  expect(sink).toHaveBeenCalledWith(expect.stringContaining('--> STREAM FAILED | 0.032s | timeout'));
+  expect(sink).toHaveBeenCalledWith(expect.stringContaining('--> STREAM FAILED | 0.032s | events=0 bytes=0 | timeout'));
 });
 
 it.each([

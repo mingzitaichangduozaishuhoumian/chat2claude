@@ -5,9 +5,10 @@ const weights: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error
 /** Only sanitized, allowlisted metadata belongs in an access entry. Never pass raw requests/errors. */
 export interface HttpAccessLogEntry {
   requestId: string; method: string; path: string; query: Record<string, true>; status: number; durationMs: number;
-  durationKind: 'response_ready' | 'stream_terminal';
+  durationKind: 'response_ready' | 'stream_terminal' | 'stream_lifecycle';
   /** The log event phase; omitted entries remain compatible as response-ready. */
-  phase?: 'request_started' | 'response_ready' | 'stream_terminal';
+  phase?: 'request_started' | 'response_ready' | 'stream_terminal' | 'stream_lifecycle';
+  lifecycle?: 'start' | 'active';
   outcome?: 'success' | 'failure' | 'cancelled'; code?: string; timeoutKind?: string; upstreamBodyBytes?: number;
   protocolStage?: string; protocolReason?: string;
   eventType?: string; responseStatus?: string; responseErrorCode?: string; incompleteReason?: string; failurePhase?: string; httpStatus?: number; exceptionFamily?: string;
@@ -58,18 +59,27 @@ export function createLogger(level: LogLevel = 'info'): Logger {
       const query = Object.keys(entry.query).sort().join('&');
       const time = formatLocalAccessTime(new Date());
       const phase = entry.phase ?? 'response_ready';
-      if (format === 'text' && phase === 'stream_terminal' && entry.outcome !== 'failure') return;
       const column = (value: string, width: number) => safeAccessText(value).slice(0, width).padEnd(width);
-      const prefix = `[${time}] [${column(entry.requestId, 8)}] [${entryLevel.toUpperCase().padEnd(5)}] [${column(entry.model ?? '—', 7)}]`;
+      const centerColumn = (value: string, width: number) => {
+        const safe = safeAccessText(value).slice(0, width);
+        const total = Math.max(0, width - safe.length);
+        const left = total === 1 ? 1 : Math.floor(total / 2);
+        return `${' '.repeat(left)}${safe}${' '.repeat(total - left)}`;
+      };
+      const pathCategory = entry.path.startsWith('/v1/') ? 'api' : entry.path.startsWith('/admin/') ? 'admin' : 'system';
+      const prefix = `[${time}] [${column(entry.requestId, 8)}] [${entryLevel.toUpperCase().padEnd(5)}] [${centerColumn(entry.model ?? pathCategory, 7)}]`;
       const target = `${entry.method} ${entry.path}${query ? `?${query}` : ''}`;
-      const terminalStatus = entry.outcome === 'failure' ? 'FAILED' : (entry.outcome ?? 'unknown').toUpperCase();
+      const terminalStatus = entry.outcome === 'success' ? 'DONE' : entry.outcome === 'cancelled' ? 'CANCELLED' : entry.outcome === 'failure' ? 'FAILED' : 'UNKNOWN';
+      const streamMetrics = `events=${entry.downstreamEventCount ?? 0} bytes=${entry.downstreamBodyBytes ?? 0}`;
       const fields = phase === 'request_started'
         ? [prefix, '<--', target]
         : phase === 'stream_terminal'
-          ? [prefix, '-->', `STREAM ${terminalStatus} | ${formatAccessDuration(entry.durationMs)}`]
-          : [prefix, '-->', `${entry.status} | ${formatAccessDuration(entry.durationMs)} | ${target}`];
-      if (format === 'detailed' && phase !== 'request_started') fields.push(
-        ...(entry.stream ? ['stream'] : []), ...(entry.reason ? [`reason=${entry.reason}`] : []), ...(entry.outcome && phase !== 'stream_terminal' ? [`outcome=${entry.outcome}`] : []),
+          ? [prefix, '-->', `STREAM ${terminalStatus} | ${formatAccessDuration(entry.durationMs)} | ${streamMetrics}`]
+          : phase === 'stream_lifecycle'
+            ? [prefix, '-->', `STREAM ${(entry.lifecycle ?? 'active').toUpperCase()} | ${formatAccessDuration(entry.durationMs)} | ${streamMetrics}`]
+            : [prefix, '-->', `${entry.status}${entry.stream ? ' STREAMING' : ''} | ${formatAccessDuration(entry.durationMs)} | ${target}`];
+      if (format === 'detailed' && phase === 'response_ready') fields.push(
+        ...(entry.stream ? ['stream'] : []), ...(entry.reason ? [`reason=${entry.reason}`] : []), ...(entry.outcome ? [`outcome=${entry.outcome}`] : []),
         ...(entry.code ? [`code=${entry.code}`] : []), ...(entry.timeoutKind ? [`timeoutKind=${entry.timeoutKind}`] : []),
         ...(['protocolStage', 'protocolReason', 'failurePhase', 'eventType', 'responseStatus', 'responseErrorCode', 'incompleteReason', 'httpStatus', 'exceptionFamily'] as const).flatMap(key => entry[key] === undefined ? [] : [`${key}=${entry[key]}`]),
         ...(entry.sourceMessageCount === undefined ? [] : [`messages=${entry.sourceMessageCount}`]),
@@ -84,7 +94,9 @@ export function createLogger(level: LogLevel = 'info'): Logger {
         ...(entry.downstreamBodyBytes === undefined ? [] : [`downstreamBytes=${entry.downstreamBodyBytes}`]),
       );
       else if (phase === 'stream_terminal' && entry.outcome === 'failure') fields.push(...(entry.code ? [`| ${entry.code}`] : []),
-        ...(['protocolReason', 'timeoutKind', 'incompleteReason'] as const).flatMap(key => entry[key] === undefined ? [] : [`${key}=${entry[key]}`]));
+        ...((format === 'detailed'
+          ? ['protocolStage', 'protocolReason', 'failurePhase', 'eventType', 'responseStatus', 'responseErrorCode', 'incompleteReason', 'httpStatus', 'exceptionFamily', 'timeoutKind']
+          : ['protocolReason', 'timeoutKind', 'incompleteReason']) as readonly (keyof HttpAccessLogEntry)[]).flatMap(key => entry[key] === undefined ? [] : [`${key}=${entry[key]}`]));
       emit(entryLevel, safeAccessText(fields.join(' ')));
     },
   };

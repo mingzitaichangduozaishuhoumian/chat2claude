@@ -63,6 +63,129 @@ it('releases once and emits terminal even when tracker.finish throws', async () 
 });
 
 describe('releaseAccountWhenDone downstream metrics', () => {
+  it('delivers and releases without waiting for queued lifecycle observation', async () => {
+    vi.useFakeTimers({ toFake: ['performance', 'setImmediate', 'clearImmediate'] });
+    const order: string[] = [];
+    const lifecycle = vi.fn(() => { order.push('lifecycle'); throw new Error('LOGGER-CANARY'); });
+    const release = vi.fn(() => { order.push('release'); });
+    const finish = vi.fn(() => { order.push('finish'); });
+    const owner = releaseAccountWhenDone(
+      { release } as never, {} as never, (async function* () { yield 'data: CANARY-PAYLOAD\n\n'; })(), async function* () {}, { finish } as never,
+      new AbortController().signal, { route: '/v1/messages', lifecycle },
+    );
+    const iterator = owner[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({ done: false, value: 'data: CANARY-PAYLOAD\n\n' });
+    expect(lifecycle).not.toHaveBeenCalled();
+    expect(order).toEqual([]);
+
+    await expect(iterator.return!()).resolves.toMatchObject({ done: true });
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['finish', 'release']);
+    await vi.runAllTimersAsync();
+    expect(lifecycle).not.toHaveBeenCalled();
+  });
+
+  it('emits queued start before active when multiple pulls happen before lifecycle flush', async () => {
+    vi.useFakeTimers({ toFake: ['setImmediate', 'clearImmediate'] });
+    const lifecycle = vi.fn();
+    const now = vi.spyOn(performance, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(5_000);
+    const owner = releaseAccountWhenDone(
+      { release: vi.fn() } as never, {} as never, (async function* () { yield 'data: one\n\n'; yield 'data: two\n\n'; })(), async function* () {}, { finish: vi.fn() } as never,
+      new AbortController().signal, { route: '/v1/messages', lifecycle },
+    );
+    const iterator = owner[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({ done: false, value: 'data: one\n\n' });
+    await expect(iterator.next()).resolves.toMatchObject({ done: false, value: 'data: two\n\n' });
+    expect(lifecycle).not.toHaveBeenCalled();
+
+    await vi.runAllTimersAsync();
+    expect(lifecycle).toHaveBeenCalledTimes(2);
+    expect(lifecycle.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ lifecycle: 'start', downstreamEventCount: 1, downstreamBodyBytes: Buffer.byteLength('data: one\n\n') }));
+    expect(lifecycle.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ lifecycle: 'active', downstreamEventCount: 2, downstreamBodyBytes: Buffer.byteLength('data: one\n\ndata: two\n\n') }));
+    expect(JSON.stringify(lifecycle.mock.calls)).not.toContain('one');
+    expect(JSON.stringify(lifecycle.mock.calls)).not.toContain('two');
+    now.mockRestore();
+  });
+
+  it('clears queued start and active work on terminal cancellation before lifecycle flush', async () => {
+    vi.useFakeTimers({ toFake: ['setImmediate', 'clearImmediate'] });
+    const lifecycle = vi.fn();
+    const release = vi.fn();
+    const finish = vi.fn();
+    const now = vi.spyOn(performance, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(5_000);
+    const owner = releaseAccountWhenDone(
+      { release } as never, {} as never, (async function* () { yield 'data: one\n\n'; yield 'data: two\n\n'; })(), async function* () {}, { finish } as never,
+      new AbortController().signal, { route: '/v1/messages', lifecycle },
+    );
+    const iterator = owner[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({ done: false, value: 'data: one\n\n' });
+    await expect(iterator.next()).resolves.toMatchObject({ done: false, value: 'data: two\n\n' });
+    await expect(iterator.return!()).resolves.toMatchObject({ done: true });
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+
+    await vi.runAllTimersAsync();
+    expect(lifecycle).not.toHaveBeenCalled();
+    now.mockRestore();
+  });
+
+  it('emits first downstream event immediately and throttles active summaries without inspecting content', async () => {
+    vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'setImmediate', 'clearImmediate'] });
+    const lifecycle = vi.fn();
+    const events = (async function* () {
+      yield 'data: CANARY-SECRET-1\n\n';
+      await new Promise(resolve => setTimeout(resolve, 4_999));
+      yield 'data: CANARY-SECRET-2\n\n';
+      await new Promise(resolve => setTimeout(resolve, 1));
+      yield 'data: CANARY-SECRET-3\n\n';
+      await new Promise(resolve => setTimeout(resolve, 5_000));
+      yield 'data: CANARY-SECRET-4\n\n';
+    })();
+    const owner = releaseAccountWhenDone(
+      { release: vi.fn() } as never, {} as never, events, async function* () {}, { finish: vi.fn() } as never,
+      new AbortController().signal, { route: '/v1/messages', lifecycle },
+    );
+    const iterator = owner[Symbol.asyncIterator]();
+
+    expect((await iterator.next()).value).toBe('data: CANARY-SECRET-1\n\n');
+    expect(lifecycle).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lifecycle).toHaveBeenCalledTimes(1);
+    expect(lifecycle).toHaveBeenLastCalledWith(expect.objectContaining({ lifecycle: 'start', downstreamEventCount: 1, downstreamBodyBytes: Buffer.byteLength('data: CANARY-SECRET-1\n\n') }));
+
+    const second = iterator.next();
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect((await second).value).toBe('data: CANARY-SECRET-2\n\n');
+    expect(lifecycle).toHaveBeenCalledTimes(1);
+
+    const third = iterator.next();
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await third).value).toBe('data: CANARY-SECRET-3\n\n');
+    expect(lifecycle).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lifecycle).toHaveBeenCalledTimes(2);
+    expect(lifecycle).toHaveBeenLastCalledWith(expect.objectContaining({ lifecycle: 'active', downstreamEventCount: 3 }));
+
+    lifecycle.mockImplementation(() => { throw new Error('LOGGER-CANARY'); });
+    const fourth = iterator.next();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect((await fourth).value).toBe('data: CANARY-SECRET-4\n\n');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lifecycle).toHaveBeenCalledTimes(3);
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    await vi.runAllTimersAsync();
+    expect(lifecycle).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(lifecycle.mock.calls)).not.toContain('CANARY-SECRET');
+  });
+
   it('counts yielded SSE events and UTF-8 bytes without inspecting content', async () => {
     const terminal = vi.fn();
     const events = (async function* () { yield 'data: 中文\n\n'; yield 'data: 😀\n\n'; })();

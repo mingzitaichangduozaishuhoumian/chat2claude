@@ -121,17 +121,18 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 
 ## 日志与计时边界
 
-HTTP access log 只挂在 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 输出 对齐的双箭头行：请求开始时 `[...] <-- METHOD path`，响应就绪时 `[...] --> STATUS | duration | METHOD path?query`；SSE 不读取、clone 或延迟 body；静默上游期间按 `SSE_KEEPALIVE_INTERVAL_MS` 发送注释 keepalive。`detailed` 在安全 allowlist 元数据后追加终态 `--> STREAM` 摘要；`simple` 是 `text` 的兼容别名。`json` 保留 `{ level, message: "HTTP access", meta, time }` 结构化外壳并保留延迟流失败。所有格式只记录已规范化路径、查询参数名称及安全元数据，绝不记录 prompt、工具参数/结果、原始 provider payload、header、token、cookie、会话或代理凭据。
+HTTP access log 只挂在 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 输出对齐的双箭头行：请求开始时 `[...] <-- METHOD path`，响应就绪时 `[...] --> STATUS [STREAMING] | duration | METHOD path?query`；SSE 不读取、clone 或延迟 body。实际下游映射事件首次写出时记录 `STREAM START`，后续最多每 5 秒记录一次只含 counts/bytes/duration 的 `STREAM ACTIVE`；静默上游 keepalive 注释不经过该生命周期计数边界。`simple` 是 `text` 的兼容别名。`detailed`/`json` 保留安全结构化字段和流生命周期/终态。所有格式只记录已规范化路径、查询参数名称及安全元数据，绝不记录 prompt、工具参数/结果、原始 provider payload、header、token、cookie、会话或代理凭据。
 
 ```text
-[2026-09-08 13:12:03] [c6a432ed] [INFO ] [—      ] <-- POST /v1/messages?beta
-[2026-09-08 13:12:08] [c6a432ed] [INFO ] [opus   ] --> 200 | 4.681s | POST /v1/messages?beta
-[2026-09-08 13:12:21] [c6a432ed] [ERROR] [opus   ] --> STREAM FAILED | 17.598s | invalid_response
+[2026-09-08 13:12:03] [c6a432ed] [INFO ] [  api  ] <-- POST /v1/messages?beta
+[2026-09-08 13:12:08] [c6a432ed] [INFO ] [ opus  ] --> 200 STREAMING | 4.681s | POST /v1/messages?beta
+[2026-09-08 13:12:08] [c6a432ed] [INFO ] [ opus  ] --> STREAM START | 4.682s | events=1 bytes=321
+[2026-09-08 13:12:21] [c6a432ed] [ERROR] [ opus  ] --> STREAM FAILED | 17.598s | events=42 bytes=8192 | invalid_response
 ```
 
-文本使用主机本地完整日期时间 `YYYY-MM-DD HH:mm:ss`；JSON 时间仍为 ISO UTC。固定列依次为时间、服务端 UUID 前 8 位、5 字符大写等级、7 字符 model、箭头。model 先清理控制字符再截断/补空格；请求开始尚未解析 model 时使用 `—`。耗时以秒表示并保留三位小数；两个方向都包含安全 query 类别（`beta` / `other`，不含值）。文本不含源码文件名或 IP；结构化 peer IP 仅来自连接，不信任转发头。
+文本使用主机本地完整日期时间 `YYYY-MM-DD HH:mm:ss`；JSON 时间仍为 ISO UTC。固定列依次为时间、服务端 UUID 前 8 位、5 字符大写等级、居中的 7 字符 model/类别、箭头。model 先清理控制字符再截断；未知 model 时按规范化 path 显示类别：`/v1/*` 为 `api`、`/admin/*` 为 `admin`、其他为 `system`。耗时以秒表示并保留三位小数；两个方向都包含安全 query 类别（`beta` / `other`，不含值）。文本不含源码文件名或 IP；结构化 peer IP 仅来自连接，不信任转发头。
 
-三个协议保留现有 readiness barrier：有效上游帧通过校验后才发送 SSE 200/prelude；该 200 表示响应就绪，不保证最终成功。普通请求使用 `durationKind: response_ready`。流在清理后恰好确定一个终态；默认 text 对正常成功和取消不追加终态行，真正的延迟失败追加一条 `STREAM FAILED`。detailed/JSON 保留成功、失败、取消终态及完整安全指标，`durationKind: stream_terminal` 的耗时从请求进入开始（包含账号等待）。headers 发出后的失败仍保留 HTTP 200。`invalid_response` 的 detailed/JSON 诊断仅包含固定 allowlist 的 `protocolStage` / `protocolReason`，区分 SSE JSON、lifecycle/text/part/output item、incomplete、缺失成功终态、工具收尾和 replay snapshot；不记录 provider message/detail/原始 param 或 payload。EOF/`[DONE]` 不等于成功，custom backend 的 done 省略 `terminalSuccessful` 仍兼容，仅显式 false 被拒绝。静默上游期间默认每 15 秒发送 `: keepalive` SSE 注释（`SSE_KEEPALIVE_INTERVAL_MS=0` 可关闭），成功终态、取消或错误会停止 keepalive。实际客户端断开会静默关闭 HTTP body、取消上游并释放账号，不产生新的 AbortError 写入栈；内部 teardown abort 不作为客户端取消证据。上游 AbortError、超时和协议错误仍计为失败。响应前取消保留 499（账号获取期间仍为原有 503）。日志/统计异常不能阻止账号释放；middleware 不读取、clone 或 tee body。
+三个协议保留现有 readiness barrier：有效上游帧通过校验后才发送 SSE 200/prelude；该 200 表示响应就绪，不保证最终成功。普通请求使用 `durationKind: response_ready`。流在清理后恰好确定一个终态；默认 text 终态为 `STREAM DONE`、`STREAM CANCELLED` 或安全的 `STREAM FAILED`，且每个流恰好一次；都只包含 duration/events/bytes 和 allowlist 错误码/诊断。detailed/JSON 保留成功、失败、取消终态及完整安全指标，`durationKind: stream_terminal` 的耗时从请求进入开始（包含账号等待）。headers 发出后的失败仍保留 HTTP 200。`invalid_response` 的 detailed/JSON 诊断仅包含固定 allowlist 的 `protocolStage` / `protocolReason`，区分 SSE JSON、lifecycle/text/part/output item、incomplete、缺失成功终态、工具收尾和 replay snapshot；不记录 provider message/detail/原始 param 或 payload。EOF/`[DONE]` 不等于成功，custom backend 的 done 省略 `terminalSuccessful` 仍兼容，仅显式 false 被拒绝。静默上游期间默认每 15 秒发送 `: keepalive` SSE 注释（`SSE_KEEPALIVE_INTERVAL_MS=0` 可关闭），成功终态、取消或错误会停止 keepalive。实际客户端断开会静默关闭 HTTP body、取消上游并释放账号，不产生新的 AbortError 写入栈；内部 teardown abort 不作为客户端取消证据。上游 AbortError、超时和协议错误仍计为失败。响应前取消保留 499（账号获取期间仍为原有 503）。日志/统计异常不能阻止账号释放；middleware 不读取、clone 或 tee body。
 
 Claude 终态结构只增加数字/boolean 指标：`sourceMessageCount` 为 messages 长度，`sourceContentBlockCount` 为 messages 中内容块总数（string 算 1，system 不计入这两项）；`upstreamBodyBytes` 为最终唯一一次 JSON.stringify 的 UTF-8 精确字节；`toolCount` / `toolSchemaBytes` 为最终工具数量 / schema JSON UTF-8 字节总和；`upstreamInputItemCount`、`replayItemCount`、`replayApplied` 描述实际发送输入和 replay。system、history、工具参数、图像、密文均计入 wire 总字节，但不记录内容。字段由内部 callback 回传并经过日志 allowlist，客户端同名字段不能注入。fetch 前就计算 wire 指标，因此超时/失败仍有已知规模。detailed 显示 wire 字节等关键项，JSON metadata 保留完整指标。
 

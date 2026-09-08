@@ -63,7 +63,7 @@ describe('accessLog', () => {
       expect(clone).not.toHaveBeenCalled();
       expect(sink).not.toHaveBeenCalled();
       await result.body!.cancel();
-      if (format === 'text') expect(sink).not.toHaveBeenCalled();
+      if (format === 'text') expect(sink).toHaveBeenCalledWith(expect.stringContaining('--> STREAM CANCELLED |'));
       else {
         expect(sink).toHaveBeenCalledTimes(1);
         expect(String(sink.mock.calls[0][0])).not.toContain('reason');

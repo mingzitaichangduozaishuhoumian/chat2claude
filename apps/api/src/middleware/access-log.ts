@@ -14,9 +14,11 @@ const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
 export interface AccessLogMetadata { model?: string; stream?: boolean; reason?: AccountUnavailableReason; }
 export interface HttpAccessLog extends HttpAccessLogEntry { reason?: AccountUnavailableReason; }
 export type AccessLogTerminal = (fields: Record<string, unknown>) => void;
+export type AccessLogStreamLifecycle = (fields: Record<string, unknown> & { lifecycle: 'start' | 'active' }) => void;
 
 /** Request-scoped internal callback; never sourced from headers or JSON. */
 export function getAccessLogTerminal(c: Context): AccessLogTerminal | undefined { return c.get('accessLogTerminal') as AccessLogTerminal | undefined; }
+export function getAccessLogStreamLifecycle(c: Context): AccessLogStreamLifecycle | undefined { return c.get('accessLogStreamLifecycle') as AccessLogStreamLifecycle | undefined; }
 
 /** Logs request start and response readiness without consuming or cloning an SSE body. */
 export function accessLog(logger: Logger, format: AccessLogFormat = 'text'): MiddlewareHandler {
@@ -65,11 +67,12 @@ export function accessLog(logger: Logger, format: AccessLogFormat = 'text'): Mid
       if (!ready || !terminal || terminalEmitted || !isStreaming()) return;
       terminalEmitted = true;
       const fields = sanitizeAccessTerminal(terminal);
-      // Text deliberately stays concise: successes/cancellations already have their ready line.
-      if (format === 'text' && fields.outcome !== 'failure' && logger.access) return;
       emit({ ...base(), ...metadata(), ...fields, durationKind: 'stream_terminal', phase: 'stream_terminal' });
     };
     c.set('accessLogTerminal', (fields: Record<string, unknown>) => { terminal ??= fields; emitTerminal(); });
+    c.set('accessLogStreamLifecycle', (fields: Record<string, unknown> & { lifecycle: 'start' | 'active' }) => {
+      emit({ ...base(), ...metadata(), ...sanitizeRequestMetrics(fields), lifecycle: fields.lifecycle, durationKind: 'stream_lifecycle', phase: 'stream_lifecycle' });
+    });
     emit({ ...base(), durationKind: 'response_ready', phase: 'request_started' });
     try { await next(); }
     finally { ready = true; emitResponseReady(); emitTerminal(); }
