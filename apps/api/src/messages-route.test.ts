@@ -1899,6 +1899,30 @@ describe('/v1/messages/count_tokens', () => {
     expect(withBody.input_tokens).toBeGreaterThan(withoutBody.input_tokens);
   });
 
+  it('includes tool schemas in estimated input_tokens', async () => {
+    const app = createApp(env);
+    const base = await app.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] }),
+    });
+    const withTools = await app.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({
+        model: 'sonnet',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [{ name: 'lookup_weather', description: 'Look up weather by city and unit.', input_schema: { type: 'object', properties: { city: { type: 'string' }, unit: { enum: ['c', 'f'] } }, required: ['city'] } }],
+      }),
+    });
+
+    expect(base.status).toBe(200);
+    expect(withTools.status).toBe(200);
+    const baseBody = await base.json() as { input_tokens: number };
+    const toolsBody = await withTools.json() as { input_tokens: number };
+    expect(toolsBody.input_tokens).toBeGreaterThan(baseBody.input_tokens);
+  });
+
   it('includes request configuration fields in estimated input_tokens', async () => {
     const app = createApp(env);
     const base = await app.request('/v1/messages/count_tokens', {

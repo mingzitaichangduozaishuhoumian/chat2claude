@@ -11,7 +11,7 @@ export function mapChatGptResponseToClaude(request: ClaudeMessagesRequest, respo
     content: mapResponseContent(response),
     stop_reason: mapStopReason(response.finishReason),
     stop_sequence: null,
-    usage: { input_tokens: response.usage?.inputTokens ?? estimateTokens(JSON.stringify(request.messages)), output_tokens: response.usage?.outputTokens ?? estimateTokens(response.text) },
+    usage: { input_tokens: response.usage?.inputTokens ?? estimateClaudeInputTokens(request), output_tokens: response.usage?.outputTokens ?? estimateTokens(response.text) },
   };
 }
 export function mapResponseContent(response: ChatGptCompletionResponse): ClaudeContentBlock[] {
@@ -21,4 +21,62 @@ export function mapResponseContent(response: ChatGptCompletionResponse): ClaudeC
   if (!content.length) content.push({ type: 'text', text: '' });
   return content;
 }
-export function estimateTokens(text: string): number { return Math.max(1, Math.ceil(text.length / 4)); }
+export function estimateClaudeInputTokens(request: Pick<ClaudeMessagesRequest, 'model' | 'messages'> & Partial<ClaudeMessagesRequest>): number {
+  const countable = compactObject({
+    model: request.model,
+    system: request.system,
+    messages: request.messages,
+    tools: request.tools,
+    tool_choice: request.tool_choice,
+    thinking: request.thinking,
+    output_config: request.output_config,
+    reasoning_effort: request.reasoning_effort,
+    speed: request.speed,
+    response_speed: request.response_speed,
+    stop_sequences: request.stop_sequences,
+    temperature: request.temperature,
+    top_p: request.top_p,
+    metadata: request.metadata,
+    service_tier: request.service_tier,
+    container: request.container,
+    context_management: request.context_management,
+    mcp_servers: request.mcp_servers,
+  });
+  return estimateTokens(JSON.stringify(countable));
+}
+
+export function estimateTokens(text: string): number {
+  let asciiRun = 0;
+  let cjk = 0;
+  let symbols = 0;
+  let whitespace = 0;
+  const flushAscii = () => {
+    const tokens = Math.ceil(asciiRun / 4);
+    asciiRun = 0;
+    return tokens;
+  };
+  let tokens = 0;
+  for (const char of text) {
+    if (/\s/u.test(char)) {
+      tokens += flushAscii();
+      whitespace += 1;
+    } else if (/\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul}/u.test(char)) {
+      tokens += flushAscii();
+      cjk += 1;
+    } else if (/[A-Za-z0-9_]/u.test(char)) {
+      asciiRun += 1;
+    } else {
+      tokens += flushAscii();
+      symbols += 1;
+    }
+  }
+  tokens += flushAscii();
+  tokens += cjk;
+  tokens += Math.ceil(symbols / 2);
+  tokens += Math.ceil(whitespace / 8);
+  return Math.max(1, tokens);
+}
+
+function compactObject<T extends Record<string, unknown>>(value: T): Partial<T> {
+  return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined)) as Partial<T>;
+}

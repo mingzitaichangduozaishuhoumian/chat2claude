@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseClaudeMessagesRequest, type ClaudeMessagesRequest } from '@chatgpt-to-claude/claude-protocol';
 import { SessionChatGptBackend } from '@chatgpt-to-claude/chatgpt-backend';
 import { mapClaudeRequestToChatGpt } from './request.js';
-import { mapChatGptResponseToClaude } from './response.js';
+import { estimateClaudeInputTokens, mapChatGptResponseToClaude } from './response.js';
 import { mapChatGptStreamToOpenAiChatSse } from './openai-chat.js';
 import { mapChatGptStreamToOpenAiResponsesSse } from './openai-responses.js';
 import { mapChatGptStreamToClaudeSse, readableStreamFromAsyncIterable } from './streaming.js';
@@ -10,6 +10,14 @@ import { mapChatGptStreamToClaudeSse, readableStreamFromAsyncIterable } from './
 const request: ClaudeMessagesRequest = { model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] };
 
 describe('mapChatGptStreamToClaudeSse', () => {
+  it('uses the shared Claude input estimate in message_start usage', async () => {
+    const countedRequest = { ...request, system: 'Answer precisely.', tools: [{ name: 'lookup', input_schema: { type: 'object', properties: { key: { type: 'string' } } } }] };
+    const events = parseClaudeData(await collect(mapChatGptStreamToClaudeSse(countedRequest, async function* () {
+      yield { type: 'done' as const, finishReason: 'stop' };
+    }())));
+    expect(events[0]).toMatchObject({ type: 'message_start', message: { usage: { input_tokens: estimateClaudeInputTokens(countedRequest), output_tokens: 0 } } });
+  });
+
   it('round trips standard session SSE to unique Claude tool_result call IDs on the next upstream request', async () => {
     const items = ['a', 'b'].map((key) => ({ type: 'function_call', id: `fc_${key}`, call_id: `call_${key}`, name: 'lookup', arguments: JSON.stringify({ key }) }));
     const frames = [
@@ -85,6 +93,27 @@ describe('mapChatGptStreamToClaudeSse', () => {
     expect(events).toContainEqual({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'hello' } });
     expect(events.findIndex((event) => event.type === 'content_block_stop' && event.index === 0))
       .toBeLessThan(events.findIndex((event) => event.type === 'content_block_start' && event.index === 1));
+    expect(events.at(-1)).toEqual({ type: 'message_stop' });
+  });
+
+  it('streams status_delta as a Claude thinking block and closes it before text and message_stop', async () => {
+    const text = await collect(mapChatGptStreamToClaudeSse(request, async function* () {
+      yield { type: 'status_delta' as const, status: 'web search searching' };
+      yield { type: 'reasoning_delta' as const, text: 'thinking out loud' };
+      yield { type: 'text_delta' as const, text: 'hello' };
+      yield { type: 'done' as const, finishReason: 'stop' };
+    }()));
+    const events = parseClaudeData(text);
+    expect(events.filter((event) => event.type === 'content_block_start')).toEqual([
+      { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+      { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+    ]);
+    expect(events).toContainEqual({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'web search searching\n' } });
+    expect(events).toContainEqual({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'thinking out loud' } });
+    expect(events).toContainEqual({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'hello' } });
+    const thinkingStop = events.findIndex((event) => event.type === 'content_block_stop' && event.index === 0);
+    expect(thinkingStop).toBeLessThan(events.findIndex((event) => event.type === 'content_block_start' && event.index === 1));
+    expect(thinkingStop).toBeLessThan(events.findIndex((event) => event.type === 'message_stop'));
     expect(events.at(-1)).toEqual({ type: 'message_stop' });
   });
 

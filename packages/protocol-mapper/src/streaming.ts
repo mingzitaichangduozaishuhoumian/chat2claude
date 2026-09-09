@@ -2,10 +2,10 @@ import type { ChatGptFinishReason, ChatGptStreamEvent } from '@chatgpt-to-claude
 import type { ClaudeMessageResponse, ClaudeMessagesRequest } from '@chatgpt-to-claude/claude-protocol';
 import { encodeSseEvent } from '@chatgpt-to-claude/claude-protocol';
 import { createMessageId } from '@chatgpt-to-claude/shared';
-import { estimateTokens } from './response.js';
+import { estimateClaudeInputTokens, estimateTokens } from './response.js';
 import { mapStopReason } from './stop-reason.js';
 export function createClaudeStreamStart(request: ClaudeMessagesRequest): ClaudeMessageResponse {
-  return { id: createMessageId(), type: 'message', role: 'assistant', model: request.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: estimateTokens(JSON.stringify(request.messages)), output_tokens: 0 } };
+  return { id: createMessageId(), type: 'message', role: 'assistant', model: request.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: estimateClaudeInputTokens(request), output_tokens: 0 } };
 }
 export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesRequest, events: AsyncIterable<ChatGptStreamEvent>): AsyncIterable<string> {
   let output = '';
@@ -28,7 +28,7 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
       }
       output += event.text;
       yield encodeSseEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: nextIndex, delta: { type: 'text_delta', text: event.text } } });
-    } else if (event.type === 'reasoning_delta') {
+    } else if (event.type === 'reasoning_delta' || event.type === 'status_delta') {
       if (textBlockOpen) {
         yield encodeSseEvent({ event: 'content_block_stop', data: { type: 'content_block_stop', index: nextIndex } });
         nextIndex += 1;
@@ -38,7 +38,8 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
         yield encodeSseEvent({ event: 'content_block_start', data: { type: 'content_block_start', index: nextIndex, content_block: { type: 'thinking', thinking: '' } } });
         thinkingBlockOpen = true;
       }
-      yield encodeSseEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: nextIndex, delta: { type: 'thinking_delta', thinking: event.text } } });
+      const thinking = event.type === 'reasoning_delta' ? event.text : `${event.status}\n`;
+      yield encodeSseEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: nextIndex, delta: { type: 'thinking_delta', thinking } } });
     } else if (event.type === 'tool_call') {
       if (textBlockOpen || thinkingBlockOpen) {
         yield encodeSseEvent({ event: 'content_block_stop', data: { type: 'content_block_stop', index: nextIndex } });

@@ -59,6 +59,20 @@ it.each([
 });
 
 it.each([
+  ['response.web_search_call.searching', 'web search searching'],
+  ['response.code_interpreter_call.interpreting', 'code interpreter interpreting'],
+] as const)('emits safe %s as status_delta after upstream_ready without leaking item_id', async (type, status) => {
+  const events = [];
+  for await (const event of backend(frame({ type, item_id: 'item_secret_123' }) + frame(completed)).stream(request, context)) events.push(event);
+  expect(events).toEqual([
+    { type: 'upstream_ready' },
+    { type: 'status_delta', status },
+    { type: 'done', finishReason: 'stop' },
+  ]);
+  expect(JSON.stringify(events)).not.toContain('item_secret_123');
+});
+
+it.each([
   '', frame(created).slice(0, -2), 'data: [DONE]\n\n', 'data: {CANARY\n\n', frame({ type: 'response.created', response: 'CANARY' }),
   frame({ type: 'response.output_text.delta', delta: 5 }), frame({ type: 'response.output_item.added', item: null }),
   frame({ type: 'response.completed', response: { output: 'CANARY' } }),

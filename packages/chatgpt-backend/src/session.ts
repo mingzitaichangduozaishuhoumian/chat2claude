@@ -1,7 +1,7 @@
 import { CODEX_ORIGINATOR, codexUserAgent, normalizeCodexClientVersion } from './codex-protocol.js';
 import type { ChatGptModelDiscoveryDiagnostic, ChatGptModelDiscoveryResult, ChatGptReplayItem } from './client.js';
 import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputContentPart, ChatGptInputItem, ChatGptModelControlCapabilities, ChatGptQuotaWindow, ChatGptReasoningLevelOption, ChatGptServiceTierOption, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
-import type { ChatGptStreamEvent } from './events.js';
+import type { ChatGptSafeStatus, ChatGptStreamEvent } from './events.js';
 import { ChatGptBackendError, sanitizeBackendDiagnostic, type ChatGptBackendErrorCode, type ChatGptSafeDiagnostic } from './errors.js';
 import { ResponsesToolCalls } from './responses-tools.js';
 import { parseResponsesReplayItem, ResponsesReplay, ResponsesReplayBudget } from './responses-replay.js';
@@ -221,6 +221,8 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
           const delta = extractTextDelta(parsed);
           if (delta) pending.push({ type: 'reasoning_delta', text: delta });
         }
+        const status = typeof type === 'string' ? statusDeltaForFrameType(type) : undefined;
+        if (status) pending.push({ type: 'status_delta', status });
         const done = isDoneEvent({ ...parsed, type });
         if (done) {
           for (const toolCall of tools.finish()) {
@@ -332,9 +334,26 @@ function invalidStreamResponse(protocolReason: ChatGptSafeDiagnostic['protocolRe
 const TEXT_FRAME_TYPES = new Set(['response.output_text.delta', 'response.output_text.done', 'response.reasoning_summary_text.delta', 'response.reasoning_summary_text.done', 'response.reasoning_text.delta', 'response.reasoning_text.done', 'response.refusal.delta', 'response.refusal.done']);
 const PART_FRAME_TYPES = new Set(['response.content_part.added', 'response.content_part.done', 'response.reasoning_summary_part.added', 'response.reasoning_summary_part.done']);
 const TOOL_PROGRESS_TYPES = new Set(['response.web_search_call.in_progress', 'response.web_search_call.searching', 'response.web_search_call.completed', 'response.file_search_call.in_progress', 'response.file_search_call.searching', 'response.file_search_call.completed', 'response.code_interpreter_call.in_progress', 'response.code_interpreter_call.interpreting', 'response.code_interpreter_call.completed', 'response.image_generation_call.in_progress', 'response.image_generation_call.generating', 'response.image_generation_call.completed', 'response.mcp_call.in_progress', 'response.mcp_call.completed', 'response.mcp_list_tools.in_progress', 'response.mcp_list_tools.completed']);
+const SAFE_STATUS_BY_FRAME_TYPE = new Map<string, ChatGptSafeStatus>([
+  ['response.in_progress', 'response in progress'],
+  ['response.web_search_call.in_progress', 'web search in progress'],
+  ['response.web_search_call.searching', 'web search searching'],
+  ['response.file_search_call.in_progress', 'file search in progress'],
+  ['response.file_search_call.searching', 'file search searching'],
+  ['response.code_interpreter_call.in_progress', 'code interpreter in progress'],
+  ['response.code_interpreter_call.interpreting', 'code interpreter interpreting'],
+  ['response.image_generation_call.in_progress', 'image generation in progress'],
+  ['response.image_generation_call.generating', 'image generation generating'],
+  ['response.mcp_call.in_progress', 'mcp call in progress'],
+  ['response.mcp_list_tools.in_progress', 'mcp list tools in progress'],
+]);
 function isSupportedFrameType(type: unknown): type is string {
   return typeof type === 'string' && (TEXT_FRAME_TYPES.has(type) || PART_FRAME_TYPES.has(type) || TOOL_PROGRESS_TYPES.has(type)
     || ['response.created', 'response.in_progress', 'response.completed', 'response.output_item.added', 'response.output_item.done', 'response.function_call_arguments.delta', 'response.function_call_arguments.done'].includes(type));
+}
+
+function statusDeltaForFrameType(type: string): ChatGptSafeStatus | undefined {
+  return SAFE_STATUS_BY_FRAME_TYPE.get(type);
 }
 
 /** Validate the supported wire subset; unknown extensions cannot open the gate. */
