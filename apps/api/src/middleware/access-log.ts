@@ -35,7 +35,10 @@ export function accessLog(logger: Logger, format: AccessLogFormat = 'text'): Mid
     let terminal: Record<string, unknown> | undefined;
     const emit = (entry: HttpAccessLog) => {
       if (format === 'text' && isReadOnlyAdminPoll(entry) && (entry.phase === 'request_started' || entry.status < 400)) return;
-      if (format === 'text' && entry.phase === 'stream_lifecycle') return;
+      // Concise streams open only after their first yielded downstream event. The
+      // response-ready entry is redundant, while ACTIVE remains diagnostics-only.
+      if (format === 'text' && entry.phase === 'response_ready' && isStreaming()) return;
+      if (format === 'text' && entry.phase === 'stream_lifecycle' && entry.lifecycle !== 'start') return;
       // Legacy injected structured loggers cannot render arrow phases. Preserve their
       // terminal-only stream contract while the application logger emits both arrows.
       if (!logger.access && entry.phase === 'request_started') return;

@@ -89,6 +89,23 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
   let lifecycleHandle: ReturnType<typeof setImmediate> | undefined;
   let pendingStartLifecycle: (Record<string, unknown> & { lifecycle: 'start' }) | undefined;
   let pendingActiveLifecycle: (Record<string, unknown> & { lifecycle: 'active' }) | undefined;
+  const emitPendingLifecycle = () => {
+    if (lifecycleHandle) clearImmediate(lifecycleHandle);
+    lifecycleHandle = undefined;
+    const startFields = pendingStartLifecycle;
+    const activeFields = pendingActiveLifecycle;
+    pendingStartLifecycle = undefined;
+    pendingActiveLifecycle = undefined;
+    if (lifecycleClosed) return;
+    if (startFields) {
+      try { context.lifecycle?.(startFields); }
+      catch { /* Logging must never affect stream delivery, backpressure, or release. */ }
+    }
+    if (activeFields && !lifecycleClosed) {
+      try { context.lifecycle?.(activeFields); }
+      catch { /* Logging must never affect stream delivery, backpressure, or release. */ }
+    }
+  };
   const clearLifecycle = () => {
     lifecycleClosed = true;
     pendingStartLifecycle = undefined;
@@ -102,22 +119,7 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
     if (lifecycle === 'start') pendingStartLifecycle ??= fields as Record<string, unknown> & { lifecycle: 'start' };
     else pendingActiveLifecycle = fields as Record<string, unknown> & { lifecycle: 'active' };
     if (lifecycleHandle) return;
-    lifecycleHandle = setImmediate(() => {
-      lifecycleHandle = undefined;
-      const startFields = pendingStartLifecycle;
-      const activeFields = pendingActiveLifecycle;
-      pendingStartLifecycle = undefined;
-      pendingActiveLifecycle = undefined;
-      if (lifecycleClosed) return;
-      if (startFields) {
-        try { context.lifecycle?.(startFields); }
-        catch { /* Logging must never affect stream delivery, backpressure, or release. */ }
-      }
-      if (activeFields && !lifecycleClosed) {
-        try { context.lifecycle?.(activeFields); }
-        catch { /* Logging must never affect stream delivery, backpressure, or release. */ }
-      }
-    });
+    lifecycleHandle = setImmediate(emitPendingLifecycle);
   };
   const countDownstreamEvent = (event: string) => {
     downstreamEventCount += 1;
@@ -139,6 +141,10 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
   const finish = () => {
     if (finished) return;
     finished = true;
+    // A naturally drained stream may complete before setImmediate runs. Preserve
+    // the first-event observation before the terminal entry without waiting while
+    // events are still being delivered; cancellation intentionally clears it.
+    if (outcome !== 'cancelled') emitPendingLifecycle();
     clearLifecycle();
     try { tracker.finish(outcome); } catch { /* Statistics are observational too. */ }
     finally { accountPool.release(lease, accountReleaseError(releaseError)); }

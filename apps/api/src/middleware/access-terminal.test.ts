@@ -38,7 +38,7 @@ it('emits exactly one safe text terminal for success, cancellation, and failure'
   expect(logger.error).toHaveBeenCalledTimes(0); // terminal ownership is idempotent
   const direct = (await import('@chatgpt-to-claude/shared')).createLogger();
   direct.access!({ requestId: '12345678', method: 'POST', path: '/v1/messages', query: {}, status: 200, durationMs: 32, durationKind: 'stream_terminal', phase: 'stream_terminal', peerIp: 'unknown', outcome: 'failure', code: 'timeout' });
-  expect(sink).toHaveBeenCalledWith(expect.stringContaining('--> STREAM FAILED | 0.032s | events=0 bytes=0 | timeout'));
+  expect(sink).toHaveBeenCalledWith(expect.stringContaining('--> STREAM FAILED | total=0.032s | events=0 bytes=0 | timeout'));
 });
 
 it.each([

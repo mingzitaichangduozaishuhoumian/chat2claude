@@ -74,9 +74,11 @@ export function createLogger(level: LogLevel = 'info'): Logger {
       const fields = phase === 'request_started'
         ? [prefix, '<--', target]
         : phase === 'stream_terminal'
-          ? [prefix, '-->', `STREAM ${terminalStatus} | ${formatAccessDuration(entry.durationMs)} | ${streamMetrics}`]
+          ? [prefix, '-->', `STREAM ${terminalStatus} | total=${formatAccessDuration(entry.durationMs)} | ${streamMetrics}`]
           : phase === 'stream_lifecycle'
-            ? [prefix, '-->', `STREAM ${(entry.lifecycle ?? 'active').toUpperCase()} | ${formatAccessDuration(entry.durationMs)} | ${streamMetrics}`]
+            ? entry.lifecycle === 'start' && format === 'text'
+              ? [prefix, '-->', `STREAM OPEN | ${entry.status} | ttfb=${formatAccessDuration(entry.durationMs)} | ${target}`]
+              : [prefix, '-->', `STREAM ${(entry.lifecycle ?? 'active').toUpperCase()} | ${formatAccessDuration(entry.durationMs)} | ${streamMetrics}`]
             : [prefix, '-->', `${entry.status}${entry.stream ? ' STREAMING' : ''} | ${formatAccessDuration(entry.durationMs)} | ${target}`];
       if (format === 'detailed' && phase === 'response_ready') fields.push(
         ...(entry.stream ? ['stream'] : []), ...(entry.reason ? [`reason=${entry.reason}`] : []), ...(entry.outcome ? [`outcome=${entry.outcome}`] : []),

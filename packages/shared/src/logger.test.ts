@@ -24,12 +24,12 @@ it('aligns text columns, outgoing query, and failure-only terminal', () => {
     ]);
     for (const outcome of ['success', 'cancelled', 'failure'] as const) logger.access!({ ...entry, durationKind: 'stream_terminal', phase: 'stream_terminal', outcome, durationMs: 17598, code: 'invalid_response' });
     expect(log).toHaveBeenCalledTimes(3);
-    expect(log.mock.calls[2][0]).toContain('--> STREAM DONE | 17.598s | events=0 bytes=0');
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('--> STREAM CANCELLED | 17.598s | events=0 bytes=0'));
+    expect(log.mock.calls[2][0]).toContain('--> STREAM DONE | total=17.598s | events=0 bytes=0');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('--> STREAM CANCELLED | total=17.598s | events=0 bytes=0'));
     expect(error).toHaveBeenCalledTimes(1);
-    expect(error).toHaveBeenCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [ERROR] [ opus  ] --> STREAM FAILED | 17.598s | events=0 bytes=0 | invalid_response');
+    expect(error).toHaveBeenCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [ERROR] [ opus  ] --> STREAM FAILED | total=17.598s | events=0 bytes=0 | invalid_response');
     logger.access!({ ...entry, durationKind: 'stream_terminal', phase: 'stream_terminal', outcome: 'failure', durationMs: 120000, code: 'invalid_response', protocolReason: 'missing_terminal', timeoutKind: 'stream_total', incompleteReason: 'max_output_tokens' });
-    expect(error).toHaveBeenLastCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [ERROR] [ opus  ] --> STREAM FAILED | 120.000s | events=0 bytes=0 | invalid_response protocolReason=missing_terminal timeoutKind=stream_total incompleteReason=max_output_tokens');
+    expect(error).toHaveBeenLastCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [ERROR] [ opus  ] --> STREAM FAILED | total=120.000s | events=0 bytes=0 | invalid_response protocolReason=missing_terminal timeoutKind=stream_total incompleteReason=max_output_tokens');
     logger.access!({ ...entry, model: 'long-model\n\x1b[31m', requestId: '1234567\nINJECT' });
     expect(log.mock.calls[3][0]).toContain('[1234567?] [INFO ] [long-mo]');
     expect(log.mock.calls[3][0]).not.toMatch(/[\r\n\x1b]/);
@@ -101,7 +101,7 @@ describe('dedicated access logger', () => {
         '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> 200 STREAMING | 0.029s | POST /v1/messages?beta',
         '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> STREAM START | 0.029s | events=1 bytes=12',
         '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> STREAM ACTIVE | 5.123s | events=3 bytes=40',
-        '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> STREAM DONE | 0.029s | events=2 bytes=10',
+        '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> STREAM DONE | total=0.029s | events=2 bytes=10',
       ]);
     } finally { vi.useRealTimers(); }
   });

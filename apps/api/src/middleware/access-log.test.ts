@@ -42,7 +42,7 @@ describe('accessLog', () => {
     } finally { sink.mockRestore(); }
   });
 
-  it('keeps concise text stream access logging to terminal outcomes only', async () => {
+  it('merges concise text stream response readiness into its first-event open entry', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const app = new Hono();
@@ -60,11 +60,42 @@ describe('accessLog', () => {
     lifecycle!({ lifecycle: 'active', downstreamEventCount: 4, downstreamBodyBytes: 64 });
     terminal!({ outcome: 'success', downstreamEventCount: 4, downstreamBodyBytes: 64 });
 
-    expect(log.mock.calls.map(([line]) => String(line)).filter(line => line.includes('STREAM START') || line.includes('STREAM ACTIVE'))).toHaveLength(0);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('--> STREAM DONE |'));
+    const streamLines = log.mock.calls.map(([line]) => String(line)).filter(line => line.includes('STREAM'));
+    expect(streamLines).toEqual([
+      expect.stringContaining('--> STREAM OPEN | 200 | ttfb='),
+      expect.stringContaining('--> STREAM DONE | total='),
+    ]);
+    expect(streamLines.join('\n')).not.toMatch(/STREAMING|START|ACTIVE|events=1|bytes=12/);
     expect(warn).not.toHaveBeenCalled();
     log.mockRestore();
     warn.mockRestore();
+  });
+
+  it.each(['detailed', 'json'] as const)('preserves response-ready and lifecycle diagnostics in %s', async (format) => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), access: vi.fn() };
+    const app = new Hono();
+    app.use('*', accessLog(logger, format));
+    let lifecycle: ReturnType<typeof getAccessLogStreamLifecycle>;
+    let terminal: ReturnType<typeof getAccessLogTerminal>;
+    app.get('/v1/messages', c => {
+      lifecycle = getAccessLogStreamLifecycle(c);
+      terminal = getAccessLogTerminal(c);
+      return new Response(new ReadableStream(), { headers: { 'content-type': 'text/event-stream' } });
+    });
+
+    await app.request('/v1/messages?beta=enabled');
+    lifecycle!({ lifecycle: 'start', downstreamEventCount: 1, downstreamBodyBytes: 12 });
+    lifecycle!({ lifecycle: 'active', downstreamEventCount: 4, downstreamBodyBytes: 64 });
+    terminal!({ outcome: 'success', downstreamEventCount: 4, downstreamBodyBytes: 64 });
+
+    const entries = logger.access.mock.calls.map(([entry]) => entry as HttpAccessLog);
+    expect(entries.map(entry => entry.phase)).toEqual(['request_started', 'response_ready', 'stream_lifecycle', 'stream_lifecycle', 'stream_terminal']);
+    expect(entries.slice(1)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'response_ready', status: 200 }),
+      expect.objectContaining({ phase: 'stream_lifecycle', lifecycle: 'start', downstreamEventCount: 1, downstreamBodyBytes: 12 }),
+      expect.objectContaining({ phase: 'stream_lifecycle', lifecycle: 'active', downstreamEventCount: 4, downstreamBodyBytes: 64 }),
+      expect.objectContaining({ phase: 'stream_terminal', outcome: 'success', downstreamEventCount: 4, downstreamBodyBytes: 64 }),
+    ]));
   });
 
   it.each(['text', 'json'] as const)('drops non-enum reasons in %s and does not inspect or delay an SSE body', async (format) => {

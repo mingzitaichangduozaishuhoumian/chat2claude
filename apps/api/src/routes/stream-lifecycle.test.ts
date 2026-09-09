@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { releaseAccountWhenDone } from './stream-lifecycle.js';
 import { ChatGptBackendError } from '@chatgpt-to-claude/chatgpt-backend';
-import { accessLog, getAccessLogTerminal } from '../middleware/access-log.js';
+import { createLogger } from '@chatgpt-to-claude/shared';
+import { accessLog, getAccessLogStreamLifecycle, getAccessLogTerminal } from '../middleware/access-log.js';
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 for (const route of ['/v1/messages', '/v1/chat/completions', '/v1/responses'] as const) {
@@ -112,6 +113,33 @@ describe('releaseAccountWhenDone downstream metrics', () => {
     expect(order).toEqual(['finish', 'release']);
     await vi.runAllTimersAsync();
     expect(lifecycle).not.toHaveBeenCalled();
+  });
+
+  it('emits OPEN before terminal when a one-event stream naturally completes before lifecycle flush', async () => {
+    vi.useFakeTimers({ toFake: ['setImmediate', 'clearImmediate'] });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const app = new Hono();
+    let owner!: ReturnType<typeof releaseAccountWhenDone>;
+    app.use('*', accessLog({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), access: createLogger().access }, 'text'));
+    app.get('/v1/messages', c => {
+      owner = releaseAccountWhenDone(
+        { release: vi.fn() } as never, {} as never, (async function* () { yield 'data: one\n\n'; })(), async function* () {}, { finish: vi.fn() } as never,
+        new AbortController().signal, { route: '/v1/messages', lifecycle: getAccessLogStreamLifecycle(c), terminal: getAccessLogTerminal(c) },
+      );
+      return new Response(new ReadableStream(), { headers: { 'content-type': 'text/event-stream' } });
+    });
+
+    await app.request('/v1/messages');
+    const iterator = owner[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({ done: false, value: 'data: one\n\n' });
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+
+    const streamLines = log.mock.calls.map(([line]) => String(line)).filter(line => line.includes('STREAM'));
+    expect(streamLines).toEqual([
+      expect.stringContaining('--> STREAM OPEN | 200 | ttfb='),
+      expect.stringContaining('--> STREAM DONE | total='),
+    ]);
+    log.mockRestore();
   });
 
   it('emits only the queued stream start lifecycle before terminal statistics', async () => {

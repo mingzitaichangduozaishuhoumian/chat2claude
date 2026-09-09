@@ -44,7 +44,9 @@ function fixture(createRoute: typeof createMessagesRoute | typeof createOpenAiCh
   const state = new AdminOperationalState({ path: 'unused.json', debounceMs: 60000 });
   const log = logger();
   const app = new Hono();
-  app.use('*', accessLog(log));
+  // These assertions cover internal lifecycle diagnostics, which concise text
+  // intentionally suppresses for actual SSE streams.
+  app.use('*', accessLog(log, 'detailed'));
   app.route('/', createRoute({ backend, accountPool: pool, modelRegistry, requestLog: new RequestLog(), operationalState: state, logger: log, backendProvider: 'session', ...extra }));
   return { app, pool, state, log, release: vi.spyOn(pool, 'release') };
 }
@@ -193,7 +195,7 @@ for (const [createRoute, path, body] of routes) {
     expect(response.status).toBe(200);
     expect(text).not.toMatch(/event: message_stop|"finish_reason":"stop"|event: response.completed/);
     assertTerminal(f, 'failure', 200);
-    expect(f.log.access).toHaveBeenCalledWith(expect.objectContaining({ code: 'invalid_response' }), 'text');
+    expect(f.log.access).toHaveBeenCalledWith(expect.objectContaining({ code: 'invalid_response' }), 'detailed');
   });
 
   it.each([
@@ -208,7 +210,7 @@ for (const [createRoute, path, body] of routes) {
     expect(response.status).toBe(200);
     expect(text).not.toMatch(/CANARY|event: message_stop|event: response.completed|"finish_reason":"stop"/);
     assertTerminal(f, 'failure', 200);
-    expect(f.log.access).toHaveBeenCalledWith(expect.objectContaining({ code: 'invalid_response', protocolStage: expect.any(String), protocolReason }), 'text');
+    expect(f.log.access).toHaveBeenCalledWith(expect.objectContaining({ code: 'invalid_response', protocolStage: expect.any(String), protocolReason }), 'detailed');
   });
 
   it(`${path}: unknown future event after readiness stays ignored`, async () => {
@@ -413,7 +415,7 @@ for (const [createRoute, path, body] of routes) {
     await vi.advanceTimersByTimeAsync(250);
     assertTerminal(f, winner === 'cancel' ? 'cancelled' : 'failure', 200);
     expect(upstream.locked).toBe(false);
-    if (winner === 'timeout') expect(f.log.access).toHaveBeenCalledWith(expect.objectContaining({ timeoutKind: 'stream_idle' }), 'text');
+    if (winner === 'timeout') expect(f.log.access).toHaveBeenCalledWith(expect.objectContaining({ timeoutKind: 'stream_idle' }), 'detailed');
   });
   it.each(['response_headers', 'stream_bootstrap'] as const)(`${path}: %s timeout returns JSON 504`, async kind => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://test', responseHeaderTimeoutMs: 20, streamBootstrapTimeoutMs: 20,
@@ -423,6 +425,6 @@ for (const [createRoute, path, body] of routes) {
     expect(response.status).toBe(504);
     expect(response.headers.get('content-type')).toContain('application/json');
     assertTerminal(f, 'failure', 504);
-    expect(f.log.access).toHaveBeenCalledWith(expect.objectContaining({ timeoutKind: kind }), 'text');
+    expect(f.log.access).toHaveBeenCalledWith(expect.objectContaining({ timeoutKind: kind }), 'detailed');
   });
 }
