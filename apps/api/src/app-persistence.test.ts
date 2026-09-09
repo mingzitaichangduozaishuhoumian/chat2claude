@@ -21,6 +21,17 @@ afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
+async function localAdminHeaders(app: { request: (input: string, requestInit?: RequestInit) => Response | Promise<Response> }, contentType = false): Promise<Record<string, string>> {
+  const response = await app.request('http://127.0.0.1:3000/admin', { headers: { host: '127.0.0.1:3000' } });
+  const cookie = response.headers.get('set-cookie') ?? '';
+  return {
+    ...(contentType ? { 'content-type': 'application/json' } : {}),
+    host: '127.0.0.1:3000',
+    cookie,
+    origin: 'http://127.0.0.1:3000',
+  };
+}
+
 describe('createApp runtime state hydration', () => {
   it('rolls back a failed startup catalog commit and still discovers the next account', async () => {
     const env = loadEnv({ DATA_DIR: temporaryDirectory(), CHATGPT_BACKEND: 'session', API_KEYS: 'test-key' });
@@ -75,7 +86,7 @@ describe('createApp runtime state hydration', () => {
     new DurableRuntimeState({ accountPool, runtimeApiKeys, store: new RuntimeStateStore({ path: env.runtimeStatePath }) }).persist();
 
     const app = createApp(env);
-    const response = await app.request('/admin/api/accounts', { headers: { 'x-api-key': apiKey } });
+    const response = await app.request('http://127.0.0.1:3000/admin/api/accounts', { headers: await localAdminHeaders(app) });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ accounts: expect.arrayContaining([expect.objectContaining({ id: 'persisted-session', hasSecret: true })]) });
     await app.dispose();
@@ -86,7 +97,7 @@ describe('createApp runtime state hydration', () => {
     const env = loadEnv({ DATA_DIR: dataDir });
     new RuntimeStateStore({ path: env.runtimeStatePath }).save({ version: 1, accounts: [], runtimeApiKeys: { keys: ['runtime-key'], namedKeys: {} } });
     const app = createApp(env);
-    const response = await app.request('/admin/api/accounts', { headers: { 'x-api-key': 'runtime-key' } });
+    const response = await app.request('http://127.0.0.1:3000/admin/api/accounts', { headers: await localAdminHeaders(app) });
     expect(await response.json()).toEqual({ accounts: [] });
     await app.dispose();
   });
@@ -118,7 +129,7 @@ describe('createApp runtime state hydration', () => {
     new DurableRuntimeState({ accountPool, runtimeApiKeys, store }).persist();
 
     const app = createApp(env);
-    const response = await app.request('/admin/api/accounts', { headers: { 'x-api-key': apiKey } });
+    const response = await app.request('http://127.0.0.1:3000/admin/api/accounts', { headers: await localAdminHeaders(app) });
     expect(await response.json()).toMatchObject({ accounts: [expect.objectContaining({ id: 'persisted-session', provider: 'chatgpt-session', hasSecret: true })] });
     expect((await store.load())?.accounts).toEqual([expect.objectContaining({ id: 'persisted-session', provider: 'chatgpt-session' })]);
     expect((await store.load())?.runtimeApiKeys).toEqual(runtimeApiKeys.exportState());
@@ -171,7 +182,7 @@ describe('createApp runtime state hydration', () => {
       const restartedEnv = loadEnv({ DATA_DIR: dataDir, CHATGPT_BACKEND: 'session' });
       const restartedApp = createApp(restartedEnv, { backend: new AccountCatalogBackend({}, true) });
       try {
-        const models = await restartedApp.request('/admin/api/models', { headers: { 'x-api-key': provisioned.apiKey } });
+        const models = await restartedApp.request('http://127.0.0.1:3000/admin/api/models', { headers: await localAdminHeaders(restartedApp) });
         expect(models.status).toBe(200);
         expect(await models.json()).toMatchObject({
           discovered: expect.arrayContaining([expect.objectContaining({
@@ -341,23 +352,24 @@ describe('createApp runtime state hydration', () => {
     });
     expect(provisionResponse.status).toBe(200);
     const provisioned = await provisionResponse.json() as { apiKey: string };
-    const headers = { 'content-type': 'application/json', 'x-api-key': provisioned.apiKey };
-    const customMapping = await initialApp.request('/admin/api/models/sonnet', {
+    const clientHeaders = { 'content-type': 'application/json', 'x-api-key': provisioned.apiKey };
+    const adminHeaders = await localAdminHeaders(initialApp, true);
+    const customMapping = await initialApp.request('http://127.0.0.1:3000/admin/api/models/sonnet', {
       method: 'PATCH',
-      headers,
+      headers: adminHeaders,
       body: JSON.stringify({ backendModel: 'custom-second-model' }),
     });
     expect(customMapping.status).toBe(200);
     await initialApp.dispose();
 
     const restartedApp = createApp(env);
-    const models = await restartedApp.request('/admin/api/models', { headers: { 'x-api-key': provisioned.apiKey } });
+    const models = await restartedApp.request('http://127.0.0.1:3000/admin/api/models', { headers: await localAdminHeaders(restartedApp) });
     expect(await models.json()).toMatchObject({ aliases: expect.arrayContaining([
       expect.objectContaining({ id: 'sonnet', backendModel: 'custom-second-model', status: 'bound' }),
     ]) });
     const response = await restartedApp.request('/v1/messages', {
       method: 'POST',
-      headers,
+      headers: clientHeaders,
       body: JSON.stringify({ model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'after restart' }] }),
     });
     expect(response.status).toBe(200);

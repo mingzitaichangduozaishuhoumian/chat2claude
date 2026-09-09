@@ -1,5 +1,5 @@
 import { setImmediate, clearImmediate } from 'node:timers';
-import { ChatGptBackendError, sanitizeBackendDiagnostic } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, sanitizeBackendDiagnostic, sanitizeReplayDebugDiagnostic } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { createLogger, type Logger } from '@chatgpt-to-claude/shared';
 import type { Account, AccountPool } from '../services/account-pool.js';
@@ -42,6 +42,14 @@ interface StreamLogContext {
 
 const BACKEND_ERROR_CODES = new Set(['unauthorized', 'rate_limited', 'network_error', 'timeout', 'upstream_error', 'invalid_response', 'invalid_request']);
 
+function logReplaySnapshotDebug(error: unknown, logger: Logger, metadata: Record<string, unknown>): void {
+  if (!(error instanceof ChatGptBackendError)) return;
+  const replay = sanitizeReplayDebugDiagnostic(error.replayDebugDiagnostic);
+  if (!replay) return;
+  try { logger.debug('ChatGPT replay snapshot validation failed', { ...metadata, replay }); }
+  catch { /* Debug logging must not replace the upstream failure. */ }
+}
+
 function safeErrorFields(error: unknown) {
   const code = error instanceof ChatGptBackendError && BACKEND_ERROR_CODES.has(error.code) ? error.code : 'internal_error';
   const exceptionFamily = error instanceof ChatGptBackendError ? 'ChatGptBackendError'
@@ -56,6 +64,7 @@ export function logHttpRequestFailure(error: unknown, context: StreamLogContext,
   const logger = context.logger ?? createLogger();
   const metadata = { route: context.route, ...(context.requestId ? { requestId: context.requestId } : {}) };
   const outcome = requestErrorOutcome(error, signal);
+  if (outcome === 'failure') logReplaySnapshotDebug(error, logger, metadata);
   try {
     if (context.terminal) {
       context.terminal({ ...sanitizeRequestMetrics(context.metrics), outcome, ...(outcome === 'failure' ? safeErrorFields(error) : {}) });
@@ -76,7 +85,6 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
   let downstreamEventCount = 0;
   let downstreamBodyBytes = 0;
   let lifecycleStarted = false;
-  let lastActiveLogAt = 0;
   let lifecycleClosed = false;
   let lifecycleHandle: ReturnType<typeof setImmediate> | undefined;
   let pendingStartLifecycle: (Record<string, unknown> & { lifecycle: 'start' }) | undefined;
@@ -116,15 +124,11 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
     downstreamBodyBytes += Buffer.byteLength(event, 'utf8');
     if (!lifecycleStarted) {
       lifecycleStarted = true;
-      lastActiveLogAt = performance.now();
       scheduleLifecycle('start');
       return;
     }
-    const now = performance.now();
-    if (now - lastActiveLogAt >= 5_000) {
-      lastActiveLogAt = now;
-      scheduleLifecycle('active');
-    }
+    // Progress is accounted on every downstream event and reported on the
+    // terminal access entry. Avoid per-chunk ACTIVE access-log spam.
   };
   let cancelling: Promise<void> | undefined;
   // Body cancellation is distinct from prepared.close()'s internal I/O abort.
@@ -156,7 +160,10 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
       if (!finished) {
         releaseError = error;
         outcome = requestErrorOutcome(error, callerSignal);
-        if (outcome === 'failure') failureFields = safeErrorFields(error);
+        if (outcome === 'failure') {
+          failureFields = safeErrorFields(error);
+          logReplaySnapshotDebug(error, logger, metadata);
+        }
       }
       await closeUpstream?.();
       if (!finished) {

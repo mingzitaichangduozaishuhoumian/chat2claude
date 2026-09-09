@@ -19,6 +19,47 @@ export type ChatGptSafeDiagnostic = Readonly<{
   [K in keyof typeof DIAGNOSTIC_VALUES]?: typeof DIAGNOSTIC_VALUES[K][number] | 'unknown';
 } & { httpStatus?: number }>;
 
+/** Debug-only shape data for replay validation. It intentionally contains no provider values. */
+export interface ChatGptReplayDebugDiagnostic {
+  eventType: 'response.output_item.done' | 'response.completed' | 'other';
+  topLevelFields: string[];
+  itemType: 'reasoning' | 'function_call' | 'message' | 'other' | 'missing';
+  itemStatus: 'in_progress' | 'completed' | 'incomplete' | 'other' | 'missing';
+  callerFields?: string[];
+  callerType?: 'direct' | 'program' | 'other' | 'missing';
+  outputIndex: 'valid' | 'invalid' | 'missing';
+  responseOutputCount?: number;
+  mismatchReason?: 'validation_failure' | 'duplicate_identity_conflict' | 'done_snapshot_missing' | 'done_snapshot_mismatch' | 'output_snapshot_conflict' | 'output_index_mismatch';
+}
+
+const REPLAY_DEBUG_FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+const REPLAY_DEBUG_MISMATCH_REASONS = new Set<NonNullable<ChatGptReplayDebugDiagnostic['mismatchReason']>>([
+  'validation_failure', 'duplicate_identity_conflict', 'done_snapshot_missing', 'done_snapshot_mismatch', 'output_snapshot_conflict', 'output_index_mismatch',
+]);
+
+/** Copy the bounded, categorical replay shape only; values from the provider never enter logs. */
+export function sanitizeReplayDebugDiagnostic(value: unknown): ChatGptReplayDebugDiagnostic | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Record<string, unknown>;
+  const eventType = raw.eventType === 'response.output_item.done' || raw.eventType === 'response.completed' ? raw.eventType : 'other';
+  const category = <T extends string>(candidate: unknown, allowed: readonly T[], fallback: T) => typeof candidate === 'string' && (allowed as readonly string[]).includes(candidate) ? candidate as T : fallback;
+  const fields = (candidate: unknown) => Array.isArray(candidate)
+    ? [...new Set(candidate.filter((field): field is string => typeof field === 'string' && REPLAY_DEBUG_FIELD_NAME.test(field)))].sort().slice(0, 32) : [];
+  const diagnostic: ChatGptReplayDebugDiagnostic = {
+    eventType,
+    topLevelFields: fields(raw.topLevelFields),
+    itemType: category(raw.itemType, ['reasoning', 'function_call', 'message', 'other', 'missing'], 'missing'),
+    itemStatus: category(raw.itemStatus, ['in_progress', 'completed', 'incomplete', 'other', 'missing'], 'missing'),
+    outputIndex: category(raw.outputIndex, ['valid', 'invalid', 'missing'], 'missing'),
+  };
+  const callerFields = fields(raw.callerFields);
+  if (callerFields.length) diagnostic.callerFields = callerFields;
+  if (raw.callerType !== undefined) diagnostic.callerType = category<NonNullable<ChatGptReplayDebugDiagnostic['callerType']>>(raw.callerType, ['direct', 'program', 'other', 'missing'], 'missing');
+  if (typeof raw.responseOutputCount === 'number' && Number.isSafeInteger(raw.responseOutputCount) && raw.responseOutputCount >= 0 && raw.responseOutputCount <= 128) diagnostic.responseOutputCount = raw.responseOutputCount;
+  if (typeof raw.mismatchReason === 'string' && REPLAY_DEBUG_MISMATCH_REASONS.has(raw.mismatchReason as NonNullable<ChatGptReplayDebugDiagnostic['mismatchReason']>)) diagnostic.mismatchReason = raw.mismatchReason as NonNullable<ChatGptReplayDebugDiagnostic['mismatchReason']>;
+  return Object.freeze(diagnostic);
+}
+
 /** Copy allowlisted primitives only, including at runtime for non-TypeScript callers. */
 export function sanitizeBackendDiagnostic(value: unknown): ChatGptSafeDiagnostic | undefined {
   if (!value || typeof value !== 'object') return undefined;
@@ -40,6 +81,7 @@ export interface ChatGptBackendErrorOptions {
   cause?: unknown;
   discoveryDiagnostic?: ChatGptModelDiscoveryDiagnostic;
   safeDiagnostic?: ChatGptSafeDiagnostic;
+  replayDebugDiagnostic?: ChatGptReplayDebugDiagnostic;
 }
 
 export class ChatGptBackendError extends Error {
@@ -48,6 +90,7 @@ export class ChatGptBackendError extends Error {
   public override readonly cause?: unknown;
   public readonly discoveryDiagnostic?: ChatGptModelDiscoveryDiagnostic;
   public readonly safeDiagnostic?: ChatGptSafeDiagnostic;
+  public readonly replayDebugDiagnostic?: ChatGptReplayDebugDiagnostic;
 
   constructor(message: string, codeOrCause?: ChatGptBackendErrorCode | unknown, options: ChatGptBackendErrorOptions = {}) {
     const code = isBackendErrorCode(codeOrCause) ? codeOrCause : options.code ?? 'upstream_error';
@@ -59,6 +102,7 @@ export class ChatGptBackendError extends Error {
     this.cause = cause;
     this.discoveryDiagnostic = options.discoveryDiagnostic;
     this.safeDiagnostic = sanitizeBackendDiagnostic(options.safeDiagnostic);
+    this.replayDebugDiagnostic = sanitizeReplayDebugDiagnostic(options.replayDebugDiagnostic);
   }
 }
 

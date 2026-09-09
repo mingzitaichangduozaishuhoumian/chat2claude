@@ -9,6 +9,8 @@ let accountsCache = [];
 let quotasCache = [];
 let modelsCache = { aliases: [], discovered: [] };
 let apiKeysCache = [];
+let requestDiagnosticsCache = [];
+let requestDiagnosticsState = 'loading';
 // Never restore raw credentials from DOM, key metadata or browser storage.
 let currentSetupRuntimeKey = '';
 let runtimeKeyGeneration = 0;
@@ -354,6 +356,21 @@ function clearOneTimeRuntimeApiKey() {
   document.getElementById('runtime-api-key-once').hidden = true;
 }
 
+async function loadRequestDiagnostics() {
+  requestDiagnosticsState = 'loading';
+  document.getElementById('request-diagnostics').innerHTML = '<div class="empty">正在读取安全请求摘要。</div>';
+  try {
+    const body = await getJson('/admin/api/diagnostics/requests');
+    requestDiagnosticsCache = Array.isArray(body.requests) ? body.requests : [];
+    requestDiagnosticsState = 'loaded';
+    document.getElementById('request-diagnostics').innerHTML = renderRequestInspector(requestDiagnosticsCache);
+  } catch (error) {
+    requestDiagnosticsState = 'error';
+    document.getElementById('request-diagnostics').innerHTML = loadFailureHtml('请求摘要加载失败，未加载。', error);
+  }
+}
+document.getElementById('refresh-request-diagnostics').addEventListener('click', loadRequestDiagnostics);
+
 async function loadAccounts() {
   try {
     const body = await getJson('/admin/api/accounts');
@@ -646,6 +663,6 @@ async function withPendingButton(button, label, action) { const original = butto
 
 void loadQuotas();
 renderOverviewPanel();
-verifyLocalAdminSession().then(async () => { await Promise.all([loadAccounts(), loadApiKeys(), loadModels()]); await restoreOAuthFlow(); });
+verifyLocalAdminSession().then(async () => { await Promise.all([loadAccounts(), loadApiKeys(), loadModels(), loadRequestDiagnostics()]); await restoreOAuthFlow(); });
 `;
 }

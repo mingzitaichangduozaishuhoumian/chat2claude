@@ -7,6 +7,8 @@ declare module 'hono' {
   interface ContextVariableMap {
     /** Present only after successful API-key authentication. */
     reasoningReplayOwner: string | undefined;
+    /** Present after admin middleware identifies the accepted credential family. */
+    adminAuthKind: 'env_key' | 'runtime_key' | 'local_session' | undefined;
   }
 }
 
@@ -53,9 +55,13 @@ export function adminApiAuth(apiKeys: string[], runtimeApiKeys: RuntimeApiKeys, 
     if (!hasAnyKey && options.allowAnonymousBootstrap && isTrustedLocalRequestHost(requestHost, c.req.url) && isBootstrapAdminApiPath(path)) return next();
 
     const apiKey = extractApiKey(c.req.header('x-api-key'), c.req.header('authorization'));
-    const ownerId = ownerIdForApiKey(apiKey, envKeys, runtimeApiKeys);
-    if (ownerId) {
-      c.set('ownerId', ownerId);
+    if (apiKey && runtimeApiKeys.has(apiKey)) {
+      c.header('cache-control', 'no-store');
+      return c.json({ type: 'error', error: { type: 'permission_error', message: 'Runtime API keys cannot access Admin API routes.' } }, 403);
+    }
+    if (apiKey && envKeys.has(apiKey)) {
+      c.set('ownerId', ownerIdFromKey(apiKey));
+      c.set('adminAuthKind', 'env_key');
       return next();
     }
 
@@ -64,6 +70,7 @@ export function adminApiAuth(apiKeys: string[], runtimeApiKeys: RuntimeApiKeys, 
         return c.json({ type: 'error', error: { type: 'permission_error', message: 'Admin browser session mutations require a same-origin Origin header' } }, 403);
       }
       c.set('ownerId', 'local_admin_session');
+      c.set('adminAuthKind', 'local_session');
       return next();
     }
 

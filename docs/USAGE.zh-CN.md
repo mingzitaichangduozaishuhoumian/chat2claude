@@ -95,15 +95,15 @@ OAuth 回跳只会在 `sessionStorage` 保存短期 `{ flowId, origin }` 定位�
 
 ## 4. Runtime API Key、Admin API Key 与静态 API_KEYS
 
-三者的**命名用途**不同，但当前服务端没有把 Runtime Key 与 Admin Key 做成完全隔离的认证集合：
+三者的**命名用途**不同，且当前服务端会把 Runtime API Key 限制为客户端凭据：
 
 | 凭据 | 主要用途 | 认证位置 |
 | --- | --- | --- |
-| Runtime API Key | 客户端调用 `/v1/*`；当前实现中有效 Runtime Key 也可访问受保护的 `/admin/api/*` | `Authorization: Bearer <key>` 或 `x-api-key: <key>` |
+| Runtime API Key | 客户端调用 `/v1/*`；受保护的 `/admin/api/*` 路由会拒绝 Runtime Key | `Authorization: Bearer <key>` 或 `x-api-key: <key>` |
 | Admin API Key | 操作者自行连通服务后外部调用 `/admin/api/*` 的完整管理凭据；不得作为普通用户、Claude 或 API 凭据分享 | `Authorization: Bearer <key>` 或 `x-api-key: <key>` |
 | `API_KEYS` | 启动前配置的服务端静态允许列表；可作为 `/v1/*` 和远程 Admin API 的 key | 同上 |
 
-因此 Runtime API Key 与 Admin API Key 是签发、用途和管理习惯上的区分，不是当前认证层面的安全隔离；普通客户端应使用 Runtime API Key，泄露 Runtime Key 也应按可能暴露管理 API 处理。
+因此 Runtime API Key 与 Admin API Key 在签发、用途和授权行为上都已区分；普通客户端应使用 Runtime API Key，Admin API Key 仍是完整管理凭据。
 
 优先在宿主机本地浏览器使用 HttpOnly 管理会话。只有操作者自行通过 LAN、VPN/mesh VPN、SSH 隧道、反向隧道/NAT 穿透或反向代理使服务可达后，才从其他浏览器、设备或自动化使用 Admin API Key；本项目不创建隧道、不配置 NAT、也不发布服务。
 
@@ -212,6 +212,57 @@ curl --fail "$ANTHROPIC_BASE_URL/healthz"
 
 该文件含访问凭据，不要提交仓库、同步到公共位置或分享给他人。修改后关闭已有 Claude Code 会话并重新加载终端或 VS Code。
 
+### 客户端兼容速查
+
+Base URL 必须匹配客户端族。会自行追加 `/v1/...` 的客户端应使用服务根地址，例如 Claude Code 和 Anthropic TypeScript SDK。OpenAI 兼容客户端通常需要以 `/v1` 结尾的版本化地址。不能把根地址给不会自行追加 `/v1` 的客户端，也不能重复追加 `/v1`。
+
+Claude Code 使用上文的根地址。Anthropic TypeScript SDK 同样使用根地址：
+
+```ts
+import Anthropic from '@anthropic-ai/sdk';
+
+const client = new Anthropic({
+  baseURL: 'http://127.0.0.1:3000',
+  apiKey: '<runtime-api-key>',
+});
+const message = await client.messages.create({
+  model: 'sonnet', max_tokens: 64,
+  messages: [{ role: 'user', content: 'Hello' }],
+});
+```
+
+OpenAI TypeScript SDK 使用版本化地址和已支持的 OpenAI 兼容路由：
+
+```ts
+import OpenAI from 'openai';
+
+const client = new OpenAI({
+  baseURL: 'http://127.0.0.1:3000/v1',
+  apiKey: '<runtime-api-key>',
+});
+const completion = await client.chat.completions.create({
+  model: 'sonnet', messages: [{ role: 'user', content: 'Hello' }],
+});
+```
+
+`POST /v1/messages/count_tokens` 只返回 `{ "input_tokens": number }`，它是本地 heuristic，不是 Anthropic tokenizer 的精确计数；成功响应会包含 `x-chat2claude-token-count-mode: heuristic`。`GET /v1/models` 保持 OpenAI 风格的顶层 `{ "data": [...] }`，单个模型可附带 capabilities、`token_counting_mode` 等项目元数据。
+
+### 真实客户端 smoke 矩阵
+
+所有客户端 smoke 检查都使用 Runtime API Key；不要把 Admin API Key 当作普通客户端凭据。
+
+| Client | Base URL | 主要 smoke endpoint |
+| --- | --- | --- |
+| Claude Code | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` |
+| Anthropic SDK | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` |
+| OpenAI SDK | `http://127.0.0.1:3000/v1` | `/v1/chat/completions`, `/v1/responses`, `/v1/models` |
+| Cline | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/models` |
+| Roo | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/models` |
+| Continue | `http://127.0.0.1:3000/v1` | `/v1/chat/completions`, `/v1/models` |
+| Cherry Studio | `http://127.0.0.1:3000/v1` | `/v1/chat/completions`, `/v1/models` |
+
+Claude Code、Anthropic SDK、Cline 和 Roo 按 Claude/Anthropic 兼容客户端配置，Base URL 使用根 origin。OpenAI SDK、Continue 和 Cherry Studio 按 OpenAI 兼容客户端配置，Base URL 使用带 `/v1` 的版本化 origin。
+
 ## 6. 模型 alias、discovery 与 reasoning/speed
 
 ### 内置 alias
@@ -229,10 +280,20 @@ curl --fail "$ANTHROPIC_BASE_URL/healthz"
 - session backend 在有账号上下文时从上游 discovery 获取模型；无账号启动 discovery 可能为空。
 - mock backend 可通过 `MOCK_BACKEND_MODELS_JSON` 提供 discovery。
 - OAuth provisioning 和账号健康/模型刷新会使用账号上下文刷新 catalog。
-- `/v1/models` 只返回已启用且状态为 `bound` 或 `passthrough` 的 alias/discovery 模型；`unbound` 和 `stale` 不会列出。
+- `/v1/models` 只返回已启用且状态为 `bound` 或 `passthrough` 的 alias/discovery 模型；`unbound` 和 `stale` 不会列出。每个模型还包含从运行时模型元数据派生的 `capabilities`、稳定的 `capability_projection`，以及 `token_counting_mode: "heuristic"`；顶层结构仍是 `{ "data": [...] }`。
 - 已存在的持久化或手动 alias binding 不会被服务重启时的 discovery refresh 随意覆盖；refresh 只在需要绑定时使用 discovery。
 
 模型映射的 Backend Model 下拉只来自当前 discovery。专业模式中的 reasoning effort、service tier 和默认值也来自所选目标的能力元数据；元数据未知时不会假设所有控制项都可用。显式请求不支持的 `reasoning_effort` 或 service tier 会返回 400，而不是静默改写。
+
+### Token 计数
+
+`POST /v1/messages/count_tokens` 保持 Claude 兼容的响应 body 结构不变：
+
+```json
+{ "input_tokens": 123 }
+```
+
+该值是本地启发式估算，不等同于 Anthropic tokenizer 计数。成功响应会包含 `x-chat2claude-token-count-mode: heuristic`；需要精确计费或上下文限制的客户端不能把它当作 Anthropic 精确计数。
 
 ## 7. 配额、日志和计时边界
 
@@ -250,12 +311,11 @@ curl --fail "$ANTHROPIC_BASE_URL/healthz"
 
 ### HTTP access log
 
-access log 只应用于 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 输出对齐的双箭头：请求开始时 `[...] <-- METHOD path`，响应就绪时 `[...] --> STATUS [STREAMING] | duration | METHOD path?query`。SSE 在响应就绪时立即记录，不读取、clone、tee 或延迟 body。首个实际下游映射事件立即记录 `STREAM START`；后续活动最多每 5 秒聚合记录一次 `STREAM ACTIVE`，只含 counts/bytes/duration。SSE keepalive 注释帧按设计不经过该生命周期计数边界。`simple` 兼容归一化为 `text`；`detailed`/`json` 保留安全结构化生命周期和终态字段。日志不会记录 prompt、工具参数/结果、加密内容、provider 原始 payload、header、token、cookie、会话或代理凭据。
+access log 只应用于 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 输出对齐的双箭头：请求开始时 `[...] <-- METHOD path`，响应就绪时 `[...] --> STATUS [STREAMING] | duration | METHOD path?query`。SSE 在响应就绪时立即记录，不读取、clone、tee 或延迟 body。text 模式避免流生命周期噪声，只在流清理后输出一次真实终态：`STREAM DONE`、`STREAM CANCELLED` 或 `STREAM FAILED`，携带累计 counts/bytes/duration。`simple` 兼容归一化为 `text`；`detailed`/`json` 可保留安全结构化字段、首次 `STREAM START` 生命周期和终态；不再按固定时间输出 `STREAM ACTIVE`。日志不会记录 prompt、工具参数/结果、加密内容、provider 原始 payload、header、token、cookie、会话或代理凭据。
 
 ```text
 [2026-09-08 13:12:03] [c6a432ed] [INFO ] [  api  ] <-- POST /v1/messages?beta
 [2026-09-08 13:12:08] [c6a432ed] [INFO ] [ opus  ] --> 200 STREAMING | 4.681s | POST /v1/messages?beta
-[2026-09-08 13:12:08] [c6a432ed] [INFO ] [ opus  ] --> STREAM START | 4.682s | events=1 bytes=321
 [2026-09-08 13:12:21] [c6a432ed] [ERROR] [ opus  ] --> STREAM FAILED | 17.598s | events=42 bytes=8192 | invalid_response
 ```
 
@@ -300,7 +360,7 @@ Messages、Chat Completions 和 Responses 采用相同的通知式获取策略�
 
 ### 后台请求统计
 
-账号卡片的成功、失败、取消、总请求数、token 累计、最近请求时间和 in-flight 数量来自独立的运营状态统计，不是完整访问日志。运营状态会 debounce 写入 `admin-operational-state.json`；`inFlight` 不持久化，重启后恢复为 0。统计持久化失败不会改变 provider 响应、账号释放或冷却逻辑。`/metrics` 只返回当前进程内 request log 的数量。
+账号卡片的成功、失败、取消、总请求数、token 累计、最近请求时间和 in-flight 数量来自独立的运营状态统计，不是完整访问日志。运营状态会 debounce 写入 `admin-operational-state.json`；`inFlight` 不持久化，重启后恢复为 0。统计持久化失败不会改变 provider 响应、账号释放或冷却逻辑。`/metrics` 仍为 JSON，返回有界 request log 聚合（保留数量、流数量和路由数量）；配置了运营状态时还会返回账号/请求/token 的聚合计数。它不会返回请求内容、header、cookie、token、工具参数或 secret。使用本地 Admin 会话或服务端 `API_KEYS` Admin key 的操作者可调用 `GET /admin/api/diagnostics/requests`，其中同样只包含有界且安全的元数据：route、model、stream 标记和时间戳。Runtime API Key 会被拒绝访问这个全局检查器，避免一个客户端读取其他客户端的请求元数据。
 
 ## 8. 持久化、密钥与安全文件
 

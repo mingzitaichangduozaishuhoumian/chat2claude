@@ -107,10 +107,11 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   app.route('/', createMessagesRoute({ logger, backend, requestLog, modelRegistry, accountPool, operationalState, reasoningReplayStore, backendProvider: env.chatGptBackend, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createOpenAiChatRoute({ logger, backend, requestLog, modelRegistry, accountPool, operationalState, reasoningReplayStore, backendProvider: env.chatGptBackend, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createOpenAiResponsesRoute({ logger, backend, requestLog, modelRegistry, accountPool, responsesStore, operationalState, backendProvider: env.chatGptBackend, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
-  app.route('/', createMetricsRoute(requestLog));
+  app.use('/metrics', adminApiAuth(env.apiKeys, runtimeApiKeys, { allowAnonymousBootstrap: env.allowAnonymousBootstrap, localAdminSession }));
+  app.route('/', createMetricsRoute({ requestLog, operationalState }));
   app.use('/admin/api/*', accessLog(logger, env.accessLogFormat));
   app.use('/admin/api/*', adminApiAuth(env.apiKeys, runtimeApiKeys, { allowAnonymousBootstrap: env.allowAnonymousBootstrap, localAdminSession }));
-  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, ready: modelRegistryReady, runtimeApiKeys, durableState, operationalState, quotaService, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow, setupProvisioner, localAdminSession }));
+  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, requestLog, ready: modelRegistryReady, runtimeApiKeys, durableState, operationalState, quotaService, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow, setupProvisioner, localAdminSession }));
   app.dispose = async () => {
     reasoningReplayStore.clear();
     try {

@@ -65,7 +65,7 @@ OAuth 不会启动独立 Chrome 或新 profile；浏览器弹窗被拦截时，�
 
 - `/v1/*` 使用 Runtime API Key 或预配置的 `API_KEYS`，使用 `x-api-key: <key>` 或 `Authorization: Bearer <key>`。
 - 优先在宿主机本地浏览器使用 HttpOnly 管理会话。只有操作者自行经 LAN、VPN/mesh VPN、SSH 隧道、反向隧道/NAT 穿透或反向代理使服务可达后，才从其他浏览器、设备或自动化使用 Admin API Key；本项目不创建隧道、不配置 NAT、也不发布服务。
-- Admin API Key 授予完整管理权限，不要作为普通用户、Claude 或 API 凭据分享；普通客户端应使用 Runtime API Key。当前服务端认证仍会接受有效 Runtime API Key 或 `API_KEYS` 访问 `/admin/api/*`，所以这是签发/使用区分而不是硬权限边界；Runtime Key 也必须按敏感管理凭据保护。
+- Admin API Key 授予完整管理权限，不要作为普通用户、Claude 或 API 凭据分享；普通客户端应使用 Runtime API Key。受保护的 `/admin/api/*` 路由会拒绝 Runtime Key，远程或自动化管理请使用服务端 `API_KEYS` / Admin API Key 或本机 HttpOnly 管理会话。
 - Runtime Key 原始值只在创建/生成后的当前页面显示一次。列表只显示稳定 ID、名称、创建时间和安全前缀；遗失后应撤销旧 Key 并生成新 Key。
 - 本机 loopback 访问 `/admin` 会获得仅当前进程有效的 HttpOnly、`SameSite=Strict` cookie。写操作还要求同源 `Origin`。服务重启后 cookie 失效。
 - 非 loopback 启动必须预先配置 `API_KEYS`，除非仅供宿主机回环访问的容器设置 `LOCAL_CONTAINER_BOOTSTRAP=true`。
@@ -121,12 +121,11 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 
 ## 日志与计时边界
 
-HTTP access log 只挂在 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 输出对齐的双箭头行：请求开始时 `[...] <-- METHOD path`，响应就绪时 `[...] --> STATUS [STREAMING] | duration | METHOD path?query`；SSE 不读取、clone 或延迟 body。实际下游映射事件首次写出时记录 `STREAM START`，后续最多每 5 秒记录一次只含 counts/bytes/duration 的 `STREAM ACTIVE`；静默上游 keepalive 注释不经过该生命周期计数边界。`simple` 是 `text` 的兼容别名。`detailed`/`json` 保留安全结构化字段和流生命周期/终态。所有格式只记录已规范化路径、查询参数名称及安全元数据，绝不记录 prompt、工具参数/结果、原始 provider payload、header、token、cookie、会话或代理凭据。
+HTTP access log 只挂在 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT=text` 输出对齐的双箭头行：请求开始时 `[...] <-- METHOD path`，响应就绪时 `[...] --> STATUS [STREAMING] | duration | METHOD path?query`；SSE 不读取、clone 或延迟 body。text 模式避免流生命周期噪声，只在流清理后输出一次真实终态：`STREAM DONE`、`STREAM CANCELLED` 或 `STREAM FAILED`，携带累计 counts/bytes/duration。`simple` 是 `text` 的兼容别名。`detailed`/`json` 可保留安全结构化字段、首次 `STREAM START` 生命周期和终态；不再按固定时间输出 `STREAM ACTIVE`。所有格式只记录已规范化路径、查询参数名称及安全元数据，绝不记录 prompt、工具参数/结果、原始 provider payload、header、token、cookie、会话或代理凭据。
 
 ```text
 [2026-09-08 13:12:03] [c6a432ed] [INFO ] [  api  ] <-- POST /v1/messages?beta
 [2026-09-08 13:12:08] [c6a432ed] [INFO ] [ opus  ] --> 200 STREAMING | 4.681s | POST /v1/messages?beta
-[2026-09-08 13:12:08] [c6a432ed] [INFO ] [ opus  ] --> STREAM START | 4.682s | events=1 bytes=321
 [2026-09-08 13:12:21] [c6a432ed] [ERROR] [ opus  ] --> STREAM FAILED | 17.598s | events=42 bytes=8192 | invalid_response
 ```
 
@@ -136,7 +135,7 @@ HTTP access log 只挂在 `/v1/*` 和 `/admin/api/*`。默认 `ACCESS_LOG_FORMAT
 
 Claude 终态结构只增加数字/boolean 指标：`sourceMessageCount` 为 messages 长度，`sourceContentBlockCount` 为 messages 中内容块总数（string 算 1，system 不计入这两项）；`upstreamBodyBytes` 为最终唯一一次 JSON.stringify 的 UTF-8 精确字节；`toolCount` / `toolSchemaBytes` 为最终工具数量 / schema JSON UTF-8 字节总和；`upstreamInputItemCount`、`replayItemCount`、`replayApplied` 描述实际发送输入和 replay。system、history、工具参数、图像、密文均计入 wire 总字节，但不记录内容。字段由内部 callback 回传并经过日志 allowlist，客户端同名字段不能注入。fetch 前就计算 wire 指标，因此超时/失败仍有已知规模。detailed 显示 wire 字节等关键项，JSON metadata 保留完整指标。
 
-后台运营统计与 access log 独立；in-flight 不持久化，重启恢复为 0，`/metrics` 只返回进程内请求计数。未安装 access middleware 的独立路由保留安全 terminal 应用事件作为兼容回退。
+后台运营统计与 access log 独立；in-flight 不持久化，重启恢复为 0。`/metrics` 需要与 Admin API 相同的 API Key 或本地 Admin session，返回有界 request log 聚合及配置运营状态时的账号/请求/token 总计。未安装 access middleware 的独立路由保留安全 terminal 应用事件作为兼容回退。
 
 请求 release 时，`unauthorized` 保持 unhealthy，需成功健康检查或重新授权恢复；`rate_limited` 保持 cooldown。`network_error`、`timeout`、`upstream_error`、`invalid_response` 仅保留固定本地诊断和安全错误码，原本健康的账号释放后仍 available、可立即重新获取。`invalid_request` 属于请求级错误，会清除临时诊断而不污染健康。成功或请求级错误 release 不会覆盖并发请求已设置的 unhealthy/cooldown。显式健康检查失败仍可能设为 error。
 

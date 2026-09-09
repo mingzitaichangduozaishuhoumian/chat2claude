@@ -14,14 +14,14 @@ describe('Admin localization primitives', () => {
       '优先使用本机 HttpOnly 管理会话。Admin API Key 仅用于服务已由操作者自行连通后的外部管理。',
       '高级：外部管理访问（Admin API Key）',
       '优先在本机浏览器使用 HttpOnly 会话。只有操作者自行通过 LAN、VPN/mesh VPN、SSH 隧道、反向隧道/NAT 穿透或反向代理使服务可达后，才从其他浏览器、设备或自动化使用此 Key；本项目不创建隧道、不配置 NAT、也不发布服务。',
-      'Admin API Key 授予完整管理权限，不要作为普通用户、Claude 或 API 凭据分享；普通客户端应使用 Runtime API Key。当前受保护 Admin API 仍接受有效 Runtime/API_KEYS，因此这是签发/使用区分，不是硬权限边界。Key 默认只保留在当前页面，勾选后才明确保存到此浏览器（localStorage）。',
+      'Admin API Key（API_KEYS）与本机 HttpOnly 会话用于受保护的 /admin/api/* 管理接口；Runtime API Key 仅用于 /v1/*，访问受保护的 Admin API 会被拒绝。不要将 Admin API Key 作为普通用户、Claude 或 API 凭据分享；普通客户端应使用 Runtime API Key。Key 默认只保留在当前页面，勾选后才明确保存到此浏览器（localStorage）。',
     ];
     for (const key of keys) {
       expect(translateAdminText(key, 'en')).not.toMatch(/\p{Script=Han}/u);
       expect(translateAdminText(key, 'zh-CN')).toBe(key);
     }
     expect(translateAdminText('高级：外部管理访问（Admin API Key）', 'en')).toBe('Advanced: external management access (Admin API Key)');
-    expect(translateAdminText(keys[3], 'en')).toContain('not a hard privilege boundary');
+    expect(translateAdminText(keys[3], 'en')).toContain('Runtime API Keys are client credentials for /v1/* only and are rejected by protected /admin/api/* routes.');
   });
 
   it('defaults to zh-CN and only accepts the supported English locale', () => {

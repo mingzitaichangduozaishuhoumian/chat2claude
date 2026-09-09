@@ -99,15 +99,15 @@ Use **Advanced: import accessToken / cookie** only when OAuth is unavailable or 
 
 ## 4. Runtime API Keys, Admin API Keys, and `API_KEYS`
 
-The names describe different primary uses, but the current server does not enforce a completely separate Runtime-Key and Admin-Key authentication set:
+The names describe different primary uses, and the server now enforces that Runtime API Keys are client credentials only:
 
 | Credential | Primary use | Accepted authentication |
 | --- | --- | --- |
-| Runtime API Key | Client calls to `/v1/*`; under the current implementation, a valid Runtime Key is also accepted for protected `/admin/api/*` routes | `Authorization: Bearer <key>` or `x-api-key: <key>` |
+| Runtime API Key | Client calls to `/v1/*`; rejected for protected `/admin/api/*` routes | `Authorization: Bearer <key>` or `x-api-key: <key>` |
 | Admin API Key | Full-management credential for external `/admin/api/*` access after the operator independently makes the service reachable; never share it as a normal user, Claude, or API credential | `Authorization: Bearer <key>` or `x-api-key: <key>` |
 | `API_KEYS` | Static server-side allow-list configured before startup; usable for `/v1/*` and remote Admin API access | Same headers |
 
-Runtime API Key and Admin API Key are therefore a distinction of issuance, purpose, and operating practice, not a hard authentication isolation boundary in the current implementation. Normal clients should receive Runtime API Keys. Treat a leaked Runtime Key as potentially granting Admin API access.
+Runtime API Key and Admin API Key are therefore separate by issuance, purpose, and authorization behavior. Normal clients should receive Runtime API Keys; Admin API Keys remain full-management credentials.
 
 Prefer the host-local browser HttpOnly session. Use an Admin API Key from another browser, device, or automation only after the operator independently makes the service reachable through LAN, VPN/mesh VPN, an SSH tunnel, reverse tunnel/NAT traversal, or a reverse proxy. This project does not create tunnels, configure NAT, or publish the service.
 
@@ -218,6 +218,57 @@ curl --fail "$ANTHROPIC_BASE_URL/healthz"
 
 This maps the Claude Code model roles to the project's aliases. If an alias is unbound, bind it in **Model mapping** before using it. This file contains credentials; do not commit or share it. Restart the existing Claude Code session after changing settings.
 
+### Compatibility cookbook
+
+The base URL must match the client family. A root URL is correct for clients that append `/v1/...` themselves, including Claude Code and the Anthropic TypeScript SDK. An OpenAI-compatible client normally expects the versioned base URL ending in `/v1`. Do not use the root URL with a client that does not append `/v1`, and do not add `/v1` twice.
+
+Claude Code uses the root URL shown above. For an Anthropic TypeScript SDK client, use the same root URL:
+
+```ts
+import Anthropic from '@anthropic-ai/sdk';
+
+const client = new Anthropic({
+  baseURL: 'http://127.0.0.1:3000',
+  apiKey: '<runtime-api-key>',
+});
+const message = await client.messages.create({
+  model: 'sonnet', max_tokens: 64,
+  messages: [{ role: 'user', content: 'Hello' }],
+});
+```
+
+For the OpenAI TypeScript SDK, use the versioned URL and one of the supported OpenAI-compatible routes:
+
+```ts
+import OpenAI from 'openai';
+
+const client = new OpenAI({
+  baseURL: 'http://127.0.0.1:3000/v1',
+  apiKey: '<runtime-api-key>',
+});
+const completion = await client.chat.completions.create({
+  model: 'sonnet', messages: [{ role: 'user', content: 'Hello' }],
+});
+```
+
+`POST /v1/messages/count_tokens` returns only `{ "input_tokens": number }`. It is a local heuristic, not Anthropic tokenizer parity; successful responses include `x-chat2claude-token-count-mode: heuristic`. `GET /v1/models` keeps the OpenAI-style top-level shape `{ "data": [...] }`; each listed model may include project metadata such as capabilities and `token_counting_mode`.
+
+### Real-client smoke matrix
+
+Use a Runtime API Key for all client smoke checks; do not use an Admin API Key as a normal client credential.
+
+| Client | Base URL | Primary smoke endpoints |
+| --- | --- | --- |
+| Claude Code | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` |
+| Anthropic SDK | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` |
+| OpenAI SDK | `http://127.0.0.1:3000/v1` | `/v1/chat/completions`, `/v1/responses`, `/v1/models` |
+| Cline | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/models` |
+| Roo | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/models` |
+| Continue | `http://127.0.0.1:3000/v1` | `/v1/chat/completions`, `/v1/models` |
+| Cherry Studio | `http://127.0.0.1:3000/v1` | `/v1/chat/completions`, `/v1/models` |
+
+Claude Code, Anthropic SDK, Cline, and Roo should be configured as Claude/Anthropic-compatible clients with the root origin. OpenAI SDK, Continue, and Cherry Studio should be configured as OpenAI-compatible clients with the versioned `/v1` origin.
+
 ## 6. Model aliases, discovery, and reasoning/speed controls
 
 ### Built-in aliases
@@ -235,10 +286,20 @@ The backend model list is not a static source-code table:
 - The session backend discovers models with an account context; startup discovery without an account may be empty.
 - The mock backend can use `MOCK_BACKEND_MODELS_JSON` for discovery.
 - OAuth provisioning and account health/model refresh update the account-scoped catalog.
-- `GET /v1/models` returns only enabled, resolvable aliases (`bound`) and discovery passthrough models (`passthrough`); `unbound` and `stale` entries are omitted.
+- `GET /v1/models` returns only enabled, resolvable aliases (`bound`) and discovery passthrough models (`passthrough`); `unbound` and `stale` entries are omitted. Each entry includes `capabilities`, a stable `capability_projection` derived from runtime model metadata, and `token_counting_mode: "heuristic"`; the top-level shape remains `{ "data": [...] }`.
 - Existing persistent or manually selected alias bindings are not arbitrarily overwritten by a restart discovery refresh; refresh only binds when a binding is needed.
 
 The Backend Model choices in Admin come from the current discovery catalog. Professional mode also exposes the target model's reasoning-effort and service-tier metadata. When metadata is unknown, the service does not assume that every control is supported. An explicit unsupported `reasoning_effort` or service tier returns HTTP 400 instead of being silently rewritten.
+
+### Token counting
+
+`POST /v1/messages/count_tokens` preserves the Claude-compatible body shape exactly:
+
+```json
+{ "input_tokens": 123 }
+```
+
+The value is a local heuristic rather than Anthropic tokenizer parity. Successful responses include `x-chat2claude-token-count-mode: heuristic`; clients that need tokenizer-exact billing or limits must not treat it as an Anthropic count.
 
 ## 7. Quotas, logs, and timing boundaries
 
@@ -256,12 +317,11 @@ The app uses external Undici 7 `ProxyAgent`, compatible with Node 22.15, through
 
 ### HTTP access logs
 
-Access logging is installed only for `/v1/*` and `/admin/api/*`. The default `ACCESS_LOG_FORMAT=text` emits aligned arrows: `[...] <-- METHOD path` at request start and `[...] --> STATUS [STREAMING] | duration | METHOD path?query` when the response is ready. SSE is logged at readiness without reading, cloning, teeing, or delaying the body. The first actual downstream mapped event emits `STREAM START`; additional activity emits aggregated `STREAM ACTIVE` at most every 5 seconds with counts/bytes/duration only. SSE keepalive comment frames bypass that lifecycle counter by design. `simple` normalizes to `text`; `detailed`/`json` retain safe structured lifecycle and terminal fields. Logs never contain prompts, tool arguments/results, encrypted content, raw provider payloads, headers, tokens, cookies, session, or proxy credentials.
+Access logging is installed only for `/v1/*` and `/admin/api/*`. The default `ACCESS_LOG_FORMAT=text` emits aligned arrows: `[...] <-- METHOD path` at request start and `[...] --> STATUS [STREAMING] | duration | METHOD path?query` when the response is ready. SSE is logged at readiness without reading, cloning, teeing, or delaying the body. Text mode avoids stream lifecycle noise and emits one real terminal line after stream cleanup: `STREAM DONE`, `STREAM CANCELLED`, or `STREAM FAILED`, with aggregate counts/bytes/duration. `simple` normalizes to `text`; `detailed`/`json` may retain safe structured fields, the initial `STREAM START` lifecycle entry, and terminal fields; fixed-interval `STREAM ACTIVE` logs are not emitted. Logs never contain prompts, tool arguments/results, encrypted content, raw provider payloads, headers, tokens, cookies, session, or proxy credentials.
 
 ```text
 [2026-09-08 13:12:03] [c6a432ed] [INFO ] [  api  ] <-- POST /v1/messages?beta
 [2026-09-08 13:12:08] [c6a432ed] [INFO ] [ opus  ] --> 200 STREAMING | 4.681s | POST /v1/messages?beta
-[2026-09-08 13:12:08] [c6a432ed] [INFO ] [ opus  ] --> STREAM START | 4.682s | events=1 bytes=321
 [2026-09-08 13:12:21] [c6a432ed] [ERROR] [ opus  ] --> STREAM FAILED | 17.598s | events=42 bytes=8192 | invalid_response
 ```
 
@@ -306,7 +366,7 @@ Reasons are internal/log metadata, not account IDs, raw errors, upstream respons
 
 ### Admin request statistics
 
-Account-card success, failure, cancellation, total-request, token, last-request, and in-flight values come from separate operational statistics, not from the complete access log. Operational state is debounced into `admin-operational-state.json`; `inFlight` is not persisted and returns to zero after restart. A statistics persistence failure does not change the provider response, account release, or cooldown behavior. `/metrics` returns only the count of in-process request-log entries.
+Account-card success, failure, cancellation, total-request, token, last-request, and in-flight values come from separate operational statistics, not from the complete access log. Operational state is debounced into `admin-operational-state.json`; `inFlight` is not persisted and returns to zero after restart. A statistics persistence failure does not change the provider response, account release, or cooldown behavior. `/metrics` remains JSON and returns bounded request-log aggregates (retained count, stream count, and route counts), plus aggregate operational account/request/token counters when operational state is configured. It never returns request content, headers, cookies, tokens, tool arguments, or secrets. Operators using the local Admin session or a server `API_KEYS` Admin key can call `GET /admin/api/diagnostics/requests` for the same bounded safe metadata only: route, model, stream flag, and timestamp. Runtime API Keys are rejected for this global inspector so one client cannot read another client's request metadata.
 
 ## 8. Persistence, encryption, and secret handling
 

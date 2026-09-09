@@ -23,6 +23,17 @@ afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
+async function localAdminHeaders(app: { request: Hono['request'] }, contentType = false): Promise<Record<string, string>> {
+  const response = await app.request('http://127.0.0.1:3000/admin', { headers: { host: '127.0.0.1:3000' } });
+  const cookie = response.headers.get('set-cookie') ?? '';
+  return {
+    ...(contentType ? { 'content-type': 'application/json' } : {}),
+    host: '127.0.0.1:3000',
+    cookie,
+    origin: 'http://127.0.0.1:3000',
+  };
+}
+
 describe('durable administration', () => {
   it('renders simple/professional mode controls and custom alias management controls', async () => {
     const app = createApp(loadEnv({ DATA_DIR: temporaryDirectory(), NODE_ENV: 'test' }));
@@ -67,10 +78,11 @@ describe('durable administration', () => {
     const first = createApp(env);
     const bootstrap = await first.request('/admin/api/api-keys/dev-enable', { method: 'POST' });
     const { key: existingKey } = await bootstrap.json() as { key: string };
+    const adminHeaders = await localAdminHeaders(first);
 
-    const createdResponse = await first.request('/admin/api/api-keys', {
+    const createdResponse = await first.request('http://127.0.0.1:3000/admin/api/api-keys', {
       method: 'POST',
-      headers: { 'x-api-key': existingKey },
+      headers: adminHeaders,
     });
     const created = await createdResponse.json() as { ok: boolean; apiKey: string };
 
@@ -80,7 +92,7 @@ describe('durable administration', () => {
     expect(created.apiKey).not.toBe(existingKey);
     expect((await first.request('/v1/models', { headers: { 'x-api-key': existingKey } })).status).toBe(200);
     expect((await first.request('/v1/models', { headers: { 'x-api-key': created.apiKey } })).status).toBe(200);
-    expect(await (await first.request('/admin/api/api-keys', { headers: { 'x-api-key': existingKey } })).json()).toEqual({
+    expect(await (await first.request('http://127.0.0.1:3000/admin/api/api-keys', { headers: adminHeaders })).json()).toEqual({
       apiKeys: expect.arrayContaining([
         expect.objectContaining({ prefix: existingKey.slice(0, 12) }),
         expect.objectContaining({ prefix: created.apiKey.slice(0, 12) }),
@@ -99,12 +111,12 @@ describe('durable administration', () => {
     const app = createApp(loadEnv({ DATA_DIR: temporaryDirectory(), NODE_ENV: 'test' }), {
       runtimeStateStore: new RuntimeStateStore({ path, fs: committedUnconfirmedFs() }),
     });
-    const keyResponse = await app.request('/admin/api/api-keys/dev-enable', { method: 'POST' });
-    const { key } = await keyResponse.json() as { key: string };
+    await app.request('/admin/api/api-keys/dev-enable', { method: 'POST' });
+    const adminHeaders = await localAdminHeaders(app, true);
 
-    const response = await app.request('/admin/api/models', {
+    const response = await app.request('http://127.0.0.1:3000/admin/api/models', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': key },
+      headers: adminHeaders,
       body: JSON.stringify({ id: 'durable-warning', backendModel: 'provider-model' }),
     });
 
@@ -120,14 +132,15 @@ describe('durable administration', () => {
     const app = createApp(loadEnv({ DATA_DIR: dataDir, NODE_ENV: 'test' }));
     const createResponse = await app.request('/admin/api/api-keys/dev-enable', { method: 'POST' });
     const created = await createResponse.json() as { key: string };
-    const listResponse = await app.request('/admin/api/api-keys', { headers: { 'x-api-key': created.key } });
+    const adminHeaders = await localAdminHeaders(app);
+    const listResponse = await app.request('http://127.0.0.1:3000/admin/api/api-keys', { headers: adminHeaders });
     const listed = await listResponse.json() as { apiKeys: Array<{ id: string; prefix: string; key?: string }> };
     expect(listResponse.status).toBe(200);
     expect(listed.apiKeys).toHaveLength(1);
     expect(listed.apiKeys[0]).not.toHaveProperty('key');
     expect(listed.apiKeys[0].prefix).toBe(created.key.slice(0, 12));
 
-    const revokeResponse = await app.request(`/admin/api/api-keys/${listed.apiKeys[0].id}`, { method: 'DELETE', headers: { 'x-api-key': created.key } });
+    const revokeResponse = await app.request(`http://127.0.0.1:3000/admin/api/api-keys/${listed.apiKeys[0].id}`, { method: 'DELETE', headers: adminHeaders });
     expect(revokeResponse.status).toBe(200);
     const apiResponse = await app.request('/v1/models', { headers: { 'x-api-key': created.key } });
     expect(apiResponse.status).toBe(401);
@@ -185,32 +198,34 @@ describe('durable administration', () => {
     const env = loadEnv({ DATA_DIR: dataDir, NODE_ENV: 'test' });
     const first = createApp(env);
     const key = (await (await first.request('/admin/api/api-keys/dev-enable', { method: 'POST' })).json() as { key: string }).key;
-    const headers = { 'content-type': 'application/json', 'x-api-key': key };
+    const headers = await localAdminHeaders(first, true);
 
-    const create = await first.request('/admin/api/models', {
+    const create = await first.request('http://127.0.0.1:3000/admin/api/models', {
       method: 'POST',
       headers,
       body: JSON.stringify({ id: 'research', display_name: 'Research alias', backendModel: 'backend-discovered-later', enabled: false, defaults: { reasoning_effort: 'max', speed: 'quality' } }),
     });
     expect(create.status).toBe(201);
     expect(await create.json()).toMatchObject({ model: { id: 'research', builtIn: false, backendModel: 'backend-discovered-later', enabled: false, defaults: { reasoning_effort: 'max', speed: 'standard' } } });
-    const duplicate = await first.request('/admin/api/models', { method: 'POST', headers, body: JSON.stringify({ id: 'research' }) });
+    const duplicate = await first.request('http://127.0.0.1:3000/admin/api/models', { method: 'POST', headers, body: JSON.stringify({ id: 'research' }) });
     expect(duplicate.status).toBe(400);
     expect(await duplicate.json()).toMatchObject({ error: expect.stringMatching(/already exists/) });
-    expect((await first.request('/admin/api/models/fable', { method: 'DELETE', headers: { 'x-api-key': key } })).status).toBe(400);
+    expect((await first.request('http://127.0.0.1:3000/admin/api/models/fable', { method: 'DELETE', headers })).status).toBe(400);
     await first.dispose();
 
     const restarted = createApp(env);
-    const list = await restarted.request('/admin/api/models', { headers: { 'x-api-key': key } });
+    const restartedHeaders = await localAdminHeaders(restarted);
+    const list = await restarted.request('http://127.0.0.1:3000/admin/api/models', { headers: restartedHeaders });
     expect(await list.json()).toMatchObject({ aliases: expect.arrayContaining([
       expect.objectContaining({ id: 'fable', builtIn: true }),
       expect.objectContaining({ id: 'research', builtIn: false, backendModel: 'backend-discovered-later', enabled: false }),
     ]) });
-    expect((await restarted.request('/admin/api/models/research', { method: 'DELETE', headers: { 'x-api-key': key } })).status).toBe(200);
+    expect((await restarted.request('http://127.0.0.1:3000/admin/api/models/research', { method: 'DELETE', headers: restartedHeaders })).status).toBe(200);
     await restarted.dispose();
 
     const afterDelete = createApp(env);
-    const afterDeleteList = await afterDelete.request('/admin/api/models', { headers: { 'x-api-key': key } });
+    const afterDeleteHeaders = await localAdminHeaders(afterDelete);
+    const afterDeleteList = await afterDelete.request('http://127.0.0.1:3000/admin/api/models', { headers: afterDeleteHeaders });
     expect((await afterDeleteList.json() as { aliases: Array<{ id: string }> }).aliases.some((model) => model.id === 'research')).toBe(false);
     await afterDelete.dispose();
   });

@@ -14,6 +14,7 @@ import { unknownDiscovery, discoveryMessage } from '../services/model-discovery.
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
 import type { LocalAdminSession } from '../services/local-admin-session.js';
 import { AccountQuotaNotFoundError, AccountQuotaResetError, AccountQuotaService, type AccountQuotaResult } from '../services/account-quota-service.js';
+import type { RequestLog } from '../services/request-log.js';
 import { renderAdminPage } from './admin-page.js';
 
 export interface AdminRouteOptions {
@@ -32,6 +33,7 @@ export interface AdminRouteOptions {
   setupProvisioner?: SetupProvisioner;
   localAdminSession?: LocalAdminSession;
   quotaService?: AccountQuotaService;
+  requestLog?: RequestLog;
 }
 
 export function createAdminRoute(options: AdminRouteOptions): Hono {
@@ -53,7 +55,18 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     return c.html(renderAdminPage(status(options)));
   });
   app.get('/admin/api/setup/status', (c) => c.json(status(options)));
-  app.get('/admin/api/auth/status', (c) => c.json(authStatus(options)));
+  app.get('/admin/api/auth/status', (c) => {
+    c.header('cache-control', 'no-store');
+    return c.json(authStatus(options));
+  });
+  app.get('/admin/api/diagnostics/requests', (c) => {
+    c.header('cache-control', 'no-store');
+    if (c.get('adminAuthKind') === 'runtime_key') {
+      return c.json({ type: 'error', error: { type: 'permission_error', message: 'Request diagnostics require a local Admin session or server API key.' } }, 403);
+    }
+    // RequestLog contains only route, model, stream, and timestamp metadata.
+    return c.json({ requests: options.requestLog?.list() ?? [] });
+  });
 
   app.post('/admin/api/api-keys/dev-enable', (c) => {
     if (process.env.NODE_ENV === 'production') {
@@ -441,12 +454,12 @@ function status(options: AdminRouteOptions) {
 
 function authStatus(options: AdminRouteOptions) {
   const setup = status(options);
+  const sonnet = options.modelRegistry.get('sonnet');
   return {
     ready: setup.chatGptReady,
     accountReady: setup.backend.chatGptConnected,
     apiKeysConfigured: setup.apiKeysConfigured,
-    backendProvider: setup.backend.provider,
-    sonnet: options.modelRegistry.get('sonnet'),
+    sonnetConfigured: Boolean(sonnet?.backendModel),
   };
 }
 

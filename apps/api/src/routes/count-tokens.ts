@@ -32,6 +32,7 @@ export function createCountTokensRoute(): Hono {
         mcp_servers: request.mcp_servers,
       }).filter(([, value]) => value !== undefined);
       const requestFieldsText = requestFieldEntries.length > 0 ? JSON.stringify(Object.fromEntries(requestFieldEntries)) : '';
+      c.header('x-chat2claude-token-count-mode', 'heuristic');
       return c.json({ input_tokens: estimateTokens(`${request.model}\n${text}\n${requestFieldsText}`) });
     } catch (error) {
       const apiError = error instanceof ClaudeApiError ? error : new ClaudeApiError(error instanceof Error ? error.message : 'Invalid request');

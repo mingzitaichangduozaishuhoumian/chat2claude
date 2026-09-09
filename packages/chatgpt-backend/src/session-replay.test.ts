@@ -61,7 +61,6 @@ describe('session ordered opaque replay', () => {
     [done(reasoning, 0), completed([{ ...reasoning, encrypted_content: 'changed' }])],
     [done(reasoning, 0), done({ ...reasoning, summary: [] }, 0), completed([reasoning])],
     [done(reasoning, 0), completed([call, reasoning])],
-    [done(reasoning, 0), completed([])],
     [completed([reasoning, { ...reasoning, encrypted_content: 'changed' }])],
     [completed([call, { ...call, id: 'fc_other' }])],
     [done(reasoning, -1), completed([reasoning])],
@@ -69,6 +68,16 @@ describe('session ordered opaque replay', () => {
     [done(call, 0), completed([{ ...call, arguments: '{"q":"x"}' }])],
   ])('rejects conflicting identities, indices or exact wire snapshots %#', async (...frames) => {
     await expect(backend(frames).complete(request, context)).rejects.toMatchObject({ code: 'invalid_response', status: 502, safeDiagnostic: { failurePhase: 'response_protocol' } });
+  });
+
+  it('ignores done snapshots when completed output has no replayable items', async () => {
+    const frames = [done(reasoning, 0), completed([])];
+
+    await expect(backend(frames).complete(request, context)).resolves.toEqual({ text: '', finishReason: 'stop' });
+    const terminal = (await events(frames)).at(-1);
+    expect(terminal).toMatchObject({ type: 'done', finishReason: 'stop' });
+    expect(terminal).not.toHaveProperty('replayItems');
+    expect(terminal).not.toHaveProperty('replayEligible');
   });
 
   it.each([undefined, null])('does not replay reasoning without ciphertext (%s)', async (encrypted_content) => {
@@ -91,6 +100,21 @@ describe('session ordered opaque replay', () => {
     expect(error).toMatchObject({ name: 'ChatGptBackendError', code: 'invalid_response', status: 502, cause: undefined, safeDiagnostic: { httpStatus: 200, failurePhase: 'response_protocol' } });
     expect(inspect(error, { depth: null }) + JSON.stringify(error)).not.toContain(canary);
     expect(logs.flatMap((log) => log.mock.calls)).toEqual([]);
+  });
+
+  it('attaches only structural replay diagnostics to validation failures', async () => {
+    const programCall = { ...call, arguments: `{"query":"${canary}"}`, caller: { type: 'program' as const, caller_id: canary } };
+    const error = await backend([done(programCall, 0), done({ ...programCall, arguments: '{"query":"changed"}' }, 0), completed([])])
+      .complete(request, context).catch((failure: unknown) => failure);
+
+    expect(error).toMatchObject({
+      replayDebugDiagnostic: {
+        eventType: 'response.output_item.done', topLevelFields: ['item', 'output_index', 'type'],
+        itemType: 'function_call', itemStatus: 'completed', callerFields: ['caller_id', 'type'], callerType: 'program',
+        outputIndex: 'valid', mismatchReason: 'output_snapshot_conflict',
+      },
+    });
+    expect(inspect(error, { depth: null }) + JSON.stringify(error)).not.toContain(canary);
   });
 
   it.each(['item', 'bundle', 'count', 'done-bundle', 'done-count'] as const)('bounds replay %s', async (mode) => {

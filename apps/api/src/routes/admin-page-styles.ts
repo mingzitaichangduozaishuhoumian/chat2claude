@@ -183,6 +183,12 @@ th { color: var(--ink-soft); background: var(--surface-muted); font-family: var(
 .activity-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); }
 .activity-list li > div { min-width: 0; }
 .activity-list time { display: block; margin-top: 4px; font-size: 12px; color: var(--ink-faint); }
+.request-inspector { border-top: 3px solid var(--accent); }
+.request-inspector-table table { min-width: 0; table-layout: fixed; }
+.request-inspector-table th:nth-child(1) { width: 34%; }
+.request-inspector-table th:nth-child(2) { width: 30%; }
+.request-inspector-table th:nth-child(3) { width: 14%; }
+.request-inspector-table time { font-variant-numeric: tabular-nums; }
 .result-dock { margin: 24px 0 0 246px; }
 .result-dock .panel { padding: 14px 18px; }
 .result-dock pre { max-height: 260px; }

@@ -79,6 +79,19 @@ export function renderAdminOverview(data: AdminOverviewData, locale: AdminLocale
     <section class="panel"><h3>最近账号活动</h3><p class="muted">最近活动来自账号时间戳和累计请求结果，不是完整请求日志。</p>${activityHtml}</section>`, locale);
 }
 
+export interface AdminRequestDiagnostic {
+  route?: string;
+  model?: string;
+  stream?: boolean;
+  time?: string;
+}
+
+export function renderRequestInspector(requests: AdminRequestDiagnostic[], locale: AdminLocale = 'zh-CN'): string {
+  if (!requests.length) return localizeAdminMarkup('<div class="empty-state"><strong>暂无最近请求</strong><span>该摘要有界且只保留 route、model、stream 和 time。</span></div>', locale);
+  const rows = requests.map((request) => `<tr><td><code>${esc(request.route || '—')}</code></td><td><code>${esc(request.model || '—')}</code></td><td>${request.stream === true ? '是' : request.stream === false ? '否' : '未知'}</td><td>${timeHtml(request.time)}</td></tr>`).join('');
+  return localizeAdminMarkup(`<div class="table-wrap request-inspector-table"><table><thead><tr><th>路由</th><th>模型</th><th>流式</th><th>时间</th></tr></thead><tbody>${rows}</tbody></table></div>`, locale);
+}
+
 function timeHtml(value: string | null | undefined): string {
   return `<time data-admin-date="${esc(value || '')}">${esc(formatTime(value))}</time>`;
 }
@@ -99,11 +112,11 @@ function renderAccountCard(account: AdminAccountView): string {
     <dl class="account-summary">
       <div><dt>套餐</dt><dd>${esc(planPresentationText(account.plan ?? presentPlan(undefined, account.planType)))}</dd></div>
       <div><dt>启用</dt><dd>${account.enabled ? '已启用' : '已停用'}</dd></div>
-      <div><dt>模型</dt><dd>${esc(discoveryMessage(account.discovery ?? unknownDiscovery(), account.modelCount))}</dd></div>
+      <div><dt>模型数量</dt><dd>${numberHtml(account.modelCount)} · <span>${esc(discoveryMessage(account.discovery ?? unknownDiscovery(), account.modelCount))}</span></dd></div>
       <div><dt>最近活动</dt><dd>${timeHtml(stats.lastRequestAt || account.lastUsedAt)}</dd></div>
     </dl>
     <p class="muted">5x/20x 是套餐类别标识，不代表当前剩余额度。</p>
-    <div class="stat-line" aria-label="请求结果统计"><span>成功 ${stats.successfulRequests}</span><span>失败 ${stats.failedRequests}</span><span>取消 ${stats.cancelledRequests}</span><span>总计 ${stats.totalRequests}</span></div>
+    <div class="stat-line" aria-label="请求结果统计"><span>成功 ${stats.successfulRequests}</span><span>失败 ${stats.failedRequests}</span><span>取消 ${stats.cancelledRequests}</span><span>总计 ${stats.totalRequests}</span><span>进行中 ${stats.inFlight}</span></div>
     <div class="professional-detail" data-professional-only>
       <dl class="technical-list">
         <div><dt>内部 ID</dt><dd><code class="wrap-anywhere">${esc(account.id)}</code></dd></div>
@@ -254,7 +267,7 @@ function esc(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char);
 }
 
-const browserFunctions = [renderAdminOverview, timeHtml, numberHtml, presentPlan, planPresentationText, discoveryMessage, unknownDiscovery, renderAccountCards, renderQuotaCards, renderAccountCard, renderQuotaCard, renderResetCredits, renderAdditionalLimit, renderMeter, renderUnavailable, accountHealth, quotaState, allowanceText, validPercent, formatPercent, formatDuration, formatTime, relativeReset, relativeSeconds, esc];
+const browserFunctions = [renderAdminOverview, renderRequestInspector, timeHtml, numberHtml, presentPlan, planPresentationText, discoveryMessage, unknownDiscovery, renderAccountCards, renderQuotaCards, renderAccountCard, renderQuotaCard, renderResetCredits, renderAdditionalLimit, renderMeter, renderUnavailable, accountHealth, quotaState, allowanceText, validPercent, formatPercent, formatDuration, formatTime, relativeReset, relativeSeconds, esc];
 
 export function adminPageViewSource(): string {
   return adminPageI18nSource() + '\n' + browserFunctions.map((fn) => fn.toString()).join('\n');

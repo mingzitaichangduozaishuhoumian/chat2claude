@@ -1,15 +1,17 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { ChatGptCompletionResponse, ChatGptOutputItem, ChatGptReplayItem } from './client.js';
-import { ChatGptBackendError } from './errors.js';
+import { ChatGptBackendError, type ChatGptReplayDebugDiagnostic } from './errors.js';
 
 type JsonObject = Record<string, unknown>;
 /** UTF-8 JSON wire bytes, including all allowed fields, not just ciphertext. */
 export const RESPONSES_REPLAY_LIMITS = Object.freeze({ itemBytes: 256 * 1024, bundleBytes: 1024 * 1024, items: 128 });
 
-function invalidReplay(): ChatGptBackendError {
+function invalidReplay(mismatchReason: ChatGptReplayDebugDiagnostic['mismatchReason'] = 'validation_failure'): ChatGptBackendError {
   // Do not interpolate provider values or retain a cause (including parser errors).
   return new ChatGptBackendError('ChatGPT session backend replay response was invalid.', 'invalid_response', {
-    status: 502, safeDiagnostic: { httpStatus: 200, failurePhase: 'response_protocol', protocolStage: 'replay_snapshot', protocolReason: 'replay_snapshot' },
+    status: 502,
+    safeDiagnostic: { httpStatus: 200, failurePhase: 'response_protocol', protocolStage: 'replay_snapshot', protocolReason: 'replay_snapshot' },
+    replayDebugDiagnostic: { eventType: 'other', topLevelFields: [], itemType: 'missing', itemStatus: 'missing', outputIndex: 'missing', mismatchReason },
   });
 }
 
@@ -78,7 +80,8 @@ class ReplaySnapshots {
   add(item: ChatGptReplayItem, index?: number): void {
     const previous = this.lookup(item, index);
     if (previous) {
-      if (!isDeepStrictEqual(previous.item, item) || previous.index !== undefined && index !== undefined && previous.index !== index) throw invalidReplay();
+      if (!isDeepStrictEqual(previous.item, item)) throw invalidReplay('output_snapshot_conflict');
+      if (previous.index !== undefined && index !== undefined && previous.index !== index) throw invalidReplay('output_index_mismatch');
       if (index !== undefined) { previous.index = index; this.byIndex.set(index, previous); }
       return;
     }
@@ -96,7 +99,7 @@ class ReplaySnapshots {
       item.type === 'function_call' ? this.byCall.get(item.call_id) : undefined,
       index === undefined ? undefined : this.byIndex.get(index),
     ].filter((entry): entry is Snapshot => entry !== undefined));
-    if (matches.size > 1) throw invalidReplay();
+    if (matches.size > 1) throw invalidReplay('duplicate_identity_conflict');
     return matches.values().next().value;
   }
 }
@@ -109,7 +112,8 @@ export class ResponsesReplay {
   private readonly done = new ReplaySnapshots();
 
   accept(type: unknown, frame: JsonObject): Pick<ChatGptCompletionResponse, 'replayItems' | 'replayEligible' | 'outputItems'> | undefined {
-    if (type === 'response.output_item.done') {
+    try {
+      if (type === 'response.output_item.done') {
       const item = frame.item;
       if (!object(item) || item.type !== 'reasoning' && item.type !== 'function_call') return undefined;
       // Legacy partial tool snapshots still belong to ResponsesToolCalls, not replay.
@@ -149,23 +153,49 @@ export class ResponsesReplay {
       budget.add(item);
       const previous = output.lookup(item);
       if (previous) {
-        if (!isDeepStrictEqual(previous.item, item)) throw invalidReplay();
+        if (!isDeepStrictEqual(previous.item, item)) throw invalidReplay('output_snapshot_conflict');
       } else {
         output.add(item, index);
         ordered.push(item);
         projection.push(item);
       }
     }
-    for (const snapshot of this.done.entries) {
+    // A completed output with no replayable items cannot commit done snapshots.
+    if (ordered.length) for (const snapshot of this.done.entries) {
       const final = output.lookup(snapshot.item, snapshot.index);
-      if (!final || !isDeepStrictEqual(final.item, snapshot.item)
-        || snapshot.index !== undefined && snapshot.index !== final.index) throw invalidReplay();
+      if (!final) throw invalidReplay('done_snapshot_missing');
+      if (!isDeepStrictEqual(final.item, snapshot.item)) throw invalidReplay('done_snapshot_mismatch');
+      if (snapshot.index !== undefined && snapshot.index !== final.index) throw invalidReplay('output_index_mismatch');
     }
     if (Buffer.byteLength(JSON.stringify(projection), 'utf8') > 4 * 1024 * 1024) throw invalidReplay();
     const hasMessages = projection.some((item) => item.type === 'message');
-    return ordered.length || hasMessages ? {
-      ...(ordered.length ? { replayItems: ordered, replayEligible: ordered.length === response.output.length && ordered.some((item) => item.type === 'function_call') } : {}),
-      ...(hasMessages ? { outputItems: projection } : {}),
-    } : undefined;
+      return ordered.length || hasMessages ? {
+        ...(ordered.length ? { replayItems: ordered, replayEligible: ordered.length === response.output.length && ordered.some((item) => item.type === 'function_call') } : {}),
+        ...(hasMessages ? { outputItems: projection } : {}),
+      } : undefined;
+    } catch (error) {
+      if (!(error instanceof ChatGptBackendError) || error.safeDiagnostic?.protocolStage !== 'replay_snapshot') throw error;
+      throw new ChatGptBackendError(error.message, error.code, {
+        status: error.status,
+        safeDiagnostic: error.safeDiagnostic,
+        replayDebugDiagnostic: { ...replayDebugDiagnostic(type, frame), ...(error.replayDebugDiagnostic?.mismatchReason ? { mismatchReason: error.replayDebugDiagnostic.mismatchReason } : {}) },
+      });
+    }
   }
+}
+
+function replayDebugDiagnostic(type: unknown, frame: JsonObject): ChatGptReplayDebugDiagnostic {
+  const item = object(frame.item) ? frame.item : undefined;
+  const caller = object(item?.caller) ? item.caller : undefined;
+  const output = object(frame.response) && Array.isArray(frame.response.output) ? frame.response.output : undefined;
+  return {
+    eventType: type === 'response.output_item.done' || type === 'response.completed' ? type : 'other',
+    topLevelFields: Object.keys(frame),
+    itemType: item?.type === 'reasoning' || item?.type === 'function_call' || item?.type === 'message' ? item.type : item ? 'other' : 'missing',
+    itemStatus: item?.status === 'in_progress' || item?.status === 'completed' || item?.status === 'incomplete' ? item.status : item?.status === undefined ? 'missing' : 'other',
+    ...(caller ? { callerFields: Object.keys(caller), callerType: caller.type === 'direct' || caller.type === 'program' ? caller.type : caller.type === undefined ? 'missing' : 'other' } : {}),
+    outputIndex: frame.output_index === undefined ? 'missing' : typeof frame.output_index === 'number' && Number.isSafeInteger(frame.output_index) && frame.output_index >= 0 ? 'valid' : 'invalid',
+    ...(output ? { responseOutputCount: output.length } : {}),
+    mismatchReason: 'validation_failure',
+  };
 }

@@ -81,7 +81,7 @@ export const ADMIN_MESSAGES: Record<string, string> = {
   '推荐在本机浏览器使用 HttpOnly 会话；无需 Admin API Key。': 'Use the HttpOnly session in a host-local browser when possible; no Admin API Key is needed.',
   '高级：外部管理访问（Admin API Key）': 'Advanced: external management access (Admin API Key)',
   '优先在本机浏览器使用 HttpOnly 会话。只有操作者自行通过 LAN、VPN/mesh VPN、SSH 隧道、反向隧道/NAT 穿透或反向代理使服务可达后，才从其他浏览器、设备或自动化使用此 Key；本项目不创建隧道、不配置 NAT、也不发布服务。': 'Prefer the HttpOnly session in a host-local browser. Use this key from another browser, device, or automation only after the operator independently makes the service reachable through LAN, VPN/mesh VPN, an SSH tunnel, reverse tunnel/NAT traversal, or reverse proxy; this project creates no tunnel, configures no NAT, and does not publish the service.',
-  'Admin API Key 授予完整管理权限，不要作为普通用户、Claude 或 API 凭据分享；普通客户端应使用 Runtime API Key。当前受保护 Admin API 仍接受有效 Runtime/API_KEYS，因此这是签发/使用区分，不是硬权限边界。Key 默认只保留在当前页面，勾选后才明确保存到此浏览器（localStorage）。': 'An Admin API Key grants full management access. Do not share it as a normal user, Claude, or API credential; normal clients should receive Runtime API Keys. Protected Admin APIs still accept valid Runtime/API_KEYS, so this is an issuance/use distinction, not a hard privilege boundary. The key stays on this page unless you explicitly opt into browser storage (localStorage).',
+  'Admin API Key（API_KEYS）与本机 HttpOnly 会话用于受保护的 /admin/api/* 管理接口；Runtime API Key 仅用于 /v1/*，访问受保护的 Admin API 会被拒绝。不要将 Admin API Key 作为普通用户、Claude 或 API 凭据分享；普通客户端应使用 Runtime API Key。Key 默认只保留在当前页面，勾选后才明确保存到此浏览器（localStorage）。': 'Admin API Keys (API_KEYS) and the host-local HttpOnly session administer protected /admin/api/* routes. Runtime API Keys are client credentials for /v1/* only and are rejected by protected /admin/api/* routes. Do not share Admin API Keys as normal-user, Claude, or API credentials; normal clients should use Runtime API Keys. The key stays on this page unless you explicitly opt into browser storage (localStorage).',
   '仅本页启用 Key': 'Use key on this page', '明确保存到此浏览器（localStorage）': 'Explicitly save in this browser (localStorage)',
   '当前 backend：': 'Current backend: ', '授权 ChatGPT': 'Authorize ChatGPT', '取消': 'Cancel',
   '打开 Codex OAuth 授权页': 'Open Codex OAuth authorization', '复制授权链接': 'Copy authorization link',
@@ -106,6 +106,7 @@ export const ADMIN_MESSAGES: Record<string, string> = {
   '生成新 Key': 'Generate new key', '刷新 Key 列表': 'Refresh key list', '新生成的 Runtime API Key（仅本次显示）': 'New Runtime API Key (shown once)',
   '复制 Runtime API Key': 'Copy Runtime API Key', '清除显示': 'Clear display', '正在读取 Runtime API Key。': 'Loading Runtime API Keys.',
   '简洁模式可选择 Backend Model、启用并保存；专业模式增加推理、服务层级和自定义 alias 管理。选项仅来自 backend discovery。': 'Choose a backend model, enable it, and save in simple mode. Professional mode adds reasoning, service tiers, and custom aliases. Options come only from backend discovery.',
+  'Token 计数是本地 heuristic，不是上游 tokenizer 精确值；客户端可从 ': 'Token counting is a local heuristic, not exact upstream tokenizer output; clients can inspect ', ' 响应头确认模式。': ' response headers to confirm the mode.',
   '重置 alias overlay': 'Reset alias overlay', '刷新 backend discovery': 'Refresh backend discovery', '新 alias，例如 research': 'New alias, e.g. research', '新模型 alias': 'New model alias',
   '显示名称（可选）': 'Display name (optional)', '模型显示名称': 'Model display name', '未绑定（可选）': 'Unbound (optional)', '创建自定义 alias': 'Create custom alias', '正在加载模型映射。': 'Loading model mappings.',
   'API 配置': 'API configuration', '将上方一次性显示的 Runtime API Key 安全保存后，再替换此示例中的占位符。': 'Securely save the one-time Runtime API Key above, then replace the placeholder in this example.',
@@ -116,9 +117,9 @@ export const ADMIN_MESSAGES: Record<string, string> = {
   '正在读取配额缓存。': 'Loading quota cache.',
   '尚未添加 ChatGPT 账号': 'No ChatGPT accounts yet', '使用“添加 ChatGPT 账号”完成正常的浏览器授权流程。': 'Use “Add ChatGPT account” to complete browser authorization.',
   '暂无配额结果': 'No quota results yet', '配额结果由 provider allowance 查询独立提供；添加账号后可刷新。': 'Quota results come independently from provider allowance queries. Refresh after adding an account.',
-  '尚未发现动态模型': 'No models discovered yet', '套餐': 'Plan', '启用': 'Enable', '已启用': 'Enabled', '已停用': 'Disabled', '模型': 'Models', '最近活动': 'Last activity',
+  '尚未发现动态模型': 'No models discovered yet', '套餐': 'Plan', '启用': 'Enable', '已启用': 'Enabled', '已停用': 'Disabled', '模型': 'Models', '模型数量': 'Model count', '最近活动': 'Last activity',
   '5x/20x 是套餐类别标识，不代表当前剩余额度。': '5x/20x identifies plan categories, not remaining allowance.',
-  '请求结果统计': 'Request outcomes', '成功 {0}': 'Succeeded {0}', '失败 {0}': 'Failed {0}', '取消 {0}': 'Cancelled {0}', '总计 {0}': 'Total {0}',
+  '请求结果统计': 'Request outcomes', '成功 {0}': 'Succeeded {0}', '失败 {0}': 'Failed {0}', '取消 {0}': 'Cancelled {0}', '总计 {0}': 'Total {0}', '进行中 {0}': 'In flight {0}',
   '内部 ID': 'Internal ID', '上游 ID': 'Upstream ID', '凭据到期': 'Credential expiry', '并发': 'Concurrency', '冷却至': 'Cooldown until', '安全错误码': 'Safe error code',
   '不可用': 'Unavailable', '无': 'None', '最近发现尝试：{0} · 最近成功：{1}': 'Last discovery attempt: {0} · Last success: {1}',
   '安全发现诊断：': 'Safe discovery diagnostics: ', '动态模型完整列表（{0}）': 'Full discovered model catalog ({0})', '{0} 账号操作': '{0} account actions',
@@ -159,6 +160,7 @@ export const ADMIN_MESSAGES: Record<string, string> = {
   '健康 {0} · 异常 {1} · 停用 {2}': 'Healthy {0} · Unhealthy {1} · Disabled {2}',
   '先添加账号并完成浏览器授权。': 'Add an account and complete browser authorization first.', '检查模型映射并生成客户端 Runtime Key。': 'Check model mappings and generate a client Runtime Key.',
   '最近活动来自账号时间戳和累计请求结果，不是完整请求日志。': 'Recent activity uses account timestamps and cumulative outcomes, not a complete request log.',
+  '请求检查器': 'Request inspector', '仅显示最近请求的路由、模型、流式标记和时间。不会读取或显示请求正文、请求头或凭据。': 'Shows only recent request route, model, streaming flag, and time. It never reads or displays request bodies, headers, or credentials.', '刷新请求摘要': 'Refresh request summary', '正在读取安全请求摘要。': 'Loading safe request summary.', '请求摘要加载失败，未加载。': 'Request summary failed to load.', '暂无最近请求': 'No recent requests', '该摘要有界且只保留 route、model、stream 和 time。': 'This bounded summary retains only route, model, stream, and time.', '路由': 'Route', '流式': 'Streaming', '时间': 'Time', '是': 'Yes', '否': 'No',
 };
 
 export function normalizeAdminLocale(value: unknown): AdminLocale {

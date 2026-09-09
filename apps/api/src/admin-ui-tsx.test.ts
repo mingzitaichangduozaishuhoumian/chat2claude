@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
-import { renderQuotaCards } from './routes/admin-page-view.js';
+import { renderQuotaCards, renderRequestInspector } from './routes/admin-page-view.js';
 
 // Vitest's transform differs from `tsx watch`; serialize in the real dev loader.
 function devScript(): string {
@@ -24,6 +24,20 @@ describe('Admin browser source under the tsx development loader', () => {
       expect(html).toContain(locale === 'en' ? 'Available reset credits' : '可用重置次数');
       expect(html).not.toContain('hidden-credit-id');
     }
+  });
+
+  it('serializes the privacy-limited request inspector in both locales', () => {
+    const script = devScript();
+    const source = script.slice(0, script.indexOf('let currentFlowId'));
+    const requests = [{ route: '/v1/messages', model: 'sonnet', stream: true, time: '2026-09-09T00:00:00.000Z', body: 'BODY-CANARY' }];
+    for (const locale of ['zh-CN', 'en']) {
+      const html = runInNewContext(source + '\nrenderRequestInspector(requests, locale)', { requests, locale });
+      expect(html).toContain(locale === 'en' ? 'Route' : '路由');
+      expect(html).toContain('/v1/messages');
+      expect(html).toContain(locale === 'en' ? 'Yes' : '是');
+      expect(html).not.toContain('BODY-CANARY');
+    }
+    expect(renderRequestInspector(requests)).not.toContain('BODY-CANARY');
   });
 
   it('executes the serialized overview in both locales without loader globals', () => {

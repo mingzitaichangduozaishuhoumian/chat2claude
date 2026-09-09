@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { adminPageClientScript } from './routes/admin-page-client.js';
 import { createApp } from './app.js';
 import { loadEnv } from './config/env.js';
-import { adminPageViewSource, renderAccountCards, renderQuotaCards, renderAdminOverview, type AdminAccountView, type AdminOverviewData } from './routes/admin-page-view.js';
+import { adminPageViewSource, renderAccountCards, renderQuotaCards, renderAdminOverview, renderRequestInspector, type AdminAccountView, type AdminOverviewData } from './routes/admin-page-view.js';
 
 describe('Admin UI redesign contracts', () => {
   it('places recommended direct setup before optional CC Switch with copyable configurations', async () => {
@@ -72,9 +72,10 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     expect(html).toContain('高级：外部管理访问（Admin API Key）');
     expect(html).toContain('优先在本机浏览器使用 HttpOnly 会话');
     expect(html).toContain('本项目不创建隧道、不配置 NAT、也不发布服务');
-    expect(html).toContain('Admin API Key 授予完整管理权限');
+    expect(html).toContain('Admin API Key（API_KEYS）与本机 HttpOnly 会话用于受保护的');
+    expect(html).toContain('Runtime API Key 仅用于');
+    expect(html).toContain('访问受保护的 Admin API 会被拒绝');
     expect(html).toContain('普通客户端应使用 Runtime API Key');
-    expect(html).toContain('不是硬权限边界');
     expect(html).toContain('跨浏览器和服务重启保持有效，直至显式撤销');
     expect(html).toContain('[data-admin-mode="simple"] [id="admin-key-fallback"]');
     expect(html).toContain("postJson('/admin/api/api-keys')");
@@ -89,6 +90,24 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     expect(html).toContain("selectModule('admin-access');");
     expect(html).toContain('adminKeyInput.focus();');
     await app.dispose();
+  });
+
+  it('keeps the professional request inspector limited to safe diagnostic metadata', async () => {
+    const app = createApp(loadEnv({ NODE_ENV: 'test' }));
+    try {
+      const html = await (await app.request('/admin')).text();
+      expect(html).toContain('id="request-diagnostics"');
+      expect(html).toContain('id="refresh-request-diagnostics"');
+      expect(html).toContain("getJson('/admin/api/diagnostics/requests')");
+      expect(html).toContain('renderRequestInspector(requestDiagnosticsCache)');
+      const inspector = renderRequestInspector([{ route: '/v1/messages', model: 'sonnet', stream: true, time: '2026-09-09T00:00:00.000Z', body: 'REQUEST-BODY-CANARY', headers: 'HEADER-CANARY', secret: 'SECRET-CANARY' } as any]);
+      expect(inspector).toContain('/v1/messages');
+      expect(inspector).toContain('sonnet');
+      expect(inspector).toContain('是');
+      expect(inspector).not.toContain('REQUEST-BODY-CANARY');
+      expect(inspector).not.toContain('HEADER-CANARY');
+      expect(inspector).not.toContain('SECRET-CANARY');
+    } finally { await app.dispose(); }
   });
 
   it('toggles modes without refetch or losing advanced edits and omits defaults in the simple PATCH', async () => {

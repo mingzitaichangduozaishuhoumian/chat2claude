@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { createLogger, type Logger } from '@chatgpt-to-claude/shared';
-import { accessLog, getAccessLogTerminal, normalizeAccessPath, setAccessLogMetadata, summarizeQuery, type HttpAccessLog } from './access-log.js';
+import { accessLog, getAccessLogStreamLifecycle, getAccessLogTerminal, normalizeAccessPath, setAccessLogMetadata, summarizeQuery, type HttpAccessLog } from './access-log.js';
 import { apiKeyAuth } from './auth.js';
 import { RuntimeApiKeys } from '../services/runtime-api-keys.js';
 import { createApp } from '../app.js';
@@ -40,6 +40,31 @@ describe('accessLog', () => {
         expect(JSON.parse(line).meta.requestId).toHaveLength(36);
       }
     } finally { sink.mockRestore(); }
+  });
+
+  it('keeps concise text stream access logging to terminal outcomes only', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const app = new Hono();
+    app.use('*', accessLog(createLogger(), 'text'));
+    let lifecycle: ReturnType<typeof getAccessLogStreamLifecycle>;
+    let terminal: ReturnType<typeof getAccessLogTerminal>;
+    app.get('/v1/messages', c => {
+      lifecycle = getAccessLogStreamLifecycle(c);
+      terminal = getAccessLogTerminal(c);
+      return new Response(new ReadableStream(), { headers: { 'content-type': 'text/event-stream' } });
+    });
+
+    await app.request('/v1/messages');
+    lifecycle!({ lifecycle: 'start', downstreamEventCount: 1, downstreamBodyBytes: 12 });
+    lifecycle!({ lifecycle: 'active', downstreamEventCount: 4, downstreamBodyBytes: 64 });
+    terminal!({ outcome: 'success', downstreamEventCount: 4, downstreamBodyBytes: 64 });
+
+    expect(log.mock.calls.map(([line]) => String(line)).filter(line => line.includes('STREAM START') || line.includes('STREAM ACTIVE'))).toHaveLength(0);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('--> STREAM DONE |'));
+    expect(warn).not.toHaveBeenCalled();
+    log.mockRestore();
+    warn.mockRestore();
   });
 
   it.each(['text', 'json'] as const)('drops non-enum reasons in %s and does not inspect or delay an SSE body', async (format) => {

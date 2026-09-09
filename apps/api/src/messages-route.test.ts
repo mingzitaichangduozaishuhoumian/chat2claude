@@ -6,6 +6,8 @@ import { createApp } from './app.js';
 import { createAdminRoute } from './routes/admin.js';
 import { createMessagesRoute } from './routes/messages.js';
 import { createModelsRoute } from './routes/models.js';
+import { createMetricsRoute } from './routes/metrics.js';
+import { clientCompatibilitySmokeScenarios } from './protocol-compatibility.js';
 import { createOpenAiChatRoute } from './routes/openai-chat.js';
 import { createOpenAiResponsesRoute } from './routes/openai-responses.js';
 import { adminApiAuth, apiKeyAuth } from './middleware/auth.js';
@@ -1663,11 +1665,8 @@ describe('API key auth', () => {
     const secondEnableWithoutKeyRes = await app.request('/admin/api/api-keys/dev-enable', { method: 'POST' });
     expect(secondEnableWithoutKeyRes.status).toBe(401);
     const secondEnableRes = await app.request('/admin/api/api-keys/dev-enable', { method: 'POST', headers: { 'x-api-key': firstEnableBody.key } });
-    expect(secondEnableRes.status).toBe(200);
-    const secondEnableBody = await secondEnableRes.json() as { key: string };
+    expect(secondEnableRes.status).toBe(403);
     expect(firstEnableBody.key).toMatch(/^sk-dev-[A-Za-z0-9_-]+$/);
-    expect(secondEnableBody.key).toMatch(/^sk-dev-[A-Za-z0-9_-]+$/);
-    expect(secondEnableBody.key).not.toBe(firstEnableBody.key);
     expect(firstEnableBody.status.apiKeysConfigured).toBe(true);
     expect(firstEnableBody.status.runtimeApiKeysConfigured).toBe(true);
 
@@ -1687,7 +1686,42 @@ describe('API key auth', () => {
     expect(setupStatusRes.status).toBe(200);
   });
 
-  it('allows bootstrap admin APIs with no keys then requires the generated runtime key for sensitive admin APIs', async () => {
+  it('keeps public auth status coarse and does not expose model registry internals', async () => {
+    const modelRegistry = new ModelRegistry({
+      discoveredModels: [{
+        id: 'auth-status-backend-model',
+        raw: { token: 'AUTH-STATUS-SECRET-CANARY' },
+        controls: {
+          reasoning: { metadataKnown: true, supported: [{ effort: 'medium', ...({ raw: 'AUTH-STATUS-SECRET-CANARY' } as Record<string, unknown>) }], defaultEffort: 'medium' },
+          serviceTier: { metadataKnown: true, supported: [{ id: 'standard', ...({ raw: 'AUTH-STATUS-SECRET-CANARY' } as Record<string, unknown>) }], defaultTier: 'standard', fastMode: false },
+        },
+      }],
+    });
+    modelRegistry.update('sonnet', { backendModel: 'auth-status-backend-model' });
+    const app = new Hono();
+    app.route('/', createAdminRoute({
+      accountPool: new AccountPool(),
+      modelRegistry,
+      backend: new InspectingBackend([{ id: 'auth-status-backend-model' }]),
+      runtimeApiKeys: new RuntimeApiKeys(),
+      envApiKeys: [],
+      defaultReasoningEffort: 'medium',
+      defaultResponseSpeed: 'balanced',
+      backendProvider: 'session',
+    }));
+
+    const res = await app.request('/admin/api/auth/status');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.sonnetConfigured).toBe(true);
+    expect(body).not.toHaveProperty('backendProvider');
+    expect(body).not.toHaveProperty('sonnet');
+    expect(JSON.stringify(body)).not.toContain('AUTH-STATUS-SECRET-CANARY');
+    expect(JSON.stringify(body)).not.toContain('auth-status-backend-model');
+  });
+
+  it('allows local bootstrap APIs with no keys then rejects the generated runtime key for sensitive admin APIs', async () => {
     const app = createApp({ ...env, apiKeys: [] });
     const enableRes = await app.request('/admin/api/api-keys/dev-enable', { method: 'POST' });
     expect(enableRes.status).toBe(200);
@@ -1696,8 +1730,13 @@ describe('API key auth', () => {
     const noKeyAddRes = await app.request('/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'runtime-admin', label: 'Runtime Admin' }) });
     expect(noKeyAddRes.status).toBe(401);
 
-    const withKeyAddRes = await app.request('/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': enableBody.key }, body: JSON.stringify({ id: 'runtime-admin', label: 'Runtime Admin' }) });
-    expect(withKeyAddRes.status).toBe(201);
+    const runtimeKeyAddRes = await app.request('/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': enableBody.key }, body: JSON.stringify({ id: 'runtime-admin', label: 'Runtime Admin' }) });
+    expect(runtimeKeyAddRes.status).toBe(403);
+
+    const localAdmin = await app.request('http://127.0.0.1:3000/admin', { headers: { host: '127.0.0.1:3000' } });
+    const cookie = localAdmin.headers.get('set-cookie') ?? '';
+    const localSessionAddRes = await app.request('http://127.0.0.1:3000/admin/api/accounts', { method: 'POST', headers: { 'content-type': 'application/json', host: '127.0.0.1:3000', cookie, origin: 'http://127.0.0.1:3000' }, body: JSON.stringify({ id: 'runtime-admin', label: 'Runtime Admin' }) });
+    expect(localSessionAddRes.status).toBe(201);
   });
 
   it('rejects anonymous bootstrap when the deployment is not explicitly local', async () => {
@@ -1792,7 +1831,7 @@ describe('/admin', () => {
     expect(html).toContain("await navigator.clipboard.writeText(key);");
     expect(html).toContain("if (key && persistent) localStorage.setItem('adminApiKey', key);");
     expect(html).toContain("const key = localAdminSessionActive ? '' : getStoredAdminApiKey();");
-    expect(html).toContain("verifyLocalAdminSession().then(async () => { await Promise.all([loadAccounts(), loadApiKeys(), loadModels()]); await restoreOAuthFlow(); });");
+    expect(html).toContain("verifyLocalAdminSession().then(async () => { await Promise.all([loadAccounts(), loadApiKeys(), loadModels(), loadRequestDiagnostics()]); await restoreOAuthFlow(); });");
     expect(html).toContain('Runtime API Keys');
     expect(html).toContain('id="api-keys-count"');
     expect(html).toContain('未绑定，请在下方模型映射中选择后端模型并保存');
@@ -1834,6 +1873,7 @@ describe('/v1/messages/count_tokens', () => {
       }),
     });
     expect(res.status).toBe(200);
+    expect(res.headers.get('x-chat2claude-token-count-mode')).toBe('heuristic');
     const body = await res.json() as { input_tokens: number };
     expect(Object.keys(body)).toEqual(['input_tokens']);
     expect(body.input_tokens).toBeGreaterThan(0);
@@ -1925,16 +1965,132 @@ describe('/v1/models', () => {
     const app = createApp({ ...env, mockBackendModelsJson: JSON.stringify([{ id: 'backend-test-model' }, { id: 'direct-backend-model' }]) });
     const res = await app.request('/v1/models', { headers: { 'x-api-key': 'test-key' } });
     expect(res.status).toBe(200);
-    const body = await res.json() as { data: Array<{ id: string; backendModel: string; enabled: boolean; source: string; status: string; capabilities: { reasoning_effort: string[]; response_speed: string[]; thinking: boolean; metadata_status: { reasoning: string; service_tier: string } }; defaults: { reasoning_effort: string; speed: string } }> };
+    const body = await res.json() as { data: Array<{ id: string; enabled: boolean; source: string; status: string; token_counting_mode: string; capability_projection: { reasoning_effort: string[]; response_speed: string[]; thinking: boolean; metadata_status: { reasoning: string; service_tier: string } }; capabilities: { reasoning_effort: string[]; response_speed: string[]; thinking: boolean; metadata_status: { reasoning: string; service_tier: string } }; defaults: { reasoning_effort: string; speed: string } }> };
     expect(body.data.map((model) => model.id)).toContain('sonnet');
     expect(body.data.map((model) => model.id)).toContain('direct-backend-model');
     expect(body.data.map((model) => model.id)).not.toContain('opus');
     const sonnet = body.data.find((model) => model.id === 'sonnet');
-    expect(sonnet).toMatchObject({ backendModel: 'backend-test-model', enabled: true, source: 'alias', status: 'bound', defaults: { reasoning_effort: 'medium', speed: 'standard' } });
+    expect(sonnet).toMatchObject({ enabled: true, source: 'alias', status: 'bound', defaults: { reasoning_effort: 'medium', speed: 'standard' } });
+    expect(sonnet).not.toHaveProperty('backendModel');
     expect(sonnet?.capabilities.reasoning_effort).toEqual([]);
     expect(sonnet?.capabilities.response_speed).toEqual([]);
     expect(sonnet?.capabilities.thinking).toBe(false);
     expect(sonnet?.capabilities.metadata_status).toEqual({ reasoning: 'unknown', service_tier: 'unknown' });
+    expect(sonnet?.token_counting_mode).toBe('heuristic');
+    expect(sonnet?.capability_projection).toEqual({
+      reasoning_effort: [], response_speed: [], thinking: false,
+      metadata_status: { reasoning: 'unknown', service_tier: 'unknown' }, fast_mode: false, ultra_lossy: false,
+    });
+  });
+
+  it('projects an explicit public DTO without leaking future runtime fields', async () => {
+    const app = new Hono();
+    app.route('/', createModelsRoute({ modelRegistry: { list: () => [{
+      id: 'sonnet', type: 'model', display_name: 'Sonnet', builtIn: true, enabled: true,
+      backendModel: 'backend-test-model', defaults: { reasoning_effort: 'medium', speed: 'standard' },
+      source: 'alias', status: 'bound', effective_defaults: { reasoning_source: 'alias', service_tier_source: 'omit' },
+      configuration_issues: [], discovered: {
+        id: 'backend-test-model',
+        raw: { token: 'MODEL-SECRET-CANARY' },
+        controls: {
+          reasoning: { metadataKnown: true, supported: [{ effort: 'medium', raw: 'MODEL-SECRET-CANARY' }], defaultEffort: 'medium' },
+          serviceTier: { metadataKnown: true, supported: [{ id: 'standard', raw: 'MODEL-SECRET-CANARY' }], defaultTier: 'standard', fastMode: false },
+        },
+      },
+      capabilities: {
+        reasoning_effort: ['medium'], reasoning_effort_options: [{ effort: 'medium', raw: 'MODEL-SECRET-CANARY' }], response_speed: [], service_tiers: [{ id: 'standard', raw: 'MODEL-SECRET-CANARY' }],
+        thinking: false, metadata_status: { reasoning: 'known', service_tier: 'unknown' }, fast_mode: false, ultra_lossy: false,
+      },
+      internalSecretCanary: 'MODEL-SECRET-CANARY',
+    }] } as unknown as ModelRegistry }));
+
+    const res = await app.request('/v1/models');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Array<Record<string, unknown>> };
+    expect(JSON.stringify(body)).not.toContain('MODEL-SECRET-CANARY');
+    expect(body.data[0]).not.toHaveProperty('internalSecretCanary');
+    expect(body.data[0].discovered).not.toHaveProperty('raw');
+  });
+});
+
+describe('real-client compatibility smoke scenarios', () => {
+  it('exercises each documented client endpoint with the expected base URL family', async () => {
+    for (const scenario of clientCompatibilitySmokeScenarios) {
+      const baseUrl = scenario.baseUrl === 'root_origin' ? 'http://127.0.0.1:3000' : 'http://127.0.0.1:3000/v1';
+      expect(baseUrl.endsWith('/v1')).toBe(scenario.baseUrl === 'versioned_v1');
+      for (const endpoint of scenario.endpoints) {
+        const app = createApp(env);
+        const res = await requestSmokeEndpoint(app, endpoint);
+        expect(res.status, `${scenario.client} ${endpoint}`).toBe(200);
+      }
+    }
+  });
+});
+
+async function requestSmokeEndpoint(app: Hono, endpoint: string): Promise<Response> {
+  switch (endpoint) {
+    case '/v1/messages':
+      return app.request(endpoint, { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', max_tokens: 8, messages: [{ role: 'user', content: 'hello' }] }) });
+    case '/v1/messages/count_tokens':
+      return app.request(endpoint, { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] }) });
+    case '/v1/models':
+      return app.request(endpoint, { headers: adminKeyHeaders });
+    case '/v1/chat/completions':
+      return app.request(endpoint, { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] }) });
+    case '/v1/responses':
+      return app.request(endpoint, { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', input: 'hello' }) });
+    default:
+      throw new Error(`Unhandled smoke endpoint: ${endpoint}`);
+  }
+}
+
+describe('/metrics and admin request diagnostics', () => {
+  it('reports only bounded safe request metadata and aggregate counters', async () => {
+    const app = createApp(env);
+    const requestLog = new RequestLog({ maxEntries: 2, now: () => new Date('2026-09-08T00:00:00.000Z') });
+    requestLog.record({ route: '/v1/messages', model: 'sonnet', stream: false });
+    requestLog.record({ route: '/v1/responses', model: 'opus', stream: true });
+    requestLog.record({ route: '/v1/chat/completions', model: 'haiku', stream: false });
+
+    const metricsApp = new Hono();
+    metricsApp.route('/', createMetricsRoute({ requestLog }));
+    const metrics = await metricsApp.request('/metrics');
+    expect(await metrics.json()).toEqual({
+      requests: 2,
+      request_log: { retained: 2, streams: 1, byRoute: { '/v1/responses': 1, '/v1/chat/completions': 1 } },
+    });
+
+    const unauthenticatedMetrics = await app.request('/metrics');
+    expect(unauthenticatedMetrics.status).toBe(401);
+    const authenticatedMetrics = await app.request('/metrics', { headers: adminKeyHeaders });
+    expect(authenticatedMetrics.status).toBe(200);
+    expect(await authenticatedMetrics.json()).toMatchObject({ requests: 0, request_log: { retained: 0, streams: 0, byRoute: {} } });
+
+    const request = await app.request('/v1/messages', {
+      method: 'POST', headers: jsonHeaders,
+      body: JSON.stringify({ model: 'sonnet', max_tokens: 8, messages: [{ role: 'user', content: 'REQUEST-CONTENT-CANARY' }] }),
+    });
+    expect(request.status).toBe(200);
+    const runtimeKeyRes = await app.request('/admin/api/api-keys/dev-enable', { method: 'POST', headers: adminJsonHeaders });
+    const runtimeKeyBody = await runtimeKeyRes.json() as { key: string };
+    const runtimeDiagnostics = await app.request('/admin/api/diagnostics/requests', { headers: { 'x-api-key': runtimeKeyBody.key } });
+    expect(runtimeDiagnostics.status).toBe(403);
+    expect(runtimeDiagnostics.headers.get('cache-control')).toBe('no-store');
+
+    const localAdmin = await app.request('http://127.0.0.1:3000/admin', { headers: { host: '127.0.0.1:3000' } });
+    const cookie = localAdmin.headers.get('set-cookie');
+    expect(cookie).toContain('chat2claude_admin_session=');
+    const localDiagnostics = await app.request('http://127.0.0.1:3000/admin/api/diagnostics/requests', { headers: { host: '127.0.0.1:3000', cookie: cookie ?? '' } });
+    expect(localDiagnostics.status).toBe(200);
+
+    const diagnostics = await app.request('/admin/api/diagnostics/requests', { headers: adminKeyHeaders });
+    expect(diagnostics.status).toBe(200);
+    expect(diagnostics.headers.get('cache-control')).toBe('no-store');
+    const body = await diagnostics.json() as { requests: Array<Record<string, unknown>> };
+    expect(body.requests).toHaveLength(1);
+    expect(body.requests[0]).toMatchObject({ route: '/v1/messages', model: 'sonnet', stream: false, time: expect.any(String) });
+    expect(JSON.stringify(body)).not.toContain('REQUEST-CONTENT-CANARY');
+    expect(Object.keys(body.requests[0]).sort()).toEqual(['model', 'route', 'stream', 'time']);
   });
 });
 
@@ -2222,8 +2378,9 @@ describe('ChatGPT one-click auth admin flow', () => {
 
     const modelsRes = await app.request('/v1/models', { headers: { 'x-api-key': pollBody.provisionResult.apiKey } });
     expect(modelsRes.status).toBe(200);
-    const models = await modelsRes.json() as { data: Array<{ id: string; backendModel: string }> };
-    expect(models.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'sonnet', backendModel: 'plain-model' })]));
+    const models = await modelsRes.json() as { data: Array<{ id: string; backendModel?: string }> };
+    expect(models.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'sonnet' })]));
+    expect(models.data.find((model) => model.id === 'sonnet')).not.toHaveProperty('backendModel');
   });
 
   it('manual complete creates/updates chatgpt-primary without leaking secret', async () => {
@@ -2522,9 +2679,11 @@ describe('session admin model discovery', () => {
     expect(patchRes.status).toBe(200);
     const publicModelsRes = await app.request('/v1/models');
     expect(publicModelsRes.status).toBe(200);
-    const publicModels = await publicModelsRes.json() as { data: Array<{ id: string; backendModel: string; status: string }> };
-    expect(publicModels.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'sonnet', backendModel: 'backend-session-model', status: 'bound' })]));
-    expect(publicModels.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'backend-session-model', backendModel: 'backend-session-model' })]));
+    const publicModels = await publicModelsRes.json() as { data: Array<{ id: string; backendModel?: string; status: string }> };
+    expect(publicModels.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'sonnet', status: 'bound' })]));
+    expect(publicModels.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'backend-session-model' })]));
+    expect(publicModels.data.find((model) => model.id === 'sonnet')).not.toHaveProperty('backendModel');
+    expect(publicModels.data.find((model) => model.id === 'backend-session-model')).not.toHaveProperty('backendModel');
   });
 
   it('refreshes every session account and updates union availability on disable, enable, and delete', async () => {
