@@ -21,6 +21,28 @@ describe('token estimates', () => {
     });
     expect(withTools).toBeGreaterThan(estimateClaudeInputTokens(request));
   });
+
+  it('counts structured tool history while omitting private thinking history', () => {
+    const withToolHistory = estimateClaudeInputTokens({
+      model: 'sonnet',
+      messages: [
+        { role: 'assistant', content: [
+          { type: 'thinking', thinking: 'PRIVATE_THINKING_CANARY', signature: 'PRIVATE_SIGNATURE_CANARY' },
+          { type: 'tool_use', id: 'toolu_1', name: 'lookup_weather', input: { city: '上海' } },
+        ] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '晴天，25°C' }] },
+      ],
+    });
+    const withoutThinking = estimateClaudeInputTokens({
+      model: 'sonnet',
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'lookup_weather', input: { city: '上海' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '晴天，25°C' }] },
+      ],
+    });
+    expect(withToolHistory).toBe(withoutThinking);
+    expect(withToolHistory).toBeGreaterThan(estimateClaudeInputTokens({ model: 'sonnet', messages: [{ role: 'user', content: '晴天，25°C' }] }));
+  });
 });
 
 describe('mapChatGptResponseToClaude tool calls', () => {

@@ -1,6 +1,8 @@
 import type { ChatGptCompletionResponse } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ClaudeContentBlock, ClaudeMessageResponse, ClaudeMessagesRequest } from '@chatgpt-to-claude/claude-protocol';
 import { createMessageId } from '@chatgpt-to-claude/shared';
+import { normalizeClaudeMessagesToCanonical } from './canonical.js';
+import { mapCanonicalInputItems, mapClaudeToolChoice, mapClaudeTools } from './request.js';
 import { mapStopReason } from './stop-reason.js';
 export function mapChatGptResponseToClaude(request: ClaudeMessagesRequest, response: ChatGptCompletionResponse): ClaudeMessageResponse {
   return {
@@ -22,12 +24,12 @@ export function mapResponseContent(response: ChatGptCompletionResponse): ClaudeC
   return content;
 }
 export function estimateClaudeInputTokens(request: Pick<ClaudeMessagesRequest, 'model' | 'messages'> & Partial<ClaudeMessagesRequest>): number {
+  const canonical = normalizeClaudeMessagesToCanonical({ ...request, max_tokens: request.max_tokens ?? 1 } as ClaudeMessagesRequest);
   const countable = compactObject({
     model: request.model,
-    system: request.system,
-    messages: request.messages,
-    tools: request.tools,
-    tool_choice: request.tool_choice,
+    input: mapCanonicalInputItems(canonical.messages, canonical.diagnostics),
+    tools: mapClaudeTools(request.tools),
+    tool_choice: mapClaudeToolChoice(request.tool_choice),
     thinking: request.thinking,
     output_config: request.output_config,
     reasoning_effort: request.reasoning_effort,

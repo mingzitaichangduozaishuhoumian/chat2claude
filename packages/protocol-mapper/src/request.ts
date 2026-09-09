@@ -83,7 +83,7 @@ export function mapClaudeToolChoice(toolChoice: ClaudeToolChoice | undefined): C
   return { type: toolChoice.type };
 }
 
-function mapCanonicalInputItems(messages: Array<{ role: ChatGptMessage['role'] | 'tool'; content: CanonicalContentBlock[] }>, diagnostics: CanonicalMappingDiagnostic[]): ChatGptInputItem[] {
+export function mapCanonicalInputItems(messages: Array<{ role: ChatGptMessage['role'] | 'tool'; content: CanonicalContentBlock[] }>, diagnostics: CanonicalMappingDiagnostic[]): ChatGptInputItem[] {
   const inputItems: ChatGptInputItem[] = [];
   for (const message of messages) {
     const role = message.role === 'tool' ? 'user' : message.role;
