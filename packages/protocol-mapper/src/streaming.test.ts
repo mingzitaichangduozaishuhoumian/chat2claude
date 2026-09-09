@@ -70,6 +70,24 @@ describe('mapChatGptStreamToClaudeSse', () => {
     expect(text).toContain('"stop_reason":"tool_use"');
   });
 
+  it('streams reasoning_delta as a Claude thinking block and closes it before text', async () => {
+    const text = await collect(mapChatGptStreamToClaudeSse(request, async function* () {
+      yield { type: 'reasoning_delta' as const, text: 'thinking out loud' };
+      yield { type: 'text_delta' as const, text: 'hello' };
+      yield { type: 'done' as const, finishReason: 'stop' };
+    }()));
+    const events = parseClaudeData(text);
+    expect(events.filter((event) => event.type === 'content_block_start')).toEqual([
+      { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+      { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+    ]);
+    expect(events).toContainEqual({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'thinking out loud' } });
+    expect(events).toContainEqual({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'hello' } });
+    expect(events.findIndex((event) => event.type === 'content_block_stop' && event.index === 0))
+      .toBeLessThan(events.findIndex((event) => event.type === 'content_block_start' && event.index === 1));
+    expect(events.at(-1)).toEqual({ type: 'message_stop' });
+  });
+
   it('uses done finishReason for text streams', async () => {
     const text = await collect(mapChatGptStreamToClaudeSse(request, async function* () {
       yield { type: 'text_delta' as const, text: 'hello' };
@@ -245,6 +263,12 @@ async function collect(iterable: AsyncIterable<string>): Promise<string> {
   let text = '';
   for await (const chunk of iterable) text += chunk;
   return text;
+}
+
+function parseClaudeData(text: string): Array<Record<string, unknown>> {
+  return text.split('\n')
+    .filter((line) => line.startsWith('data: '))
+    .map((line) => JSON.parse(line.slice('data: '.length)) as Record<string, unknown>);
 }
 
 function parseOpenAiData(text: string): Array<Record<string, unknown>> {

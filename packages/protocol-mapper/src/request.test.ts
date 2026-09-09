@@ -111,6 +111,87 @@ describe('canonical request mapping', () => {
     ]);
   });
 
+  it('omits assistant thinking history from backend text while preserving adjacent text', () => {
+    const mapped = mapClaudeRequestToChatGpt({
+      model: 'sonnet',
+      max_tokens: 64,
+      messages: [{
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'PRIVATE_THINKING_CANARY', signature: 'PRIVATE_SIGNATURE_CANARY' },
+          { type: 'text', text: 'visible answer' },
+        ],
+      }],
+    });
+
+    expect(mapped.messages).toEqual([{ role: 'assistant', content: 'visible answer' }]);
+    expect(mapped.inputItems).toEqual([{ type: 'message', role: 'assistant', content: 'visible answer' }]);
+    const serialized = JSON.stringify({ messages: mapped.messages, inputItems: mapped.inputItems });
+    expect(serialized).not.toContain('[unsupported:thinking]');
+    expect(serialized).not.toContain('PRIVATE_THINKING_CANARY');
+    expect(serialized).not.toContain('PRIVATE_SIGNATURE_CANARY');
+    expect(mapped.backendOptions?.mappingDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'thinking_text_backend_omitted', path: 'messages[0].content[0]' }),
+    ]));
+  });
+
+  it('omits redacted thinking history from backend text without leaking opaque data', () => {
+    const mapped = mapClaudeRequestToChatGpt({
+      model: 'sonnet',
+      max_tokens: 64,
+      messages: [{
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'before ' },
+          { type: 'redacted_thinking', data: 'PRIVATE_REDACTED_CANARY' },
+          { type: 'text', text: 'after' },
+        ],
+      }],
+    });
+
+    expect(mapped.messages).toEqual([{ role: 'assistant', content: 'before after' }]);
+    expect(mapped.inputItems).toEqual([{ type: 'message', role: 'assistant', content: 'before after' }]);
+    const serialized = JSON.stringify({ messages: mapped.messages, inputItems: mapped.inputItems });
+    expect(serialized).not.toContain('[unsupported:redacted_thinking]');
+    expect(serialized).not.toContain('PRIVATE_REDACTED_CANARY');
+    expect(mapped.backendOptions?.mappingDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'redacted_thinking_text_backend_omitted', path: 'messages[0].content[1]' }),
+    ]));
+  });
+
+  it('omits thinking blocks from nested tool_result content while preserving adjacent text', () => {
+    const mapped = mapClaudeRequestToChatGpt({
+      model: 'sonnet',
+      max_tokens: 64,
+      messages: [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'lookup', input: {} }] },
+        { role: 'user', content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_1',
+          content: [
+            { type: 'text', text: 'public before ' },
+            { type: 'thinking', thinking: 'NESTED_THINKING_CANARY', signature: 'NESTED_SIGNATURE_CANARY' } as never,
+            { type: 'redacted_thinking', data: 'NESTED_REDACTED_CANARY' } as never,
+            { type: 'text', text: 'public after' },
+          ],
+        }],
+        },
+      ],
+    });
+
+    expect(mapped.messages[1]).toEqual({ role: 'user', content: '[tool_result:toolu_1] public before public after' });
+    expect(mapped.inputItems).toEqual([
+      { type: 'function_call', callId: 'toolu_1', name: 'lookup', arguments: {} },
+      { type: 'function_call_output', callId: 'toolu_1', output: 'public before public after' },
+    ]);
+    const serialized = JSON.stringify({ messages: mapped.messages, inputItems: mapped.inputItems });
+    expect(serialized).not.toContain('[unsupported:thinking]');
+    expect(serialized).not.toContain('[unsupported:redacted_thinking]');
+    expect(serialized).not.toContain('NESTED_THINKING_CANARY');
+    expect(serialized).not.toContain('NESTED_SIGNATURE_CANARY');
+    expect(serialized).not.toContain('NESTED_REDACTED_CANARY');
+  });
+
   it('keeps unknown blocks explicit instead of dropping them', () => {
     const request = base([{ type: 'future_block', payload: 1 }]);
     const mapped = mapClaudeRequestToChatGpt(request);

@@ -55,12 +55,12 @@ function normalizeBlock(block: ClaudeContentBlock, diagnostics: CanonicalMapping
       diagnostics.push({ severity: 'warning', code: 'tool_use_text_backend_placeholder', message: 'tool_use is preserved in canonical IR but downgraded to a text placeholder for the current backend.', path });
       return { kind: 'tool_use', id: String(block.id ?? ''), name: String(block.name ?? ''), input: block.input };
     case 'tool_result':
-      return { kind: 'tool_result', toolUseId: String(block.tool_use_id ?? ''), content: normalizeToolResultContent(block.content), isError: typeof block.is_error === 'boolean' ? block.is_error : undefined };
+      return { kind: 'tool_result', toolUseId: String(block.tool_use_id ?? ''), content: normalizeToolResultContent(block.content, diagnostics, `${path}.content`), isError: typeof block.is_error === 'boolean' ? block.is_error : undefined };
     case 'thinking':
-      diagnostics.push({ severity: 'warning', code: 'thinking_text_backend_placeholder', message: 'thinking is preserved in canonical IR but downgraded to a text placeholder for the current backend.', path });
+      diagnostics.push({ severity: 'info', code: 'thinking_text_backend_omitted', message: 'thinking is preserved in canonical IR but omitted from text backend replay.', path });
       return { kind: 'thinking', thinking: String(block.thinking ?? ''), signature: typeof block.signature === 'string' ? block.signature : undefined };
     case 'redacted_thinking':
-      diagnostics.push({ severity: 'warning', code: 'redacted_thinking_text_backend_placeholder', message: 'redacted_thinking is preserved in canonical IR but downgraded to a text placeholder for the current backend.', path });
+      diagnostics.push({ severity: 'info', code: 'redacted_thinking_text_backend_omitted', message: 'redacted_thinking is preserved in canonical IR but omitted from text backend replay.', path });
       return { kind: 'redacted_thinking', data: String(block.data ?? '') };
     default:
       diagnostics.push({ severity: 'error', code: 'unsupported_content_block', message: `Unsupported content block type: ${block.type}`, path });
@@ -68,12 +68,12 @@ function normalizeBlock(block: ClaudeContentBlock, diagnostics: CanonicalMapping
   }
 }
 
-function normalizeToolResultContent(content: unknown): string | CanonicalContentBlock[] {
+function normalizeToolResultContent(content: unknown, diagnostics: CanonicalMappingDiagnostic[], path: string): string | CanonicalContentBlock[] {
   if (content === undefined) return '';
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
-    return content.map((item) => {
-      if (item && typeof item === 'object' && (item as { type?: unknown }).type === 'text') return { kind: 'text', text: String((item as { text?: unknown }).text ?? '') } satisfies CanonicalTextBlock;
+    return content.map((item, index) => {
+      if (item && typeof item === 'object' && typeof (item as { type?: unknown }).type === 'string') return normalizeBlock(item as ClaudeContentBlock, diagnostics, `${path}[${index}]`);
       return { kind: 'unsupported', blockType: String((item as { type?: unknown } | undefined)?.type ?? 'unknown'), raw: item } satisfies CanonicalUnsupportedBlock;
     });
   }
@@ -89,8 +89,8 @@ function flattenBlock(block: CanonicalContentBlock, diagnostics: CanonicalMappin
     }
     case 'image': return '[unsupported:image]';
     case 'tool_use': return `[unsupported:tool_use:${block.name}]`;
-    case 'thinking': return '[unsupported:thinking]';
-    case 'redacted_thinking': return '[unsupported:redacted_thinking]';
+    case 'thinking': return '';
+    case 'redacted_thinking': return '';
     case 'unsupported':
       diagnostics.push({ severity: 'error', code: 'unsupported_content_block', message: `Unsupported content block type: ${block.blockType}`, path });
       return `[unsupported:${block.blockType}]`;

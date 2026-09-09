@@ -11,7 +11,7 @@ Only these status values are used by the manifest:
 
 - `supported`: implemented behavior with direct support.
 - `partial`: implemented subset; some semantics are not complete.
-- `downgraded`: preserved in Canonical IR but represented as an explicit fallback.
+- `downgraded`: preserved in Canonical IR but represented as an explicit fallback or safe omission.
 - `estimated`: locally calculated value, not provider/tokenizer parity.
 - `unsupported`: rejected or not implemented.
 - `backend_dependent`: mapped safely where possible, but upstream support determines the result.
@@ -27,9 +27,9 @@ Only these status values are used by the manifest:
 | `tools_and_tool_choice` | `backend_dependent` | Typed and mapped where possible; backend execution is not guaranteed. |
 | `tool_result_and_tool_use_blocks` | `downgraded` | Preserved in Canonical IR and flattened when the backend cannot represent them. |
 | `image_blocks` | `downgraded` | Preserved in Canonical IR and rendered as an explicit fallback for text backends. |
-| `thinking_blocks` | `downgraded` | Preserved in Canonical IR and rendered as explicit placeholders. |
+| `thinking_blocks` | `downgraded` | Preserved in Canonical IR but omitted from text backend replay; thinking streaming remains unsupported. |
 | `input_json_delta` | `unsupported` | Tool streaming is not implemented. |
-| `thinking_and_signature_deltas` | `unsupported` | Thinking streaming is not implemented. |
+| `thinking_and_signature_deltas` | `partial` | Readable upstream reasoning text streams as Claude thinking_delta; signatures are unavailable. |
 | `usage_accounting` | `estimated` | Usage is estimated unless upstream usage is available. |
 | `stop_reasons_and_error_envelopes` | `partial` | Common backend results and validation failures are mapped. |
 

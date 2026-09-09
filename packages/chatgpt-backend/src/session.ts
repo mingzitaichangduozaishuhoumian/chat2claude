@@ -217,6 +217,10 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
           const delta = extractTextDelta(parsed);
           if (delta) pending.push({ type: 'text_delta', text: delta });
         }
+        if (type === 'response.reasoning_text.delta' || type === 'response.reasoning_summary_text.delta') {
+          const delta = extractTextDelta(parsed);
+          if (delta) pending.push({ type: 'reasoning_delta', text: delta });
+        }
         const done = isDoneEvent({ ...parsed, type });
         if (done) {
           for (const toolCall of tools.finish()) {

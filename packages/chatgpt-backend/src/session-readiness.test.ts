@@ -46,6 +46,19 @@ it.each([
 });
 
 it.each([
+  ['response.reasoning_text.delta', 'visible reasoning'],
+  ['response.reasoning_summary_text.delta', 'visible summary'],
+] as const)('emits readable %s as reasoning_delta after upstream_ready', async (type, delta) => {
+  const events = [];
+  for await (const event of backend(frame({ type, delta }) + frame(completed)).stream(request, context)) events.push(event);
+  expect(events).toEqual([
+    { type: 'upstream_ready' },
+    { type: 'reasoning_delta', text: delta },
+    { type: 'done', finishReason: 'stop' },
+  ]);
+});
+
+it.each([
   '', frame(created).slice(0, -2), 'data: [DONE]\n\n', 'data: {CANARY\n\n', frame({ type: 'response.created', response: 'CANARY' }),
   frame({ type: 'response.output_text.delta', delta: 5 }), frame({ type: 'response.output_item.added', item: null }),
   frame({ type: 'response.completed', response: { output: 'CANARY' } }),
