@@ -34,7 +34,7 @@ http://127.0.0.1:3000/admin
 
 If you set `PORT`, replace `3000` in every example with the actual port. This guide uses `127.0.0.1` to make local-only access explicit.
 
-The service listens on loopback by default. A non-loopback `HOST` requires `API_KEYS` at startup. `LOCAL_CONTAINER_BOOTSTRAP=true` is intended only for a container that listens on `0.0.0.0` while its host port remains published only on loopback.
+The service listens on loopback by default. A non-loopback `HOST` requires `API_KEYS` at startup, plus your own firewall, reverse proxy, VPN, or other network access control.
 
 ## 2. The six Admin destinations
 
@@ -313,7 +313,7 @@ Missing or unknown `usedPercent` is not rendered as a zero-value progress bar. T
 
 Set `OUTBOUND_PROXY_URL=http://127.0.0.1:7890` for the local Clash mixed port (no authentication required); `http://127.0.0.1:7892` can be used for its HTTP port. Leave it unset or empty for direct connections. Only HTTP/HTTPS proxy URLs are accepted; SOCKS URLs, paths, queries, and fragments are rejected with a fixed safe error. URL credentials are supported but must be treated as secrets, never pasted into logs or shared screenshots.
 
-The app uses external Undici 7 `ProxyAgent`, compatible with Node 22.15, through an explicit fetch dispatcher for ChatGPT/Codex requests: completions/SSE, model discovery, health checks, quotas/reset credits, OAuth code exchange and token refresh. It does not set a global dispatcher, depend on `NODE_USE_ENV_PROXY`, or proxy local Hono requests, OAuth loopback callbacks, or browser navigation. The dispatcher closes on app disposal. The proxy URL is not exposed in logs, Admin APIs or the DOM. In Docker, loopback refers to the container; use a reachable host address instead (for example, `host.docker.internal` on Docker Desktop).
+The app uses external Undici 7 `ProxyAgent`, compatible with Node 22.15, through an explicit fetch dispatcher for ChatGPT/Codex requests: completions/SSE, model discovery, health checks, quotas/reset credits, OAuth code exchange and token refresh. It does not set a global dispatcher, depend on `NODE_USE_ENV_PROXY`, or proxy local Hono requests, OAuth loopback callbacks, or browser navigation. The dispatcher closes on app disposal. The proxy URL is not exposed in logs, Admin APIs, or the DOM.
 
 ### HTTP access logs
 

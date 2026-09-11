@@ -8,28 +8,28 @@ This project is intended for personal local/private use with ChatGPT/Codex accou
 
 ## What makes this project different
 
-`chatgpt-to-claude` is not “another OpenAI/Claude proxy”. It is a **local adapter that exposes ChatGPT/Codex account-session capabilities to Claude Code, Anthropic SDK, OpenAI SDK, and OpenAI-compatible tools**.
+`chatgpt-to-claude` has a deliberately narrow position: it is a **local, lightweight ChatGPT/Codex to Claude/OpenAI-compatible API adapter**. It turns a ChatGPT/Codex account session that you control into interfaces that Claude Code, Anthropic SDK, OpenAI SDK, and OpenAI-compatible clients can use directly.
+
+It is not a large all-in-one proxy gateway, and it is not trying to become the biggest proxy hub. The tradeoff is intentional: run locally or in a private environment, listen on `127.0.0.1` by default, and solve personal developer-tool integration with as little operational burden as possible.
 
 It is built for practical problems like these:
 
-- You have an authorized ChatGPT/Codex account, but your tools expect Claude-style or OpenAI-style APIs.
-- You do not want to paste account tokens, cookies, or session secrets into every client configuration.
-- You want one local service to serve Claude Code, Anthropic SDK, OpenAI SDK, Continue, Cherry Studio, and similar clients.
-- You need to know which models were discovered, where aliases point, why a request failed, and whether a stream really completed.
+- You have a ChatGPT/Codex account that you own or are authorized to operate, but your clients expect Claude-style or OpenAI-style APIs.
+- You want Claude Code, Anthropic SDK, OpenAI SDK, Continue, Cherry Studio, and similar clients to share one local service.
+- You do not want OAuth, tokens, cookies, model discovery, alias binding, and Runtime API Keys scattered across every client configuration.
+- You want local `/admin` to centralize authorization, model discovery, alias binding, and Runtime API Key creation without operating heavy gateway infrastructure.
 
-Core differences:
+Design tradeoffs:
 
-- **Account-session adaptation, not raw API forwarding**: Codex OAuth provisions an account session; the server handles session verification, token refresh, model discovery, account health, and quota state. Clients only receive Runtime API Keys.
-- **Claude and OpenAI protocol surfaces in one service**: Claude Code and Anthropic SDK use the root origin; OpenAI SDK, Continue, Cherry Studio, and similar clients use `/v1`. The same account pool and model aliases expose Claude Messages, OpenAI Chat Completions, OpenAI Responses, and Models API routes.
-- **Fine-grained compatibility for Claude Code**: the adapter preserves Claude Messages patterns such as `system`, tools, thinking/reasoning controls, streaming, and `count_tokens`, while containing upstream ChatGPT/Codex differences inside the compatibility layer.
-- **Dynamic models and alias control**: backend models are discovered from the current account session and mapped to aliases such as `haiku`, `sonnet`, `fable`, and `opus`. Unbound, stale, or unsupported aliases fail explicitly instead of being silently guessed.
-- **Streaming has a readiness barrier**: SSE is not blindly piped. The service waits for a valid upstream frame before opening the client response, then tracks `DONE`, `CANCELLED`, or `FAILED` terminal state so empty streams, half frames, and abnormal EOF are not treated as success.
-- **The Admin console covers real operations**: OAuth, account health checks, model binding, named Runtime API Keys, key revocation, quota refresh, and safe diagnostics are available from `/admin` without repeatedly editing config files.
-- **Clear permission boundaries**: Runtime Keys are for normal `/v1/*` clients only. Admin API Keys / configured `API_KEYS` are required for account management and global diagnostics; protected Admin APIs reject Runtime Keys.
+- **Local/personal use first**: the service listens on `127.0.0.1` by default and is designed for a personal machine or private network. It is not for public proxying, subscription resale, traffic aggregation, or multi-tenant billing.
+- **Low operational burden**: the recommended path is Node.js + pnpm + the local `/admin` console. No database, Redis, Kubernetes, service mesh, or heavyweight API gateway is required to get started.
+- **Configuration lives in `/admin`**: account OAuth, model discovery, alias binding, Runtime API Key creation, and basic diagnostics are concentrated in the local Admin console, reducing manual config edits and secret copying across tools.
+- **Client-friendly surface**: one local service exposes Claude Messages, OpenAI Chat Completions, OpenAI Responses, and Models API routes for Claude Code, Anthropic SDK, OpenAI SDK, and OpenAI-compatible clients.
+- **Lightweight does not mean toy**: the project still keeps OAuth/session maintenance, model aliases, Runtime/Admin key separation, stream-state tracking, request terminal-state accounting, and safe logging boundaries.
+- **Clear permission boundaries**: Runtime API Keys are for normal `/v1/*` clients only. Admin API Keys / configured `API_KEYS` are required for account management and global diagnostics; protected Admin APIs reject Runtime Keys.
 - **Logs are useful without leaking content**: logs keep timing, stream terminal state, event/byte counts, safe error categories, and diagnostics; they do not record prompts, tool arguments/results, raw provider payloads, Authorization headers, cookies, tokens, or proxy credentials.
-- **Private/local first**: the service listens on `127.0.0.1` by default. It does not provide public hosting, subscription resale, multi-tenant billing, or a supported Docker one-click deployment. The recommended path today is Node.js + pnpm + the local Admin console.
 
-In short: this is closer to a **local protocol gateway and management console for ChatGPT/Codex account capabilities** than a URL-rewriting reverse proxy.
+In short: it is not trying to pack every proxy feature into one large platform. It adapts a **personal ChatGPT/Codex account session** into a local Claude/OpenAI-compatible API with stable behavior, clear boundaries, and low operational overhead.
 
 ## Quick start
 
@@ -152,7 +152,7 @@ Security boundaries:
 
 - Local `/admin` prefers an HttpOnly, `SameSite=Strict` local admin cookie.
 - The cookie is process-scoped and expires on service restart.
-- Non-loopback deployments must preconfigure `API_KEYS`, unless the container is published only on host loopback and `LOCAL_CONTAINER_BOOTSTRAP=true` is set.
+- Non-loopback deployments must preconfigure `API_KEYS` and provide their own firewall, reverse proxy, VPN, or other network access control.
 - OAuth access tokens, refresh tokens, ID tokens, cookies, and other session secrets are not returned to the frontend, error responses, or access logs.
 
 ## Client configuration

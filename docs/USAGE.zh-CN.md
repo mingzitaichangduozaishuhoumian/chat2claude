@@ -32,7 +32,7 @@ http://127.0.0.1:3000/admin
 
 如果设置了 `PORT`，请把所有示例中的 `3000` 换成实际端口。文档使用 `127.0.0.1` 是为了明确表示本机连接。
 
-服务默认监听 loopback。若 `HOST` 不是 loopback，启动时必须预先设置 `API_KEYS`；`LOCAL_CONTAINER_BOOTSTRAP=true` 只用于容器监听 `0.0.0.0` 且宿主端口仍仅发布到 loopback 的场景。
+服务默认监听 loopback。若 `HOST` 不是 loopback，启动时必须预先设置 `API_KEYS`，并自行处理防火墙、反向代理、VPN 或其他网络访问控制。
 
 ## 2. Admin 的六个目的地
 
@@ -307,7 +307,7 @@ Claude Code、Anthropic SDK、Cline 和 Roo 按 Claude/Anthropic 兼容客户端
 
 设置 `OUTBOUND_PROXY_URL=http://127.0.0.1:7890` 使用本机 Clash 混合端口（无需用户认证）；也可用 `http://127.0.0.1:7892` 的 HTTP 端口。未设置或留空时直连。只接受 HTTP/HTTPS 代理 URL；SOCKS、路径、查询参数和 fragment 会被固定安全错误拒绝。支持 URL 用户名/密码，但必须作为密钥保护，不要贴入日志或公开截图。
 
-实现采用兼容 Node 22.15 的外部 Undici 7 `ProxyAgent`，仅显式注入 ChatGPT/Codex 出站 fetch：完成/SSE、模型发现、健康检查、配额/重置额度、OAuth 换码和刷新。不设置全局 dispatcher，不依赖 `NODE_USE_ENV_PROXY`，不代理本地 Hono 请求、OAuth 本地回调或浏览器导航；app dispose 时关闭 dispatcher。代理 URL 不进入日志、Admin API 或 DOM。Docker 中的 loopback 指容器自身，需要改用容器可达的宿主地址（如 Docker Desktop 的 `host.docker.internal`）。
+实现采用兼容 Node 22.15 的外部 Undici 7 `ProxyAgent`，仅显式注入 ChatGPT/Codex 出站 fetch：完成/SSE、模型发现、健康检查、配额/重置额度、OAuth 换码和刷新。不设置全局 dispatcher，不依赖 `NODE_USE_ENV_PROXY`，不代理本地 Hono 请求、OAuth 本地回调或浏览器导航；app dispose 时关闭 dispatcher。代理 URL 不进入日志、Admin API 或 DOM。
 
 ### HTTP access log
 

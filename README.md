@@ -8,28 +8,28 @@
 
 ## 我们的项目不一样在哪里
 
-`chatgpt-to-claude` 的定位不是“又一个 OpenAI/Claude API 代理”，而是一个 **把 ChatGPT/Codex 网页账号能力接入 Claude Code / Anthropic SDK / OpenAI 生态的本地适配层**。
+`chatgpt-to-claude` 的定位很明确：它是一个 **本地轻量的 ChatGPT/Codex 到 Claude/OpenAI 兼容 API 适配器**。它把你本机可控的 ChatGPT/Codex 账号会话整理成 Claude Code、Anthropic SDK、OpenAI SDK 以及 OpenAI 兼容客户端能直接使用的接口。
+
+它不是大型 all-in-one 代理网关，也不追求成为“最大、最全”的代理 hub。它选择的是另一条路线：默认跑在个人电脑或私有环境里，默认监听 `127.0.0.1`，用尽量少的运维负担解决本地开发和个人工具接入问题。
 
 它解决的是这类实际问题：
 
-- 你有可用的 ChatGPT/Codex 账号，但常用工具只会调用 Claude 或 OpenAI 风格 API。
-- 你不想把 token、cookie、账号授权直接塞进各种客户端配置里。
-- 你希望一个本地服务同时喂给 Claude Code、Anthropic SDK、OpenAI SDK、Continue、Cherry Studio 等不同客户端。
-- 你需要知道模型到底发现了什么、alias 绑定到哪里、请求为什么失败、流式输出是否真的完成。
+- 你有自己控制或已获授权的 ChatGPT/Codex 账号，但常用客户端只认识 Claude 或 OpenAI 风格 API。
+- 你希望 Claude Code、Anthropic SDK、OpenAI SDK、Continue、Cherry Studio 等客户端共用同一个本地服务。
+- 你不想把 OAuth、token、cookie、模型发现、alias 绑定和 Runtime API Key 分散塞进不同工具配置里。
+- 你需要一个本机 `/admin` 集中完成授权、模型发现、alias 绑定和 Runtime API Key 创建，而不是维护一套重型网关基础设施。
 
-核心差异：
+设计取舍：
 
-- **账号会话适配，而不是裸 API 转发**：通过 Codex OAuth 建立账号 session，服务端负责 session 验证、token refresh、模型 discovery、账号健康和配额状态；客户端只拿 Runtime API Key。
-- **Claude / OpenAI 双协议入口**：Claude Code / Anthropic SDK 使用根地址；OpenAI SDK / Continue / Cherry Studio 等使用 `/v1` 地址；同一套账号池和模型 alias 对外提供 Claude Messages、OpenAI Chat Completions、OpenAI Responses 和 Models API。
-- **面向 Claude Code 的细粒度兼容**：保留 Claude Messages 的 `system`、tools、thinking/reasoning、streaming、`count_tokens` 等使用习惯，并把 ChatGPT/Codex 上游差异收敛在兼容层里。
-- **动态模型和 alias 控制**：模型来自账号 session 的实时 discovery，再映射到 `haiku`、`sonnet`、`fable`、`opus` 等 alias；alias 失效、未绑定或能力不支持时明确报错，不做静默猜测。
-- **流式输出有 readiness barrier**：SSE 不是收到什么就盲转什么；必须先收到并验证有效上游帧才向客户端打开响应，后续 `DONE / CANCELLED / FAILED` 终态单独统计，避免把空流、半帧或异常 EOF 当成功。
-- **Admin 控制台覆盖真实运维动作**：账号 OAuth、健康检查、模型绑定、Runtime API Key 命名/撤销、配额刷新、日志诊断都能在 `/admin` 完成，不需要反复手改配置文件。
-- **权限边界清楚**：Runtime Key 只给普通客户端调用 `/v1/*`；Admin API Key / `API_KEYS` 才能管理账号和全局诊断，受保护 Admin API 会拒绝 Runtime Key。
+- **本地/个人使用优先**：默认监听 `127.0.0.1`，默认面向个人机器或私有网络；不面向公共代理、订阅转售、流量聚合或多租户计费场景。
+- **轻量运维**：推荐路径是 Node.js + pnpm + 本机 `/admin`。不要求数据库、Redis、Kubernetes、服务网格或重型 API gateway 才能启动。
+- **配置集中在 `/admin`**：账号 OAuth、模型 discovery、alias 绑定、Runtime API Key 创建和基础诊断都集中在本地管理台完成，减少手改配置和跨工具复制 secret。
+- **客户端友好**：一个本地服务同时提供 Claude Messages、OpenAI Chat Completions、OpenAI Responses 和 Models API，方便 Claude Code、Anthropic SDK、OpenAI SDK 以及 OpenAI 兼容客户端接入。
+- **轻量不等于玩具**：项目仍保留 OAuth/session 维护、模型 alias、Runtime/Admin key 分离、流式状态追踪、请求终态统计和安全日志边界。
+- **权限边界清楚**：Runtime API Key 只给普通客户端调用 `/v1/*`；Admin API Key / `API_KEYS` 才用于管理账号和全局诊断，受保护 Admin API 会拒绝 Runtime Key。
 - **日志可排障但不泄密**：记录请求耗时、stream 终态、events/bytes、错误分类和安全诊断；不记录 prompt、工具参数/结果、原始 provider payload、Authorization、cookie、token 或代理凭据。
-- **本地/私有优先**：默认监听 `127.0.0.1`；项目不提供公网发布、订阅转售、多租户计费或 Docker 一键部署。当前推荐运行方式是 Node.js + pnpm + 本机 Admin 控制台。
 
-一句话：它更像是 **ChatGPT/Codex 账号能力的本地协议网关和管理面板**，而不是一个只改 URL 的反向代理。
+一句话：它不是要把所有代理能力都塞进一个大平台，而是把 **个人 ChatGPT/Codex 账号会话** 稳定、清晰、低负担地适配成本机 Claude/OpenAI 兼容 API。
 
 ## 快速开始
 
@@ -152,7 +152,7 @@ x-api-key: <runtime-api-key>
 
 - 本机 `/admin` 优先使用 HttpOnly、`SameSite=Strict` 的本地管理 cookie。
 - 该 cookie 只在当前进程有效，服务重启后失效。
-- 非 loopback 部署必须预先配置 `API_KEYS`，除非容器仅通过宿主机 loopback 发布并设置 `LOCAL_CONTAINER_BOOTSTRAP=true`。
+- 非 loopback 部署必须预先配置 `API_KEYS`，并自行处理防火墙、反向代理、VPN 或其他网络访问控制。
 - OAuth access token、refresh token、ID token、cookie 和其他 session secret 不返回给前端、错误响应或 access log。
 
 ## 客户端配置
