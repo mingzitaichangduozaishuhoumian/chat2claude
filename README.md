@@ -324,3 +324,7 @@ corepack pnpm check
 - Hono HTTP API
 - Vitest
 - Node.js runtime
+
+## 开源协议
+
+MIT。详见 [LICENSE](LICENSE)。

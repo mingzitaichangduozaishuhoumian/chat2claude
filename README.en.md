@@ -324,3 +324,7 @@ corepack pnpm check
 - Hono HTTP API
 - Vitest
 - Node.js runtime
+
+## License
+
+MIT. See [LICENSE](LICENSE).
