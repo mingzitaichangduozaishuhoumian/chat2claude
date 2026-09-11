@@ -5,7 +5,7 @@ import type { ReasoningEffort, SpeedPreference } from '@chatgpt-to-claude/protoc
 import type { ChatGptBackendProvider } from '../config/env.js';
 import type { AccountPool } from '../services/account-pool.js';
 import type { ModelRegistry } from '../services/model-registry.js';
-import { DEV_API_KEY_PREFIX, type RuntimeApiKeys } from '../services/runtime-api-keys.js';
+import { DEV_API_KEY_PREFIX, RUNTIME_API_KEY_PREFIX, type RuntimeApiKeys } from '../services/runtime-api-keys.js';
 import { ChatGptAuthFlowService } from '../services/chatgpt-auth-flow.js';
 import { ChatGptProvisioningError, SetupProvisioner, type ProvisionResult, type ProvisioningTarget } from '../services/setup-provisioner.js';
 import type { DurableRuntimeState } from '../services/durable-runtime-state.js';
@@ -167,8 +167,15 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
 
   app.get('/admin/api/accounts', (c) => c.json({ accounts: accountsWithRequestStats(options, quotaService) }));
   app.get('/admin/api/api-keys', (c) => c.json({ apiKeys: options.runtimeApiKeys.listSafe() }));
-  app.post('/admin/api/api-keys', (c) => {
-    const createKey = () => options.runtimeApiKeys.create();
+  app.post('/admin/api/api-keys', async (c) => {
+    let name: string | undefined;
+    try {
+      name = validateRuntimeApiKeyName(await readJson(c.req), options.runtimeApiKeys);
+    } catch (error) {
+      if (error instanceof RuntimeApiKeyNameValidationError) return c.json({ error: error.message }, 400);
+      throw error;
+    }
+    const createKey = () => options.runtimeApiKeys.create(RUNTIME_API_KEY_PREFIX, name);
     const apiKey = options.durableState ? options.durableState.transaction(createKey) : createKey();
     c.header('cache-control', 'no-store');
     return c.json({ ok: true, apiKey }, 201);
@@ -399,6 +406,25 @@ function parseExactHttpOrigin(value: string, label: string): string {
     throw new Error(`${label} must be an exact HTTP(S) origin without path, query, hash, or userinfo.`);
   }
   return url.origin;
+}
+
+class RuntimeApiKeyNameValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RuntimeApiKeyNameValidationError';
+  }
+}
+
+function validateRuntimeApiKeyName(input: Record<string, unknown>, runtimeApiKeys: RuntimeApiKeys): string | undefined {
+  if (!Object.prototype.hasOwnProperty.call(input, 'name')) return undefined;
+  if (input.name === null || input.name === undefined) return undefined;
+  if (typeof input.name !== 'string') throw new RuntimeApiKeyNameValidationError('Runtime API key name must be a string.');
+  const name = input.name.trim();
+  if (!name) return undefined;
+  if (name.length > 64) throw new RuntimeApiKeyNameValidationError('Runtime API key name must be 1-64 characters after trimming.');
+  if (/[\u0000-\u001f\u007f]/.test(name)) throw new RuntimeApiKeyNameValidationError('Runtime API key name must not contain control characters.');
+  if (runtimeApiKeys.listSafe().some((apiKey) => apiKey.name === name)) throw new RuntimeApiKeyNameValidationError('Runtime API key name already exists.');
+  return name;
 }
 
 function validateMockAccountCreate(input: Record<string, unknown>): Record<string, unknown> {

@@ -62,6 +62,9 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     const app = createApp(loadEnv({ NODE_ENV: 'test' }));
     const html = await (await app.request('/admin')).text();
 
+    expect(html).toContain('id="runtime-api-key-name"');
+    expect(html).toContain('placeholder="Key 名称（可选）"');
+    expect(html).toContain('aria-label="Runtime API Key 名称（可选）"');
     expect(html).toContain('id="generate-runtime-api-key"');
     expect(html).toContain('生成新 Key 不会撤销现有 Key');
     expect(html).toContain('id="runtime-api-key-once"');
@@ -78,7 +81,7 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     expect(html).toContain('普通客户端应使用 Runtime API Key');
     expect(html).toContain('跨浏览器和服务重启保持有效，直至显式撤销');
     expect(html).toContain('[data-admin-mode="simple"] [id="admin-key-fallback"]');
-    expect(html).toContain("postJson('/admin/api/api-keys')");
+    expect(html).toContain("postJson('/admin/api/api-keys', name ? { name } : undefined)");
     expect(html).toContain('let generatingRuntimeApiKey = false;');
     expect(html).toContain('await loadApiKeys();');
     expect(html).toContain('function showOneTimeRuntimeApiKey(value)');

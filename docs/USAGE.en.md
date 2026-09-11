@@ -119,7 +119,7 @@ On loopback, opening `/admin` issues a process-scoped random HttpOnly, `SameSite
 - requires a same-origin `Origin` header for mutations;
 - falls back to an explicit Admin API Key for remote access, automation, or an unavailable local session.
 
-A Runtime API Key is shown in raw form only on the page that creates it. Later lists contain only its ID, optional name, creation time, and safe prefix. If the raw value is lost, create a replacement and revoke the old record if necessary.
+A Runtime API Key is shown in raw form only on the page that creates it. When generating a key, you may optionally assign a 1-64 character display name; names are trimmed and duplicates are rejected to avoid replacing an existing named key by accident. Later lists contain only the key ID, optional name, creation time, and safe prefix. If the raw value is lost, create a replacement and revoke the old record if necessary.
 
 For a fixed server-side key, use a placeholder value such as:
 

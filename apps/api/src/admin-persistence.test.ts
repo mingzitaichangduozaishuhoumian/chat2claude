@@ -106,6 +106,58 @@ describe('durable administration', () => {
     await restarted.dispose();
   });
 
+  it('creates named Runtime API Keys, trims names, and rejects invalid or duplicate names', async () => {
+    const dataDir = temporaryDirectory();
+    const app = createApp(loadEnv({ DATA_DIR: dataDir, NODE_ENV: 'test' }));
+    await app.request('/admin/api/api-keys/dev-enable', { method: 'POST' });
+    const adminHeaders = await localAdminHeaders(app, true);
+
+    const unnamedResponse = await app.request('http://127.0.0.1:3000/admin/api/api-keys', { method: 'POST', headers: adminHeaders, body: JSON.stringify({ name: '   ' }) });
+    const namedResponse = await app.request('http://127.0.0.1:3000/admin/api/api-keys', { method: 'POST', headers: adminHeaders, body: JSON.stringify({ name: '  laptop  ' }) });
+    const named = await namedResponse.json() as { apiKey: string };
+
+    expect(unnamedResponse.status).toBe(201);
+    expect(namedResponse.status).toBe(201);
+    expect((await (await app.request('http://127.0.0.1:3000/admin/api/api-keys', { headers: adminHeaders })).json()) as { apiKeys: Array<{ name?: string; prefix: string }> }).toMatchObject({
+      apiKeys: expect.arrayContaining([
+        expect.objectContaining({ name: 'laptop', prefix: named.apiKey.slice(0, 12) }),
+      ]),
+    });
+
+    const duplicateResponse = await app.request('http://127.0.0.1:3000/admin/api/api-keys', { method: 'POST', headers: adminHeaders, body: JSON.stringify({ name: 'laptop' }) });
+    const controlResponse = await app.request('http://127.0.0.1:3000/admin/api/api-keys', { method: 'POST', headers: adminHeaders, body: JSON.stringify({ name: 'badname' }) });
+    const longResponse = await app.request('http://127.0.0.1:3000/admin/api/api-keys', { method: 'POST', headers: adminHeaders, body: JSON.stringify({ name: 'x'.repeat(65) }) });
+    const typeResponse = await app.request('http://127.0.0.1:3000/admin/api/api-keys', { method: 'POST', headers: adminHeaders, body: JSON.stringify({ name: 42 }) });
+
+    expect(duplicateResponse.status).toBe(400);
+    expect(await duplicateResponse.json()).toEqual({ error: 'Runtime API key name already exists.' });
+    expect(controlResponse.status).toBe(400);
+    expect(await controlResponse.json()).toEqual({ error: 'Runtime API key name must not contain control characters.' });
+    expect(longResponse.status).toBe(400);
+    expect(await longResponse.json()).toEqual({ error: 'Runtime API key name must be 1-64 characters after trimming.' });
+    expect(typeResponse.status).toBe(400);
+    expect(await typeResponse.json()).toEqual({ error: 'Runtime API key name must be a string.' });
+    await app.dispose();
+  });
+
+  it('returns an internal server error when durable Runtime API Key persistence fails after name validation', async () => {
+    const dataDir = temporaryDirectory();
+    const app = createApp(loadEnv({ DATA_DIR: dataDir, NODE_ENV: 'test' }), {
+      runtimeStateStore: new RuntimeStateStore({ path: join(dataDir, 'runtime-state.json'), fs: failingWriteFs() }),
+    });
+    const adminHeaders = await localAdminHeaders(app, true);
+
+    const response = await app.request('http://127.0.0.1:3000/admin/api/api-keys', {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ name: 'server-failure' }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ type: 'error', error: { type: 'internal_server_error', message: 'Internal server error' } });
+    await app.dispose();
+  });
+
   it('reports a model mutation as successful when persistence commits but confirmation fails', async () => {
     const path = join(temporaryDirectory(), 'runtime-state.json');
     const app = createApp(loadEnv({ DATA_DIR: temporaryDirectory(), NODE_ENV: 'test' }), {
@@ -481,6 +533,24 @@ function temporaryDirectory(): string {
   const directory = mkdtempSync(join(tmpdir(), 'chat2claude-admin-persistence-'));
   directories.push(directory);
   return directory;
+}
+
+function failingWriteFs(): RuntimeStateFileSystem {
+  return {
+    readFileSync: nodeFs.readFileSync,
+    mkdirSync: nodeFs.mkdirSync,
+    chmodSync: nodeFs.chmodSync,
+    openSync: nodeFs.openSync,
+    writeSync() {
+      const error = new Error('injected pre-commit persistence failure') as NodeJS.ErrnoException;
+      error.code = 'EIO';
+      throw error;
+    },
+    fsyncSync: nodeFs.fsyncSync,
+    closeSync: nodeFs.closeSync,
+    renameSync: nodeFs.renameSync,
+    unlinkSync: nodeFs.unlinkSync,
+  };
 }
 
 function committedUnconfirmedFs(): RuntimeStateFileSystem {

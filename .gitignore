@@ -8,4 +8,7 @@ coverage/
 *.log
 .pnpm-store/
 .omc/
+.claude/
+**/.claude/
+.omc-session-review.diff
 apps/api/data/

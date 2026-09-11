@@ -85,24 +85,23 @@ describe('dedicated access logger', () => {
     expect(sink.mock.calls[0][0]).not.toMatch(/stream|model=|durationKind|reason=/);
   });
 
-  it('renders Copilot-style arrow phases and detailed stream summaries without request content', () => {
+  it('direct renderer supports Copilot-style arrow phases and detailed stream summaries without request content', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 8, 3, 17, 37, 48, 754));
     const sink = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
       const logger = createLogger();
       logger.access!({ ...entry, phase: 'request_started', model: undefined });
-      logger.access!({ ...entry, phase: 'response_ready', model: 'opus' });
       logger.access!({ ...entry, phase: 'stream_lifecycle', lifecycle: 'start', downstreamEventCount: 1, downstreamBodyBytes: 12, stream: true }, 'detailed');
       logger.access!({ ...entry, phase: 'stream_lifecycle', lifecycle: 'active', durationMs: 5123, downstreamEventCount: 3, downstreamBodyBytes: 40, stream: true }, 'detailed');
       logger.access!({ ...entry, phase: 'stream_terminal', outcome: 'success', downstreamEventCount: 2, downstreamBodyBytes: Buffer.byteLength('中文😀'), stream: true }, 'detailed');
       expect(sink.mock.calls.map(([line]) => line)).toEqual([
         '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [  api  ] <-- POST /v1/messages?beta',
-        '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> 200 STREAMING | 0.029s | POST /v1/messages?beta',
-        '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> STREAM START | 0.029s | events=1 bytes=12',
+        '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> STREAM OPEN | 200 | ttfb=0.029s | POST /v1/messages?beta',
         '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> STREAM ACTIVE | 5.123s | events=3 bytes=40',
         '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> STREAM DONE | total=0.029s | events=2 bytes=10',
       ]);
+      expect(sink.mock.calls.map(([line]) => String(line)).join('\n')).not.toMatch(/200 STREAMING|STREAM START/);
     } finally { vi.useRealTimers(); }
   });
 

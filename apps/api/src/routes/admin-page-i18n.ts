@@ -103,6 +103,7 @@ export const ADMIN_MESSAGES: Record<string, string> = {
   '客户端调用': 'Client calls to ',
   '使用的独立凭据，不是 Admin API Key。生成新 Key 不会撤销现有 Key；生成后的 Key 会固定保存，跨浏览器和服务重启保持有效，直至显式撤销。原始值只在本页面本次显示，请立即复制保存。当前': ' use separate credentials, not the Admin API Key. Generating a new key does not revoke existing keys. Keys persist across browsers and server restarts until explicitly revoked. The raw value is shown only once on this page; copy and save it now. Current count: ',
   '个；列表只显示安全前缀。': '; the list shows safe prefixes only.',
+  'Key 名称（可选）': 'Key name (optional)', 'Runtime API Key 名称（可选）': 'Runtime API Key name (optional)',
   '生成新 Key': 'Generate new key', '刷新 Key 列表': 'Refresh key list', '新生成的 Runtime API Key（仅本次显示）': 'New Runtime API Key (shown once)',
   '复制 Runtime API Key': 'Copy Runtime API Key', '清除显示': 'Clear display', '正在读取 Runtime API Key。': 'Loading Runtime API Keys.',
   '简洁模式可选择 Backend Model、启用并保存；专业模式增加推理、服务层级和自定义 alias 管理。选项仅来自 backend discovery。': 'Choose a backend model, enable it, and save in simple mode. Professional mode adds reasoning, service tiers, and custom aliases. Options come only from backend discovery.',

@@ -142,8 +142,8 @@ describe('releaseAccountWhenDone downstream metrics', () => {
     log.mockRestore();
   });
 
-  it('emits only the queued stream start lifecycle before terminal statistics', async () => {
-    vi.useFakeTimers({ toFake: ['setImmediate', 'clearImmediate'] });
+  it('does not emit active lifecycle for rapid events before the heartbeat interval', async () => {
+    vi.useFakeTimers({ toFake: ['performance', 'setImmediate', 'clearImmediate'] });
     const lifecycle = vi.fn();
     const terminal = vi.fn();
     const owner = releaseAccountWhenDone(
@@ -186,8 +186,8 @@ describe('releaseAccountWhenDone downstream metrics', () => {
     expect(lifecycle).not.toHaveBeenCalled();
   });
 
-  it('keeps lifecycle logs quiet while terminal reports real downstream event progress', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'setImmediate', 'clearImmediate'] });
+  it('emits low-noise active lifecycle progress while terminal reports real downstream event progress', async () => {
+    vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'setImmediate', 'clearImmediate'] });
     const lifecycle = vi.fn();
     const terminal = vi.fn();
     const events = (async function* () {
@@ -221,16 +221,18 @@ describe('releaseAccountWhenDone downstream metrics', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect((await third).value).toBe('data: CANARY-SECRET-3\n\n');
     await vi.advanceTimersByTimeAsync(0);
-    expect(lifecycle).toHaveBeenCalledTimes(1);
+    expect(lifecycle).toHaveBeenCalledTimes(2);
+    expect(lifecycle).toHaveBeenLastCalledWith(expect.objectContaining({ lifecycle: 'active', downstreamEventCount: 3, downstreamBodyBytes: Buffer.byteLength('data: CANARY-SECRET-1\n\ndata: CANARY-SECRET-2\n\ndata: CANARY-SECRET-3\n\n') }));
 
     const fourth = iterator.next();
     await vi.advanceTimersByTimeAsync(5_000);
     expect((await fourth).value).toBe('data: CANARY-SECRET-4\n\n');
     await vi.advanceTimersByTimeAsync(0);
-    expect(lifecycle).toHaveBeenCalledTimes(1);
+    expect(lifecycle).toHaveBeenCalledTimes(3);
+    expect(lifecycle).toHaveBeenLastCalledWith(expect.objectContaining({ lifecycle: 'active', downstreamEventCount: 4, downstreamBodyBytes: Buffer.byteLength('data: CANARY-SECRET-1\n\ndata: CANARY-SECRET-2\n\ndata: CANARY-SECRET-3\n\ndata: CANARY-SECRET-4\n\n') }));
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
     await vi.runAllTimersAsync();
-    expect(lifecycle).toHaveBeenCalledTimes(1);
+    expect(lifecycle).toHaveBeenCalledTimes(3);
     expect(terminal).toHaveBeenCalledWith(expect.objectContaining({
       outcome: 'success', downstreamEventCount: 4,
       downstreamBodyBytes: Buffer.byteLength('data: CANARY-SECRET-1\n\ndata: CANARY-SECRET-2\n\ndata: CANARY-SECRET-3\n\ndata: CANARY-SECRET-4\n\n'),

@@ -41,6 +41,7 @@ interface StreamLogContext {
 }
 
 const BACKEND_ERROR_CODES = new Set(['unauthorized', 'rate_limited', 'network_error', 'timeout', 'upstream_error', 'invalid_response', 'invalid_request']);
+const ACTIVE_LIFECYCLE_INTERVAL_MS = 5_000;
 
 function logReplaySnapshotDebug(error: unknown, logger: Logger, metadata: Record<string, unknown>): void {
   if (!(error instanceof ChatGptBackendError)) return;
@@ -85,6 +86,7 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
   let downstreamEventCount = 0;
   let downstreamBodyBytes = 0;
   let lifecycleStarted = false;
+  let lastActiveLifecycleAt = 0;
   let lifecycleClosed = false;
   let lifecycleHandle: ReturnType<typeof setImmediate> | undefined;
   let pendingStartLifecycle: (Record<string, unknown> & { lifecycle: 'start' }) | undefined;
@@ -126,11 +128,18 @@ export function releaseAccountWhenDone(accountPool: AccountPool, lease: Account,
     downstreamBodyBytes += Buffer.byteLength(event, 'utf8');
     if (!lifecycleStarted) {
       lifecycleStarted = true;
+      lastActiveLifecycleAt = performance.now();
       scheduleLifecycle('start');
       return;
     }
-    // Progress is accounted on every downstream event and reported on the
-    // terminal access entry. Avoid per-chunk ACTIVE access-log spam.
+    // Progress is accounted on every downstream event, but ACTIVE lifecycle
+    // diagnostics are only a low-frequency heartbeat. This keeps detailed
+    // access logs useful without producing one line per SSE event.
+    const now = performance.now();
+    if (now - lastActiveLifecycleAt >= ACTIVE_LIFECYCLE_INTERVAL_MS) {
+      lastActiveLifecycleAt = now;
+      scheduleLifecycle('active');
+    }
   };
   let cancelling: Promise<void> | undefined;
   // Body cancellation is distinct from prepared.close()'s internal I/O abort.

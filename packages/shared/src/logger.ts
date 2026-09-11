@@ -76,7 +76,7 @@ export function createLogger(level: LogLevel = 'info'): Logger {
         : phase === 'stream_terminal'
           ? [prefix, '-->', `STREAM ${terminalStatus} | total=${formatAccessDuration(entry.durationMs)} | ${streamMetrics}`]
           : phase === 'stream_lifecycle'
-            ? entry.lifecycle === 'start' && format === 'text'
+            ? entry.lifecycle === 'start'
               ? [prefix, '-->', `STREAM OPEN | ${entry.status} | ttfb=${formatAccessDuration(entry.durationMs)} | ${target}`]
               : [prefix, '-->', `STREAM ${(entry.lifecycle ?? 'active').toUpperCase()} | ${formatAccessDuration(entry.durationMs)} | ${streamMetrics}`]
             : [prefix, '-->', `${entry.status}${entry.stream ? ' STREAMING' : ''} | ${formatAccessDuration(entry.durationMs)} | ${target}`];

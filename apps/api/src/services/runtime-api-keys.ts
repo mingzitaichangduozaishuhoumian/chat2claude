@@ -72,9 +72,9 @@ export class RuntimeApiKeys {
     if (normalized && !this.idsByKey.has(normalized)) this.insert(createRecord(normalized));
   }
 
-  create(prefix = RUNTIME_API_KEY_PREFIX): string {
+  create(prefix = RUNTIME_API_KEY_PREFIX, name?: string): string {
     const key = `${prefix}${randomBytes(24).toString('base64url')}`;
-    this.insert(createRecord(key));
+    this.insert(createRecord(key, name));
     return key;
   }
 

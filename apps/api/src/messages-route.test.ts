@@ -1821,13 +1821,15 @@ describe('/admin', () => {
     expect(html).toContain('<details id="admin-key-fallback" data-professional-only>');
     expect(html).toContain('高级：外部管理访问（Admin API Key）');
     expect(html).toContain('生成后的 Key 会固定保存，跨浏览器和服务重启保持有效，直至显式撤销');
+    expect(html).toContain('id="runtime-api-key-name"');
+    expect(html).toContain('placeholder="Key 名称（可选）"');
     expect(html).toContain('id="generate-runtime-api-key"');
     expect(html).toContain('id="runtime-api-key-once"');
     expect(html).toContain('id="copy-runtime-api-key"');
     expect(html).toContain('function showOneTimeRuntimeApiKey(value)');
     expect(html).toContain('function clearOneTimeRuntimeApiKey()');
     expect(html).toContain('delete apiKey.dataset.value;');
-    expect(html).toContain("postJson('/admin/api/api-keys')");
+    expect(html).toContain("postJson('/admin/api/api-keys', name ? { name } : undefined)");
     expect(html).toContain("await navigator.clipboard.writeText(key);");
     expect(html).toContain("if (key && persistent) localStorage.setItem('adminApiKey', key);");
     expect(html).toContain("const key = localAdminSessionActive ? '' : getStoredAdminApiKey();");

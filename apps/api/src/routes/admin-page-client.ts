@@ -188,8 +188,10 @@ document.getElementById('generate-runtime-api-key').addEventListener('click', as
   generatingRuntimeApiKey = true;
   button.setAttribute('disabled', '');
   try {
-    const body = await postJson('/admin/api/api-keys');
+    const name = document.getElementById('runtime-api-key-name').value.trim();
+    const body = await postJson('/admin/api/api-keys', name ? { name } : undefined);
     showOneTimeRuntimeApiKey(body.apiKey);
+    if (name) document.getElementById('runtime-api-key-name').value = '';
     renderResult({ ok: body.ok, message: '已生成新的 Runtime API Key；现有 Key 保持有效。' });
     await copyOneTimeRuntimeApiKey({ suppressResult: true });
     await loadApiKeys();
