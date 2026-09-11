@@ -4,7 +4,7 @@ import { adminPageLocaleSource } from './routes/admin-page-locale.js';
 
 describe('Admin localization primitives', () => {
   it('localizes both setup paths and clipboard feedback', () => {
-    for (const key of ['直接接入 Claude Code（推荐）', '通过 CC Switch 接入（可选）', '复制 Claude Code 配置', '复制 CC Switch 配置', '配置已复制；请安全保存，并替换尚未填写的 Runtime Key 占位符。', '复制失败，请手动选中配置并复制。']) {
+    for (const key of ['直接接入 Claude Code（推荐）', '通过 CC Switch 接入（可选）', '复制 Claude Code 配置', '复制 CC Switch 配置', '配置已复制；请安全保存，并替换尚未填写的 Runtime Key 占位符。', '复制失败，请手动选中配置并复制。', '运行时 API Key 已撤销；ChatGPT 账号授权不会被移除。']) {
       expect(translateAdminText(key, 'en')).not.toMatch(/\p{Script=Han}/u);
       expect(translateAdminText(key, 'zh-CN')).toBe(key);
     }

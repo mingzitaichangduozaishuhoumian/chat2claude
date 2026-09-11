@@ -89,6 +89,7 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     expect(html).toContain('delete apiKey.dataset.value;');
     expect(html).toContain("key === 'apiKey' || key === 'key' ? '<one-time-key-hidden>'");
     expect(html).toContain('剪贴板不可用，请手动选中上方完整 Key 并立即保存。');
+    expect(html).toContain('运行时 API Key 已撤销；ChatGPT 账号授权不会被移除。');
     expect(html).toContain("setAdminMode('professional');");
     expect(html).toContain("selectModule('admin-access');");
     expect(html).toContain('adminKeyInput.focus();');

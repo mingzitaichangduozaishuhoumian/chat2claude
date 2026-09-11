@@ -518,7 +518,7 @@ async function loadApiKeys() {
     document.getElementById('api-keys').innerHTML = apiKeys.length ? '<div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>安全前缀</th><th>创建时间</th><th>操作</th></tr></thead><tbody>' + apiKeys.map((apiKey) => '<tr><td><code>' + esc(apiKey.id) + '</code></td><td data-i18n-ignore>' + esc(apiKey.name || '-') + '</td><td><code>' + esc(apiKey.prefix) + '</code></td><td>' + esc(apiKey.createdAt) + '</td><td><button class="secondary" data-revoke-key="' + esc(apiKey.id) + '">撤销</button></td></tr>').join('') + '</tbody></table></div>' : '<div class="empty">没有运行时 API Key。</div>';
     document.querySelectorAll('[data-revoke-key]').forEach((button) => button.addEventListener('click', async () => {
       if (!window.confirm(translateAdminText('确认撤销此运行时 API Key？撤销后对应客户端会立即失效。', adminLocale))) return;
-      const result = await deleteJson('/admin/api/api-keys/' + encodeURIComponent(button.dataset.revokeKey)); renderResult(result); await loadApiKeys();
+      const result = await deleteJson('/admin/api/api-keys/' + encodeURIComponent(button.dataset.revokeKey)); renderResult({ ...result, message: '运行时 API Key 已撤销；ChatGPT 账号授权不会被移除。' }); await loadApiKeys();
     }));
   } catch (error) { overviewLoadState.keys = 'error'; document.getElementById('api-keys-count').textContent = '-'; document.getElementById('api-keys').innerHTML = loadFailureHtml('运行时 API Key 加载失败，未加载。', error); }
   renderOverviewPanel();

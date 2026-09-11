@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import { createApp } from './app.js';
 import { loadEnv } from './config/env.js';
@@ -198,6 +198,51 @@ describe('durable administration', () => {
     expect(apiResponse.status).toBe(401);
     expect((await app.request('/admin/api/api-keys/dev-enable', { method: 'POST' })).status).toBe(200);
     await app.dispose();
+  });
+
+  it('preserves ChatGPT account authorization when revoking the final durable Runtime API Key', async () => {
+    const dataDir = temporaryDirectory();
+    const env = loadEnv({ DATA_DIR: dataDir, NODE_ENV: 'test', CHATGPT_BACKEND: 'session' });
+    const accountPool = new AccountPool({ seedMockAccount: false });
+    accountPool.add({
+      id: 'session-account',
+      provider: 'chatgpt-session',
+      secret: { type: 'chatgpt-session', accessToken: 'persisted-access-token', accountId: 'upstream-account' },
+    });
+    const runtimeApiKeys = new RuntimeApiKeys();
+    const apiKey = runtimeApiKeys.create('sk-runtime-', 'only-client');
+    new DurableRuntimeState({ accountPool, runtimeApiKeys, modelRegistry: new ModelRegistry(), store: new RuntimeStateStore({ path: env.runtimeStatePath }) }).persist();
+
+    const app = createApp(env, {
+      backend: { listModels: vi.fn(async () => [{ id: 'provider-sonnet' }]) } as unknown as ChatGptBackendClient,
+    });
+    const adminHeaders = await localAdminHeaders(app);
+    expect((await app.request('/v1/models', { headers: { 'x-api-key': apiKey } })).status).toBe(200);
+
+    const beforeAuthStatus = await (await app.request('/admin/api/auth/status')).json() as { accountReady: boolean; apiKeysConfigured: boolean; ready: boolean };
+    expect(beforeAuthStatus).toMatchObject({ accountReady: true, apiKeysConfigured: true });
+
+    const [listedKey] = (await (await app.request('http://127.0.0.1:3000/admin/api/api-keys', { headers: adminHeaders })).json() as { apiKeys: Array<{ id: string; name?: string }> }).apiKeys;
+    expect(listedKey).toMatchObject({ name: 'only-client' });
+    expect((await app.request(`http://127.0.0.1:3000/admin/api/api-keys/${listedKey.id}`, { method: 'DELETE', headers: adminHeaders })).status).toBe(200);
+    expect((await app.request('/v1/models', { headers: { 'x-api-key': apiKey } })).status).toBe(401);
+
+    const afterAuthStatus = await (await app.request('/admin/api/auth/status')).json() as { accountReady: boolean; apiKeysConfigured: boolean; ready: boolean };
+    expect(afterAuthStatus).toMatchObject({ accountReady: true, apiKeysConfigured: false, ready: false });
+    const afterRevokeAccounts = new AccountPool({ seedMockAccount: false });
+    const afterRevokeKeys = new RuntimeApiKeys();
+    expect(new DurableRuntimeState({ accountPool: afterRevokeAccounts, runtimeApiKeys: afterRevokeKeys, store: new RuntimeStateStore({ path: env.runtimeStatePath }) }).hydrate()).toBe(true);
+    expect(afterRevokeAccounts.list()).toEqual([expect.objectContaining({ id: 'session-account', provider: 'chatgpt-session', hasSecret: true })]);
+    expect(afterRevokeKeys.listSafe()).toEqual([]);
+    await app.dispose();
+
+    const restarted = createApp(env, {
+      backend: { listModels: vi.fn(async () => [{ id: 'provider-sonnet' }]) } as unknown as ChatGptBackendClient,
+    });
+    const restartedAuthStatus = await (await restarted.request('/admin/api/auth/status')).json() as { accountReady: boolean; apiKeysConfigured: boolean; ready: boolean };
+    expect(restartedAuthStatus).toMatchObject({ accountReady: true, apiKeysConfigured: false, ready: false });
+    expect((await restarted.request('/v1/models', { headers: { 'x-api-key': apiKey } })).status).toBe(401);
+    await restarted.dispose();
   });
 
   it('hydrates legacy runtime-key metadata with an unprefixed SHA-256 ID and replaces a revoked named key', () => {
