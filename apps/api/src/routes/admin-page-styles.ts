@@ -85,6 +85,7 @@ pre { margin: 0; max-width: 100%; overflow: auto; white-space: pre-wrap; overflo
 .one-time-key { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start; margin: 0 0 14px; border-left: 4px solid var(--accent); padding: 14px; background: var(--accent-soft); }
 .one-time-key strong, .one-time-key code { display: block; }
 .one-time-key code { margin-top: 6px; color: var(--ink); }
+.one-time-key .secret-value { margin-top: 8px; width: 100%; min-height: 92px; resize: vertical; color: var(--ink); background: var(--surface-raised); font-family: var(--font-mono); overflow-wrap: anywhere; word-break: break-all; }
 .one-time-key p { margin: 6px 0 0; }
 .state-badge { display: inline-flex; align-items: center; width: fit-content; min-width: 0; max-width: 100%; min-height: 28px; border: 1px solid currentColor; border-radius: 999px; padding: 4px 9px; font-size: 12px; font-weight: 800; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 .state-badge.positive { color: var(--positive); background: var(--positive-soft); }

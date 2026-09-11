@@ -320,10 +320,13 @@ function showOneTimeRuntimeApiKey(value) {
   runtimeKeyGeneration += 1;
   currentSetupRuntimeKey = value;
   renderClientSetup();
-  apiKey.textContent = value;
+  apiKey.value = value;
   apiKey.dataset.value = value;
   status.textContent = '请立即复制保存；关闭或清除显示后无法恢复原始 Key。';
   display.hidden = false;
+  display.removeAttribute('hidden');
+  apiKey.focus();
+  apiKey.select();
   return true;
 }
 async function copyOneTimeRuntimeApiKey(options) {
@@ -342,8 +345,17 @@ async function copyOneTimeRuntimeApiKey(options) {
     return true;
   } catch {
     if (apiKey.dataset.value !== key || runtimeKeyGeneration !== generationAtCopy) return false;
-    status.textContent = '剪贴板不可用，请手动选中上方完整 Key 并立即保存。';
-    if (!options?.suppressResult) renderResult({ error: 'Runtime API Key 复制失败，请手动选中并立即保存。' });
+    apiKey.focus();
+    apiKey.select();
+    try {
+      if (document.execCommand && document.execCommand('copy')) {
+        status.textContent = '已复制到剪贴板。请立即保存；刷新页面后不会再次显示原始 Key。';
+        if (!options?.suppressResult) renderResult({ message: 'Runtime API Key 已复制。' });
+        return true;
+      }
+    } catch { /* Fall through to manual copy guidance. */ }
+    status.textContent = '剪贴板不可用，已选中上方完整 Key；请按 Ctrl+C 手动复制并立即保存。';
+    if (!options?.suppressResult) renderResult({ error: 'Runtime API Key 复制失败，请按 Ctrl+C 手动复制已选中的完整 Key。' });
     return false;
   }
 }
@@ -352,6 +364,7 @@ function clearOneTimeRuntimeApiKey() {
   currentSetupRuntimeKey = '';
   renderClientSetup();
   const apiKey = document.getElementById('api-key');
+  apiKey.value = '';
   apiKey.textContent = '';
   delete apiKey.dataset.value;
   document.getElementById('runtime-key-copy-status').textContent = '';
@@ -548,17 +561,26 @@ function bindModelActions(aliases, discovered) {
     const host = document.querySelector('[data-controls-for="' + CSS.escape(select.dataset.id) + '"]');
     if (alias && host) host.innerHTML = controlSelectsHtml(target || { capabilities: unknownCapabilities() }, alias.defaults, alias.id) + capabilityStateHtml(target || { capabilities: unknownCapabilities(), configuration_issues: [] });
   }));
-  document.querySelectorAll('[data-save-model]').forEach((button) => button.addEventListener('click', () => saveModel(button.dataset.saveModel)));
+  document.querySelectorAll('[data-save-model]').forEach((button) => button.addEventListener('click', () => saveModel(button.dataset.saveModel, button)));
   document.querySelectorAll('[data-delete-model]').forEach((button) => button.addEventListener('click', async () => {
     if (!window.confirm(translateAdminText('确认删除此自定义模型 alias？删除后无法恢复。', adminLocale))) return;
     const body = await deleteJson('/admin/api/models/' + encodeURIComponent(button.dataset.deleteModel)); renderResult(body); await loadModels();
   }));
 }
-async function saveModel(id) {
+async function saveModel(id, button) {
   const byField = (field) => document.querySelector('[data-id="' + CSS.escape(id) + '"][data-field="' + field + '"]');
   const patch = { backendModel: byField('backendModel').value, enabled: byField('enabled').checked };
   if (document.documentElement.dataset.adminMode === 'professional') patch.defaults = { reasoning_effort: byField('reasoning_effort').value, service_tier: byField('speed').value };
-  const body = await patchJson('/admin/api/models/' + encodeURIComponent(id), patch); renderResult(body); await loadModels();
+  if (button) button.disabled = true;
+  try {
+    const body = await patchJson('/admin/api/models/' + encodeURIComponent(id), patch);
+    renderResult({ ...body, message: '模型 alias ' + id + ' 已保存。' });
+    await loadModels();
+  } catch (error) {
+    renderResult({ error: '模型 alias ' + id + ' 保存失败：' + error.message });
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 function backendOptionsHtml(current, discovered, allowEmpty) {
   const values = discovered.map((model) => ({ value: model.id, label: model.display_name || model.id, provider: true }));

@@ -68,6 +68,8 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     expect(html).toContain('id="generate-runtime-api-key"');
     expect(html).toContain('生成新 Key 不会撤销现有 Key');
     expect(html).toContain('id="runtime-api-key-once"');
+    expect(html).toContain('id="api-key" class="secret-value" readonly');
+    expect(html).toContain('aria-label="新生成的 Runtime API Key"');
     expect(html).toContain('id="copy-runtime-api-key"');
     expect(html).toContain('id="dismiss-runtime-api-key"');
     expect(html).toContain('id="runtime-key-copy-status"');
@@ -85,6 +87,9 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     expect(html).toContain('let generatingRuntimeApiKey = false;');
     expect(html).toContain('await loadApiKeys();');
     expect(html).toContain('function showOneTimeRuntimeApiKey(value)');
+    expect(html).toContain('apiKey.value = value;');
+    expect(html).toContain('apiKey.select();');
+    expect(html).toContain("document.execCommand('copy')");
     expect(html).toContain('function clearOneTimeRuntimeApiKey()');
     expect(html).toContain('delete apiKey.dataset.value;');
     expect(html).toContain("key === 'apiKey' || key === 'key' ? '<one-time-key-hidden>'");
@@ -125,11 +130,12 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
       querySelector: (selector: string) => fields[selector.match(/data-field="([^"]+)"/)![1]],
     };
     const patchJson = vi.fn(async () => ({}));
+    const renderResult = vi.fn();
     const loadModels = vi.fn();
     const mode = script.slice(script.indexOf('function setAdminMode('), script.indexOf('modeButtons.simple.addEventListener'));
     const save = script.slice(script.indexOf('async function saveModel('), script.indexOf('function backendOptionsHtml('));
     const controls = new Function('document', 'CSS', 'modeButtons', 'localStorage', 'patchJson', 'renderResult', 'loadModels', `${mode}\n${save}\nreturn { setAdminMode, saveModel };`)(
-      document, { escape: (value: string) => value }, { simple: { setAttribute: vi.fn() }, professional: { setAttribute: vi.fn() } }, { setItem: vi.fn() }, patchJson, vi.fn(), loadModels,
+      document, { escape: (value: string) => value }, { simple: { setAttribute: vi.fn() }, professional: { setAttribute: vi.fn() } }, { setItem: vi.fn() }, patchJson, renderResult, loadModels,
     );
     controls.setAdminMode('simple');
     controls.setAdminMode('professional');
@@ -138,6 +144,7 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     expect(loadModels).not.toHaveBeenCalled();
     await controls.saveModel('custom');
     expect(patchJson).toHaveBeenLastCalledWith('/admin/api/models/custom', { backendModel: 'new-target', enabled: true, defaults: { reasoning_effort: 'future-deep', service_tier: 'priority' } });
+    expect(renderResult).toHaveBeenLastCalledWith({ message: '模型 alias custom 已保存。' });
     controls.setAdminMode('simple');
     await controls.saveModel('custom');
     expect(patchJson).toHaveBeenLastCalledWith('/admin/api/models/custom', { backendModel: 'new-target', enabled: true });
