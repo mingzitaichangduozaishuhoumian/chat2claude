@@ -169,6 +169,10 @@ th { color: var(--ink-soft); background: var(--surface-muted); font-family: var(
 [data-admin-mode="simple"] .model-mapping-panel select { min-width: 0; max-width: 100%; padding: 8px 4px; }
 [data-admin-mode="simple"] .model-mapping-panel input[type="checkbox"] { width: 18px; min-height: 18px; }
 [data-admin-mode="simple"] .model-mapping-panel td button { padding: 8px; }
+.model-save-status { min-height: 1.4em; margin-top: 5px; color: var(--ink-faint); font-size: 12px; }
+.model-save-status.neutral { color: var(--ink-soft); }
+.model-save-status.positive { color: var(--positive); }
+.model-save-status.negative { color: var(--negative); }
 .utility-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }

@@ -54,6 +54,7 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     expect(table).toContain('<td data-professional-only><div class="stack"');
     expect(table).toMatch(/<button[^>]*data-professional-only[^>]*data-delete-model="custom"/);
     expect(table).toContain('<button data-save-model="custom">保存</button>');
+    expect(table).toContain('<div data-model-save-status="custom" class="model-save-status" role="status" aria-live="polite"></div>');
     expect(table).toMatch(/<div data-professional-only><p class="muted">Backend discovery/);
     await app.dispose();
   });
@@ -127,7 +128,7 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     };
     const document = {
       documentElement: { dataset: { adminMode: 'professional' } },
-      querySelector: (selector: string) => fields[selector.match(/data-field="([^"]+)"/)![1]],
+      querySelector: (selector: string) => selector.includes('data-model-save-status') ? { textContent: '', className: '' } : fields[selector.match(/data-field="([^"]+)"/)![1]],
     };
     const patchJson = vi.fn(async () => ({}));
     const renderResult = vi.fn();
@@ -148,6 +149,37 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     controls.setAdminMode('simple');
     await controls.saveModel('custom');
     expect(patchJson).toHaveBeenLastCalledWith('/admin/api/models/custom', { backendModel: 'new-target', enabled: true });
+  });
+
+  it('shows inline model save status for pending, success, and failure', async () => {
+    const script = adminPageClientScript();
+    const status = { textContent: '', className: '' };
+    const fields: Record<string, { value?: string; checked?: boolean }> = {
+      backendModel: { value: 'provider' }, enabled: { checked: true },
+    };
+    const document = {
+      documentElement: { dataset: { adminMode: 'simple' } },
+      querySelector: (selector: string) => selector.includes('data-model-save-status') ? status : fields[selector.match(/data-field="([^"]+)"/)![1]],
+    };
+    let rejectSave = false;
+    const patchJson = vi.fn(async () => { if (rejectSave) throw new Error('backend unavailable'); return {}; });
+    const renderResult = vi.fn();
+    const loadModels = vi.fn(async () => { expect(status.textContent).toBe('正在保存…'); });
+    const save = script.slice(script.indexOf('async function saveModel('), script.indexOf('function backendOptionsHtml('));
+    const controls = new Function('document', 'CSS', 'patchJson', 'renderResult', 'loadModels', `${save}\nreturn saveModel;`)(
+      document, { escape: (value: string) => value }, patchJson, renderResult, loadModels,
+    );
+    const button = { disabled: false };
+    const pending = controls('custom', button);
+    expect(status).toMatchObject({ textContent: '正在保存…', className: 'model-save-status neutral' });
+    await pending;
+    expect(status).toMatchObject({ textContent: '模型 alias custom 已保存。', className: 'model-save-status positive' });
+    expect(button.disabled).toBe(false);
+    rejectSave = true;
+    await controls('custom', button);
+    expect(status).toMatchObject({ textContent: '模型 alias custom 保存失败：backend unavailable', className: 'model-save-status negative' });
+    expect(renderResult).toHaveBeenLastCalledWith({ error: '模型 alias custom 保存失败：backend unavailable' });
+    expect(button.disabled).toBe(false);
   });
 
   it.each(['fast', 'FASTEST', 'Priority'])('renders one canonical Fast for current %s without changing reasoning semantics', (current) => {

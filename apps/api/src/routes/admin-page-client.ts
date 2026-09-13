@@ -549,7 +549,7 @@ async function loadModels() {
     const builtInAliases = aliases.filter((model) => model.builtIn);
     document.getElementById('model-availability').innerHTML = builtInAliases.length ? '<div class="row">' + builtInAliases.map((model) => '<span class="state-badge neutral"><code>' + esc(model.id) + '</code>：' + (model.status === 'unbound' ? '未绑定，请在下方模型映射中选择后端模型并保存' : esc(model.status || '-')) + '</span>').join('') + '</div>' : '<div class="empty">暂无内置 alias。</div>';
     document.getElementById('model-backend').innerHTML = backendOptionsHtml('', discovered, true);
-    document.getElementById('models').innerHTML = aliases.length ? discoverySection + '<div class="table-wrap"><table><thead><tr><th>Alias</th><th>Backend Model</th><th data-professional-only>状态</th><th>启用</th><th data-professional-only>目标能力与默认参数</th><th>操作</th></tr></thead><tbody>' + aliases.map((model) => '<tr><td><code>' + esc(model.id) + '</code>' + (model.builtIn ? ' <span class="muted">内置</span>' : '') + '</td><td><select data-field="backendModel" data-id="' + esc(model.id) + '" aria-label="Alias ' + esc(model.id) + ' 的 Backend Model">' + backendOptionsHtml(model.backendModel || '', discovered, true) + '</select></td><td data-professional-only>' + esc(model.status || '-') + '</td><td><input type="checkbox" data-field="enabled" data-id="' + esc(model.id) + '" aria-label="Alias ' + esc(model.id) + ' 是否启用" ' + (model.enabled ? 'checked' : '') + ' /></td><td data-professional-only><div class="stack" data-controls-for="' + esc(model.id) + '">' + controlSelectsHtml(model, model.defaults, model.id) + capabilityStateHtml(model) + '</div></td><td><button data-save-model="' + esc(model.id) + '">保存</button>' + (model.builtIn ? '' : ' <button class="secondary" data-professional-only data-delete-model="' + esc(model.id) + '">删除</button>') + '</td></tr>').join('') + '</tbody></table></div>' : discoverySection + '<div class="empty">暂无 alias overlay。</div>';
+    document.getElementById('models').innerHTML = aliases.length ? discoverySection + '<div class="table-wrap"><table><thead><tr><th>Alias</th><th>Backend Model</th><th data-professional-only>状态</th><th>启用</th><th data-professional-only>目标能力与默认参数</th><th>操作</th></tr></thead><tbody>' + aliases.map((model) => '<tr><td><code>' + esc(model.id) + '</code>' + (model.builtIn ? ' <span class="muted">内置</span>' : '') + '</td><td><select data-field="backendModel" data-id="' + esc(model.id) + '" aria-label="Alias ' + esc(model.id) + ' 的 Backend Model">' + backendOptionsHtml(model.backendModel || '', discovered, true) + '</select><div data-model-save-status="' + esc(model.id) + '" class="model-save-status" role="status" aria-live="polite"></div></td><td data-professional-only>' + esc(model.status || '-') + '</td><td><input type="checkbox" data-field="enabled" data-id="' + esc(model.id) + '" aria-label="Alias ' + esc(model.id) + ' 是否启用" ' + (model.enabled ? 'checked' : '') + ' /></td><td data-professional-only><div class="stack" data-controls-for="' + esc(model.id) + '">' + controlSelectsHtml(model, model.defaults, model.id) + capabilityStateHtml(model) + '</div></td><td><button data-save-model="' + esc(model.id) + '">保存</button>' + (model.builtIn ? '' : ' <button class="secondary" data-professional-only data-delete-model="' + esc(model.id) + '">删除</button>') + '</td></tr>').join('') + '</tbody></table></div>' : discoverySection + '<div class="empty">暂无 alias overlay。</div>';
     bindModelActions(aliases, discovered);
   } catch (error) { overviewLoadState.models = 'error'; const failure = loadFailureHtml('模型数据加载失败，未加载。', error); document.getElementById('model-availability').innerHTML = failure; document.getElementById('models').innerHTML = failure; }
   renderOverviewPanel();
@@ -569,15 +569,25 @@ function bindModelActions(aliases, discovered) {
 }
 async function saveModel(id, button) {
   const byField = (field) => document.querySelector('[data-id="' + CSS.escape(id) + '"][data-field="' + field + '"]');
+  const setStatus = (message, tone) => {
+    const status = document.querySelector('[data-model-save-status="' + CSS.escape(id) + '"]');
+    if (!status) return;
+    status.textContent = message;
+    status.className = 'model-save-status' + (tone ? ' ' + tone : '');
+  };
   const patch = { backendModel: byField('backendModel').value, enabled: byField('enabled').checked };
   if (document.documentElement.dataset.adminMode === 'professional') patch.defaults = { reasoning_effort: byField('reasoning_effort').value, service_tier: byField('speed').value };
+  setStatus('正在保存…', 'neutral');
   if (button) button.disabled = true;
   try {
     const body = await patchJson('/admin/api/models/' + encodeURIComponent(id), patch);
     renderResult({ ...body, message: '模型 alias ' + id + ' 已保存。' });
     await loadModels();
+    setStatus('模型 alias ' + id + ' 已保存。', 'positive');
   } catch (error) {
-    renderResult({ error: '模型 alias ' + id + ' 保存失败：' + error.message });
+    const message = '模型 alias ' + id + ' 保存失败：' + error.message;
+    renderResult({ error: message });
+    setStatus(message, 'negative');
   } finally {
     if (button) button.disabled = false;
   }
