@@ -96,9 +96,11 @@ describe('mapChatGptStreamToClaudeSse', () => {
     expect(events.at(-1)).toEqual({ type: 'message_stop' });
   });
 
-  it('streams status_delta as a Claude thinking block and closes it before text and message_stop', async () => {
+  it('omits status_delta and empty reasoning while preserving later thinking before text', async () => {
+    const status = 'web search searching';
     const text = await collect(mapChatGptStreamToClaudeSse(request, async function* () {
-      yield { type: 'status_delta' as const, status: 'web search searching' };
+      yield { type: 'status_delta' as const, status };
+      yield { type: 'reasoning_delta' as const, text: '   ' };
       yield { type: 'reasoning_delta' as const, text: 'thinking out loud' };
       yield { type: 'text_delta' as const, text: 'hello' };
       yield { type: 'done' as const, finishReason: 'stop' };
@@ -108,13 +110,63 @@ describe('mapChatGptStreamToClaudeSse', () => {
       { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
       { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
     ]);
-    expect(events).toContainEqual({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'web search searching\n' } });
-    expect(events).toContainEqual({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'thinking out loud' } });
+    const thinkingDeltas = events.filter((event) => event.type === 'content_block_delta' && (event.delta as { type?: string }).type === 'thinking_delta');
+    expect(thinkingDeltas).toEqual([
+      { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'thinking out loud' } },
+    ]);
+    expect(JSON.stringify(thinkingDeltas)).not.toContain(status);
     expect(events).toContainEqual({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'hello' } });
     const thinkingStop = events.findIndex((event) => event.type === 'content_block_stop' && event.index === 0);
     expect(thinkingStop).toBeLessThan(events.findIndex((event) => event.type === 'content_block_start' && event.index === 1));
-    expect(thinkingStop).toBeLessThan(events.findIndex((event) => event.type === 'message_stop'));
     expect(events.at(-1)).toEqual({ type: 'message_stop' });
+  });
+
+  it('keeps text at index 0 after a status-only stream', async () => {
+    const events = parseClaudeData(await collect(mapChatGptStreamToClaudeSse(request, async function* () {
+      yield { type: 'status_delta' as const, status: 'web search searching' };
+      yield { type: 'text_delta' as const, text: 'hello' };
+      yield { type: 'done' as const, finishReason: 'stop' };
+    }())));
+    expect(events.filter((event) => event.type === 'content_block_start')).toEqual([
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    ]);
+    expect(events.some((event) => (event.delta as { type?: string } | undefined)?.type === 'thinking_delta')).toBe(false);
+  });
+
+  it('keeps tool_use at index 0 after whitespace-only reasoning', async () => {
+    const events = parseClaudeData(await collect(mapChatGptStreamToClaudeSse(request, async function* () {
+      yield { type: 'reasoning_delta' as const, text: '  \n ' };
+      yield { type: 'tool_call' as const, toolCall: { id: 'call_1', name: 'lookup', input: {} } };
+      yield { type: 'done' as const, finishReason: 'tool_calls' };
+    }())));
+    expect(events.filter((event) => event.type === 'content_block_start')).toEqual([
+      { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'call_1', name: 'lookup', input: {} } },
+    ]);
+    expect(events.some((event) => (event.delta as { type?: string } | undefined)?.type === 'thinking_delta')).toBe(false);
+  });
+
+  it('closes real reasoning before starting tool_use', async () => {
+    const events = parseClaudeData(await collect(mapChatGptStreamToClaudeSse(request, async function* () {
+      yield { type: 'reasoning_delta' as const, text: 'considering options' };
+      yield { type: 'tool_call' as const, toolCall: { id: 'call_1', name: 'lookup', input: {} } };
+      yield { type: 'done' as const, finishReason: 'tool_calls' };
+    }())));
+    expect(events.findIndex((event) => event.type === 'content_block_stop' && event.index === 0))
+      .toBeLessThan(events.findIndex((event) => event.type === 'content_block_start' && event.index === 1));
+  });
+
+  it('does not emit a thinking delta for status after real reasoning', async () => {
+    const events = parseClaudeData(await collect(mapChatGptStreamToClaudeSse(request, async function* () {
+      yield { type: 'reasoning_delta' as const, text: 'considering options' };
+      yield { type: 'status_delta' as const, status: 'web search searching' };
+      yield { type: 'text_delta' as const, text: 'hello' };
+      yield { type: 'done' as const, finishReason: 'stop' };
+    }())));
+    expect(events.filter((event) => (event.delta as { type?: string } | undefined)?.type === 'thinking_delta')).toEqual([
+      { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'considering options' } },
+    ]);
+    expect(events.findIndex((event) => event.type === 'content_block_stop' && event.index === 0))
+      .toBeLessThan(events.findIndex((event) => event.type === 'content_block_start' && event.index === 1));
   });
 
   it('uses done finishReason for text streams', async () => {

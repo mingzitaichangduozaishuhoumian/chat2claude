@@ -28,7 +28,7 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
       }
       output += event.text;
       yield encodeSseEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: nextIndex, delta: { type: 'text_delta', text: event.text } } });
-    } else if (event.type === 'reasoning_delta' || event.type === 'status_delta') {
+    } else if (event.type === 'reasoning_delta' && event.text.trim()) {
       if (textBlockOpen) {
         yield encodeSseEvent({ event: 'content_block_stop', data: { type: 'content_block_stop', index: nextIndex } });
         nextIndex += 1;
@@ -38,8 +38,7 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
         yield encodeSseEvent({ event: 'content_block_start', data: { type: 'content_block_start', index: nextIndex, content_block: { type: 'thinking', thinking: '' } } });
         thinkingBlockOpen = true;
       }
-      const thinking = event.type === 'reasoning_delta' ? event.text : `${event.status}\n`;
-      yield encodeSseEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: nextIndex, delta: { type: 'thinking_delta', thinking } } });
+      yield encodeSseEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: nextIndex, delta: { type: 'thinking_delta', thinking: event.text } } });
     } else if (event.type === 'tool_call') {
       if (textBlockOpen || thinkingBlockOpen) {
         yield encodeSseEvent({ event: 'content_block_stop', data: { type: 'content_block_stop', index: nextIndex } });
