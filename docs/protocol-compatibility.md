@@ -30,7 +30,7 @@ Only these status values are used by the manifest:
 | `thinking_blocks` | `downgraded` | Client-supplied thinking blocks are preserved in Canonical IR but not replayed to text backends; readable upstream reasoning output streams separately via thinking_and_signature_deltas. |
 | `input_json_delta` | `unsupported` | Tool streaming is not implemented. |
 | `thinking_and_signature_deltas` | `partial` | Readable upstream reasoning text streams as Claude thinking_delta; signatures are unavailable. |
-| `safe_progress_status_deltas` | `partial` | Safe lifecycle and tool progress statuses are internal diagnostics and omitted from Claude thinking streams. |
+| `safe_progress_status_deltas` | `partial` | Safe lifecycle and tool progress statuses are internal diagnostics; they may open an empty thinking block but are omitted from Claude thinking_delta content. |
 | `usage_accounting` | `estimated` | Usage is estimated unless upstream usage is available. |
 | `stop_reasons_and_error_envelopes` | `partial` | Common backend results and validation failures are mapped. |
 

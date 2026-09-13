@@ -28,6 +28,9 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
       }
       output += event.text;
       yield encodeSseEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: nextIndex, delta: { type: 'text_delta', text: event.text } } });
+    } else if (event.type === 'status_delta' && !textBlockOpen && !thinkingBlockOpen) {
+      yield encodeSseEvent({ event: 'content_block_start', data: { type: 'content_block_start', index: nextIndex, content_block: { type: 'thinking', thinking: '' } } });
+      thinkingBlockOpen = true;
     } else if (event.type === 'reasoning_delta' && event.text.trim()) {
       if (textBlockOpen) {
         yield encodeSseEvent({ event: 'content_block_stop', data: { type: 'content_block_stop', index: nextIndex } });

@@ -48,7 +48,7 @@ export const protocolCompatibilityManifest: readonly ProtocolCompatibilityEntry[
   { protocol: 'claude_messages', feature: 'thinking_blocks', status: 'downgraded', note: 'Client-supplied thinking blocks are preserved in Canonical IR but not replayed to text backends; readable upstream reasoning output streams separately via thinking_and_signature_deltas.' },
   { protocol: 'claude_messages', feature: 'input_json_delta', status: 'unsupported', note: 'Tool streaming is not implemented.' },
   { protocol: 'claude_messages', feature: 'thinking_and_signature_deltas', status: 'partial', note: 'Readable upstream reasoning text streams as Claude thinking_delta; signatures are unavailable.' },
-  { protocol: 'claude_messages', feature: 'safe_progress_status_deltas', status: 'partial', note: 'Safe lifecycle and tool progress statuses are internal diagnostics and omitted from Claude thinking streams.' },
+  { protocol: 'claude_messages', feature: 'safe_progress_status_deltas', status: 'partial', note: 'Safe lifecycle and tool progress statuses are internal diagnostics; they may open an empty thinking block but are omitted from Claude thinking_delta content.' },
   { protocol: 'claude_messages', feature: 'usage_accounting', status: 'estimated', note: 'Usage is estimated unless upstream usage is available.' },
   { protocol: 'claude_messages', feature: 'stop_reasons_and_error_envelopes', status: 'partial', note: 'Common backend results and validation failures are mapped.' },
   { protocol: 'openai_chat_completions', feature: 'text_and_streaming', status: 'supported', note: 'Text responses and SSE chunks use OpenAI-like shapes.' },
