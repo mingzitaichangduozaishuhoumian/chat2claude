@@ -197,7 +197,7 @@ describe('accessLog', () => {
     const app = new Hono();
     app.use('/v1/*', accessLog(capturedLogger(entries)));
     app.post('/v1/messages', async (c) => {
-      setAccessLogMetadata(c, { model: 'backend-test-model', stream: true });
+      setAccessLogMetadata(c, { model: 'client-alias', backendModel: 'backend-test-model', stream: true });
       return c.json({ ok: true });
     });
 
@@ -216,7 +216,8 @@ describe('accessLog', () => {
       status: 200,
       durationKind: 'response_ready',
       peerIp: 'unknown',
-      model: 'backend-test-model',
+      model: 'client-alias',
+      backendModel: 'backend-test-model',
       stream: false,
     });
     expect(entries[0].requestId).toMatch(/^[0-9a-f-]{36}$/i);
@@ -256,7 +257,8 @@ describe('accessLog', () => {
     ];
     let requestIndex = 0;
     app.post('/v1/messages', (c) => {
-      setAccessLogMetadata(c, { model: invalidModels[requestIndex++] });
+      const model = invalidModels[requestIndex++];
+      setAccessLogMetadata(c, { model, backendModel: model });
       return c.json({ ok: true });
     });
 
@@ -266,6 +268,7 @@ describe('accessLog', () => {
 
     expect(entries).toHaveLength(invalidModels.length);
     expect(entries.map((entry) => entry.model)).toEqual(invalidModels.map(() => '<invalid-model-id>'));
+    expect(entries.map((entry) => entry.backendModel)).toEqual(invalidModels.map(() => '<invalid-model-id>'));
     for (const [index, model] of invalidModels.entries()) {
       expect(JSON.stringify(entries[index])).not.toContain(model);
     }
@@ -312,9 +315,9 @@ describe('accessLog', () => {
         .filter((entry) => entry.message === 'HTTP access')
         .map((entry) => entry.meta!);
       expect(entries).toEqual(expect.arrayContaining([
-        expect.objectContaining({ path: '/v1/messages', model: 'backend-test-model', stream: true }),
-        expect.objectContaining({ path: '/v1/chat/completions', model: 'backend-test-model', stream: false }),
-        expect.objectContaining({ path: '/v1/responses', model: 'backend-test-model', stream: true }),
+        expect.objectContaining({ path: '/v1/messages', model: 'backend-test-model', backendModel: 'backend-test-model', stream: true }),
+        expect.objectContaining({ path: '/v1/chat/completions', model: 'backend-test-model', backendModel: 'backend-test-model', stream: false }),
+        expect.objectContaining({ path: '/v1/responses', model: 'backend-test-model', backendModel: 'backend-test-model', stream: true }),
       ]));
       expect(JSON.stringify(entries)).not.toMatch(/private Claude prompt|private OpenAI prompt|private Responses prompt|private_tool|test-key/);
     } finally {

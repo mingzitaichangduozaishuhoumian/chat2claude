@@ -15,7 +15,7 @@ export interface HttpAccessLogEntry {
   downstreamEventCount?: number; downstreamBodyBytes?: number;
   sourceMessageCount?: number; sourceContentBlockCount?: number; toolCount?: number; toolSchemaBytes?: number;
   upstreamInputItemCount?: number; replayItemCount?: number; replayApplied?: boolean;
-  peerIp: string; model?: string; stream?: boolean; reason?: string;
+  peerIp: string; model?: string; backendModel?: string; stream?: boolean; reason?: string;
 }
 
 export interface Logger {
@@ -67,7 +67,10 @@ export function createLogger(level: LogLevel = 'info'): Logger {
         return `${' '.repeat(left)}${safe}${' '.repeat(total - left)}`;
       };
       const pathCategory = entry.path.startsWith('/v1/') ? 'api' : entry.path.startsWith('/admin/') ? 'admin' : 'system';
-      const prefix = `[${time}] [${column(entry.requestId, 8)}] [${entryLevel.toUpperCase().padEnd(5)}] [${centerColumn(entry.model ?? pathCategory, 7)}]`;
+      const hasModelMapping = Boolean(entry.model && entry.backendModel && entry.model !== entry.backendModel);
+      const model = hasModelMapping ? `${entry.model}→${entry.backendModel}` : entry.model ?? entry.backendModel ?? pathCategory;
+      const compactModel = hasModelMapping && model.length > 15 ? `${model.slice(0, 14)}…` : model;
+      const prefix = `[${time}] [${column(entry.requestId, 8)}] [${entryLevel.toUpperCase().padEnd(5)}] [${centerColumn(compactModel, hasModelMapping ? 15 : 7)}]`;
       const target = `${entry.method} ${entry.path}${query ? `?${query}` : ''}`;
       const terminalStatus = entry.outcome === 'success' ? 'DONE' : entry.outcome === 'cancelled' ? 'CANCELLED' : entry.outcome === 'failure' ? 'FAILED' : 'UNKNOWN';
       const streamMetrics = `events=${entry.downstreamEventCount ?? 0} bytes=${entry.downstreamBodyBytes ?? 0}`;

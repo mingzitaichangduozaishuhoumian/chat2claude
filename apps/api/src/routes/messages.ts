@@ -66,6 +66,7 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
           ? deps.modelRegistry.resolveForAccount(request.model, { accountId: account.id, createdAt: account.createdAt })
           : globalResolution;
         const controls = deps.modelRegistry.resolveControls(resolution, accountControls);
+        setAccessLogMetadata(c, { backendModel: resolution.backendModel });
         const backendRequest = mapClaudeRequestToChatGpt(request, {}, {
           backendModel: resolution.backendModel,
           resolvedControls: controls,

@@ -11,8 +11,8 @@ const PUBLIC_QUERY_PARAMETERS = new Set(['beta']);
 const INVALID_MODEL_ID = '<invalid-model-id>';
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
 
-export interface AccessLogMetadata { model?: string; stream?: boolean; reason?: AccountUnavailableReason; }
-export interface HttpAccessLog extends HttpAccessLogEntry { reason?: AccountUnavailableReason; }
+export interface AccessLogMetadata { model?: string; backendModel?: string; stream?: boolean; reason?: AccountUnavailableReason; }
+export interface HttpAccessLog extends HttpAccessLogEntry { backendModel?: string; reason?: AccountUnavailableReason; }
 export type AccessLogTerminal = (fields: Record<string, unknown>) => void;
 export type AccessLogStreamLifecycle = (fields: Record<string, unknown> & { lifecycle: 'start' | 'active' }) => void;
 
@@ -51,6 +51,7 @@ export function accessLog(logger: Logger, format: AccessLogFormat = 'text'): Mid
       const value = c.get(ACCESS_LOG_METADATA) as AccessLogMetadata | undefined;
       return {
         ...(value?.model === undefined ? {} : { model: safeModelId(value.model) }),
+        ...(value?.backendModel === undefined ? {} : { backendModel: safeModelId(value.backendModel) }),
         ...(value?.stream === undefined ? {} : { stream: value.stream }),
         ...(value?.reason && ACCOUNT_UNAVAILABLE_REASONS.includes(value.reason) ? { reason: value.reason } : {}),
       };

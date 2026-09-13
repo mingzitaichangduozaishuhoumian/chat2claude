@@ -33,6 +33,8 @@ it('aligns text columns, outgoing query, and failure-only terminal', () => {
     logger.access!({ ...entry, model: 'long-model\n\x1b[31m', requestId: '1234567\nINJECT' });
     expect(log.mock.calls[3][0]).toContain('[1234567?] [INFO ] [long-mo]');
     expect(log.mock.calls[3][0]).not.toMatch(/[\r\n\x1b]/);
+    logger.access!({ ...entry, model: 'sonnet', backendModel: 'gpt-5.6-ultra-long-backend-name' });
+    expect(log).toHaveBeenLastCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [INFO ] [sonnet→gpt-5.6…] --> 200 STREAMING | 0.029s | POST /v1/messages?beta');
   } finally { vi.useRealTimers(); }
 });
 
@@ -56,8 +58,11 @@ describe('dedicated access logger', () => {
       expect(sink).toHaveBeenNthCalledWith(1, '[2026-09-03 17:37:48] [ed73cd3b] [INFO ] [ opus  ] --> 200 STREAMING | 0.029s | POST /v1/messages?beta');
       logger.info('ordinary', { ok: true });
       expect(JSON.parse(sink.mock.calls[1][0])).toMatchObject({ level: 'info', message: 'ordinary', meta: { ok: true }, time: localDate.toISOString() });
-      logger.access!(entry, 'json');
-      expect(JSON.parse(sink.mock.calls[2][0]).time).toBe(localDate.toISOString());
+      logger.access!({ ...entry, model: 'sonnet', backendModel: 'gpt-5.6-ultra-long-backend-name' }, 'json');
+      expect(JSON.parse(sink.mock.calls[2][0])).toMatchObject({
+        time: localDate.toISOString(),
+        meta: { model: 'sonnet', backendModel: 'gpt-5.6-ultra-long-backend-name' },
+      });
     } finally { vi.useRealTimers(); }
   });
 

@@ -62,6 +62,7 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
           ? deps.modelRegistry.resolveForAccount(request.model, { accountId: account.id, createdAt: account.createdAt })
           : globalResolution;
         const controls = deps.modelRegistry.resolveControls(resolution, accountControls);
+        setAccessLogMetadata(c, { backendModel: resolution.backendModel });
         const current = deps.accountPool.get(account.id);
         if (previous && (!current || !current.enabled || current.status !== 'available' || !previous.accepts(current, resolution.backendModel))) throw new ClaudeApiError('No available account supports the requested model and controls.', 503, 'overloaded_error');
         // Release history only after acquisition, with current affinity and expiry checks.
