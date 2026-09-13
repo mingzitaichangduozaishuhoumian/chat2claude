@@ -64,8 +64,9 @@ export function accessLog(logger: Logger, format: AccessLogFormat = 'text'): Mid
       if (!logger.access && isStreaming()) return;
       // A non-stream route finalizes before its response is ready: retain its safe
       // terminal state on this sole response-ready record rather than logging STREAM.
-      const fields = !isStreaming() && terminal ? sanitizeAccessTerminal(terminal) : {};
-      emit({ ...base(), ...metadata(), ...fields, durationKind: 'response_ready', phase: 'response_ready' });
+      const streaming = isStreaming();
+      const fields = !streaming && terminal ? sanitizeAccessTerminal(terminal) : {};
+      emit({ ...base(), ...metadata(), stream: streaming, ...fields, durationKind: 'response_ready', phase: 'response_ready' });
     };
     const emitTerminal = () => {
       if (!ready || !terminal || terminalEmitted || !isStreaming()) return;

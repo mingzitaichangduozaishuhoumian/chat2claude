@@ -217,11 +217,31 @@ describe('accessLog', () => {
       durationKind: 'response_ready',
       peerIp: 'unknown',
       model: 'backend-test-model',
-      stream: true,
+      stream: false,
     });
     expect(entries[0].requestId).toMatch(/^[0-9a-f-]{36}$/i);
     expect(entries[0].durationMs).toEqual(expect.any(Number));
     expect(JSON.stringify(entries[0])).not.toMatch(/enabled|query-secret|browser-secret|header-secret|cookie-secret|key-secret|private prompt|private tool input|body-secret/);
+  });
+
+  it('does not render JSON errors with stream request metadata as streaming responses', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const app = new Hono();
+    app.use('/v1/*', accessLog(createLogger(), 'text'));
+    app.post('/v1/messages', (c) => {
+      setAccessLogMetadata(c, { model: 'backend-test-model', stream: true });
+      return c.json({ error: 'upstream unavailable' }, 503);
+    });
+    try {
+      const response = await app.request('/v1/messages', { method: 'POST' });
+      expect(response.status).toBe(503);
+      expect(error).toHaveBeenCalledTimes(1);
+      const line = String(error.mock.calls[0][0]);
+      expect(line).toContain('--> 503 |');
+      expect(line).not.toContain('503 STREAMING');
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it('sanitizes invalid model IDs without echoing their raw values', async () => {
