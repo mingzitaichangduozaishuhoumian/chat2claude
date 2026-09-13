@@ -34,7 +34,7 @@ it('aligns text columns, outgoing query, and failure-only terminal', () => {
     expect(log.mock.calls[3][0]).toContain('[1234567?] [INFO ] [long-mo]');
     expect(log.mock.calls[3][0]).not.toMatch(/[\r\n\x1b]/);
     logger.access!({ ...entry, model: 'sonnet', backendModel: 'gpt-5.6-ultra-long-backend-name' });
-    expect(log).toHaveBeenLastCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [INFO ] [sonnet→gpt-5.6…] --> 200 STREAMING | 0.029s | POST /v1/messages?beta');
+    expect(log).toHaveBeenLastCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [INFO ] [ sonnet] --> 200 STREAMING | 0.029s | POST /v1/messages?beta');
   } finally { vi.useRealTimers(); }
 });
 
