@@ -30,6 +30,8 @@ it('aligns text columns, outgoing query, and failure-only terminal', () => {
     expect(error).toHaveBeenCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [ERROR] [ opus  ] --> STREAM FAILED | total=17.598s | events=0 bytes=0 | invalid_response');
     logger.access!({ ...entry, durationKind: 'stream_terminal', phase: 'stream_terminal', outcome: 'failure', durationMs: 120000, code: 'invalid_response', protocolReason: 'missing_terminal', timeoutKind: 'stream_total', incompleteReason: 'max_output_tokens' });
     expect(error).toHaveBeenLastCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [ERROR] [ opus  ] --> STREAM FAILED | total=120.000s | events=0 bytes=0 | invalid_response protocolReason=missing_terminal timeoutKind=stream_total incompleteReason=max_output_tokens');
+    logger.access!({ ...entry, durationKind: 'stream_terminal', phase: 'stream_terminal', outcome: 'failure', durationMs: 3923, code: 'upstream_error', failurePhase: 'response_event', eventType: 'response.failed', responseStatus: 'failed', responseErrorCode: 'server_error', httpStatus: 200, exceptionFamily: 'ChatGptBackendError' });
+    expect(error).toHaveBeenLastCalledWith('[2026-09-08 13:12:21] [ed73cd3b] [ERROR] [ opus  ] --> STREAM FAILED | total=3.923s | events=0 bytes=0 | upstream_error failurePhase=response_event eventType=response.failed responseStatus=failed responseErrorCode=server_error httpStatus=200 exceptionFamily=ChatGptBackendError');
     logger.access!({ ...entry, model: 'long-model\n\x1b[31m', requestId: '1234567\nINJECT' });
     expect(log.mock.calls[3][0]).toContain('[1234567?] [INFO ] [long-mo]');
     expect(log.mock.calls[3][0]).not.toMatch(/[\r\n\x1b]/);

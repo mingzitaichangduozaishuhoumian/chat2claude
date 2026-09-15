@@ -99,7 +99,7 @@ export function createLogger(level: LogLevel = 'info'): Logger {
       else if (phase === 'stream_terminal' && entry.outcome === 'failure') fields.push(...(entry.code ? [`| ${entry.code}`] : []),
         ...((format === 'detailed'
           ? ['protocolStage', 'protocolReason', 'failurePhase', 'eventType', 'responseStatus', 'responseErrorCode', 'incompleteReason', 'httpStatus', 'exceptionFamily', 'timeoutKind']
-          : ['protocolReason', 'timeoutKind', 'incompleteReason']) as readonly (keyof HttpAccessLogEntry)[]).flatMap(key => entry[key] === undefined ? [] : [`${key}=${entry[key]}`]));
+          : ['protocolReason', 'timeoutKind', 'incompleteReason', 'failurePhase', 'eventType', 'responseStatus', 'responseErrorCode', 'httpStatus', 'exceptionFamily']) as readonly (keyof HttpAccessLogEntry)[]).flatMap(key => entry[key] === undefined ? [] : [`${key}=${entry[key]}`]));
       emit(entryLevel, safeAccessText(fields.join(' ')));
     },
   };
