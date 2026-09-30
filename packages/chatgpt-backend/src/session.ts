@@ -4,7 +4,7 @@ import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptBackendCl
 import type { ChatGptSafeStatus, ChatGptStreamEvent } from './events.js';
 import { ChatGptBackendError, sanitizeBackendDiagnostic, type ChatGptBackendErrorCode, type ChatGptSafeDiagnostic } from './errors.js';
 import { ResponsesToolCalls } from './responses-tools.js';
-import { parseResponsesReplayItem, ResponsesReplay, ResponsesReplayBudget } from './responses-replay.js';
+import { parseResponsesReplayItem, ResponsesReplay, ResponsesReplayBudget, validateImageGenerationCallLifecycle } from './responses-replay.js';
 
 export interface SessionChatGptBackendOptions {
   baseUrl: string;
@@ -428,7 +428,7 @@ function isValidPartFrame(type: string, value: unknown): boolean {
 }
 
 function isKnownOutputItemType(eventType: string, item: JsonObject): boolean {
-  return item.type === 'message' || item.type === 'reasoning' || item.type === 'function_call'
+  return item.type === 'message' || item.type === 'reasoning' || item.type === 'function_call' || item.type === 'image_generation_call'
     || (eventType.endsWith('.done') && item.type === undefined);
 }
 
@@ -446,6 +446,9 @@ function isValidSupportedOutputItem(eventType: string, item: JsonObject): boolea
   if (type === 'function_call') {
     return readNonEmptyString(item.id) !== undefined && readNonEmptyString(item.call_id) !== undefined
       && readNonEmptyString(item.name) !== undefined && (typeof item.arguments === 'string' || eventType.endsWith('.done'));
+  }
+  if (type === 'image_generation_call') {
+    try { return validateImageGenerationCallLifecycle(item) !== undefined; } catch { return false; }
   }
   // Compatibility done frames omit type but are function calls only when they
   // contain the complete canonical function-call identity.

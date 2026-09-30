@@ -55,9 +55,11 @@ export const protocolCompatibilityManifest: readonly ProtocolCompatibilityEntry[
   { protocol: 'openai_chat_completions', feature: 'content_parts_tools_and_structured_output', status: 'backend_dependent', note: 'Mapped where possible; strict semantics depend on the backend.' },
   { protocol: 'openai_responses', feature: 'text_and_streaming', status: 'supported', note: 'Common response objects and SSE events are emitted.' },
   { protocol: 'openai_responses', feature: 'input_tools_and_continuation_options', status: 'backend_dependent', note: 'Mapped or locally retained where documented; upstream support varies.' },
+  { protocol: 'openai_responses', feature: 'image_generation_output_streaming', status: 'partial', note: 'Safe allowlisted image-generation results are emitted as Responses output items; upstream image availability remains backend-dependent.' },
   { protocol: 'chatgpt_codex_backend', feature: 'dynamic_model_discovery', status: 'supported', note: 'Backend model catalogs are discovered dynamically.' },
   { protocol: 'chatgpt_codex_backend', feature: 'oauth_authorization_and_text_completion', status: 'partial', note: 'Implemented with backend-dependent upstream availability.' },
   { protocol: 'chatgpt_codex_backend', feature: 'reasoning_and_speed_selection', status: 'backend_dependent', note: 'Controls are resolved safely but provider support varies.' },
-  { protocol: 'chatgpt_codex_backend', feature: 'images_and_tool_calls', status: 'unsupported', note: 'Backend mappings are not implemented.' },
+  { protocol: 'chatgpt_codex_backend', feature: 'image_generation_output', status: 'backend_dependent', note: 'Safe image-generation output fields are mapped for OpenAI Responses only when supplied by the upstream backend.' },
+  { protocol: 'chatgpt_codex_backend', feature: 'tool_calls', status: 'unsupported', note: 'Backend tool-call mappings are not implemented.' },
   { protocol: 'chatgpt_codex_backend', feature: 'real_usage', status: 'unsupported', note: 'Upstream usage parsing is not implemented.' },
 ] as const;

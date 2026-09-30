@@ -1,4 +1,5 @@
-import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptImageDetail, ChatGptInputContentPart, ChatGptInputItem, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
+import { isDeepStrictEqual } from 'node:util';
+import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptImageDetail, ChatGptImageGenerationCallOutputItem, ChatGptInputContentPart, ChatGptInputItem, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
 import { ChatGptBackendError, parseResponsesReplayItem, ResponsesReplayBudget } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { createMessageId } from '@chatgpt-to-claude/shared';
@@ -122,7 +123,8 @@ function normalizeOpenAiResponseFormat(responseFormat: Record<string, unknown>):
 
 export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequest, response: ChatGptCompletionResponse): OpenAiResponsesResponse {
   if (response.terminalSuccessful === false) throw invalidNativeOutput();
-  const outputText = response.outputItems ? response.outputItems.filter((item) => item.type === 'message').flatMap((item) => item.content.map((part) => part.text)).join('') : response.text ?? '';
+  const hasNativeMessage = response.outputItems?.some((item) => item.type === 'message') ?? false;
+  const outputText = hasNativeMessage ? response.outputItems!.filter((item) => item.type === 'message').flatMap((item) => item.content.map((part) => part.text)).join('') : response.text ?? '';
   const output: Array<Record<string, unknown>> = [];
   const replay = response.replayItems ?? [];
   if (outputText || !response.toolCalls?.length && !replay.length) output.push({ id: `msg_${createMessageId()}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: outputText, annotations: [] }] });
@@ -137,12 +139,15 @@ export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequ
   const replayCalls = new Set(replay.filter((item) => item.type === 'function_call').map((item) => item.call_id));
   for (const toolCall of response.toolCalls ?? []) if (!replayCalls.has(toolCall.id)) output.push({ id: `fc_${createMessageId()}`, type: 'function_call', status: 'completed', call_id: toolCall.id, name: toolCall.name, arguments: JSON.stringify(toolCall.input ?? {}) });
   if (response.outputItems) {
-    output.splice(0, output.length, ...response.outputItems.map((item): Record<string, unknown> => {
+    const nativeOutput = response.outputItems.map((item): Record<string, unknown> => {
       const visible: Record<string, unknown> = { ...structuredClone(item) };
       if (!request.include?.includes('reasoning.encrypted_content')) delete visible.encrypted_content;
-      visible.id ??= `${item.type === 'message' ? 'msg' : 'fc'}_${createMessageId()}`;
+      visible.id ??= `${item.type === 'message' ? 'msg' : item.type === 'image_generation_call' ? 'img' : 'fc'}_${createMessageId()}`;
       return visible;
-    }));
+    });
+    output.splice(0, output.length, ...(hasNativeMessage || !outputText
+      ? nativeOutput
+      : [{ id: `msg_${createMessageId()}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: outputText, annotations: [] }] }, ...nativeOutput]));
   }
   const inputTokens = response.usage?.inputTokens ?? estimateTokens(JSON.stringify(request.input));
   const outputTokens = response.usage?.outputTokens ?? estimateTokens(outputText + JSON.stringify(response.toolCalls ?? []));
@@ -180,6 +185,7 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
   let bytes = 256; // Fixed counters/array state, independent of discarded envelopes.
   let lastTextCodeUnit = 0;
   const toolCalls: NonNullable<ChatGptCompletionResponse['toolCalls']> = [];
+  const pendingImages: ChatGptImageGenerationCallOutputItem[] = [];
   const output: Array<Record<string, unknown>> = [];
   let textOutput: Record<string, unknown> | undefined;
   let textOpen = false;
@@ -203,6 +209,8 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
         yield emit('response.output_text.done', { ...fields, content_index, text: part.text });
         yield emit('response.content_part.done', { ...fields, content_index, part });
       }
+    } else if (item.type === 'image_generation_call' && item.status === 'completed') {
+      yield emit('response.image_generation_call.completed', fields);
     }
     doneIndexes.add(output_index);
     yield emit('response.output_item.done', { output_index, item });
@@ -247,6 +255,10 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
       const argumentsText = JSON.stringify(event.toolCall.input ?? {});
       bytes += Buffer.byteLength(argumentsText, 'utf8') + Buffer.byteLength(event.toolCall.name, 'utf8') + event.toolCall.id.length;
       toolCalls.push(event.toolCall);
+    } else if (event.type === 'image_output') {
+      if (event.item.status !== 'completed') throw invalidNativeOutput();
+      bytes += Buffer.byteLength(JSON.stringify(event.item), 'utf8');
+      pendingImages.push(structuredClone(event.item));
     } else if (event.type === 'done') {
       bytes += Buffer.byteLength(JSON.stringify(event), 'utf8');
       terminal = event;
@@ -258,11 +270,12 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
   const completion: ChatGptCompletionResponse = { text, toolCalls, ...terminal, finishReason: terminal.finishReason ?? 'stop' };
   const response = { ...mapChatGptResponseToOpenAiResponses(request, completion), id, created_at: createdAt };
   const authoritative = [...response.output];
+  reconcilePendingImages(pendingImages, authoritative);
   const consumed = new Set<number>();
   const takeMessage = () => {
     if (!textOutput) return undefined;
     const index = authoritative.findIndex((item, i) => !consumed.has(i) && item.type === 'message' && messageText(item) === text);
-    if (index < 0) throw invalidNativeOutput();
+    if (index < 0) return undefined;
     consumed.add(index);
     return { ...structuredClone(authoritative[index]), id: textOutput.id };
   };
@@ -433,6 +446,22 @@ function stringifyUnknown(value: unknown): string {
 
 function messageText(item: Record<string, unknown>): string {
   return Array.isArray(item.content) ? item.content.map((part) => isPlainObject(part) && typeof part.text === 'string' ? part.text : '').join('') : '';
+}
+
+function reconcilePendingImages(pendingImages: ChatGptImageGenerationCallOutputItem[], authoritative: Array<Record<string, unknown>>): void {
+  const finalImages = new Map<string, Record<string, unknown>>();
+  for (const item of authoritative) {
+    if (item.type !== 'image_generation_call') continue;
+    if (typeof item.id !== 'string' || finalImages.has(item.id)) throw invalidNativeOutput();
+    finalImages.set(item.id, item);
+  }
+  const pendingIds = new Set<string>();
+  for (const item of pendingImages) {
+    if (pendingIds.has(item.id)) throw invalidNativeOutput();
+    pendingIds.add(item.id);
+    const final = finalImages.get(item.id);
+    if (!final || !isDeepStrictEqual(final, item)) throw invalidNativeOutput();
+  }
 }
 
 function createMinimalResponse(id: string, createdAt: number, model: string, output: Array<Record<string, unknown>>, outputText: string, usage?: ChatGptUsage): OpenAiResponsesResponse {

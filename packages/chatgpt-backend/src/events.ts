@@ -1,4 +1,4 @@
-import type { ChatGptFinishReason, ChatGptOutputItem, ChatGptReplayItem, ChatGptToolCall, ChatGptUsage } from './client.js';
+import type { ChatGptFinishReason, ChatGptImageGenerationCallOutputItem, ChatGptOutputItem, ChatGptReplayItem, ChatGptToolCall, ChatGptUsage } from './client.js';
 
 export interface ChatGptTextDeltaEvent { type: 'text_delta'; text: string; }
 export interface ChatGptReasoningDeltaEvent { type: 'reasoning_delta'; text: string; }
@@ -16,7 +16,9 @@ export type ChatGptSafeStatus =
   | 'mcp list tools in progress';
 export interface ChatGptStatusDeltaEvent { type: 'status_delta'; status: ChatGptSafeStatus; }
 export interface ChatGptToolCallEvent { type: 'tool_call'; toolCall: ChatGptToolCall; }
+/** Safe, allowlisted generated-image result. Native Responses only consumes this event. */
+export interface ChatGptImageOutputEvent { type: 'image_output'; item: ChatGptImageGenerationCallOutputItem; }
 export interface ChatGptDoneEvent { type: 'done'; terminalSuccessful?: boolean; outputItems?: ChatGptOutputItem[]; finishReason?: ChatGptFinishReason; usage?: ChatGptUsage; /** Internal carrier, never client-visible content. */ replayItems?: ChatGptReplayItem[]; /** Fixed internal completeness marker for implicit replay. */ replayEligible?: boolean; }
 /** Transport-only barrier; never content, usage, or replay. */
 export interface ChatGptUpstreamReadyEvent { type: 'upstream_ready'; }
-export type ChatGptStreamEvent = ChatGptTextDeltaEvent | ChatGptReasoningDeltaEvent | ChatGptStatusDeltaEvent | ChatGptToolCallEvent | ChatGptDoneEvent | ChatGptUpstreamReadyEvent;
+export type ChatGptStreamEvent = ChatGptTextDeltaEvent | ChatGptReasoningDeltaEvent | ChatGptStatusDeltaEvent | ChatGptToolCallEvent | ChatGptImageOutputEvent | ChatGptDoneEvent | ChatGptUpstreamReadyEvent;

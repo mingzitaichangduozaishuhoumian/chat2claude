@@ -79,6 +79,63 @@ describe('native Responses replay projection', () => {
     expect(events.filter((x) => x.type === 'response.function_call_arguments.done')).toHaveLength(1);
     expect(events.find((x) => x.type === 'response.function_call_arguments.done')).toMatchObject({ item_id: 'fc_after_reasoning', output_index: 2, arguments: authoritativeCall.arguments });
   });
+  it('preserves incremental text when terminal native output contains only replay items', async () => {
+    const events = await collect([
+      { type: 'text_delta', text: 'answer' },
+      { type: 'tool_call', toolCall: { id: call.call_id, name: call.name, input: { x: 1 } } },
+      { type: 'done', finishReason: 'tool_calls', outputItems: [reasoning, call], replayItems: [reasoning, call] },
+    ], false);
+    const completedOutput = events.at(-1).response.output;
+    expect(completedOutput.map((item: { type: string }) => item.type)).toEqual(['message', 'reasoning', 'function_call']);
+    expect(completedOutput[0]).toMatchObject({ type: 'message', content: [{ type: 'output_text', text: 'answer' }] });
+    expect(completedOutput[1]).toMatchObject({ id: reasoning.id, type: 'reasoning', summary: [] });
+    expect(completedOutput[2]).toMatchObject(call);
+    expect(JSON.stringify(events)).not.toContain(secret);
+    expect(JSON.stringify(events)).not.toContain('encrypted_content');
+    assertOutputLifecycleReconciles(events);
+  });
+
+  it('emits an authoritative completed image lifecycle without adding it to output_text', async () => {
+    const image: ChatGptOutputItem = { type: 'image_generation_call', id: 'img_1', status: 'completed', result: 'https://example.test/generated.png', mime_type: 'image/png' };
+    const events = await collect([{ type: 'done', finishReason: 'stop', outputItems: [image] }]);
+    const completed = events.find((event) => event.type === 'response.completed')!;
+    expect(events.filter((event) => event.type === 'response.output_item.added')).toHaveLength(1);
+    expect(events.filter((event) => event.type === 'response.output_item.done')).toHaveLength(1);
+    expect(events.filter((event) => event.type === 'response.image_generation_call.completed')).toHaveLength(1);
+    expect(completed.response.output).toEqual([image]);
+    expect(completed.response.output_text).toBe('');
+    assertOutputLifecycleReconciles(events);
+  });
+
+  it('emits a streamed image only from identical terminal output', async () => {
+    const image: ChatGptOutputItem = { type: 'image_generation_call', id: 'img_1', status: 'completed', result: 'https://example.test/generated.png', mime_type: 'image/png', revised_prompt: 'a bright landscape' };
+    const events = await collect([{ type: 'image_output', item: image }, { type: 'done', finishReason: 'stop', outputItems: [image] }]);
+    const completed = events.find((event) => event.type === 'response.completed')!;
+    const lifecycleItems = events.filter((event) => event.type === 'response.output_item.added' || event.type === 'response.output_item.done').map((event) => event.item);
+    expect(events.filter((event) => event.type === 'response.image_generation_call.completed')).toHaveLength(1);
+    expect(lifecycleItems).toContainEqual(image);
+    expect(completed.response.output).toEqual([image]);
+    expect(completed.response.output_text).toBe('');
+    expect(JSON.stringify(events.filter((event) => event.type.startsWith('response.output_text') || event.type.startsWith('response.content_part')))).not.toContain(image.result);
+    assertOutputLifecycleReconciles(events);
+  });
+
+  it('rejects a streamed image omitted from terminal output', async () => {
+    const image: ChatGptOutputItem = { type: 'image_generation_call', id: 'img_1', status: 'completed', result: 'https://example.test/generated.png' };
+    await expect(collect([{ type: 'image_output', item: image }, { type: 'done', finishReason: 'stop', outputItems: [] }])).rejects.toThrow('Invalid Responses backend output.');
+  });
+
+  it.each([
+    ['status', { status: 'failed' as const }],
+    ['result', { result: 'https://example.test/other.png' }],
+    ['mime_type', { mime_type: 'image/jpeg' }],
+    ['revised_prompt', { revised_prompt: 'a different prompt' }],
+  ])('rejects a streamed image with conflicting terminal %s', async (_field, override) => {
+    const image = { type: 'image_generation_call' as const, id: 'img_1', status: 'completed' as const, result: 'https://example.test/generated.png', mime_type: 'image/png', revised_prompt: 'a bright landscape' };
+    const conflicting = { ...image, ...override } as unknown as ChatGptOutputItem;
+    await expect(collect([{ type: 'image_output', item: image }, { type: 'done', finishReason: 'stop', outputItems: [conflicting] }])).rejects.toThrow('Invalid Responses backend output.');
+  });
+
   it('does not synthesize success on EOF', async () => {
     await expect(collect([{ type: 'text_delta', text: 'tentative' }])).rejects.toThrow();
   });

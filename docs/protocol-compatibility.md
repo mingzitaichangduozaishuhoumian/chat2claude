@@ -65,6 +65,7 @@ Use a Runtime API Key for all client smokes; do not use an Admin API Key as a no
 | Chat Completions | `content_parts_tools_and_structured_output` | `backend_dependent` | Mapped where possible; strict semantics depend on the backend. |
 | Responses | `text_and_streaming` | `supported` | Common response objects and SSE events are emitted. |
 | Responses | `input_tools_and_continuation_options` | `backend_dependent` | Mapped or locally retained where documented; upstream support varies. |
+| Responses | `image_generation_output_streaming` | `partial` | Safe allowlisted image-generation results are emitted as Responses output items; upstream image availability remains backend-dependent. |
 
 ## ChatGPT/Codex backend
 
@@ -73,7 +74,8 @@ Use a Runtime API Key for all client smokes; do not use an Admin API Key as a no
 | `dynamic_model_discovery` | `supported` | Backend model catalogs are discovered dynamically. |
 | `oauth_authorization_and_text_completion` | `partial` | Implemented with backend-dependent upstream availability. |
 | `reasoning_and_speed_selection` | `backend_dependent` | Controls are resolved safely but provider support varies. |
-| `images_and_tool_calls` | `unsupported` | Backend mappings are not implemented. |
+| `image_generation_output` | `backend_dependent` | Safe image-generation output fields are mapped for OpenAI Responses only when supplied by the upstream backend. |
+| `tool_calls` | `unsupported` | Backend tool-call mappings are not implemented. |
 | `real_usage` | `unsupported` | Upstream usage parsing is not implemented. |
 
 ## Design direction

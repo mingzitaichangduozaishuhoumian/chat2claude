@@ -55,7 +55,7 @@ describe('mapChatGptStreamToClaudeSse', () => {
     const item = { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'lookup', arguments: '{}' };
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response([
       { type: 'response.output_item.done', item },
-      { type: 'response.completed', response: { finish_reason } },
+      { type: 'response.completed', response: { finish_reason, output: [item] } },
     ].map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('')) });
     const context = { account: { id: 'session-1', provider: 'chatgpt-session' as const, secret: { type: 'chatgpt-session' as const, accessToken: 'token' } } };
     const backendRequest = mapClaudeRequestToChatGpt(request);
@@ -215,6 +215,15 @@ describe('mapChatGptStreamToClaudeSse', () => {
     expect(completed[0].output_text).toBe('hello');
     expect(text).toContain(`"id":"${completed[0].id}"`);
     expect(text).toContain('data: [DONE]');
+  });
+
+  it('calls OpenAI responses onCompleted with finalized image output', async () => {
+    const image = { type: 'image_generation_call' as const, id: 'img_1', status: 'completed' as const, result: 'https://example.test/generated.png' };
+    const completed: Array<{ output: Array<Record<string, unknown>>; output_text: string }> = [];
+    await collect(mapChatGptStreamToOpenAiResponsesSse({ model: 'gpt-test', input: 'draw' }, async function* () {
+      yield { type: 'done' as const, outputItems: [image] };
+    }(), { onCompleted: async (response) => { completed.push({ output: response.output, output_text: response.output_text }); } }));
+    expect(completed).toEqual([{ output: [image], output_text: '' }]);
   });
 
   it('does not emit an OpenAI chat usage chunk by default', async () => {

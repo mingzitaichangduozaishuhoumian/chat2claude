@@ -72,6 +72,84 @@ it.each([
   expect(JSON.stringify(events)).not.toContain('item_secret_123');
 });
 
+it('commits a completed image only from the authoritative completed output', async () => {
+  const image = { type: 'image_generation_call', id: 'img_1', status: 'completed', result: 'https://example.test/generated.png', mime_type: 'image/png', revised_prompt: 'a cat' };
+  const events = [];
+  for await (const event of backend(
+    frame({ type: 'response.output_item.added', item: { type: 'image_generation_call', id: 'img_1', status: 'in_progress', result: null } })
+    + frame({ type: 'response.image_generation_call.generating', item_id: 'image_secret_123' })
+    + frame({ type: 'response.output_item.done', item: image })
+    + frame({ type: 'response.completed', response: { status: 'completed', output: [image] } }),
+  ).stream(request, context)) events.push(event);
+  expect(events).toEqual([
+    { type: 'upstream_ready' },
+    { type: 'status_delta', status: 'image generation generating' },
+    { type: 'done', finishReason: 'stop', outputItems: [image] },
+  ]);
+  expect(JSON.stringify(events)).not.toContain('image_secret_123');
+});
+
+it.each(['failed', 'in_progress', 'generating'] as const)('ignores terminal %s image lifecycle without emitting output', async status => {
+  const image = { type: 'image_generation_call', id: 'img_1', status };
+  const events = [];
+  for await (const event of backend(
+    frame(created) + frame({ type: 'response.completed', response: { status: 'completed', output: [image] } }),
+  ).stream(request, context)) events.push(event);
+  expect(events).toEqual([{ type: 'upstream_ready' }, { type: 'done', finishReason: 'stop' }]);
+});
+
+it('rejects a completed image snapshot when completed output is missing without leaking provider content', async () => {
+  const image = { type: 'image_generation_call', id: 'img_1', status: 'completed', result: 'CANARY' };
+  const collect = async () => { for await (const _ of backend(frame({ type: 'response.output_item.done', item: image }) + frame({ type: 'response.completed', response: { status: 'completed' } })).stream(request, context)) {} };
+  const error = await collect().catch(error => error);
+  expect(error).toMatchObject({ code: 'invalid_response', status: 502 });
+  expect(String(error) + JSON.stringify(error)).not.toContain('CANARY');
+});
+
+it.each(['failed', 'in_progress', 'generating'] as const)('rejects terminal completed and %s image lifecycles with the same id without leaking provider content', async status => {
+  const completedImage = { type: 'image_generation_call', id: 'img_1', status: 'completed', result: 'https://example.test/generated.png' };
+  const conflictingImage = { type: 'image_generation_call', id: 'img_1', status, result: 'CANARY' };
+  const collect = async () => { for await (const _ of backend(frame(created) + frame({ type: 'response.completed', response: { status: 'completed', output: [completedImage, conflictingImage] } })).stream(request, context)) {} };
+  const error = await collect().catch(error => error);
+  expect(error).toMatchObject({ code: 'invalid_response', status: 502 });
+  expect(String(error) + JSON.stringify(error)).not.toContain('CANARY');
+});
+
+it.each(['failed', 'in_progress', 'generating'] as const)('ignores duplicate identical terminal %s image lifecycles', async status => {
+  const image = { type: 'image_generation_call', id: 'img_1', status };
+  const events = [];
+  for await (const event of backend(frame(created) + frame({ type: 'response.completed', response: { status: 'completed', output: [image, image] } })).stream(request, context)) events.push(event);
+  expect(events).toEqual([{ type: 'upstream_ready' }, { type: 'done', finishReason: 'stop' }]);
+});
+
+it.each([
+  { terminal: false, item: { type: 'image_generation_call', id: 'img_1', status: 'incomplete', result: 'CANARY' } },
+  { terminal: false, item: { type: 'image_generation_call', id: 'img_1', status: 'completed', result: { secret: 'CANARY' } } },
+  { terminal: true, item: { type: 'image_generation_call', id: 'img_1', status: 'incomplete', result: 'CANARY' } },
+])('rejects invalid image lifecycle without leaking provider content', async ({ terminal, item }) => {
+  const terminalFrame = terminal
+    ? { type: 'response.completed', response: { status: 'completed', output: [item] } }
+    : { type: 'response.output_item.done', item };
+  const iterator = backend(frame(created) + frame(terminalFrame)).stream(request, context)[Symbol.asyncIterator]();
+  expect((await iterator.next()).value).toEqual({ type: 'upstream_ready' });
+  const error = await iterator.next().catch(error => error);
+  expect(error).toMatchObject({ code: 'invalid_response', status: 502 });
+  expect(String(error) + JSON.stringify(error)).not.toContain('CANARY');
+});
+
+it.each([
+  { output: [], label: 'missing final image' },
+  { output: [{ type: 'image_generation_call', id: 'img_1', status: 'completed', result: 'CANARY_changed' }], label: 'different final result' },
+  { output: [{ type: 'image_generation_call', id: 'img_1', status: 'failed' }], label: 'different final status' },
+  { output: [{ type: 'image_generation_call', id: 'img_1', status: 'completed', result: 'https://example.test/generated.png' }, { type: 'image_generation_call', id: 'img_1', status: 'completed', result: 'https://example.test/generated.png' }], label: 'duplicate final identity' },
+])('rejects a completed image snapshot with $label without leaking provider values', async ({ output }) => {
+  const image = { type: 'image_generation_call', id: 'img_1', status: 'completed', result: 'https://example.test/generated.png' };
+  const collect = async () => { for await (const _ of backend(frame({ type: 'response.output_item.done', item: image }) + frame({ type: 'response.completed', response: { status: 'completed', output } })).stream(request, context)) {} };
+  const error = await collect().catch(error => error);
+  expect(error).toMatchObject({ code: 'invalid_response', status: 502 });
+  expect(String(error) + JSON.stringify(error)).not.toContain('CANARY');
+});
+
 it.each([
   '', frame(created).slice(0, -2), 'data: [DONE]\n\n', 'data: {CANARY\n\n', frame({ type: 'response.created', response: 'CANARY' }),
   frame({ type: 'response.output_text.delta', delta: 5 }), frame({ type: 'response.output_item.added', item: null }),

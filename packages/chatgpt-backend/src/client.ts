@@ -36,7 +36,20 @@ export interface ChatGptFunctionCallReplayItem {
 }
 export type ChatGptReplayItem = ChatGptReasoningReplayItem | ChatGptFunctionCallReplayItem;
 
-export type ChatGptOutputItem = ChatGptReplayItem | {
+/** Provider image lifecycle states. `incomplete` is not an image lifecycle state. */
+export type ChatGptImageGenerationCallStatus = 'in_progress' | 'generating' | 'completed' | 'failed';
+
+/** A completed, authoritative image result safe to expose to protocol mappers. */
+export interface ChatGptImageGenerationCallOutputItem {
+  type: 'image_generation_call';
+  id: string;
+  status: 'completed';
+  result: string;
+  mime_type?: string;
+  revised_prompt?: string;
+}
+
+export type ChatGptOutputItem = ChatGptReplayItem | ChatGptImageGenerationCallOutputItem | {
   type: 'message'; id?: string; role: 'assistant'; status?: ChatGptReplayItemStatus;
   content: Array<{ type: 'output_text'; text: string; annotations: [] }>;
 };
