@@ -11,7 +11,7 @@ export interface HttpAccessLogEntry {
   lifecycle?: 'start' | 'active';
   outcome?: 'success' | 'failure' | 'cancelled'; code?: string; timeoutKind?: string; upstreamBodyBytes?: number;
   protocolStage?: string; protocolReason?: string;
-  eventType?: string; responseStatus?: string; responseErrorCode?: string; incompleteReason?: string; failurePhase?: string; httpStatus?: number; exceptionFamily?: string;
+  eventType?: string; responseStatus?: string; responseErrorCode?: string; responseErrorType?: string; responseErrorParam?: string; incompleteReason?: string; failurePhase?: string; bodyReadErrorFamily?: string; httpStatus?: number; exceptionFamily?: string;
   downstreamEventCount?: number; downstreamBodyBytes?: number;
   sourceMessageCount?: number; sourceContentBlockCount?: number; toolCount?: number; toolSchemaBytes?: number;
   upstreamInputItemCount?: number; replayItemCount?: number; replayApplied?: boolean;
@@ -84,7 +84,7 @@ export function createLogger(level: LogLevel = 'info'): Logger {
       if (format === 'detailed' && phase === 'response_ready') fields.push(
         ...(entry.stream ? ['stream'] : []), ...(entry.reason ? [`reason=${entry.reason}`] : []), ...(entry.outcome ? [`outcome=${entry.outcome}`] : []),
         ...(entry.code ? [`code=${entry.code}`] : []), ...(entry.timeoutKind ? [`timeoutKind=${entry.timeoutKind}`] : []),
-        ...(['protocolStage', 'protocolReason', 'failurePhase', 'eventType', 'responseStatus', 'responseErrorCode', 'incompleteReason', 'httpStatus', 'exceptionFamily'] as const).flatMap(key => entry[key] === undefined ? [] : [`${key}=${entry[key]}`]),
+        ...(['protocolStage', 'protocolReason', 'failurePhase', 'eventType', 'responseStatus', 'responseErrorCode', 'responseErrorType', 'responseErrorParam', 'incompleteReason', 'httpStatus', 'exceptionFamily'] as const).flatMap(key => entry[key] === undefined ? [] : [`${key}=${entry[key]}`]),
         ...(entry.sourceMessageCount === undefined ? [] : [`messages=${entry.sourceMessageCount}`]),
         ...(entry.sourceContentBlockCount === undefined ? [] : [`content=${entry.sourceContentBlockCount}`]),
         ...(entry.toolCount === undefined ? [] : [`tools=${entry.toolCount}`]),
@@ -98,8 +98,8 @@ export function createLogger(level: LogLevel = 'info'): Logger {
       );
       else if (phase === 'stream_terminal' && entry.outcome === 'failure') fields.push(...(entry.code ? [`| ${entry.code}`] : []),
         ...((format === 'detailed'
-          ? ['protocolStage', 'protocolReason', 'failurePhase', 'eventType', 'responseStatus', 'responseErrorCode', 'incompleteReason', 'httpStatus', 'exceptionFamily', 'timeoutKind']
-          : ['protocolReason', 'timeoutKind', 'incompleteReason', 'failurePhase', 'eventType', 'responseStatus', 'responseErrorCode', 'httpStatus', 'exceptionFamily']) as readonly (keyof HttpAccessLogEntry)[]).flatMap(key => entry[key] === undefined ? [] : [`${key}=${entry[key]}`]));
+          ? ['protocolStage', 'protocolReason', 'failurePhase', 'eventType', 'responseStatus', 'responseErrorCode', 'responseErrorType', 'responseErrorParam', 'incompleteReason', 'bodyReadErrorFamily', 'httpStatus', 'exceptionFamily', 'timeoutKind']
+          : ['protocolReason', 'timeoutKind', 'incompleteReason', 'failurePhase', 'eventType', 'responseStatus', 'responseErrorCode', 'responseErrorType', 'responseErrorParam', 'bodyReadErrorFamily', 'httpStatus', 'exceptionFamily']) as readonly (keyof HttpAccessLogEntry)[]).flatMap(key => entry[key] === undefined ? [] : [`${key}=${entry[key]}`]));
       emit(entryLevel, safeAccessText(fields.join(' ')));
     },
   };

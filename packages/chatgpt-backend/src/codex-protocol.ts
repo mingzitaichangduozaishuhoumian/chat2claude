@@ -1,9 +1,8 @@
 import { arch, release, type } from 'node:os';
 
-// Protocol baseline, not this package's version. Official release and identity:
-// https://github.com/openai/codex/releases/tag/rust-v0.153.4
-// https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/login/src/auth/default_client.rs
-export const DEFAULT_CODEX_CLIENT_VERSION = '0.153.4';
+// Protocol baseline, not this package's version. Match the current Codex CLI identity
+// used by chatgpt.com for model discovery so account catalogs are not artificially stale.
+export const DEFAULT_CODEX_CLIENT_VERSION = '0.155.0';
 export const CODEX_ORIGINATOR = 'codex_cli_rs';
 
 /** Strict SemVer, including official prereleases; never echo an invalid value. */

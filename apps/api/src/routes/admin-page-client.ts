@@ -324,9 +324,8 @@ function showOneTimeRuntimeApiKey(value) {
   apiKey.dataset.value = value;
   status.textContent = '请立即复制保存；关闭或清除显示后无法恢复原始 Key。';
   display.hidden = false;
-  display.removeAttribute('hidden');
-  apiKey.focus();
-  apiKey.select();
+  if (typeof apiKey.focus === 'function') apiKey.focus();
+  if (typeof apiKey.select === 'function') apiKey.select();
   return true;
 }
 async function copyOneTimeRuntimeApiKey(options) {

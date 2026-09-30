@@ -291,7 +291,7 @@ describe('SessionChatGptBackend', () => {
     ]) });
     const error = await backend.complete(request, context).catch((error: unknown) => error);
     expect(error).toMatchObject({ code: 'upstream_error', status: 502, safeDiagnostic: {
-      eventType: 'error', responseErrorCode: code === 'rate_limit_exceeded' ? code : 'unknown', httpStatus: 200, failurePhase: 'response_event',
+      eventType: 'error', responseErrorCode: code === 'rate_limit_exceeded' ? code : 'unknown', responseErrorParam: 'unknown', httpStatus: 200, failurePhase: 'response_event',
     } });
     expect(String(error) + JSON.stringify(error)).not.toContain('CANARY');
     expect((error as Error).cause).toBeUndefined();
@@ -309,6 +309,21 @@ describe('SessionChatGptBackend', () => {
       ...(frame.type ? { eventType: frame.type } : {}), responseErrorCode: code, httpStatus: 200, failurePhase: 'response_event',
     } });
     expect(String(error) + JSON.stringify(error)).not.toContain('NESTED_');
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it.each([
+    { name: 'unrecognized code', error: { code: 'UNRECOGNIZED_CANARY', type: 'server_error', param: 'model', message: 'NESTED_MESSAGE_CANARY', detail: 'NESTED_DETAIL_CANARY', raw: 'NESTED_RAW_CANARY' }, expected: { responseErrorCode: 'unknown', responseErrorType: 'server_error', responseErrorParam: 'model' } },
+    { name: 'missing code', error: { type: 'server_error', param: 'model', message: 'NESTED_MESSAGE_CANARY', detail: 'NESTED_DETAIL_CANARY', raw: 'NESTED_RAW_CANARY' }, expected: { responseErrorType: 'server_error', responseErrorParam: 'model' } },
+  ])('keeps nested generic error type and param for $name', async ({ error: nestedError, expected }) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
+      { type: 'error', error: nestedError },
+    ]) });
+    const error = await backend.complete(request, context).catch((error: unknown) => error);
+    expect(error).toMatchObject({ code: 'upstream_error', status: 502, safeDiagnostic: {
+      eventType: 'error', ...expected, httpStatus: 200, failurePhase: 'response_event',
+    } });
+    expect(String(error) + JSON.stringify(error)).not.toContain('CANARY');
     expect((error as Error).cause).toBeUndefined();
   });
 
@@ -343,7 +358,11 @@ describe('SessionChatGptBackend', () => {
     await expect(backend.complete(request, context)).rejects.toMatchObject({ code: 'invalid_response', safeDiagnostic: { httpStatus: 200, failurePhase: 'response_body_read' } });
   });
 
-  it.each([TypeError, SyntaxError])('classifies a body read %s safely after HTTP 2xx', async (ErrorClass) => {
+  it.each([
+    [TypeError, 'network_error', 'TypeError'],
+    [SyntaxError, 'invalid_response', 'SyntaxError'],
+    [Error, 'network_error', 'Error'],
+  ] as const)('classifies a body read %s safely after HTTP 2xx', async (ErrorClass, code, bodyReadErrorFamily) => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response(new ReadableStream({
       pull(controller) { controller.error(new ErrorClass('BODY_READ_CANARY')); },
     })) });
@@ -351,7 +370,7 @@ describe('SessionChatGptBackend', () => {
       await backend.complete(request, context);
       expect.fail('Expected body read failure');
     } catch (error) {
-      expect(error).toMatchObject({ code: ErrorClass === SyntaxError ? 'invalid_response' : 'network_error', safeDiagnostic: { httpStatus: 200, failurePhase: 'response_body_read' } });
+      expect(error).toMatchObject({ code, safeDiagnostic: { httpStatus: 200, failurePhase: 'response_body_read', bodyReadErrorFamily } });
       expect(String(error) + JSON.stringify(error)).not.toContain('BODY_READ_CANARY');
       expect((error as Error).cause).toBeUndefined();
     }
@@ -545,6 +564,23 @@ describe('SessionChatGptBackend', () => {
     expect(result.status).toBe('success');
     expect(result.models.map((model) => model.id)).toEqual(['synthetic-route']);
     expect(result.diagnostic).toEqual({ clientVersion: DEFAULT_CODEX_CLIENT_VERSION, httpStatus: 200, contentType: 'json', envelope: 'models', candidateCount: 1, acceptedCount: 1, rejectedCount: 0, duplicateCount: 0, reasons: [] });
+  });
+
+  it('accepts current Codex GPT and image model IDs from discovery without filtering them out', async () => {
+    const visibleInCliProxyApi = [
+      'gpt-5.5', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-luna',
+      'gpt-image-1.5', 'gpt-image-2', 'gpt-5.6-terra', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst',
+      'gpt-image-2.5', 'gpt-6.1-sol', 'codex-auto-review',
+    ];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => Response.json({
+      models: visibleInCliProxyApi.map((slug) => ({ slug, name: slug.toUpperCase() })),
+    }) });
+
+    const result = await backend.discoverModels(context);
+
+    expect(result.status).toBe('success');
+    expect(result.models.map((model) => model.id)).toEqual(visibleInCliProxyApi);
+    expect(result.diagnostic).toMatchObject({ candidateCount: visibleInCliProxyApi.length, acceptedCount: visibleInCliProxyApi.length, rejectedCount: 0 });
   });
 
   it.each([

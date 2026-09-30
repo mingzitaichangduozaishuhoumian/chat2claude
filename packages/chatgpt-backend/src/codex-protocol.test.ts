@@ -3,7 +3,7 @@ import { CODEX_ORIGINATOR, DEFAULT_CODEX_CLIENT_VERSION, codexUserAgent, normali
 
 describe('Codex protocol identity', () => {
   it('pins an official client release independently of the package version', () => {
-    expect(DEFAULT_CODEX_CLIENT_VERSION).toBe('0.153.4');
+    expect(DEFAULT_CODEX_CLIENT_VERSION).toBe('0.155.0');
     expect(normalizeCodexClientVersion(undefined)).toBe(DEFAULT_CODEX_CLIENT_VERSION);
     expect(CODEX_ORIGINATOR).toBe('codex_cli_rs');
   });

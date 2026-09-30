@@ -255,7 +255,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       if (error instanceof Error && error.name === 'AbortError') throw abortError();
       if (httpStatus !== undefined) {
         throw new ChatGptBackendError('ChatGPT session backend response body could not be read.', error instanceof SyntaxError ? 'invalid_response' : 'network_error', {
-          status: 502, safeDiagnostic: { httpStatus, failurePhase: 'response_body_read' },
+          status: 502, safeDiagnostic: { httpStatus, failurePhase: 'response_body_read', bodyReadErrorFamily: bodyReadErrorFamily(error) },
         });
       }
       throw error;
@@ -329,6 +329,14 @@ function invalidStreamResponse(protocolReason: ChatGptSafeDiagnostic['protocolRe
   return new ChatGptBackendError('ChatGPT session backend response was invalid.', 'invalid_response', {
     status: 502, safeDiagnostic: { failurePhase: 'response_protocol', protocolStage, protocolReason },
   });
+}
+
+function bodyReadErrorFamily(error: unknown): ChatGptSafeDiagnostic['bodyReadErrorFamily'] {
+  if (error instanceof TypeError) return 'TypeError';
+  if (error instanceof SyntaxError) return 'SyntaxError';
+  if (error instanceof DOMException) return 'DOMException';
+  if (error instanceof Error) return 'Error';
+  return 'unknown';
 }
 
 const TEXT_FRAME_TYPES = new Set(['response.output_text.delta', 'response.output_text.done', 'response.reasoning_summary_text.delta', 'response.reasoning_summary_text.done', 'response.reasoning_text.delta', 'response.reasoning_text.done', 'response.refusal.delta', 'response.refusal.done']);
@@ -1152,8 +1160,10 @@ function responseEventError(event: string | undefined, value: JsonObject | undef
   if (!incomplete && !failed) return undefined;
   const error = isPlainObject(response?.error) ? response.error : isPlainObject(value?.error) ? value.error : undefined;
   const details = isPlainObject(response?.incomplete_details) ? response.incomplete_details : undefined;
+  const topLevelError = type === 'error' || event === 'error';
   const safeDiagnostic = sanitizeBackendDiagnostic({
-    eventType: type, responseStatus: response?.status ?? value?.status, responseErrorCode: error?.code ?? (type === 'error' || event === 'error' ? value?.code : undefined),
+    eventType: type, responseStatus: response?.status ?? value?.status, responseErrorCode: error?.code ?? (topLevelError ? value?.code : undefined),
+    responseErrorType: error?.type ?? (event === 'error' && value?.type !== 'error' ? value?.type : undefined), responseErrorParam: error?.param ?? (topLevelError ? value?.param : undefined),
     ...(incomplete ? { incompleteReason: details?.reason, protocolStage: 'terminal', protocolReason: 'response_incomplete' } : {}),
     httpStatus, failurePhase: incomplete ? 'response_incomplete' : 'response_event',
   });

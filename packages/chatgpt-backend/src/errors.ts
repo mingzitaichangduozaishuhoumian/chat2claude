@@ -12,6 +12,7 @@ const DIAGNOSTIC_VALUES = {
   responseErrorCode: ['unsupported_parameter', 'unsupported_value', 'invalid_value', 'invalid_type', 'missing_required_parameter', 'unknown_parameter', 'invalid_request_error', 'model_not_found', 'invalid_api_key', 'insufficient_quota', 'context_length_exceeded', 'server_error', 'rate_limit_exceeded', 'invalid_prompt', 'data_residency_mismatch', 'bio_policy', 'misalignment_policy_violation', 'vector_store_timeout', 'invalid_image', 'invalid_image_format', 'invalid_base64_image', 'invalid_image_url', 'image_too_large', 'image_too_small', 'image_parse_error', 'image_content_policy_violation', 'invalid_image_mode', 'image_file_too_large', 'unsupported_image_media_type', 'empty_image_file', 'failed_to_download_image', 'image_file_not_found'],
   incompleteReason: ['max_output_tokens', 'max_messages', 'content_filter', 'steered'],
   timeoutKind: ['stream_bootstrap', 'response_headers', 'stream_idle', 'stream_total'],
+  bodyReadErrorFamily: ['TypeError', 'SyntaxError', 'Error', 'DOMException', 'unknown'],
   failurePhase: ['request_fetch', 'response_headers', 'response_event', 'response_incomplete', 'response_body_read', 'response_protocol'],
 } as const;
 
