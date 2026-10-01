@@ -2,11 +2,11 @@ import { boundedClose, prepareStream, type PreparedStream } from './prepare-stre
 import { Hono } from 'hono';
 import type { Logger } from '@chatgpt-to-claude/shared';
 import { logHttpRequestFailure, releaseAccountWhenDone } from './stream-lifecycle.js';
-import { parseResponsesReplayItem, ResponsesReplayBudget, type ChatGptCompletionResponse, type ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
+import { parseResponsesReplayItem, ResponsesReplayBudget, RESPONSES_INPUT_REPLAY_LIMITS, type ChatGptCompletionResponse, type ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { mapChatGptResponseToOpenAiResponses, mapChatGptStreamToOpenAiResponsesSse, mapOpenAiResponsesRequestToChatGpt, readableStreamFromAsyncIterable, type OpenAiResponsesResponse, type OpenAiResponsesRequest, type ReasoningSpeedDefaults } from '@chatgpt-to-claude/protocol-mapper';
 import type { RequestLog } from '../services/request-log.js';
-import { previousResponseNotFound, ResponsesStore } from '../services/responses-store.js';
+import { previousResponseNotFound, RESPONSES_HISTORY_LIMITS, ResponsesStore } from '../services/responses-store.js';
 import { bindRequestHistory } from '../services/request-history-binding.js';
 import { ModelRegistryError, type ModelRegistry } from '../services/model-registry.js';
 import type { AccountPool, AccountProvider } from '../services/account-pool.js';
@@ -164,15 +164,15 @@ function validateStop(stop: unknown): void {
 }
 
 function validateResponsesInput(input: unknown): void {
-  if (Buffer.byteLength(JSON.stringify(input), 'utf8') > 8 * 1024 * 1024) throw new ClaudeApiError('Responses input limit exceeded.');
+  if (Buffer.byteLength(JSON.stringify(input), 'utf8') > RESPONSES_HISTORY_LIMITS.bytes) throw new ClaudeApiError('Responses input limit exceeded.');
   if (!Array.isArray(input)) return;
-  if (input.length > 4096) throw new ClaudeApiError('Responses input limit exceeded.');
-  const budget = new ResponsesReplayBudget();
+  if (input.length > RESPONSES_HISTORY_LIMITS.items) throw new ClaudeApiError('Responses input limit exceeded.');
+  const budget = new ResponsesReplayBudget(RESPONSES_INPUT_REPLAY_LIMITS);
   for (const item of input) {
     if (!isObject(item)) throw new ClaudeApiError('input items must be objects');
     if (item.type === 'reasoning' || item.type === 'function_call' && typeof item.arguments === 'string') {
       try {
-        const parsed = parseResponsesReplayItem(item);
+        const parsed = parseResponsesReplayItem(item, RESPONSES_INPUT_REPLAY_LIMITS);
         if (!parsed) throw new Error();
         budget.add(parsed);
       } catch { throw new ClaudeApiError('Invalid reasoning input.', 400, 'invalid_request_error'); }

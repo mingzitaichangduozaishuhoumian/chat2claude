@@ -26,6 +26,8 @@ corepack pnpm check
 corepack pnpm start
 ```
 
+`start` builds the workspace before launching the compiled service. `corepack pnpm dev` builds first and then watches API source changes; shared-package changes still require rebuilding those packages.
+
 The default address is `http://127.0.0.1:3000`; open:
 
 ```text
@@ -217,6 +219,37 @@ curl --fail "$ANTHROPIC_BASE_URL/healthz"
 ```
 
 This maps the Claude Code model roles to the project's aliases. If an alias is unbound, bind it in **Model mapping** before using it. This file contains credentials; do not commit or share it. Restart the existing Claude Code session after changing settings.
+
+### Long context and 1M configuration
+
+First bind the target alias to a model that supports long context in Admin. Client settings cannot increase the upstream model or account capacity; use the current account catalog as the authority.
+
+Merge these fields into the existing `~/.claude/settings.json`, preserving the Base URL, credentials, and other settings:
+
+```json
+{
+  "model": "sonnet[1m]",
+  "env": {
+    "ANTHROPIC_MODEL": "sonnet[1m]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet",
+    "CLAUDE_CODE_DISABLE_1M_CONTEXT": "0",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "800000"
+  }
+}
+```
+
+`ANTHROPIC_MODEL` overrides the top-level `model`, so keep them consistent. Claude Code strips `[1m]`, sends `sonnet` with a long-context beta marker, and uses the ordinary `sonnet` alias in this service. `800000` sets the automatic compaction window; lower it when the upstream capacity is smaller. See [Claude Code model configuration](https://code.claude.com/docs/en/model-config).
+
+For Codex, place these settings at the top level of `~/.codex/config.toml`, before any `[section]`:
+
+```toml
+model_context_window = 1000000
+model_auto_compact_token_limit = 800000
+```
+
+These request a client window; they do not increase upstream capacity. Codex clamps the window to the catalog's `max_context_window` and reserves room for effective context and automatic compaction. For example, a catalog maximum of `872000` does not provide a real 1M window; with 95% effective context and a 90% compaction rule, the resulting limits are `828400` and `784800`. See the [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference). Restart the client and start a new session after changing settings.
+
+Native Responses input history allows up to 4096 items and 8 MiB of serialized data. Input history has a separate budget from bounded upstream output/replay caches. History referenced by `previous_response_id` remains subject to cache size, expiry, and process lifetime. Byte limits and model token capacity are separate constraints; `count_tokens` remains a heuristic estimate.
 
 ### Compatibility cookbook
 

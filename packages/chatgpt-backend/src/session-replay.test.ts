@@ -1,7 +1,7 @@
 import { inspect } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SessionChatGptBackend, type ChatGptCompletionRequest, type ChatGptReplayItem, type ChatGptStreamEvent } from './index.js';
-import { parseResponsesReplayItem, RESPONSES_REPLAY_LIMITS } from './responses-replay.js';
+import { parseResponsesReplayItem, RESPONSES_REPLAY_LIMITS, RESPONSES_INPUT_REPLAY_LIMITS } from './responses-replay.js';
 
 const request: ChatGptCompletionRequest = { model: 'gpt-test', maxTokens: 128, messages: [] };
 const context = { account: { id: 'test', provider: 'chatgpt-session' as const, secret: { type: 'chatgpt-session' as const, accessToken: 'test' } } };
@@ -224,8 +224,8 @@ describe('session ordered opaque replay', () => {
 
   it.each(['item', 'bundle', 'count'] as const)('bounds replay input %s before sending a request', async (mode) => {
     const capture = vi.fn();
-    const items = Array.from({ length: mode === 'item' ? 1 : mode === 'count' ? 129 : 6 }, (_, i) => ({
-      type: 'replay' as const, item: { ...reasoning, id: `rs_${i}`, encrypted_content: 'x'.repeat(mode === 'item' ? 300_000 : mode === 'bundle' ? 200_000 : 1) },
+    const items = Array.from({ length: mode === 'item' ? 1 : mode === 'count' ? RESPONSES_INPUT_REPLAY_LIMITS.items + 1 : 2 }, (_, i) => ({
+      type: 'replay' as const, item: { ...reasoning, id: `rs_${i}`, encrypted_content: 'x'.repeat(mode === 'item' ? RESPONSES_INPUT_REPLAY_LIMITS.itemBytes : mode === 'bundle' ? RESPONSES_INPUT_REPLAY_LIMITS.bundleBytes / 2 : 1) },
     }));
     await expect(backend([completed([])], capture).complete({ ...request, inputItems: items }, context)).rejects.toMatchObject({ code: 'invalid_response', status: 502 });
     expect(capture).not.toHaveBeenCalled();

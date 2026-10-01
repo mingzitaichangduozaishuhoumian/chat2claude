@@ -3,14 +3,10 @@ setlocal
 
 cd /d "%~dp0"
 
-echo Enabling corepack...
-call corepack enable
-if errorlevel 1 exit /b %errorlevel%
-
 if not exist "node_modules" (
   echo Installing dependencies...
   call corepack pnpm install
-  if errorlevel 1 exit /b %errorlevel%
+  if errorlevel 1 exit /b 1
 )
 
 if not defined DEFAULT_REASONING_EFFORT set "DEFAULT_REASONING_EFFORT=medium"

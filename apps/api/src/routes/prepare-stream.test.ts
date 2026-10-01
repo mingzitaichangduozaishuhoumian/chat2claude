@@ -10,7 +10,7 @@ function source(values: ChatGptStreamEvent[]) {
   const factory = vi.fn(() => iterator);
   return { source: { [Symbol.asyncIterator]: factory }, next, close, factory };
 }
-it.each<ChatGptStreamEvent>([{ type: 'text_delta', text: 'one' }, { type: 'tool_call', toolCall: { id: 'call', name: 'f', input: {} } }, done])('replays compatibility $type exactly once from the original iterator', async first => {
+it.each<ChatGptStreamEvent>([{ type: 'text_delta', text: 'one' }, { type: 'refusal_delta', text: 'Unable to help with that request.' }, { type: 'tool_call', toolCall: { id: 'call', name: 'f', input: {} } }, done])('replays compatibility $type exactly once from the original iterator', async first => {
   const f = source([first]);
   const abort = vi.fn();
   const prepared = await prepareStream(f.source, { abort });
@@ -32,7 +32,7 @@ it('consumes only the explicit barrier and filters later internal barriers', asy
   expect(events).toEqual([done]);
   await prepared.close();
 });
-it.each([[], [null], [undefined], [{ type: 'done', terminalSuccessful: false }], [{ type: 'text_delta', text: 5 }], [{ type: 'extension' }]].map(values => ({ values })))('rejects unsuccessful/invalid compatibility bootstrap %#', async ({ values }) => {
+it.each([[], [null], [undefined], [{ type: 'done', terminalSuccessful: false }], [{ type: 'text_delta', text: 5 }], [{ type: 'refusal_delta', text: 5 }], [{ type: 'extension' }]].map(values => ({ values })))('rejects unsuccessful/invalid compatibility bootstrap %#', async ({ values }) => {
   const f = source(values as ChatGptStreamEvent[]);
   const abort = vi.fn();
   await expect(prepareStream(f.source, { abort })).rejects.toMatchObject({ code: 'invalid_response', status: 502 });

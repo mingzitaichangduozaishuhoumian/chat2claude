@@ -5,7 +5,7 @@ import type { ChatGptSafeStatus, ChatGptStreamEvent } from './events.js';
 import { ChatGptBackendError, sanitizeBackendDiagnostic, type ChatGptBackendErrorCode, type ChatGptSafeDiagnostic } from './errors.js';
 import { ResponsesToolCalls } from './responses-tools.js';
 import { resolveSessionReasoningExecution } from './reasoning-execution.js';
-import { parseResponsesReplayItem, ResponsesReplay, ResponsesReplayBudget, validateImageGenerationCallLifecycle } from './responses-replay.js';
+import { parseResponsesReplayItem, RESPONSES_INPUT_REPLAY_LIMITS, ResponsesReplay, ResponsesReplayBudget, validateImageGenerationCallLifecycle } from './responses-replay.js';
 
 export interface SessionChatGptBackendOptions {
   baseUrl: string;
@@ -133,6 +133,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
 
   async complete(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse> {
     let text = '';
+    let refusal = '';
     let finishReason: ChatGptFinishReason = 'stop';
     let usage: ChatGptUsage | undefined;
     let replayItems: ChatGptReplayItem[] | undefined;
@@ -142,6 +143,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     const toolCalls: ChatGptToolCall[] = [];
     for await (const event of this.stream(request, context)) {
       if (event.type === 'text_delta') text += event.text;
+      if (event.type === 'refusal_delta') refusal += event.text;
       if (event.type === 'tool_call') toolCalls.push(event.toolCall);
       if (event.type === 'done') {
         if (event.finishReason) finishReason = event.finishReason;
@@ -151,7 +153,14 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         terminalSuccessful = event.terminalSuccessful;
       }
     }
-    return { text, finishReason, ...(toolCalls.length ? { toolCalls } : {}), ...(usage ? { usage } : {}), ...(replayItems ? { replayItems, replayEligible } : {}), ...(outputItems ? { outputItems } : {}), ...(terminalSuccessful === false ? { terminalSuccessful } : {}) };
+    // Streaming arrival order can differ from the authoritative message order.
+    // Non-stream callers receive the completed output order whenever available.
+    if (outputItems?.some((item) => item.type === 'message')) {
+      const parts = outputItems.flatMap((item) => item.type === 'message' ? item.content : []);
+      text = parts.map((part) => part.type === 'output_text' ? part.text : '').join('');
+      refusal = parts.map((part) => part.type === 'refusal' ? part.refusal : '').join('');
+    }
+    return { text, ...(refusal ? { refusal } : {}), finishReason, ...(toolCalls.length ? { toolCalls } : {}), ...(usage ? { usage } : {}), ...(replayItems ? { replayItems, replayEligible } : {}), ...(outputItems ? { outputItems } : {}), ...(terminalSuccessful === false ? { terminalSuccessful } : {}) };
   }
 
   async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent> {
@@ -187,6 +196,10 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       httpStatus = response.status;
       let latestUsage: ChatGptUsage | undefined;
       let sawToolCall = false;
+      let streamedText = '';
+      let streamedRefusal = '';
+      const streamedContent: StreamedContent = { byItem: new Map(), byIndex: new Map(), hasLegacy: false };
+      const completedReasoningPrefix = new Map<number, Extract<ChatGptReplayItem, { type: 'reasoning' }>>();
       const tools = new ResponsesToolCalls(httpStatus);
       const replay = new ResponsesReplay();
       let ready = false;
@@ -208,6 +221,10 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         // before publishing either the readiness barrier or any business event.
         const pending: ChatGptStreamEvent[] = [];
         const replayResult = replay.accept(type, parsed);
+        if (type === 'response.output_item.done' && typeof parsed.output_index === 'number' && isPlainObject(parsed.item) && parsed.item.type === 'reasoning') {
+          const item = parseResponsesReplayItem(parsed.item);
+          if (item?.type === 'reasoning') completedReasoningPrefix.set(parsed.output_index, item);
+        }
         latestUsage = mergeUsage(latestUsage, extractUsage(parsed));
         for (const toolCall of tools.accept(type, parsed)) {
           sawToolCall = true;
@@ -215,7 +232,11 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         }
         if (type === 'response.output_text.delta') {
           const delta = extractTextDelta(parsed);
-          if (delta) pending.push({ type: 'text_delta', text: delta });
+          if (delta) { recordStreamedContent(streamedContent, parsed, 'text', delta); streamedText += delta; pending.push({ type: 'text_delta', text: delta, ...contentDeltaIdentity(parsed), ...earlyProjectedOutputIndex(parsed, completedReasoningPrefix) }); }
+        }
+        if (type === 'response.refusal.delta') {
+          const delta = extractTextDelta(parsed);
+          if (delta) { recordStreamedContent(streamedContent, parsed, 'refusal', delta); streamedRefusal += delta; pending.push({ type: 'refusal_delta', text: delta, ...contentDeltaIdentity(parsed), ...earlyProjectedOutputIndex(parsed, completedReasoningPrefix) }); }
         }
         if (type === 'response.reasoning_text.delta' || type === 'response.reasoning_summary_text.delta') {
           const delta = extractTextDelta(parsed);
@@ -225,11 +246,16 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         if (status) pending.push({ type: 'status_delta', status });
         const done = isDoneEvent({ ...parsed, type });
         if (done) {
+          for (const delta of completedContentDeltas(replayResult?.outputItems, parsed, streamedContent, streamedText, streamedRefusal)) {
+            if (delta.type === 'text_delta') streamedText += delta.text;
+            else streamedRefusal += delta.text;
+            pending.push(delta);
+          }
           for (const toolCall of tools.finish()) {
             sawToolCall = true;
             pending.push({ type: 'tool_call', toolCall });
           }
-          pending.push({ type: 'done', finishReason: extractFinishReason(parsed) ?? (sawToolCall ? 'tool_calls' : 'stop'), ...(latestUsage ? { usage: latestUsage } : {}), ...replayResult });
+          pending.push({ type: 'done', finishReason: extractFinishReason(parsed) ?? (sawToolCall ? 'tool_calls' : streamedRefusal ? 'refusal' : 'stop'), ...(latestUsage ? { usage: latestUsage } : {}), ...replayResult });
         }
         lifetime.signal.throwIfAborted();
         if (!ready) {
@@ -331,6 +357,91 @@ function invalidStreamResponse(protocolReason: ChatGptSafeDiagnostic['protocolRe
   });
 }
 
+interface StreamedContentMessage { itemId?: string; outputIndex?: number; parts: Map<number, { text: string; refusal: string }>; }
+interface StreamedContent { byItem: Map<string, StreamedContentMessage>; byIndex: Map<number, StreamedContentMessage>; hasLegacy: boolean; }
+
+function recordStreamedContent(state: StreamedContent, frame: JsonObject, kind: 'text' | 'refusal', delta: string): void {
+  const { itemId, outputIndex, contentIndex } = contentDeltaIdentity(frame);
+  if (itemId === undefined && outputIndex === undefined) { state.hasLegacy = true; return; }
+  const byItem = itemId === undefined ? undefined : state.byItem.get(itemId);
+  const byIndex = outputIndex === undefined ? undefined : state.byIndex.get(outputIndex);
+  if (byItem && byIndex && byItem !== byIndex) throw invalidStreamResponse('invalid_text');
+  const message = byItem ?? byIndex ?? { parts: new Map<number, { text: string; refusal: string }>() };
+  if (message.itemId !== undefined && itemId !== undefined && message.itemId !== itemId
+    || message.outputIndex !== undefined && outputIndex !== undefined && message.outputIndex !== outputIndex) throw invalidStreamResponse('invalid_text');
+  if (itemId !== undefined) { message.itemId = itemId; state.byItem.set(itemId, message); }
+  if (outputIndex !== undefined) { message.outputIndex = outputIndex; state.byIndex.set(outputIndex, message); }
+  const index = contentIndex ?? 0;
+  const part = message.parts.get(index) ?? { text: '', refusal: '' };
+  part[kind] += delta;
+  message.parts.set(index, part);
+}
+
+/** Reconcile identified streams per message/content part. Legacy anonymous
+ * streams retain their aggregate-prefix compatibility path. Snapshot identities
+ * come from the original provider output, whose indices can differ from projection.
+ */
+function completedContentDeltas(items: ChatGptCompletionResponse['outputItems'], frame: JsonObject, state: StreamedContent, text: string, refusal: string): Array<Extract<ChatGptStreamEvent, { type: 'text_delta' | 'refusal_delta' }>> {
+  const response = isPlainObject(frame.response) ? frame.response : undefined;
+  const rawMessages = Array.isArray(response?.output) ? response.output.flatMap((item, index) => isPlainObject(item) && item.type === 'message' ? [{ item, index }] : []) : [];
+  const messages = items?.filter((item) => item.type === 'message') ?? [];
+  const parts = messages.flatMap((item, messageIndex) => {
+    const raw = rawMessages[messageIndex];
+    const rawContentIndices = Array.isArray(raw?.item.content) ? raw.item.content.flatMap((part, index) => isPlainObject(part) && (part.type === 'output_text' || part.type === 'refusal') ? [index] : []) : [];
+    return item.content.map((part, contentIndex) => ({ part, itemId: item.id, outputIndex: raw?.index, contentIndex: rawContentIndices[contentIndex] ?? contentIndex }));
+  });
+  const finalText = parts.map(({ part }) => part.type === 'output_text' ? part.text : '').join('');
+  const finalRefusal = parts.map(({ part }) => part.type === 'refusal' ? part.refusal : '').join('');
+  let skipText = finalText.startsWith(text) ? text.length : Infinity;
+  let skipRefusal = finalRefusal.startsWith(refusal) ? refusal.length : Infinity;
+  const deltas: Array<Extract<ChatGptStreamEvent, { type: 'text_delta' | 'refusal_delta' }>> = [];
+  for (const { part, itemId, outputIndex, contentIndex } of parts) {
+    const identity = { ...(itemId ? { itemId } : {}), ...(outputIndex === undefined ? {} : { outputIndex }), contentIndex };
+    if (!state.hasLegacy) {
+      const previous = (itemId === undefined ? undefined : state.byItem.get(itemId))
+        ?? (outputIndex === undefined ? undefined : state.byIndex.get(outputIndex));
+      const streamed = previous?.parts.get(contentIndex);
+      skipText = part.type === 'output_text' && part.text.startsWith(streamed?.text ?? '') ? streamed?.text.length ?? 0 : Infinity;
+      skipRefusal = part.type === 'refusal' && part.refusal.startsWith(streamed?.refusal ?? '') ? streamed?.refusal.length ?? 0 : Infinity;
+    }
+    if (part.type === 'output_text') {
+      const suffix = part.text.slice(skipText);
+      skipText = Math.max(0, skipText - part.text.length);
+      if (suffix) deltas.push({ type: 'text_delta', text: suffix, ...identity, finalSnapshot: true });
+    } else {
+      const suffix = part.refusal.slice(skipRefusal);
+      skipRefusal = Math.max(0, skipRefusal - part.refusal.length);
+      if (suffix) deltas.push({ type: 'refusal_delta', text: suffix, ...identity, finalSnapshot: true });
+    }
+  }
+  return deltas;
+}
+
+/** Called only after frame validation; absent legacy identities remain absent. */
+function contentDeltaIdentity(frame: JsonObject): Pick<Extract<ChatGptStreamEvent, { type: 'text_delta' }>, 'itemId' | 'outputIndex' | 'contentIndex'> {
+  return {
+    ...(typeof frame.item_id === 'string' ? { itemId: frame.item_id } : {}),
+    ...(typeof frame.output_index === 'number' ? { outputIndex: frame.output_index } : {}),
+    ...(typeof frame.content_index === 'number' ? { contentIndex: frame.content_index } : {}),
+  };
+}
+
+/** Replay/frame validation runs first. A complete reasoning prefix lets native
+ * consumers publish its item lifecycles before the message. Unknown, omitted or
+ * unfinished items are deliberately not guessed from partial lifecycle frames.
+ */
+function earlyProjectedOutputIndex(frame: JsonObject, retained: Map<number, Extract<ChatGptReplayItem, { type: 'reasoning' }>>): Pick<Extract<ChatGptStreamEvent, { type: 'text_delta' }>, 'projectedOutputIndex' | 'projectedOutputPrefix'> {
+  const index = frame.output_index;
+  if (typeof index !== 'number' || index > retained.size) return {};
+  const prefix: ChatGptReplayItem[] = [];
+  for (let previous = 0; previous < index; previous++) {
+    const item = retained.get(previous);
+    if (!item) return {};
+    prefix.push(item);
+  }
+  return { projectedOutputIndex: index, projectedOutputPrefix: structuredClone(prefix) };
+}
+
 function bodyReadErrorFamily(error: unknown): ChatGptSafeDiagnostic['bodyReadErrorFamily'] {
   if (error instanceof TypeError) return 'TypeError';
   if (error instanceof SyntaxError) return 'SyntaxError';
@@ -404,6 +515,7 @@ function isValidResponseLifecycle(type: string, value: unknown): boolean {
   const hasOutput = Array.isArray(response.output);
   if (response.output !== undefined && !hasOutput) return false;
   if (type === 'response.completed') {
+    if (status !== undefined && status !== 'completed') return false;
     // Compatible terminal frames may provide finalized output or accounting
     // metadata instead of status, but an empty response envelope is never ready.
     return status === 'completed' || hasOutput || isPlainObject(response.usage);
@@ -679,7 +791,7 @@ function abortError(): Error {
  */
 function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {
   const reasoningExecution = resolveSessionReasoningExecution(request);
-  const replayBudget = new ResponsesReplayBudget();
+  const replayBudget = new ResponsesReplayBudget(RESPONSES_INPUT_REPLAY_LIMITS);
   const body: JsonObject = {
     model: request.model,
     input: request.inputItems?.length ? request.inputItems.map((item) => toResponsesInputItem(item, replayBudget)) : request.messages.map((message) => toResponsesInputItem({ type: 'message', ...message })),
@@ -724,14 +836,14 @@ function isPlainObject(value: unknown): value is JsonObject {
 
 function toResponsesInputItem(item: ChatGptInputItem, replayBudget?: ResponsesReplayBudget): JsonObject {
   if (item.type === 'replay') {
-    const replay = parseResponsesReplayItem(item.item);
+    const replay = parseResponsesReplayItem(item.item, RESPONSES_INPUT_REPLAY_LIMITS);
     if (!replay) throw new ChatGptBackendError('ChatGPT session backend replay input was invalid.', 'invalid_request', { status: 400 });
     replayBudget?.add(replay);
     return { ...replay };
   }
   if (item.type === 'message') return { type: 'message', role: item.role === 'system' ? 'developer' : item.role, content: toResponsesContent(item.content, item.role) };
   if (item.type === 'function_call') return { type: 'function_call', call_id: item.callId, name: item.name, arguments: stringifyArguments(item.arguments) };
-  return { type: 'function_call_output', call_id: item.callId, output: item.output };
+  return { type: 'function_call_output', call_id: item.callId, output: toResponsesContent(item.output, 'user') };
 }
 
 function toResponsesContent(content: string | ChatGptInputContentPart[], role: 'system' | 'user' | 'assistant'): string | JsonObject[] {
@@ -1170,6 +1282,9 @@ function responseEventError(event: string | undefined, value: JsonObject | undef
     httpStatus, failurePhase: incomplete ? 'response_incomplete' : 'response_event',
   });
   // Incomplete is a distinct unsuccessful terminal state, never a completed response.
+  if (!incomplete && (safeDiagnostic?.responseErrorCode === 'rate_limit_exceeded' || safeDiagnostic?.responseErrorCode === 'insufficient_quota' || safeDiagnostic?.responseErrorType === 'rate_limit_error')) {
+    return new ChatGptBackendError('ChatGPT session backend rate limit exceeded.', 'rate_limited', { status: 429, safeDiagnostic });
+  }
   return new ChatGptBackendError(incomplete ? 'ChatGPT session backend response was incomplete.' : 'ChatGPT session backend response failed.', incomplete ? 'invalid_response' : 'upstream_error', { status: 502, safeDiagnostic });
 }
 

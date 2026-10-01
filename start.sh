@@ -3,9 +3,6 @@ set -e
 
 cd "$(dirname "$0")"
 
-echo "Enabling corepack..."
-corepack enable
-
 if [ ! -d "node_modules" ]; then
   echo "Installing dependencies..."
   corepack pnpm install

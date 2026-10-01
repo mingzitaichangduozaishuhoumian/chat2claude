@@ -502,7 +502,7 @@ describe('/v1/chat/completions', () => {
     ]);
     expect(backend.lastRequest?.inputItems).toEqual([
       { type: 'message', role: 'assistant', content: 'checking' },
-      { type: 'function_call', callId: 'call_1', name: 'get_weather', arguments: { city: 'Paris' } },
+      { type: 'function_call', callId: 'call_1', name: 'get_weather', arguments: '{"city":"Paris"}' },
       { type: 'function_call_output', callId: 'call_1', output: 'sunny' },
     ]);
   });
@@ -1406,18 +1406,18 @@ describe('completion protocol public-error boundary', () => {
     expect(accountPool.get(account.id)?.currentConcurrency).toBe(0);
   });
 
-  it.each(['/v1/messages', '/v1/chat/completions', '/v1/responses'])('returns a fixed safe 400 for malformed JSON at %s', async (path) => {
+  it.each(['/v1/messages', '/v1/messages/count_tokens', '/v1/chat/completions', '/v1/responses'])('returns a fixed safe 400 for malformed JSON at %s', async (path) => {
     const app = createApp(env);
     const canary = 'private-json-canary';
     try {
-      for (const body of ['{', '', `{${canary}`, `{"secret":"${canary}"`]) {
+      for (const body of [canary, '{', '', `{${canary}`, `{"secret":"${canary}"`]) {
         const response = await app.request(path, { method: 'POST', headers: jsonHeaders, body });
         expect(response.status).toBe(400);
         const text = await response.text();
         expect(text).not.toContain(canary);
         const payload = JSON.parse(text);
         expect(payload.error).toMatchObject({ type: 'invalid_request_error', message: 'Request body must be valid JSON.' });
-        if (path === '/v1/messages') expect(payload.type).toBe('error');
+        if (path.startsWith('/v1/messages')) expect(payload.type).toBe('error');
       }
     } finally { await app.dispose(); }
   });

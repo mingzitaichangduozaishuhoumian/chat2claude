@@ -16,7 +16,7 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
   let outputTokens: number | undefined;
   yield encodeSseEvent({ event: 'message_start', data: { type: 'message_start', message: createClaudeStreamStart(request) } });
   for await (const event of events) {
-    if (event.type === 'text_delta') {
+    if (event.type === 'text_delta' || event.type === 'refusal_delta') {
       if (thinkingBlockOpen) {
         yield encodeSseEvent({ event: 'content_block_stop', data: { type: 'content_block_stop', index: nextIndex } });
         nextIndex += 1;
@@ -27,6 +27,7 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
         textBlockOpen = true;
       }
       output += event.text;
+      if (event.type === 'refusal_delta') finishReason = 'refusal';
       yield encodeSseEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: nextIndex, delta: { type: 'text_delta', text: event.text } } });
     } else if (event.type === 'status_delta' && !textBlockOpen && !thinkingBlockOpen) {
       yield encodeSseEvent({ event: 'content_block_start', data: { type: 'content_block_start', index: nextIndex, content_block: { type: 'thinking', thinking: '' } } });

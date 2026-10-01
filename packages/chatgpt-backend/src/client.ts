@@ -51,14 +51,14 @@ export interface ChatGptImageGenerationCallOutputItem {
 
 export type ChatGptOutputItem = ChatGptReplayItem | ChatGptImageGenerationCallOutputItem | {
   type: 'message'; id?: string; role: 'assistant'; status?: ChatGptReplayItemStatus;
-  content: Array<{ type: 'output_text'; text: string; annotations: [] }>;
+  content: Array<{ type: 'output_text'; text: string; annotations: [] } | { type: 'refusal'; refusal: string }>;
 };
 
 export type ChatGptInputItem =
   | { type: 'replay'; item: ChatGptReplayItem }
   | { type: 'message'; role: 'user' | 'assistant' | 'system'; content: string | ChatGptInputContentPart[] }
   | { type: 'function_call'; callId: string; name: string; arguments: unknown }
-  | { type: 'function_call_output'; callId: string; output: string; isError?: boolean };
+  | { type: 'function_call_output'; callId: string; output: string | ChatGptInputContentPart[]; isError?: boolean };
 export interface ChatGptTool { name: string; description?: string; inputSchema: Record<string, unknown>; strict?: boolean; raw?: unknown; }
 export type ChatGptToolChoice = { type: 'auto' | 'any' | 'none' } | { type: 'tool'; name: string };
 export interface ChatGptToolCall { id: string; name: string; input: unknown; }
@@ -66,7 +66,7 @@ export interface ChatGptUsage { inputTokens?: number; outputTokens?: number; tot
 /** Trusted execution plan resolved against the selected account's model catalog. */
 export interface ChatGptReasoningExecution { effort: string; delegation: 'proactive'; }
 export interface ChatGptCompletionRequest { messages: ChatGptMessage[]; inputItems?: ChatGptInputItem[]; maxTokens: number; model: string; reasoningEffort?: ChatGptReasoningEffort; reasoningExecution?: ChatGptReasoningExecution; serviceTier?: ChatGptServiceTier; /** @deprecated Use serviceTier. */ speedPreference?: ChatGptSpeedPreference; temperature?: number; topP?: number; stopSequences?: string[]; parallelToolCalls?: boolean; tools?: ChatGptTool[]; toolChoice?: ChatGptToolChoice; backendOptions?: Record<string, unknown>; }
-export interface ChatGptCompletionResponse { /** False for legacy EOF compatibility; native Responses must reject it. */ terminalSuccessful?: boolean; /** Ordered text/replay projection for native Responses only. */ outputItems?: ChatGptOutputItem[]; text: string; finishReason: ChatGptFinishReason; toolCalls?: ChatGptToolCall[]; usage?: ChatGptUsage; /** Successful provider output order; internal only. */ replayItems?: ChatGptReplayItem[]; /** Entire completed output is replayable reasoning/tools with at least one tool. */ replayEligible?: boolean; }
+export interface ChatGptCompletionResponse { /** False for legacy EOF compatibility; native Responses must reject it. */ terminalSuccessful?: boolean; /** Ordered text/replay projection for native Responses only. */ outputItems?: ChatGptOutputItem[]; text: string; refusal?: string; finishReason: ChatGptFinishReason; toolCalls?: ChatGptToolCall[]; usage?: ChatGptUsage; /** Successful provider output order; internal only. */ replayItems?: ChatGptReplayItem[]; /** Entire completed output is replayable reasoning/tools with at least one tool. */ replayEligible?: boolean; }
 export interface ChatGptReasoningLevelOption { effort: string; description?: string; }
 export interface ChatGptServiceTierOption { id: string; name?: string; description?: string; }
 export interface ChatGptModelControlCapabilities {

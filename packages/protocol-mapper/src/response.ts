@@ -13,12 +13,13 @@ export function mapChatGptResponseToClaude(request: ClaudeMessagesRequest, respo
     content: mapResponseContent(response),
     stop_reason: mapStopReason(response.finishReason),
     stop_sequence: null,
-    usage: { input_tokens: response.usage?.inputTokens ?? estimateClaudeInputTokens(request), output_tokens: response.usage?.outputTokens ?? estimateTokens(response.text) },
+    usage: { input_tokens: response.usage?.inputTokens ?? estimateClaudeInputTokens(request), output_tokens: response.usage?.outputTokens ?? estimateTokens(response.text + (response.refusal ?? '')) },
   };
 }
 export function mapResponseContent(response: ChatGptCompletionResponse): ClaudeContentBlock[] {
   const content: ClaudeContentBlock[] = [];
   if (response.text) content.push({ type: 'text', text: response.text });
+  if (response.refusal) content.push({ type: 'text', text: response.refusal });
   for (const toolCall of response.toolCalls ?? []) content.push({ type: 'tool_use', id: toolCall.id, name: toolCall.name, input: toolCall.input });
   if (!content.length) content.push({ type: 'text', text: '' });
   return content;

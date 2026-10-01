@@ -63,6 +63,18 @@ async function responseBody(response: Response, stream: boolean) {
 }
 
 describe('native Responses replay route', () => {
+  it('accepts complete long-session tool history beyond the per-response replay limit', async () => {
+    const f = setup();
+    const history = Array.from({ length: 150 }, (_, i) => [
+      { type: 'function_call', id: `history_${i}`, call_id: `call_history_${i}`, name: 'lookup', arguments: JSON.stringify({ i }) },
+      { type: 'function_call_output', call_id: `call_history_${i}`, output: `result-${i}` },
+    ]).flat();
+    const response = await f.post({ input: history, store: false });
+    expect(response.status, await response.text()).toBe(200);
+    expect(f.captured[0].input).toEqual(history);
+    expect(f.pool.list().every((account) => account.currentConcurrency === 0)).toBe(true);
+  });
+
   it.each([false, true])('preserves ordered include output and all three rounds of input, stream=%s', async (stream) => {
     const f = setup();
     const first = await responseBody(await f.post({ stream, input: 'first user', include: ['reasoning.encrypted_content'] }), stream);
@@ -211,9 +223,9 @@ describe('native Responses replay route', () => {
   it.each([
     { include: ['unsafe'] }, { include: 'reasoning.encrypted_content' }, { include: ['reasoning.encrypted_content', 'reasoning.encrypted_content'] },
     { previous_response_id: 'bad secret ID' }, { previous_response_id: 'resp_' + 'x'.repeat(256) },
-    ...[undefined, null, 1, '', 'x'.repeat(256 * 1024)].map((encrypted_content) => ({ input: [{ ...reasoning(), encrypted_content }] })),
+    ...[undefined, null, 1, '', 'x'.repeat(8 * 1024 * 1024)].map((encrypted_content) => ({ input: [{ ...reasoning(), encrypted_content }] })),
     { input: [{ ...reasoning(), extra: canary }] }, { input: [{ ...reasoning(), summary: [{ type: 'summary_text', text: 1 }] }] },
-    { input: Array.from({ length: 129 }, () => reasoning()) },
+    { input: Array.from({ length: 4097 }, () => reasoning()) },
   ])('rejects invalid bounded protocol input without echoing payload %#', async (payload) => {
     const f = setup();
     const response = await f.post(payload);

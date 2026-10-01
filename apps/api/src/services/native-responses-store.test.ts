@@ -27,3 +27,14 @@ it('keeps payload out of store/handle inspection and bounds records and bytes', 
   expect(store.count()).toBe(0);
   expect(() => active.expand('next', context.account, context.model)).toThrow('Previous response not found.');
 });
+
+it('retains accepted large histories instead of silently dropping them at half the input limit', () => {
+  const store = new ResponsesStore();
+  const request = { model: 'm', input: 'long context '.repeat(400_000) };
+  const response = { id: 'resp_long', object: 'response' as const, created_at: 0, model: 'm', status: 'completed' as const, output: [], output_text: '', usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } };
+  const context = { account: { id: 'a', incarnation: 1, provider: 'mock' as const }, model: 'm', output: [] };
+  expect(Buffer.byteLength(request.input)).toBeGreaterThan(4 * 1024 * 1024);
+  expect(store.put('owner', request, response, context)).toBe(true);
+  expect(store.get('owner', response.id)!.expand('next', context.account, context.model)[0].content).toBe(request.input);
+  expect(store.stats().bytes).toBeLessThan(64 * 1024 * 1024);
+});

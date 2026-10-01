@@ -25,10 +25,10 @@ Only these status values are used by the manifest:
 | `models` | `supported` | Enabled, resolvable aliases and discovered passthrough models are listed. |
 | `count_tokens` | `estimated` | Returns a local heuristic estimate, not Anthropic tokenizer parity. |
 | `tools_and_tool_choice` | `backend_dependent` | Typed and mapped where possible; backend execution is not guaranteed. |
-| `tool_result_and_tool_use_blocks` | `downgraded` | Preserved in Canonical IR and flattened when the backend cannot represent them. |
-| `image_blocks` | `downgraded` | Preserved in Canonical IR and rendered as an explicit fallback for text backends. |
+| `tool_result_and_tool_use_blocks` | `backend_dependent` | Mapped to native function calls and outputs, including text/image tool results, for the session backend; text-only backends receive a fallback. |
+| `image_blocks` | `backend_dependent` | URL and base64 images map to native input images for the session backend; model vision support is required. |
 | `thinking_blocks` | `downgraded` | Client-supplied thinking blocks are preserved in Canonical IR but not replayed to text backends; readable upstream reasoning output streams separately via thinking_and_signature_deltas. |
-| `input_json_delta` | `unsupported` | Tool streaming is not implemented. |
+| `input_json_delta` | `supported` | Upstream function-call arguments stream as Claude input_json_delta events. |
 | `thinking_and_signature_deltas` | `partial` | Readable upstream reasoning text streams as Claude thinking_delta; signatures are unavailable. |
 | `safe_progress_status_deltas` | `partial` | Safe lifecycle and tool progress statuses are internal diagnostics; they may open an empty thinking block but are omitted from Claude thinking_delta content. |
 | `usage_accounting` | `estimated` | Usage is estimated unless upstream usage is available. |
@@ -67,6 +67,8 @@ Use a Runtime API Key for all client smokes; do not use an Admin API Key as a no
 | Responses | `input_tools_and_continuation_options` | `backend_dependent` | Mapped or locally retained where documented; upstream support varies. |
 | Responses | `image_generation_output_streaming` | `partial` | Safe allowlisted image-generation results are emitted as Responses output items; upstream image availability remains backend-dependent. |
 
+Native Responses preserves message IDs, text/refusal content, and the order of the safe output projection. Added-item and added-content events use consecutive indexes for SDK compatibility. When preceding output items or content parts cannot yet be projected safely, affected text is buffered until the completed snapshot supplies their order. A validated encrypted reasoning prefix can be published before live message text. Claude and Chat Completions continue to expose text/refusal deltas directly.
+
 ## ChatGPT/Codex backend
 
 | Manifest feature | Status | Notes |
@@ -75,8 +77,8 @@ Use a Runtime API Key for all client smokes; do not use an Admin API Key as a no
 | `oauth_authorization_and_text_completion` | `partial` | Implemented with backend-dependent upstream availability. |
 | `reasoning_and_speed_selection` | `backend_dependent` | Ordinary effort values are preserved; Ultra resolves a base effort and encourages delegation through caller-supplied tools. Provider and client support determine execution. |
 | `image_generation_output` | `backend_dependent` | Safe image-generation output fields are mapped for OpenAI Responses only when supplied by the upstream backend. |
-| `tool_calls` | `unsupported` | Backend tool-call mappings are not implemented. |
-| `real_usage` | `unsupported` | Upstream usage parsing is not implemented. |
+| `tool_calls` | `backend_dependent` | Function tools, tool choice, argument deltas, and results are mapped; availability and execution depend on the model and caller. |
+| `real_usage` | `partial` | Upstream input/output token counts are parsed when present; missing usage uses a local estimate. |
 
 ## Design direction
 

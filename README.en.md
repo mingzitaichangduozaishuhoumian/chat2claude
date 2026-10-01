@@ -53,6 +53,8 @@ corepack pnpm check
 corepack pnpm start
 ```
 
+`start` builds all workspace packages before launching the service, so a fresh installation does not need a separate `dist` build. Use `corepack pnpm dev` for an initial build followed by API source watching.
+
 Default address:
 
 ```text

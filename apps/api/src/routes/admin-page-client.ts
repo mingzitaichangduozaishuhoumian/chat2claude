@@ -412,18 +412,25 @@ function bindAccountActions() {
   }));
   document.querySelectorAll('[data-account-reauthorize]').forEach((button) => button.addEventListener('click', () => startOAuthFlow('reauthorize', button.dataset.accountReauthorize)));
   document.querySelectorAll('[data-account-toggle]').forEach((button) => button.addEventListener('click', async () => {
-    const enabled = button.dataset.enabled !== 'true';
-    const body = await patchJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.accountToggle), { enabled }); renderResult(body); await loadAccounts();
+    await withPendingButton(button, button.textContent, async () => {
+      const enabled = button.dataset.enabled !== 'true';
+      const body = await patchJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.accountToggle), { enabled }); renderResult(body); await loadAccounts();
+    });
   }));
   document.querySelectorAll('[data-account-settings]').forEach((button) => button.addEventListener('click', () => { document.querySelector('[data-account-settings-form="' + CSS.escape(button.dataset.accountSettings) + '"]').hidden = false; }));
   document.querySelectorAll('[data-account-settings-cancel]').forEach((button) => button.addEventListener('click', () => { button.closest('form').hidden = true; }));
   document.querySelectorAll('[data-account-settings-form]').forEach((form) => form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const body = await patchJson('/admin/api/accounts/' + encodeURIComponent(form.dataset.accountSettingsForm), { label: form.elements.label.value, maxConcurrency: Number(form.elements.maxConcurrency.value) }); renderResult(body); await loadAccounts();
+    const button = form.querySelector('button[type="submit"]');
+    await withPendingButton(button, button.textContent, async () => {
+      const body = await patchJson('/admin/api/accounts/' + encodeURIComponent(form.dataset.accountSettingsForm), { label: form.elements.label.value, maxConcurrency: Number(form.elements.maxConcurrency.value) }); renderResult(body); await loadAccounts();
+    });
   }));
   document.querySelectorAll('[data-account-delete]').forEach((button) => button.addEventListener('click', async () => {
     if (!window.confirm(translateAdminText('确认删除此账号？账号凭据、动态模型关联和配额缓存将被移除，操作无法恢复。', adminLocale))) return;
-    const body = await deleteJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.accountDelete)); renderResult(body); await Promise.all([loadAccounts(), loadModels(), loadQuotas()]);
+    await withPendingButton(button, button.textContent, async () => {
+      const body = await deleteJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.accountDelete)); renderResult(body); await Promise.all([loadAccounts(), loadModels(), loadQuotas()]);
+    });
   }));
 }
 function updateManualAccountOptions(accounts) {
@@ -530,7 +537,9 @@ async function loadApiKeys() {
     document.getElementById('api-keys').innerHTML = apiKeys.length ? '<div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>安全前缀</th><th>创建时间</th><th>操作</th></tr></thead><tbody>' + apiKeys.map((apiKey) => '<tr><td><code>' + esc(apiKey.id) + '</code></td><td data-i18n-ignore>' + esc(apiKey.name || '-') + '</td><td><code>' + esc(apiKey.prefix) + '</code></td><td>' + esc(apiKey.createdAt) + '</td><td><button class="secondary" data-revoke-key="' + esc(apiKey.id) + '">撤销</button></td></tr>').join('') + '</tbody></table></div>' : '<div class="empty">没有运行时 API Key。</div>';
     document.querySelectorAll('[data-revoke-key]').forEach((button) => button.addEventListener('click', async () => {
       if (!window.confirm(translateAdminText('确认撤销此运行时 API Key？撤销后对应客户端会立即失效。', adminLocale))) return;
-      const result = await deleteJson('/admin/api/api-keys/' + encodeURIComponent(button.dataset.revokeKey)); renderResult({ ...result, message: '运行时 API Key 已撤销；ChatGPT 账号授权不会被移除。' }); await loadApiKeys();
+      await withPendingButton(button, button.textContent, async () => {
+        const result = await deleteJson('/admin/api/api-keys/' + encodeURIComponent(button.dataset.revokeKey)); renderResult({ ...result, message: '运行时 API Key 已撤销；ChatGPT 账号授权不会被移除。' }); await loadApiKeys();
+      });
     }));
   } catch (error) { overviewLoadState.keys = 'error'; document.getElementById('api-keys-count').textContent = '-'; document.getElementById('api-keys').innerHTML = loadFailureHtml('运行时 API Key 加载失败，未加载。', error); }
   renderOverviewPanel();
@@ -563,7 +572,9 @@ function bindModelActions(aliases, discovered) {
   document.querySelectorAll('[data-save-model]').forEach((button) => button.addEventListener('click', () => saveModel(button.dataset.saveModel, button)));
   document.querySelectorAll('[data-delete-model]').forEach((button) => button.addEventListener('click', async () => {
     if (!window.confirm(translateAdminText('确认删除此自定义模型 alias？删除后无法恢复。', adminLocale))) return;
-    const body = await deleteJson('/admin/api/models/' + encodeURIComponent(button.dataset.deleteModel)); renderResult(body); await loadModels();
+    await withPendingButton(button, button.textContent, async () => {
+      const body = await deleteJson('/admin/api/models/' + encodeURIComponent(button.dataset.deleteModel)); renderResult(body); await loadModels();
+    });
   }));
 }
 async function saveModel(id, button) {
@@ -650,11 +661,15 @@ function unknownCapabilities() { return { reasoning_effort_options: [], service_
 
 document.getElementById('create-model-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const id = document.getElementById('model-alias-id').value.trim(); const displayName = document.getElementById('model-display-name').value.trim(); const backendModel = document.getElementById('model-backend').value.trim();
-  const body = await postJson('/admin/api/models', { id, display_name: displayName || id, backendModel: backendModel || undefined }); renderResult(body); await loadModels(); if (!body.error) event.target.reset();
+  const form = event.currentTarget;
+  const button = form.querySelector('button[type="submit"]');
+  await withPendingButton(button, button.textContent, async () => {
+    const id = document.getElementById('model-alias-id').value.trim(); const displayName = document.getElementById('model-display-name').value.trim(); const backendModel = document.getElementById('model-backend').value.trim();
+    const body = await postJson('/admin/api/models', { id, display_name: displayName || id, backendModel: backendModel || undefined }); renderResult(body); await loadModels(); form.reset();
+  });
 });
-document.getElementById('reset-models').addEventListener('click', async () => { const body = await postJson('/admin/api/models/reset'); renderResult(body); await loadModels(); });
-document.getElementById('refresh-models').addEventListener('click', async () => { const body = await postJson('/admin/api/models/refresh'); renderResult(body); await Promise.all([loadModels(), loadAccounts()]); });
+document.getElementById('reset-models').addEventListener('click', async (event) => { const button = event.currentTarget; await withPendingButton(button, button.textContent, async () => { const body = await postJson('/admin/api/models/reset'); renderResult(body); await loadModels(); }); });
+document.getElementById('refresh-models').addEventListener('click', async (event) => { const button = event.currentTarget; await withPendingButton(button, button.textContent, async () => { const body = await postJson('/admin/api/models/refresh'); renderResult(body); await Promise.all([loadModels(), loadAccounts()]); }); });
 
 function renderResult(body) {
   const outcomes = Array.isArray(body.refreshedAccounts) ? body.refreshedAccounts : [];
@@ -715,7 +730,7 @@ function setAdminSessionState(active) {
 function getStoredAdminApiKey() { return pageAdminApiKey || localStorage.getItem('adminApiKey') || ''; }
 function saveAdminApiKey(key, persistent) { pageAdminApiKey = key; if (key && persistent) localStorage.setItem('adminApiKey', key); else localStorage.removeItem('adminApiKey'); adminKeyInput.value = key; }
 ${adminPageLocaleSource()}
-async function withPendingButton(button, label, action) { const original = button.textContent; button.disabled = true; button.textContent = label; try { await action(); } catch (error) { renderResult({ error: error.message }); } finally { button.disabled = false; button.textContent = original; } }
+async function withPendingButton(button, label, action) { if (button.disabled) return; const original = button.textContent; button.disabled = true; button.textContent = label; try { await action(); } catch (error) { renderResult({ error: error.message }); } finally { button.disabled = false; button.textContent = original; } }
 
 void loadQuotas();
 renderOverviewPanel();

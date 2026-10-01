@@ -98,7 +98,7 @@ export async function prepareStream(source: AsyncIterable<ChatGptStreamEvent>, o
 
 function validBusinessEvent(event: ChatGptStreamEvent): boolean {
   if (!event || typeof event !== 'object') return false;
-  if (event.type === 'text_delta') return typeof event.text === 'string';
+  if (event.type === 'text_delta' || event.type === 'refusal_delta') return typeof event.text === 'string';
   if (event.type === 'tool_call') return Boolean(event.toolCall && typeof event.toolCall.id === 'string' && event.toolCall.id && typeof event.toolCall.name === 'string' && event.toolCall.name && event.toolCall.input && typeof event.toolCall.input === 'object' && !Array.isArray(event.toolCall.input));
   return event.type === 'done' && event.terminalSuccessful !== false;
 }

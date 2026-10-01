@@ -344,7 +344,7 @@ describe('OpenAI request generation controls mapping', () => {
     ]);
     expect(mapped.inputItems).toEqual([
       { type: 'message', role: 'assistant', content: 'checking' },
-      { type: 'function_call', callId: 'call_1', name: 'get_weather', arguments: { city: 'Paris' } },
+      { type: 'function_call', callId: 'call_1', name: 'get_weather', arguments: '{"city":"Paris"}' },
       { type: 'function_call', callId: 'call_2', name: 'fallback', arguments: 'not-json' },
       { type: 'function_call_output', callId: 'call_1', output: 'sunny' },
     ]);

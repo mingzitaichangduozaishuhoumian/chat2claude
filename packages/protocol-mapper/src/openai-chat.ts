@@ -28,6 +28,7 @@ export interface OpenAiChatCompletionRequest {
 export interface OpenAiChatMessage {
   role: OpenAiChatRole;
   content?: string | OpenAiChatContentPart[] | null;
+  refusal?: string | null;
   tool_call_id?: string;
   tool_calls?: OpenAiChatToolCall[];
 }
@@ -49,6 +50,7 @@ export interface OpenAiChatCompletionResponse {
 export interface OpenAiChatResponseMessage {
   role: 'assistant';
   content: string | null;
+  refusal?: string;
   tool_calls?: OpenAiChatResponseToolCall[];
 }
 
@@ -139,7 +141,7 @@ export function mapChatGptResponseToOpenAiChat(request: OpenAiChatCompletionRequ
   const toolCalls = mapToolCalls(response.toolCalls);
   const completionText = response.text ?? '';
   const promptTokens = response.usage?.inputTokens ?? estimateTokens(JSON.stringify(request.messages));
-  const completionTokens = response.usage?.outputTokens ?? estimateTokens(completionText + JSON.stringify(toolCalls ?? []));
+  const completionTokens = response.usage?.outputTokens ?? estimateTokens(completionText + (response.refusal ?? '') + JSON.stringify(toolCalls ?? []));
   const totalTokens = response.usage?.totalTokens ?? promptTokens + completionTokens;
   return {
     id: createOpenAiId(),
@@ -148,7 +150,7 @@ export function mapChatGptResponseToOpenAiChat(request: OpenAiChatCompletionRequ
     model: request.model,
     choices: [{
       index: 0,
-      message: { role: 'assistant', content: toolCalls?.length ? (completionText || null) : completionText, ...(toolCalls?.length ? { tool_calls: toolCalls } : {}) },
+      message: { role: 'assistant', content: toolCalls?.length || response.refusal ? (completionText || null) : completionText, ...(response.refusal ? { refusal: response.refusal } : {}), ...(toolCalls?.length ? { tool_calls: toolCalls } : {}) },
       finish_reason: toolCalls?.length ? 'tool_calls' : mapOpenAiFinishReason(response.finishReason),
     }],
     usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: totalTokens },
@@ -165,6 +167,8 @@ export async function* mapChatGptStreamToOpenAiChatSse(request: OpenAiChatComple
   for await (const event of events) {
     if (event.type === 'text_delta') {
       yield openAiSse({ id, object: 'chat.completion.chunk', created, model: request.model, choices: [{ index: 0, delta: { content: event.text }, finish_reason: null }] });
+    } else if (event.type === 'refusal_delta') {
+      yield openAiSse({ id, object: 'chat.completion.chunk', created, model: request.model, choices: [{ index: 0, delta: { refusal: event.text }, finish_reason: null }] });
     } else if (event.type === 'tool_call') {
       const toolIndex = toolIndices.get(event.toolCall.id) ?? toolIndices.size;
       toolIndices.set(event.toolCall.id, toolIndex);
@@ -187,6 +191,7 @@ export function stringifyOpenAiMessage(message: OpenAiChatMessage): string {
   const content = stringifyOpenAiContent(message.content);
   if (message.role === 'tool' && message.tool_call_id) parts.push(`[tool_result:${message.tool_call_id}] ${content}`);
   else if (content) parts.push(content);
+  if (message.role === 'assistant' && typeof message.refusal === 'string' && message.refusal) parts.push(message.refusal);
   for (const toolCall of message.tool_calls ?? []) {
     const name = toolCall.function?.name ?? 'unknown';
     const id = toolCall.id ?? 'unknown';
@@ -210,10 +215,11 @@ function mapOpenAiChatInputItems(messages: OpenAiChatMessage[]): ChatGptInputIte
       inputItems.push({ type: 'function_call_output', callId: message.tool_call_id, output: stringifyOpenAiContent(message.content) });
     } else {
       if (content) inputItems.push({ type: 'message', role: normalizeOpenAiChatRole(message.role), content });
+      if (message.role === 'assistant' && typeof message.refusal === 'string' && message.refusal) inputItems.push({ type: 'message', role: 'assistant', content: message.refusal });
       for (const toolCall of message.tool_calls ?? []) {
         const name = toolCall.function?.name ?? 'unknown';
         const callId = toolCall.id ?? 'unknown';
-        inputItems.push({ type: 'function_call', callId, name, arguments: parseOpenAiToolArguments(toolCall.function?.arguments ?? '') });
+        inputItems.push({ type: 'function_call', callId, name, arguments: toolCall.function?.arguments ?? '' });
       }
     }
   }
@@ -263,10 +269,6 @@ function normalizeImageDetail(value: unknown): ChatGptImageDetail | undefined {
   return value === 'auto' || value === 'low' || value === 'high' ? value : undefined;
 }
 
-function parseOpenAiToolArguments(value: string): unknown {
-  try { return JSON.parse(value) as unknown; } catch { return value; }
-}
-
 function mapToolCalls(toolCalls: ChatGptCompletionResponse['toolCalls']): OpenAiChatResponseToolCall[] | undefined {
   return toolCalls?.map((toolCall) => ({ id: toolCall.id, type: 'function', function: { name: toolCall.name, arguments: JSON.stringify(toolCall.input ?? {}) } }));
 }
@@ -295,7 +297,7 @@ export function mapOpenAiFinishReason(reason: ChatGptFinishReason | null | undef
     case 'content_filter':
       return 'content_filter';
     case 'refusal':
-      return 'content_filter';
+      return 'stop';
     case 'stop':
     case 'end_turn':
     case undefined:

@@ -108,7 +108,7 @@ export function mapCanonicalInputItems(messages: Array<{ role: ChatGptMessage['r
         inputItems.push({ type: 'function_call', callId: block.id, name: block.name, arguments: block.input });
       } else if (block.kind === 'tool_result') {
         flushParts();
-        const output = typeof block.content === 'string' ? block.content : flattenCanonicalContentForTextBackend(block.content, diagnostics);
+        const output = mapToolResultContent(block.content, diagnostics);
         inputItems.push({ type: 'function_call_output', callId: block.toolUseId, output, ...(block.isError === undefined ? {} : { isError: block.isError }) });
       } else if (block.kind === 'text') {
         appendText(block.text);
@@ -127,6 +127,23 @@ export function mapCanonicalInputItems(messages: Array<{ role: ChatGptMessage['r
     flushParts();
   }
   return inputItems;
+}
+
+function mapToolResultContent(content: string | CanonicalContentBlock[], diagnostics: CanonicalMappingDiagnostic[]): string | ChatGptInputContentPart[] {
+  if (typeof content === 'string') return content;
+  const parts: ChatGptInputContentPart[] = [];
+  let hasImage = false;
+  for (const block of content) {
+    const image = block.kind === 'image' ? imagePartFromClaudeSource(block.source) : undefined;
+    if (image) {
+      parts.push(image);
+      hasImage = true;
+    } else {
+      const text = flattenCanonicalContentForTextBackend([block], diagnostics);
+      if (text) parts.push({ type: 'text', text });
+    }
+  }
+  return hasImage ? parts : parts.map((part) => part.type === 'text' ? part.text : '').join('');
 }
 
 function imagePartFromClaudeSource(source: unknown): ChatGptInputContentPart | undefined {

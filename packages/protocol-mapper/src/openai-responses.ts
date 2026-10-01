@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptImageDetail, ChatGptImageGenerationCallOutputItem, ChatGptInputContentPart, ChatGptInputItem, ChatGptMessage, ChatGptReasoningExecution, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
-import { ChatGptBackendError, parseResponsesReplayItem, ResponsesReplayBudget } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, parseResponsesReplayItem, ResponsesReplayBudget, RESPONSES_INPUT_REPLAY_LIMITS } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { createMessageId } from '@chatgpt-to-claude/shared';
 import { estimateTokens } from './response.js';
@@ -125,10 +125,17 @@ function normalizeOpenAiResponseFormat(responseFormat: Record<string, unknown>):
 export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequest, response: ChatGptCompletionResponse): OpenAiResponsesResponse {
   if (response.terminalSuccessful === false) throw invalidNativeOutput();
   const hasNativeMessage = response.outputItems?.some((item) => item.type === 'message') ?? false;
-  const outputText = hasNativeMessage ? response.outputItems!.filter((item) => item.type === 'message').flatMap((item) => item.content.map((part) => part.text)).join('') : response.text ?? '';
+  const outputText = hasNativeMessage ? response.outputItems!.filter((item) => item.type === 'message').flatMap((item) => item.content.map((part) => part.type === 'output_text' ? part.text : '')).join('') : response.text ?? '';
+  const refusal = response.refusal ?? '';
+  const fallbackContent: Array<Record<string, unknown>> = [
+    ...(outputText ? [{ type: 'output_text', text: outputText, annotations: [] }] : []),
+    ...(refusal ? [{ type: 'refusal', refusal }] : []),
+  ];
+  if (!fallbackContent.length) fallbackContent.push({ type: 'output_text', text: '', annotations: [] });
+  const fallbackMessage = { id: `msg_${createMessageId()}`, type: 'message', role: 'assistant', status: 'completed', content: fallbackContent };
   const output: Array<Record<string, unknown>> = [];
   const replay = response.replayItems ?? [];
-  if (outputText || !response.toolCalls?.length && !replay.length) output.push({ id: `msg_${createMessageId()}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: outputText, annotations: [] }] });
+  if (outputText || refusal || !response.toolCalls?.length && !replay.length) output.push(fallbackMessage);
   for (const raw of replay) {
     const item = parseResponsesReplayItem(raw);
     if (!item) throw invalidNativeOutput();
@@ -146,12 +153,12 @@ export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequ
       visible.id ??= `${item.type === 'message' ? 'msg' : item.type === 'image_generation_call' ? 'img' : 'fc'}_${createMessageId()}`;
       return visible;
     });
-    output.splice(0, output.length, ...(hasNativeMessage || !outputText
+    output.splice(0, output.length, ...(hasNativeMessage || !outputText && !refusal
       ? nativeOutput
-      : [{ id: `msg_${createMessageId()}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: outputText, annotations: [] }] }, ...nativeOutput]));
+      : [fallbackMessage, ...nativeOutput]));
   }
   const inputTokens = response.usage?.inputTokens ?? estimateTokens(JSON.stringify(request.input));
-  const outputTokens = response.usage?.outputTokens ?? estimateTokens(outputText + JSON.stringify(response.toolCalls ?? []));
+  const outputTokens = response.usage?.outputTokens ?? estimateTokens(outputText + refusal + JSON.stringify(response.toolCalls ?? []));
   const totalTokens = response.usage?.totalTokens ?? inputTokens + outputTokens;
   return {
     id: createResponsesId(),
@@ -183,16 +190,20 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
   yield emit('response.created', { response: { ...createMinimalResponse(id, createdAt, request.model, [], ''), status: 'in_progress' } });
   let terminal: Extract<ChatGptStreamEvent, { type: 'done' }> | undefined;
   let text = '';
+  let refusal = '';
   let bytes = 256; // Fixed counters/array state, independent of discarded envelopes.
-  let lastTextCodeUnit = 0;
+  const lastCodeUnit = { text_delta: 0, refusal_delta: 0 };
   const toolCalls: NonNullable<ChatGptCompletionResponse['toolCalls']> = [];
   const pendingImages: ChatGptImageGenerationCallOutputItem[] = [];
   const output: Array<Record<string, unknown>> = [];
   let textOutput: Record<string, unknown> | undefined;
   let textOpen = false;
-  let contentOpen = false;
+  const contentIndexes = new Map<'text_delta' | 'refusal_delta', number>();
+  type LiveMessage = { id: string; publishedIndex?: number; parts: Map<number, { type: 'text_delta' | 'refusal_delta'; text: string; published: boolean }> };
+  const identifiedMessages = new Map<number, LiveMessage>();
   const addedIndexes = new Set<number>();
   const doneIndexes = new Set<number>();
+  const publishedSnapshots = new Map<number, Record<string, unknown>>();
   const emitFinalItem = function* (item: Record<string, unknown>, output_index: number) {
     const initial: Record<string, unknown> = { ...item, status: 'in_progress', ...(item.type === 'function_call' ? { arguments: '' } : item.type === 'message' ? { content: [] } : {}) };
     delete initial.encrypted_content;
@@ -205,9 +216,10 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
     } else if (item.type === 'message') {
       const content = item.content as Array<Record<string, unknown>>;
       for (const [content_index, part] of content.entries()) {
-        yield emit('response.content_part.added', { ...fields, content_index, part: { ...part, text: '' } });
-        yield emit('response.output_text.delta', { ...fields, content_index, delta: part.text });
-        yield emit('response.output_text.done', { ...fields, content_index, text: part.text });
+        const isRefusal = part.type === 'refusal';
+        yield emit('response.content_part.added', { ...fields, content_index, part: { ...part, ...(isRefusal ? { refusal: '' } : { text: '' }) } });
+        yield emit(isRefusal ? 'response.refusal.delta' : 'response.output_text.delta', { ...fields, content_index, delta: isRefusal ? part.refusal : part.text });
+        yield emit(isRefusal ? 'response.refusal.done' : 'response.output_text.done', { ...fields, content_index, ...(isRefusal ? { refusal: part.refusal } : { text: part.text }) });
         yield emit('response.content_part.done', { ...fields, content_index, part });
       }
     } else if (item.type === 'image_generation_call' && item.status === 'completed') {
@@ -219,39 +231,147 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
   const finalizeIncrementalText = function* (finalItem?: Record<string, unknown>) {
     if (!textOutput || !textOpen) return;
     const output_index = output.indexOf(textOutput);
-    const fields = { item_id: textOutput.id, output_index, content_index: 0 };
-    const part = { type: 'output_text', text, annotations: [] };
-    const completed = finalItem ?? { ...textOutput, content: [part], status: 'completed' };
-    if (contentOpen) {
-      yield emit('response.output_text.done', { ...fields, text });
+    const content = [...contentIndexes].map(([type]) => type === 'refusal_delta'
+      ? { type: 'refusal', refusal } : { type: 'output_text', text, annotations: [] });
+    const completed = finalItem ?? { ...textOutput, content, status: 'completed' };
+    for (const [content_index, part] of content.entries()) {
+      const fields = { item_id: textOutput.id, output_index, content_index };
+      yield emit(part.type === 'refusal' ? 'response.refusal.done' : 'response.output_text.done', { ...fields, ...(part.type === 'refusal' ? { refusal } : { text }) });
       yield emit('response.content_part.done', { ...fields, part });
-      contentOpen = false;
     }
     output[output_index] = completed;
     doneIndexes.add(output_index);
     yield emit('response.output_item.done', { output_index, item: completed });
     textOpen = false;
   };
+  const finalizeIdentifiedMessage = function* (item: Record<string, unknown>, output_index: number, live: LiveMessage) {
+    if (item.type !== 'message' || item.id !== live.id || !Array.isArray(item.content)) throw invalidNativeOutput();
+    for (const index of live.parts.keys()) if (index >= item.content.length) throw invalidNativeOutput();
+    if (live.publishedIndex !== undefined && live.publishedIndex !== output_index) throw invalidNativeOutput();
+    // Omitted provider items may precede this message. Until the final safe
+    // projection is known, their raw indices cannot be exposed as client indices.
+    if (live.publishedIndex === undefined) {
+      for (const [index, previous] of live.parts) {
+        const part = item.content[index] as Record<string, unknown>;
+        const value = previous.type === 'refusal_delta' ? part.refusal : part.text;
+        if (part.type !== (previous.type === 'refusal_delta' ? 'refusal' : 'output_text') || typeof value !== 'string' || !value.startsWith(previous.text)) throw invalidNativeOutput();
+      }
+      yield* emitFinalItem(item, output_index);
+      return;
+    }
+    for (const [content_index, raw] of item.content.entries()) {
+      const part = raw as Record<string, unknown>;
+      const isRefusal = part.type === 'refusal';
+      const type = isRefusal ? 'refusal_delta' : 'text_delta';
+      const value = isRefusal ? part.refusal : part.text;
+      if (typeof value !== 'string') throw invalidNativeOutput();
+      const previous = live.parts.get(content_index);
+      if (previous && (previous.type !== type || !value.startsWith(previous.text))) throw invalidNativeOutput();
+      const fields = { item_id: live.id, output_index, content_index };
+      if (!previous?.published) yield emit('response.content_part.added', { ...fields, part: { ...part, ...(isRefusal ? { refusal: '' } : { text: '' }) } });
+      const remaining = value.slice(previous?.published ? previous.text.length : 0);
+      if (remaining) yield emit(isRefusal ? 'response.refusal.delta' : 'response.output_text.delta', { ...fields, delta: remaining });
+      yield emit(isRefusal ? 'response.refusal.done' : 'response.output_text.done', { ...fields, ...(isRefusal ? { refusal: value } : { text: value }) });
+      yield emit('response.content_part.done', { ...fields, part });
+    }
+    doneIndexes.add(output_index);
+    yield emit('response.output_item.done', { output_index, item });
+  };
   for await (const event of events) {
     if (terminal) throw invalidNativeOutput();
-    if (event.type === 'text_delta') {
+    if (event.type === 'text_delta' || event.type === 'refusal_delta') {
       bytes += Buffer.byteLength(event.text, 'utf8');
       // A surrogate pair can straddle chunks: two isolated replacements cost six
       // UTF-8 bytes, whereas the concatenated code point costs four.
       const first = event.text.charCodeAt(0);
-      if (lastTextCodeUnit >= 0xd800 && lastTextCodeUnit <= 0xdbff && first >= 0xdc00 && first <= 0xdfff) bytes -= 2;
-      if (event.text.length) lastTextCodeUnit = event.text.charCodeAt(event.text.length - 1);
+      const previous = lastCodeUnit[event.type];
+      if (previous >= 0xd800 && previous <= 0xdbff && first >= 0xdc00 && first <= 0xdfff) bytes -= 2;
+      if (event.text.length) lastCodeUnit[event.type] = event.text.charCodeAt(event.text.length - 1);
+      // Completed snapshots already carry authoritative item IDs and order. If
+      // no live message was sent, publish those items together at the terminal.
+      if (event.finalSnapshot && !textOutput) {
+        if (event.type === 'refusal_delta') refusal += event.text;
+        else text += event.text;
+        if (bytes > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
+        continue;
+      }
+      if (event.itemId !== undefined && event.outputIndex !== undefined && event.contentIndex !== undefined) {
+        if (textOutput) throw invalidNativeOutput();
+        const { itemId, outputIndex, contentIndex } = event;
+        let live = identifiedMessages.get(outputIndex);
+        if (!live) {
+          if ([...identifiedMessages.values()].some((message) => message.id === itemId)) throw invalidNativeOutput();
+          let hintedIndex: number | undefined;
+          if (event.projectedOutputIndex !== undefined && event.projectedOutputPrefix?.length === event.projectedOutputIndex) {
+            const prefix = event.projectedOutputPrefix.map((item) => {
+              const parsed = parseResponsesReplayItem(item);
+              if (!parsed || parsed.type !== 'reasoning') throw invalidNativeOutput();
+              const visible: Record<string, unknown> = { ...parsed };
+              if (!request.include?.includes('reasoning.encrypted_content')) delete visible.encrypted_content;
+              return visible;
+            });
+            for (const [index, item] of prefix.entries()) {
+              const previous = publishedSnapshots.get(index);
+              if (previous) { if (!isDeepStrictEqual(previous, item)) throw invalidNativeOutput(); }
+              else {
+                if (addedIndexes.has(index)) throw invalidNativeOutput();
+                bytes += Buffer.byteLength(JSON.stringify(item), 'utf8');
+                if (bytes > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
+                publishedSnapshots.set(index, item);
+                yield* emitFinalItem(item, index);
+              }
+            }
+            hintedIndex = event.projectedOutputIndex;
+          }
+          const precedingArePublished = outputIndex === 0 || addedIndexes.size >= outputIndex
+            && [...addedIndexes].filter((index) => index < outputIndex).length === outputIndex;
+          const publishedIndex = hintedIndex ?? (precedingArePublished ? outputIndex : undefined);
+          if (publishedIndex !== undefined && [...identifiedMessages.values()].some((message) => message.publishedIndex === publishedIndex)) throw invalidNativeOutput();
+          live = { id: itemId, ...(publishedIndex !== undefined ? { publishedIndex } : {}), parts: new Map() };
+          identifiedMessages.set(outputIndex, live);
+          bytes += Buffer.byteLength(itemId, 'utf8') + 64;
+          if (live.publishedIndex !== undefined) {
+            addedIndexes.add(live.publishedIndex);
+            yield emit('response.output_item.added', { output_index: live.publishedIndex, item: { id: itemId, type: 'message', role: 'assistant', status: 'in_progress', content: [] } });
+          }
+        }
+        if (live.id !== itemId) throw invalidNativeOutput();
+        const isRefusal = event.type === 'refusal_delta';
+        let part = live.parts.get(contentIndex);
+        if (!part) {
+          const published = live.publishedIndex !== undefined && contentIndex === [...live.parts.values()].filter((part) => part.published).length;
+          part = { type: event.type, text: '', published };
+          live.parts.set(contentIndex, part);
+          bytes += 64;
+          if (part.published) yield emit('response.content_part.added', { item_id: itemId, output_index: live.publishedIndex, content_index: contentIndex, part: isRefusal ? { type: 'refusal', refusal: '' } : { type: 'output_text', text: '', annotations: [] } });
+        }
+        if (part.type !== event.type) throw invalidNativeOutput();
+        part.text += event.text;
+        if (isRefusal) refusal += event.text;
+        else text += event.text;
+        if (part.published) yield emit(isRefusal ? 'response.refusal.delta' : 'response.output_text.delta', { item_id: itemId, output_index: live.publishedIndex, content_index: contentIndex, delta: event.text });
+        if (bytes > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
+        continue;
+      }
+      if (identifiedMessages.size) throw invalidNativeOutput();
       if (!textOutput) {
         textOutput = { id: `msg_${createMessageId()}`, type: 'message', role: 'assistant', status: 'in_progress', content: [] };
         output.push(textOutput);
         addedIndexes.add(output.length - 1);
         yield emit('response.output_item.added', { output_index: output.length - 1, item: textOutput });
-        yield emit('response.content_part.added', { item_id: textOutput.id, output_index: output.length - 1, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } });
         textOpen = true;
-        contentOpen = true;
       }
-      text += event.text;
-      yield emit('response.output_text.delta', { item_id: textOutput.id, output_index: output.indexOf(textOutput), content_index: 0, delta: event.text });
+      const isRefusal = event.type === 'refusal_delta';
+      let contentIndex = contentIndexes.get(event.type);
+      if (contentIndex === undefined) {
+        contentIndex = contentIndexes.size;
+        contentIndexes.set(event.type, contentIndex);
+        const part = isRefusal ? { type: 'refusal', refusal: '' } : { type: 'output_text', text: '', annotations: [] };
+        yield emit('response.content_part.added', { item_id: textOutput.id, output_index: output.indexOf(textOutput), content_index: contentIndex, part });
+      }
+      if (isRefusal) refusal += event.text;
+      else text += event.text;
+      yield emit(isRefusal ? 'response.refusal.delta' : 'response.output_text.delta', { item_id: textOutput.id, output_index: output.indexOf(textOutput), content_index: contentIndex, delta: event.text });
     } else if (event.type === 'tool_call') {
       const argumentsText = JSON.stringify(event.toolCall.input ?? {});
       bytes += Buffer.byteLength(argumentsText, 'utf8') + Buffer.byteLength(event.toolCall.name, 'utf8') + event.toolCall.id.length;
@@ -268,23 +388,36 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
   }
   if (!terminal) throw invalidNativeOutput();
   options.signal?.throwIfAborted();
-  const completion: ChatGptCompletionResponse = { text, toolCalls, ...terminal, finishReason: terminal.finishReason ?? 'stop' };
+  const completion: ChatGptCompletionResponse = { text, ...(refusal ? { refusal } : {}), toolCalls, ...terminal, finishReason: terminal.finishReason ?? 'stop' };
   const response = { ...mapChatGptResponseToOpenAiResponses(request, completion), id, created_at: createdAt };
   const authoritative = [...response.output];
   reconcilePendingImages(pendingImages, authoritative);
-  const consumed = new Set<number>();
-  const takeMessage = () => {
-    if (!textOutput) return undefined;
-    const index = authoritative.findIndex((item, i) => !consumed.has(i) && item.type === 'message' && messageText(item) === text);
-    if (index < 0) return undefined;
-    consumed.add(index);
-    return { ...structuredClone(authoritative[index]), id: textOutput.id };
-  };
-  if (textOutput) yield* finalizeIncrementalText(takeMessage());
-  for (const [sourceIndex, item] of authoritative.entries()) {
-    if (consumed.has(sourceIndex)) continue;
-    const output_index = output.push(item) - 1;
-    yield* emitFinalItem(item, output_index);
+  if (identifiedMessages.size) {
+    const messagesById = new Map([...identifiedMessages.values()].map((message) => [message.id, message]));
+    for (const id of messagesById.keys()) if (!authoritative.some((item) => item.type === 'message' && item.id === id)) throw invalidNativeOutput();
+    for (const [index, item] of publishedSnapshots) if (!isDeepStrictEqual(authoritative[index], item)) throw invalidNativeOutput();
+    for (const [index, item] of authoritative.entries()) {
+      if (publishedSnapshots.has(index)) continue;
+      const live = typeof item.id === 'string' ? messagesById.get(item.id) : undefined;
+      if (live) yield* finalizeIdentifiedMessage(item, index, live);
+      else yield* emitFinalItem(item, index);
+    }
+    output.push(...authoritative);
+  } else {
+    const consumed = new Set<number>();
+    const takeMessage = () => {
+      if (!textOutput) return undefined;
+      const index = authoritative.findIndex((item, i) => !consumed.has(i) && item.type === 'message' && messageText(item) === text && messageRefusal(item) === refusal);
+      if (index < 0) return undefined;
+      consumed.add(index);
+      return { ...structuredClone(authoritative[index]), id: textOutput.id };
+    };
+    if (textOutput) yield* finalizeIncrementalText(takeMessage());
+    for (const [sourceIndex, item] of authoritative.entries()) {
+      if (consumed.has(sourceIndex)) continue;
+      const output_index = output.push(item) - 1;
+      yield* emitFinalItem(item, output_index);
+    }
   }
   if (!output.length) output.push({ id: `msg_${createMessageId()}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: '', annotations: [] }] });
   response.output = output;
@@ -323,11 +456,11 @@ function mapResponsesInputItems(input: OpenAiResponsesRequest['input'], instruct
     inputItems.push({ type: 'message', role: 'user', content: input });
     return inputItems;
   }
-  const budget = new ResponsesReplayBudget();
+  const budget = new ResponsesReplayBudget(RESPONSES_INPUT_REPLAY_LIMITS);
   for (const item of input) {
     if (item.type === 'reasoning' || item.type === 'function_call' && typeof item.arguments === 'string') {
       try {
-        const replay = parseResponsesReplayItem(item);
+        const replay = parseResponsesReplayItem(item, RESPONSES_INPUT_REPLAY_LIMITS);
         if (!replay) throw new Error();
         budget.add(replay);
         inputItems.push({ type: 'replay', item: replay });
@@ -335,7 +468,7 @@ function mapResponsesInputItems(input: OpenAiResponsesRequest['input'], instruct
     } else if (item.type === 'function_call') {
       inputItems.push({ type: 'function_call', callId: String(item.call_id ?? 'unknown'), name: String(item.name ?? 'unknown'), arguments: item.arguments ?? {} });
     } else if (item.type === 'function_call_output') {
-      inputItems.push({ type: 'function_call_output', callId: String(item.call_id ?? 'unknown'), output: stringifyUnknown(item.output) });
+      inputItems.push({ type: 'function_call_output', callId: String(item.call_id ?? 'unknown'), output: mapResponsesToolOutput(item.output) });
     } else {
       const content = mapResponsesMessageContent(item);
       if (content !== undefined) inputItems.push({ type: 'message', role: normalizeRole(item.role), content });
@@ -344,10 +477,16 @@ function mapResponsesInputItems(input: OpenAiResponsesRequest['input'], instruct
   return inputItems;
 }
 
+function mapResponsesToolOutput(output: unknown): string | ChatGptInputContentPart[] {
+  if (!Array.isArray(output)) return stringifyUnknown(output);
+  return output.map((part) => responsesImagePart(part) ?? { type: 'text', text: stringifyResponsesContentPart(part) });
+}
+
 function stringifyResponsesContentPart(part: unknown): string {
   if (typeof part === 'string') return part;
   if (!part || typeof part !== 'object') return stringifyUnknown(part);
   const raw = part as Record<string, unknown>;
+  if (raw.type === 'refusal' && typeof raw.refusal === 'string') return raw.refusal;
   if (typeof raw.text === 'string') return raw.text;
   if (raw.type === 'input_text' || raw.type === 'output_text' || raw.type === 'text') return String(raw.text ?? '');
   if (raw.type === 'input_image' || raw.type === 'image' || raw.type === 'image_url' || raw.type === 'url') return `[unsupported:${String(raw.type)}]`;
@@ -447,6 +586,10 @@ function stringifyUnknown(value: unknown): string {
 
 function messageText(item: Record<string, unknown>): string {
   return Array.isArray(item.content) ? item.content.map((part) => isPlainObject(part) && typeof part.text === 'string' ? part.text : '').join('') : '';
+}
+
+function messageRefusal(item: Record<string, unknown>): string {
+  return Array.isArray(item.content) ? item.content.map((part) => isPlainObject(part) && part.type === 'refusal' && typeof part.refusal === 'string' ? part.refusal : '').join('') : '';
 }
 
 function reconcilePendingImages(pendingImages: ChatGptImageGenerationCallOutputItem[], authoritative: Array<Record<string, unknown>>): void {

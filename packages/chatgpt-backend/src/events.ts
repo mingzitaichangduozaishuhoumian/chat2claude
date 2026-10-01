@@ -1,6 +1,18 @@
 import type { ChatGptFinishReason, ChatGptImageGenerationCallOutputItem, ChatGptOutputItem, ChatGptReplayItem, ChatGptToolCall, ChatGptUsage } from './client.js';
 
-export interface ChatGptTextDeltaEvent { type: 'text_delta'; text: string; }
+export interface ChatGptContentDeltaIdentity {
+  itemId?: string;
+  outputIndex?: number;
+  contentIndex?: number;
+  /** Safe projected index when every preceding provider item is known to survive projection. */
+  projectedOutputIndex?: number;
+  /** Detached, validated full prefix for native output item lifecycles; never text content. */
+  projectedOutputPrefix?: ChatGptOutputItem[];
+  /** Reconciled from authoritative completed output, rather than a live delta. */
+  finalSnapshot?: true;
+}
+export interface ChatGptTextDeltaEvent extends ChatGptContentDeltaIdentity { type: 'text_delta'; text: string; }
+export interface ChatGptRefusalDeltaEvent extends ChatGptContentDeltaIdentity { type: 'refusal_delta'; text: string; }
 export interface ChatGptReasoningDeltaEvent { type: 'reasoning_delta'; text: string; }
 export type ChatGptSafeStatus =
   | 'response in progress'
@@ -21,4 +33,4 @@ export interface ChatGptImageOutputEvent { type: 'image_output'; item: ChatGptIm
 export interface ChatGptDoneEvent { type: 'done'; terminalSuccessful?: boolean; outputItems?: ChatGptOutputItem[]; finishReason?: ChatGptFinishReason; usage?: ChatGptUsage; /** Internal carrier, never client-visible content. */ replayItems?: ChatGptReplayItem[]; /** Fixed internal completeness marker for implicit replay. */ replayEligible?: boolean; }
 /** Transport-only barrier; never content, usage, or replay. */
 export interface ChatGptUpstreamReadyEvent { type: 'upstream_ready'; }
-export type ChatGptStreamEvent = ChatGptTextDeltaEvent | ChatGptReasoningDeltaEvent | ChatGptStatusDeltaEvent | ChatGptToolCallEvent | ChatGptImageOutputEvent | ChatGptDoneEvent | ChatGptUpstreamReadyEvent;
+export type ChatGptStreamEvent = ChatGptTextDeltaEvent | ChatGptRefusalDeltaEvent | ChatGptReasoningDeltaEvent | ChatGptStatusDeltaEvent | ChatGptToolCallEvent | ChatGptImageOutputEvent | ChatGptDoneEvent | ChatGptUpstreamReadyEvent;

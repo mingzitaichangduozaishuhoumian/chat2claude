@@ -16,7 +16,9 @@ interface RecordData {
 }
 export interface ResponsesStoreOptions { now?: () => number; ttlMs?: number; maxRecords?: number; maxBytes?: number; maxRecordBytes?: number; }
 export const RESPONSES_HISTORY_LIMITS = Object.freeze({ items: 4096, bytes: 8 * 1024 * 1024 });
-const defaults = { ttlMs: 30 * 60_000, maxRecords: 1000, maxBytes: 64 * 1024 * 1024, maxRecordBytes: 8 * 1024 * 1024 };
+// Retention charges twice the serialized size. Allow one accepted 8 MiB history
+// plus bounded identity metadata, instead of silently losing histories over 4 MiB.
+const defaults = { ttlMs: 30 * 60_000, maxRecords: 1000, maxBytes: 64 * 1024 * 1024, maxRecordBytes: 2 * RESPONSES_HISTORY_LIMITS.bytes + 64 * 1024 };
 export function previousResponseNotFound(): ClaudeApiError { return new ClaudeApiError('Previous response not found.', 404, 'not_found_error'); }
 
 /** No record/public payload getters or debug metadata. Only an explicit expansion

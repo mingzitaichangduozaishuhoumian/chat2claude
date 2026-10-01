@@ -1,5 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import { mapChatGptStreamToOpenAiChatSse } from './openai-chat.js';
+import { SessionChatGptBackend } from '@chatgpt-to-claude/chatgpt-backend';
+import { mapChatGptStreamToOpenAiChatSse, mapOpenAiChatRequestToChatGpt } from './openai-chat.js';
+
+describe('OpenAI Chat historical tool arguments', () => {
+  it('preserves original numeric precision, escaping, and whitespace on the session wire', async () => {
+    const argumentsText = ' { "id": 9007199254740993, "name": "\\u96ea" } ';
+    let input: unknown;
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+      input = JSON.parse(String(init?.body)).input;
+      return new Response('data: {"type":"response.completed","response":{"status":"completed"}}\n\n');
+    } });
+    const request = mapOpenAiChatRequestToChatGpt({ model: 'model', messages: [
+      { role: 'assistant', content: null, tool_calls: [{ id: 'call_id', type: 'function', function: { name: 'lookup', arguments: argumentsText } }] },
+      { role: 'tool', tool_call_id: 'call_id', content: 'found' },
+    ] });
+    await backend.complete(request, { account: { id: 'synthetic', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'synthetic-token' } } });
+    expect(input).toEqual([
+      { type: 'function_call', call_id: 'call_id', name: 'lookup', arguments: argumentsText },
+      { type: 'function_call_output', call_id: 'call_id', output: 'found' },
+    ]);
+  });
+});
 
 describe('OpenAI Chat streaming tools', () => {
   it('assigns stable independent tool indices within choice zero', async () => {

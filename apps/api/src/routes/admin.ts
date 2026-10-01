@@ -172,7 +172,7 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     try {
       name = validateRuntimeApiKeyName(await readJson(c.req), options.runtimeApiKeys);
     } catch (error) {
-      if (error instanceof RuntimeApiKeyNameValidationError) return c.json({ error: error.message }, 400);
+      if (error instanceof RuntimeApiKeyNameValidationError || error instanceof AdminRequestError) return c.json({ error: error.message }, 400);
       throw error;
     }
     const createKey = () => options.runtimeApiKeys.create(RUNTIME_API_KEY_PREFIX, name);
@@ -281,7 +281,13 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
   });
   app.patch('/admin/api/models/:id', async (c) => {
     if (options.ready) await options.ready;
-    const patch = await readJson(c.req);
+    let patch: Record<string, unknown>;
+    try {
+      patch = await readJson(c.req);
+    } catch (error) {
+      if (error instanceof AdminRequestError) return c.json({ error: error.message }, error.status);
+      throw error;
+    }
     const update = () => options.modelRegistry.update(c.req.param('id'), patch);
     const model = options.durableState ? options.durableState.transaction(update) : update();
     return model ? c.json({ model, view: options.modelRegistry.adminView() }) : c.json({ error: 'Model alias not found' }, 404);
@@ -448,13 +454,17 @@ function accountAdminPatch(input: Record<string, unknown>): { label?: unknown; e
   };
 }
 
-async function readJson(req: { json: () => Promise<unknown> }): Promise<Record<string, unknown>> {
+async function readJson(req: { text: () => Promise<string> }): Promise<Record<string, unknown>> {
+  const body = await req.text();
+  if (!body) return {};
+  let value: unknown;
   try {
-    const value = await req.json();
-    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    value = JSON.parse(body);
   } catch {
-    return {};
+    throw new AdminRequestError('Request body must be valid JSON.', 400);
   }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AdminRequestError('Request body must be a JSON object.', 400);
+  return value as Record<string, unknown>;
 }
 
 function status(options: AdminRouteOptions) {

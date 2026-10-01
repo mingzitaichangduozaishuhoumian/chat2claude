@@ -24,6 +24,8 @@ corepack pnpm check
 corepack pnpm start
 ```
 
+`start` 自动构建 workspace 后启动已编译的服务。`corepack pnpm dev` 会先构建，再监听 API 源码变化；修改共享包时仍需重新构建相应包。
+
 默认服务地址为 `http://127.0.0.1:3000`，管理后台为：
 
 ```text
@@ -211,6 +213,37 @@ curl --fail "$ANTHROPIC_BASE_URL/healthz"
 ```
 
 该文件含访问凭据，不要提交仓库、同步到公共位置或分享给他人。修改后关闭已有 Claude Code 会话并重新加载终端或 VS Code。
+
+### 长上下文与 1M 配置
+
+先在后台确认目标 alias 绑定的是支持长上下文的模型。客户端设置不能扩大上游模型或账号的实际容量；应以当前账号返回的模型目录为准。
+
+Claude Code 可以把以下字段合并到现有 `~/.claude/settings.json`，保留已有 Base URL、凭据和其他设置：
+
+```json
+{
+  "model": "sonnet[1m]",
+  "env": {
+    "ANTHROPIC_MODEL": "sonnet[1m]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet",
+    "CLAUDE_CODE_DISABLE_1M_CONTEXT": "0",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "800000"
+  }
+}
+```
+
+`ANTHROPIC_MODEL` 优先于顶层 `model`，两者应一致。Claude Code 会去掉 `[1m]` 后缀，向本服务发送 `sonnet` 并附带长上下文 beta 标记，所以后台仍绑定普通 `sonnet` alias。`800000` 是自动压缩窗口设置；如果上游容量更小，应相应降低。参见 [Claude Code 模型配置](https://code.claude.com/docs/en/model-config)。
+
+Codex 可在 `~/.codex/config.toml` 的顶层（任何 `[section]` 之前）配置：
+
+```toml
+model_context_window = 1000000
+model_auto_compact_token_limit = 800000
+```
+
+这表示客户端请求的窗口大小，不是上游扩容。Codex 会按模型目录的 `max_context_window` 裁剪，并为有效上下文和自动压缩预留空间。例如目录上限为 `872000` 时，不能宣称实际已获得 1M；采用 95% 有效窗口和 90% 自动压缩规则时，分别为 `828400` 和 `784800`。配置项见 [Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。修改后重新启动客户端，并新建会话确认生效。
+
+本服务的原生 Responses 输入历史允许最多 4096 项、总计 8 MiB 的序列化数据；输入历史与有界的上游输出/replay 缓存使用不同预算。`previous_response_id` 的历史记录仍受缓存总量、过期时间和进程生命周期限制。字节数限制与模型 token 容量是不同约束，`count_tokens` 仍是启发式估算。
 
 ### 客户端兼容速查
 

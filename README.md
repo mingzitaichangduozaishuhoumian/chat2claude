@@ -53,6 +53,8 @@ corepack pnpm check
 corepack pnpm start
 ```
 
+`start` 会先构建所有 workspace 包，再启动服务；首次安装后无需另行生成 `dist`。开发时使用 `corepack pnpm dev`，完成初始构建后监听 API 源码变化。
+
 默认地址：
 
 ```text

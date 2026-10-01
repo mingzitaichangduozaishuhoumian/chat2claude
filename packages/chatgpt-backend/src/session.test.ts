@@ -290,7 +290,7 @@ describe('SessionChatGptBackend', () => {
       { type: 'error', code, message: 'ERROR_MESSAGE_CANARY', param: 'ERROR_PARAM_CANARY', raw: 'ERROR_RAW_CANARY' },
     ]) });
     const error = await backend.complete(request, context).catch((error: unknown) => error);
-    expect(error).toMatchObject({ code: 'upstream_error', status: 502, safeDiagnostic: {
+    expect(error).toMatchObject({ code: code === 'rate_limit_exceeded' ? 'rate_limited' : 'upstream_error', status: code === 'rate_limit_exceeded' ? 429 : 502, safeDiagnostic: {
       eventType: 'error', responseErrorCode: code === 'rate_limit_exceeded' ? code : 'unknown', responseErrorParam: 'unknown', httpStatus: 200, failurePhase: 'response_event',
     } });
     expect(String(error) + JSON.stringify(error)).not.toContain('CANARY');
@@ -305,7 +305,7 @@ describe('SessionChatGptBackend', () => {
   ])('sanitizes nested response error codes for $frame.type frames', async ({ frame, code }) => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([frame]) });
     const error = await backend.complete(request, context).catch((error: unknown) => error);
-    expect(error).toMatchObject({ code: 'upstream_error', status: 502, safeDiagnostic: {
+    expect(error).toMatchObject({ code: code === 'rate_limit_exceeded' ? 'rate_limited' : 'upstream_error', status: code === 'rate_limit_exceeded' ? 429 : 502, safeDiagnostic: {
       ...(frame.type ? { eventType: frame.type } : {}), responseErrorCode: code, httpStatus: 200, failurePhase: 'response_event',
     } });
     expect(String(error) + JSON.stringify(error)).not.toContain('NESTED_');

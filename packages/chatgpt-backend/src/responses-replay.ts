@@ -3,8 +3,11 @@ import type { ChatGptCompletionResponse, ChatGptImageGenerationCallOutputItem, C
 import { ChatGptBackendError, type ChatGptReplayDebugDiagnostic } from './errors.js';
 
 type JsonObject = Record<string, unknown>;
+export interface ResponsesReplayLimits { readonly itemBytes: number; readonly bundleBytes: number; readonly items: number; }
 /** UTF-8 JSON wire bytes, including all allowed fields, not just ciphertext. */
 export const RESPONSES_REPLAY_LIMITS = Object.freeze({ itemBytes: 256 * 1024, bundleBytes: 1024 * 1024, items: 128 });
+/** Explicit input history can span many turns; provider output/cache budgets stay separate. */
+export const RESPONSES_INPUT_REPLAY_LIMITS = Object.freeze({ itemBytes: 8 * 1024 * 1024, bundleBytes: 8 * 1024 * 1024, items: 4096 });
 
 /** Validate a provider image lifecycle without retaining any provider payload. */
 export function validateImageGenerationCallLifecycle(value: unknown): ChatGptImageGenerationCallStatus | undefined {
@@ -67,8 +70,8 @@ function fields(value: JsonObject, allowed: readonly string[]): void {
   if (Object.keys(value).some((key) => !allowed.includes(key))) throw invalidReplay();
 }
 function nonempty(value: unknown): value is string { return typeof value === 'string' && value.length > 0; }
-function textParts(value: unknown, type: 'summary_text' | 'reasoning_text'): boolean {
-  return Array.isArray(value) && value.length <= RESPONSES_REPLAY_LIMITS.items && value.every((part) => {
+function textParts(value: unknown, type: 'summary_text' | 'reasoning_text', limits: ResponsesReplayLimits): boolean {
+  return Array.isArray(value) && value.length <= limits.items && value.every((part) => {
     if (!object(part)) return false;
     fields(part, ['type', 'text']);
     return part.type === type && typeof part.text === 'string';
@@ -76,15 +79,15 @@ function textParts(value: unknown, type: 'summary_text' | 'reasoning_text'): boo
 }
 
 /** Validate and detach a restricted wire object. Missing/null ciphertext is not replayable. */
-export function parseResponsesReplayItem(value: unknown): ChatGptReplayItem | undefined {
+export function parseResponsesReplayItem(value: unknown, limits: ResponsesReplayLimits = RESPONSES_REPLAY_LIMITS): ChatGptReplayItem | undefined {
   if (!object(value)) throw invalidReplay();
   if (value.type !== 'reasoning' && value.type !== 'function_call') return undefined;
   if (value.type === 'reasoning' && (value.encrypted_content === undefined || value.encrypted_content === null)) return undefined;
   if (value.status !== undefined && (typeof value.status !== 'string' || !['in_progress', 'completed', 'incomplete'].includes(value.status))) throw invalidReplay();
   if (value.type === 'reasoning') {
     fields(value, ['type', 'id', 'summary', 'content', 'status', 'encrypted_content']);
-    if (!nonempty(value.id) || !nonempty(value.encrypted_content) || !textParts(value.summary, 'summary_text')
-      || value.content !== undefined && !textParts(value.content, 'reasoning_text')) throw invalidReplay();
+    if (!nonempty(value.id) || !nonempty(value.encrypted_content) || !textParts(value.summary, 'summary_text', limits)
+      || value.content !== undefined && !textParts(value.content, 'reasoning_text', limits)) throw invalidReplay();
   } else {
     fields(value, ['type', 'id', 'call_id', 'name', 'arguments', 'status', 'async', 'caller', 'namespace']);
     if (value.id !== undefined && !nonempty(value.id) || !nonempty(value.call_id) || !nonempty(value.name)
@@ -97,7 +100,7 @@ export function parseResponsesReplayItem(value: unknown): ChatGptReplayItem | un
     }
   }
   const wire = JSON.stringify(value);
-  if (Buffer.byteLength(wire, 'utf8') > RESPONSES_REPLAY_LIMITS.itemBytes) throw invalidReplay();
+  if (Buffer.byteLength(wire, 'utf8') > limits.itemBytes) throw invalidReplay();
   return JSON.parse(wire) as ChatGptReplayItem;
 }
 
@@ -105,9 +108,10 @@ export function parseResponsesReplayItem(value: unknown): ChatGptReplayItem | un
 export class ResponsesReplayBudget {
   private bytes = 2; // JSON array brackets
   private count = 0;
+  constructor(private readonly limits: ResponsesReplayLimits = RESPONSES_REPLAY_LIMITS) {}
   add(item: ChatGptReplayItem | ChatGptImageGenerationCallOutputItem): void {
     this.bytes += Buffer.byteLength(JSON.stringify(item), 'utf8') + (this.count ? 1 : 0);
-    if (++this.count > RESPONSES_REPLAY_LIMITS.items || this.bytes > RESPONSES_REPLAY_LIMITS.bundleBytes) throw invalidReplay();
+    if (++this.count > this.limits.items || this.bytes > this.limits.bundleBytes) throw invalidReplay();
   }
 }
 
@@ -254,12 +258,15 @@ export class ResponsesReplay {
     for (const [index, raw] of response.output.entries()) {
       if (object(raw) && raw.type === 'message') {
         if (!Array.isArray(raw.content) || raw.content.length > RESPONSES_REPLAY_LIMITS.items) throw invalidReplay();
-        const content: Array<{ type: 'output_text'; text: string; annotations: [] }> = [];
+        const content: Extract<ChatGptOutputItem, { type: 'message' }>['content'] = [];
         for (const part of raw.content) {
           if (!object(part)) throw invalidReplay();
           if (part.type === 'output_text') {
             if (typeof part.text !== 'string') throw invalidReplay();
             content.push({ type: 'output_text', text: part.text, annotations: [] });
+          } else if (part.type === 'refusal') {
+            if (typeof part.refusal !== 'string') throw invalidReplay();
+            content.push({ type: 'refusal', refusal: part.refusal });
           }
         }
         projection.push({ type: 'message', role: 'assistant', ...(typeof raw.id === 'string' ? { id: raw.id } : {}), status: 'completed', content });

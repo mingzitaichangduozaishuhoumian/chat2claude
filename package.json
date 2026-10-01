@@ -5,10 +5,10 @@
   "type": "module",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "start": "corepack pnpm --filter @chatgpt-to-claude/api dev",
+    "start": "corepack pnpm build && corepack pnpm --filter @chatgpt-to-claude/api start",
     "setup": "corepack pnpm install",
     "check": "corepack pnpm test && corepack pnpm build && corepack pnpm typecheck",
-    "dev": "corepack pnpm --filter @chatgpt-to-claude/api dev",
+    "dev": "corepack pnpm build && corepack pnpm --filter @chatgpt-to-claude/api dev",
     "build": "corepack pnpm -r build",
     "test": "vitest run",
     "typecheck": "corepack pnpm -r typecheck"
