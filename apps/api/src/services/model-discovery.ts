@@ -1,4 +1,4 @@
-import { ChatGptBackendError, normalizeCodexClientVersion, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptModelDiscoveryDiagnostic, type ChatGptModelDiscoveryResult } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, CODEX_ORIGINATOR, normalizeCodexClientVersion, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptModelDiscoveryDiagnostic, type ChatGptModelDiscoveryResult } from '@chatgpt-to-claude/chatgpt-backend';
 
 export interface ModelDiscoveryState {
   status: 'unknown' | 'success' | 'empty' | 'partial' | 'error';
@@ -48,14 +48,43 @@ export function safeDiscoveryDiagnostic(value: ChatGptModelDiscoveryDiagnostic):
   if (typeof value.clientVersion !== 'string') throw new Error('Invalid discovery client version.');
   const clientVersion = normalizeCodexClientVersion(value.clientVersion);
   if (value.httpStatus !== undefined && (!Number.isInteger(value.httpStatus) || value.httpStatus < 100 || value.httpStatus > 599)) throw new Error('Invalid discovery HTTP status.');
+  const requestContext = value.requestContext === undefined ? undefined : safeRequestContext(value.requestContext);
   return {
     clientVersion,
+    ...(requestContext === undefined ? {} : { requestContext }),
     ...(value.httpStatus === undefined ? {} : { httpStatus: value.httpStatus }),
     contentType: choice(value.contentType, ['json', 'event_stream', 'html', 'other', 'missing']),
     envelope: choice(value.envelope, ['models', 'data', 'body_models', 'array', 'unknown']),
     candidateCount: count(value.candidateCount), acceptedCount: count(value.acceptedCount),
     rejectedCount: count(value.rejectedCount), duplicateCount: count(value.duplicateCount),
     reasons: value.reasons.map((reason) => choice(reason, ['unknown_envelope', 'invalid_model_array', 'invalid_model_id', 'duplicate_model_id', 'invalid_json'])),
+  };
+}
+
+function safeRequestContext(value: unknown): NonNullable<ChatGptModelDiscoveryDiagnostic['requestContext']> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid discovery request context.');
+  const raw = value as Record<string, unknown>;
+  const fields = ['originator', 'hasAccountId', 'hasCookie', 'hasDeviceId', 'userAgentSource', 'userAgentFamily'] as const;
+  const hasOwn = (field: typeof fields[number]) => Object.prototype.hasOwnProperty.call(raw, field);
+  if (Reflect.ownKeys(raw).some((field) => typeof field !== 'string' || !fields.includes(field as typeof fields[number])) || !fields.every(hasOwn)) {
+    throw new Error('Invalid discovery request context.');
+  }
+  const boolean = (field: 'hasAccountId' | 'hasCookie' | 'hasDeviceId') => {
+    if (typeof raw[field] !== 'boolean') throw new Error('Invalid discovery request context boolean.');
+    return raw[field];
+  };
+  if (raw.originator !== CODEX_ORIGINATOR) throw new Error('Invalid discovery request context originator.');
+  const userAgentSource = raw.userAgentSource;
+  if (userAgentSource !== 'stored' && userAgentSource !== 'fallback') throw new Error('Invalid discovery request context user agent source.');
+  const userAgentFamily = userAgentSource === 'stored' ? 'stored' : CODEX_ORIGINATOR;
+  if (raw.userAgentFamily !== userAgentFamily) throw new Error('Invalid discovery request context user agent family.');
+  return {
+    originator: CODEX_ORIGINATOR,
+    hasAccountId: boolean('hasAccountId'),
+    hasCookie: boolean('hasCookie'),
+    hasDeviceId: boolean('hasDeviceId'),
+    userAgentSource,
+    userAgentFamily,
   };
 }
 

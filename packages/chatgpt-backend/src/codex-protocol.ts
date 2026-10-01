@@ -1,5 +1,3 @@
-import { arch, release, type } from 'node:os';
-
 // Protocol baseline, not this package's version. Match the current Codex CLI identity
 // used by chatgpt.com for model discovery so account catalogs are not artificially stale.
 export const DEFAULT_CODEX_CLIENT_VERSION = '0.155.0';
@@ -17,12 +15,11 @@ export function normalizeCodexClientVersion(value: string | undefined): string {
   return value;
 }
 
-/** Omit terminal/environment details; only bounded, header-safe OS components. */
+/** Prefer a stored safe identity; otherwise use the proven CPA/Codex CLI profile. */
 export function codexUserAgent(version: string, storedUserAgent?: string): string {
   const validatedVersion = normalizeCodexClientVersion(version);
   if (storedUserAgent && storedUserAgent.length <= 512 && /^[\x20-\x7e]+$/.test(storedUserAgent) && storedUserAgent.trim()) {
     return storedUserAgent;
   }
-  const component = (value: string) => value.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 64) || 'unknown';
-  return `${CODEX_ORIGINATOR}/${validatedVersion} (${component(type())} ${component(release())}; ${component(arch())})`;
+  return `${CODEX_ORIGINATOR}/${validatedVersion} (Mac OS 26.3.1; arm64) iTerm.app/3.6.9`;
 }

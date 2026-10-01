@@ -435,7 +435,10 @@ function validateAccount(value: unknown, index: number): PersistedOperationalAcc
 
 function validateDiscovery(value: unknown): ModelDiscoveryState {
   const raw = strictObject(value, ['status', 'attemptedAt', 'succeededAt', 'stale', 'error', 'diagnostic'], 'discovery', ['error', 'diagnostic']);
-  if (raw.diagnostic !== undefined) strictObject(raw.diagnostic, ['clientVersion', 'httpStatus', 'contentType', 'envelope', 'candidateCount', 'acceptedCount', 'rejectedCount', 'duplicateCount', 'reasons'], 'discovery diagnostic', ['httpStatus']);
+  if (raw.diagnostic !== undefined) {
+    const diagnostic = strictObject(raw.diagnostic, ['clientVersion', 'requestContext', 'httpStatus', 'contentType', 'envelope', 'candidateCount', 'acceptedCount', 'rejectedCount', 'duplicateCount', 'reasons'], 'discovery diagnostic', ['requestContext', 'httpStatus']);
+    if (diagnostic.requestContext !== undefined) strictObject(diagnostic.requestContext, ['originator', 'hasAccountId', 'hasCookie', 'hasDeviceId', 'userAgentSource', 'userAgentFamily'], 'discovery request context');
+  }
   try {
     return {
       status: enumValue(raw.status, ['unknown', 'success', 'empty', 'partial', 'error'] as const, 'discovery status'),

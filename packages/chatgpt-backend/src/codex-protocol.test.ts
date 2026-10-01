@@ -8,10 +8,8 @@ describe('Codex protocol identity', () => {
     expect(CODEX_ORIGINATOR).toBe('codex_cli_rs');
   });
 
-  it('generates a bounded platform-aware official-style User-Agent', () => {
-    const agent = codexUserAgent('1.2.3-alpha.1');
-    expect(agent).toMatch(/^codex_cli_rs\/1\.2\.3-alpha\.1 \([A-Za-z0-9._-]+ [A-Za-z0-9._-]+; [A-Za-z0-9._-]+\)$/);
-    expect(agent.length).toBeLessThan(512);
+  it('generates the fixed CPA/Codex CLI fallback User-Agent', () => {
+    expect(codexUserAgent('1.2.3-alpha.1')).toBe('codex_cli_rs/1.2.3-alpha.1 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9');
   });
 
   it('preserves intentional safe account overrides', () => {

@@ -58,7 +58,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         { method: 'GET', headers: this.headers(secret, false, 'application/json') },
         signal,
       );
-      const diagnostic = discoveryDiagnostic(response, this.clientVersion);
+      const diagnostic = discoveryDiagnostic(response, this.clientVersion, secret);
       if (!response.ok) {
         await cancelBody(response);
         signal.throwIfAborted();
@@ -858,11 +858,26 @@ function stringifyArguments(value: unknown): string {
   try { return JSON.stringify(value ?? {}); } catch { return String(value); }
 }
 
-function discoveryDiagnostic(response: Response, clientVersion: string): ChatGptModelDiscoveryDiagnostic {
+function discoveryDiagnostic(response: Response, clientVersion: string, secret: ChatGptSessionSecret): ChatGptModelDiscoveryDiagnostic {
   const mime = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
   const contentType = !mime ? 'missing' : mime === 'application/json' || /^application\/[a-z0-9!#$&^_.+-]+\+json$/.test(mime)
     ? 'json' : mime === 'text/event-stream' ? 'event_stream' : mime === 'text/html' ? 'html' : 'other';
-  return { clientVersion, httpStatus: response.status, contentType, envelope: 'unknown', candidateCount: 0, acceptedCount: 0, rejectedCount: 0, duplicateCount: 0, reasons: [] };
+  const storedUserAgent = isSafeStoredUserAgent(secret.userAgent);
+  return {
+    clientVersion, httpStatus: response.status, contentType, envelope: 'unknown', candidateCount: 0, acceptedCount: 0, rejectedCount: 0, duplicateCount: 0, reasons: [],
+    requestContext: {
+      originator: CODEX_ORIGINATOR,
+      hasAccountId: Boolean(secret.accountId),
+      hasCookie: Boolean(secret.cookie),
+      hasDeviceId: Boolean(secret.deviceId),
+      userAgentSource: storedUserAgent ? 'stored' : 'fallback',
+      userAgentFamily: storedUserAgent ? 'stored' : CODEX_ORIGINATOR,
+    },
+  };
+}
+
+function isSafeStoredUserAgent(value: string | undefined): boolean {
+  return Boolean(value && value.length <= 512 && /^[\x20-\x7e]+$/.test(value) && value.trim());
 }
 
 function invalidDiscoveryResponse(diagnostic: ChatGptModelDiscoveryDiagnostic): ChatGptBackendError {

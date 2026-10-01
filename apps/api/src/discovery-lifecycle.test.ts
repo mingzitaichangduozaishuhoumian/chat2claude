@@ -9,6 +9,7 @@ import { ModelRegistry } from './services/model-registry.js';
 import { RuntimeApiKeys } from './services/runtime-api-keys.js';
 import { createAdminRoute } from './routes/admin.js';
 import { refreshAccountModels } from './services/account-model-discovery.js';
+import { discoverAccountModels, safeDiscoveryDiagnostic } from './services/model-discovery.js';
 import { SetupProvisioner } from './services/setup-provisioner.js';
 import { createApp } from './app.js';
 import { loadEnv } from './config/env.js';
@@ -17,7 +18,7 @@ const dirs: string[] = [];
 const states: AdminOperationalState[] = [];
 afterEach(async () => { for (const state of states.splice(0)) await state.dispose(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function directory() { const dir = mkdtempSync(join(tmpdir(), 'discovery-lifecycle-')); dirs.push(dir); return dir; }
-const diagnostic: ChatGptModelDiscoveryDiagnostic = { clientVersion: '1.2.3-rc.1+build.7', httpStatus: 200, contentType: 'json', envelope: 'models', candidateCount: 2, acceptedCount: 1, rejectedCount: 1, duplicateCount: 0, reasons: ['invalid_model_id'] };
+const diagnostic: ChatGptModelDiscoveryDiagnostic = { clientVersion: '1.2.3-rc.1+build.7', requestContext: { originator: 'codex_cli_rs', hasAccountId: true, hasCookie: false, hasDeviceId: true, userAgentSource: 'fallback', userAgentFamily: 'codex_cli_rs' }, httpStatus: 200, contentType: 'json', envelope: 'models', candidateCount: 2, acceptedCount: 1, rejectedCount: 1, duplicateCount: 0, reasons: ['invalid_model_id'] };
 function fixture() {
   const path = join(directory(), 'operations.json');
   const operationalState = new AdminOperationalState({ path }); states.push(operationalState);
@@ -84,6 +85,22 @@ describe('discovery lifecycle stages 3–5', () => {
     expect(roundtrip.snapshot().accounts[0]).toMatchObject({ discoveredModelIds: ['synthetic-safe'], discovery: { status: 'error', stale: true, diagnostic } });
     const invalid = JSON.parse(readFileSync(f.path, 'utf8')); invalid.accounts[0].discovery.diagnostic.headers = { authorization: 'secret' }; writeFileSync(f.path, JSON.stringify(invalid));
     expect(() => new AdminOperationalState({ path: f.path }).hydrate()).toThrow('unknown fields');
+    delete invalid.accounts[0].discovery.diagnostic.headers; invalid.accounts[0].discovery.diagnostic.requestContext.userAgent = 'secret'; writeFileSync(f.path, JSON.stringify(invalid));
+    expect(() => new AdminOperationalState({ path: f.path }).hydrate()).toThrow('unknown fields');
+    delete invalid.accounts[0].discovery.diagnostic.requestContext.userAgent;
+    invalid.accounts[0].discovery.diagnostic.requestContext.userAgentFamily = 'Mozilla/5.0 token=secret; cookie=session-secret'; writeFileSync(f.path, JSON.stringify(invalid));
+    expect(() => new AdminOperationalState({ path: f.path }).hydrate()).toThrow('invalid discovery metadata');
+  });
+
+  it('drops diagnostics with unsafe request contexts at backend ingress', async () => {
+    const f = fixture();
+    const unsafeDiagnostic = { ...diagnostic, requestContext: { ...diagnostic.requestContext!, userAgent: 'Mozilla/5.0 token=secret' } } as ChatGptModelDiscoveryDiagnostic;
+    f.backend.discoverModels = async () => ({ status: 'partial', models: [{ id: 'synthetic-safe' }], diagnostic: unsafeDiagnostic });
+    await expect(discoverAccountModels(f.backend, {})).rejects.toThrow('Invalid discovery request context.');
+    expect(() => safeDiscoveryDiagnostic({ ...diagnostic, requestContext: { ...diagnostic.requestContext!, originator: 'Mozilla/5.0 token=secret' } as unknown as ChatGptModelDiscoveryDiagnostic['requestContext'] })).toThrow('Invalid discovery request context originator.');
+    expect(() => safeDiscoveryDiagnostic({ ...diagnostic, requestContext: { ...diagnostic.requestContext!, userAgentFamily: 'Mozilla/5.0 token=secret' } as unknown as ChatGptModelDiscoveryDiagnostic['requestContext'] })).toThrow('Invalid discovery request context user agent family.');
+    const prototypeContext = Object.create(diagnostic.requestContext!);
+    expect(() => safeDiscoveryDiagnostic({ ...diagnostic, requestContext: prototypeContext })).toThrow('Invalid discovery request context.');
   });
 
   it('ignores late failures and legacy empty lists rather than erasing a newer catalog', async () => {

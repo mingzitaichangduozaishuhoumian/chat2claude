@@ -547,7 +547,7 @@ describe('SessionChatGptBackend', () => {
     expect(calls.map((headers) => headers.get('accept'))).toEqual(['application/json', 'text/event-stream']);
     for (const headers of calls) {
       expect(headers.get('originator')).toBe('codex_cli_rs');
-      expect(headers.get('user-agent')).toBe(codexUserAgent('2.3.4'));
+      expect(headers.get('user-agent')).toBe('codex_cli_rs/2.3.4 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9');
       expect(headers.get('authorization')).toBe('Bearer token-1');
       expect(headers.get('cookie')).toBe('cookie-1');
       expect(headers.get('oai-device-id')).toBe('device-1');
@@ -563,7 +563,17 @@ describe('SessionChatGptBackend', () => {
     const result = await backend.discoverModels(context);
     expect(result.status).toBe('success');
     expect(result.models.map((model) => model.id)).toEqual(['synthetic-route']);
-    expect(result.diagnostic).toEqual({ clientVersion: DEFAULT_CODEX_CLIENT_VERSION, httpStatus: 200, contentType: 'json', envelope: 'models', candidateCount: 1, acceptedCount: 1, rejectedCount: 0, duplicateCount: 0, reasons: [] });
+    expect(result.diagnostic).toEqual({ clientVersion: DEFAULT_CODEX_CLIENT_VERSION, requestContext: { originator: CODEX_ORIGINATOR, hasAccountId: true, hasCookie: true, hasDeviceId: true, userAgentSource: 'stored', userAgentFamily: 'stored' }, httpStatus: 200, contentType: 'json', envelope: 'models', candidateCount: 1, acceptedCount: 1, rejectedCount: 0, duplicateCount: 0, reasons: [] });
+  });
+
+  it('reports only safe fallback request context for discovery', async () => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => Response.json({ models: [] }) });
+    const noContext = { account: { ...context.account, secret: { type: 'chatgpt-session' as const, accessToken: 'token-1' } } };
+
+    const result = await backend.discoverModels(noContext);
+
+    expect(result.diagnostic?.requestContext).toEqual({ originator: CODEX_ORIGINATOR, hasAccountId: false, hasCookie: false, hasDeviceId: false, userAgentSource: 'fallback', userAgentFamily: CODEX_ORIGINATOR });
+    expect(JSON.stringify(result.diagnostic)).not.toMatch(/token-1|cookie-1|device-1|acct-1|ua-1/);
   });
 
   it('accepts current Codex GPT and image model IDs from discovery without filtering them out', async () => {
@@ -619,8 +629,8 @@ describe('SessionChatGptBackend', () => {
     const result = await backend.discoverModels(context);
     expect(result.status).toBe('partial');
     expect(result.models.map((model) => model.id)).toEqual(['synthetic-a', 'synthetic-b']);
-    expect(result.diagnostic).toEqual({ clientVersion: DEFAULT_CODEX_CLIENT_VERSION, httpStatus: 200, contentType: 'json', envelope: 'models', candidateCount: 5, acceptedCount: 2, rejectedCount: 2, duplicateCount: 1, reasons: ['invalid_model_id', 'duplicate_model_id'] });
-    expect(JSON.stringify(result.diagnostic)).not.toMatch(/sensitive|synthetic|token|cookie/);
+    expect(result.diagnostic).toEqual({ clientVersion: DEFAULT_CODEX_CLIENT_VERSION, requestContext: { originator: CODEX_ORIGINATOR, hasAccountId: true, hasCookie: true, hasDeviceId: true, userAgentSource: 'stored', userAgentFamily: 'stored' }, httpStatus: 200, contentType: 'json', envelope: 'models', candidateCount: 5, acceptedCount: 2, rejectedCount: 2, duplicateCount: 1, reasons: ['invalid_model_id', 'duplicate_model_id'] });
+    expect(JSON.stringify(result.diagnostic)).not.toMatch(/sensitive|synthetic|token|cookie-1|device-1|acct-1|ua-1/);
     await expect(backend.listModels(context)).resolves.toHaveLength(2);
   });
 

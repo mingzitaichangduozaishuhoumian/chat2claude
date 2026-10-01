@@ -92,6 +92,14 @@ export interface ChatGptDiscoveredModel { id: string; displayName?: string; capa
 /** Allowlisted operational metadata only. Never attach provider payloads or error text. */
 export interface ChatGptModelDiscoveryDiagnostic {
   clientVersion: string;
+  requestContext?: {
+    originator: 'codex_cli_rs';
+    hasAccountId: boolean;
+    hasCookie: boolean;
+    hasDeviceId: boolean;
+    userAgentSource: 'stored' | 'fallback';
+    userAgentFamily: 'stored' | 'codex_cli_rs';
+  };
   httpStatus?: number;
   contentType: 'json' | 'event_stream' | 'html' | 'other' | 'missing';
   envelope: 'models' | 'data' | 'body_models' | 'array' | 'unknown';
