@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { ClaudeMessagesRequest } from '@chatgpt-to-claude/claude-protocol';
 import { normalizeReasoningEffort, normalizeSpeedPreference, resolveReasoningSpeed } from './reasoning.js';
+import { mapClaudeRequestToChatGpt } from './request.js';
+import { mapOpenAiChatRequestToChatGpt } from './openai-chat.js';
+import { mapOpenAiResponsesRequestToChatGpt } from './openai-responses.js';
 
 const baseRequest: ClaudeMessagesRequest = { model: 'claude-3-5-sonnet-latest', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] };
 
@@ -67,5 +70,27 @@ describe('normalizeReasoningEffort and normalizeSpeedPreference', () => {
     expect(normalizeSpeedPreference('standard_only')).toBe('standard');
     expect(normalizeSpeedPreference('auto')).toBe('auto');
     expect(normalizeSpeedPreference('turbo')).toBe('turbo');
+  });
+
+  it.each(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])('canonicalizes known effort %s without changing its strength', (effort) => {
+    expect(normalizeReasoningEffort(` ${effort.toUpperCase()} `)).toBe(effort);
+  });
+
+  it.each(['Future_Deep', 'FUTURE-DEEP', 'future_deep', 'future-deep'])('preserves the native provider ID %s', (effort) => {
+    expect(normalizeReasoningEffort(` ${effort} `)).toBe(effort);
+  });
+
+  it.each(['Future_Deep', 'ultra', 'max', 'xhigh'])('preserves distinct native effort %s through every request mapper', (effort) => {
+    const claude = { ...baseRequest, output_config: { effort }, reasoning_effort: 'low' };
+    const chat = { model: baseRequest.model, messages: baseRequest.messages, reasoning_effort: effort };
+    const responses = { model: baseRequest.model, input: 'hello', reasoning: { effort }, reasoning_effort: 'low' };
+    expect(mapClaudeRequestToChatGpt(claude).reasoningEffort).toBe(effort);
+    expect(mapOpenAiChatRequestToChatGpt(chat).reasoningEffort).toBe(effort);
+    expect(mapOpenAiResponsesRequestToChatGpt(responses).reasoningEffort).toBe(effort);
+
+    const resolvedControls = { reasoningEffort: effort };
+    expect(mapClaudeRequestToChatGpt(claude, {}, { resolvedControls }).reasoningEffort).toBe(effort);
+    expect(mapOpenAiChatRequestToChatGpt(chat, {}, { resolvedControls }).reasoningEffort).toBe(effort);
+    expect(mapOpenAiResponsesRequestToChatGpt(responses, {}, { resolvedControls }).reasoningEffort).toBe(effort);
   });
 });

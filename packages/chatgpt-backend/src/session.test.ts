@@ -746,32 +746,21 @@ describe('SessionChatGptBackend', () => {
     for (const field of ['temperature', 'top_p', 'stop', 'max_output_tokens']) expect(calls[0].body).not.toHaveProperty(field);
   });
 
-  it('forwards canonical reasoning effort and service tier to the Codex responses body', async () => {
-    const calls: Array<{ body: Record<string, unknown> }> = [];
-    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
-      calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
-      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
-    } });
+  describe.each(['complete', 'stream'] as const)('%s reasoning controls', (method) => {
+    it.each(['ultra', 'max', 'xhigh', 'Future-Deep'])('forwards provider effort %s without rewriting it', async (reasoningEffort) => {
+      const calls: Array<{ body: Record<string, unknown> }> = [];
+      const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async (_url, init) => {
+        calls.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+        return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
+      } });
 
-    await backend.complete({ ...request, reasoningEffort: 'xhigh', serviceTier: 'priority' }, context);
-    await backend.complete({ ...request, reasoningEffort: 'max', serviceTier: 'priority' }, context);
-    expect(calls[0].body).toMatchObject({ reasoning: { effort: 'xhigh' }, service_tier: 'priority' });
-    expect(calls[1].body).toMatchObject({ reasoning: { effort: 'max' }, service_tier: 'priority' });
-  });
+      const completionRequest = { ...request, reasoningEffort, serviceTier: 'priority' };
+      if (method === 'complete') await backend.complete(completionRequest, context);
+      else for await (const _event of backend.stream(completionRequest, context)) { /* drain the lazy stream */ }
 
-  it('rejects local-only ultra before performing a fetch', async () => {
-    let fetchCalls = 0;
-    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => {
-      fetchCalls += 1;
-      return sseResponse([{ type: 'response.completed', response: { status: 'completed' } }]);
-    } });
-
-    await expect(backend.complete({ ...request, reasoningEffort: 'ultra' }, context)).rejects.toMatchObject({
-      name: 'ChatGptBackendError',
-      code: 'invalid_request',
-      status: 400,
+      expect(calls).toHaveLength(1);
+      expect(calls[0].body).toMatchObject({ reasoning: { effort: reasoningEffort }, service_tier: 'priority' });
     });
-    expect(fetchCalls).toBe(0);
   });
 
   it('forwards neutral reasoning but omits the default service tier', async () => {
@@ -981,7 +970,10 @@ describe('SessionChatGptBackend', () => {
       supported_reasoning_levels: [
         { effort: 'low', description: 'Fast' },
         { effort: 'future-deep', description: 'Future' },
-        { effort: 'ultra', description: 'Client compatibility mode' },
+        { effort: 'ultra', description: 'Native provider effort' },
+        'xhigh',
+        'max',
+        'Future-Deep',
       ],
       service_tiers: [{ id: 'economy', name: 'Economy', description: 'Queued' }],
       additional_speed_tiers: [{ id: 'priority', name: 'Priority' }],
@@ -1000,7 +992,10 @@ describe('SessionChatGptBackend', () => {
         supported: [
           { effort: 'low', description: 'Fast' },
           { effort: 'future-deep', description: 'Future' },
-          { effort: 'ultra', description: 'Client compatibility mode' },
+          { effort: 'ultra', description: 'Native provider effort' },
+          { effort: 'xhigh' },
+          { effort: 'max' },
+          { effort: 'Future-Deep' },
         ],
         defaultEffort: 'future-deep',
         multiAgent: { effort: 'max' },

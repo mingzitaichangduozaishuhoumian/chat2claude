@@ -60,7 +60,7 @@ describe('RuntimeStateStore', () => {
     expect(migrated).toMatchObject({ version: 2, runtimeApiKeys: { records: [expect.objectContaining({ key: 'legacy-key' })] }, modelAliases: [] });
   });
 
-  it('migrates legacy reasoning and speed aliases while preserving future values', () => {
+  it('preserves configured reasoning IDs while migrating legacy capability and speed aliases', () => {
     const path = statePath();
     writeFileSync(path, JSON.stringify({
       version: 2,
@@ -82,7 +82,7 @@ describe('RuntimeStateStore', () => {
     }));
 
     const migrated = new RuntimeStateStore({ path }).load()!;
-    expect(migrated.modelAliases[0].defaults).toEqual({ reasoning_effort: 'xhigh', speed: 'priority' });
+    expect(migrated.modelAliases[0].defaults).toEqual({ reasoning_effort: 'extra-high', speed: 'priority' });
     expect(migrated.modelAliases[0].capabilities.reasoning_effort).toEqual(['none', 'low', 'xhigh', 'future-deep']);
     expect(migrated.modelAliases[0].capabilities.response_speed).toEqual(['standard', 'priority', 'future-tier']);
   });
@@ -93,6 +93,15 @@ describe('RuntimeStateStore', () => {
     const restored = runtime(path);
     restored.durable.hydrate();
     expect(restored.accounts.list()).toEqual([]);
+  });
+
+  it.each(['ultra', 'light', 'Future_Deep', 'future_deep'])('roundtrips native reasoning default %s without rewriting it', (effort) => {
+    const models = new ModelRegistry({ defaults: { aliases: [{ id: 'sonnet', defaults: { reasoning_effort: effort } }] } });
+    const store = new RuntimeStateStore({ path: statePath() });
+    store.save({ version: 2, accounts: [], runtimeApiKeys: { records: [] }, modelAliases: models.exportState() });
+    const restored = store.load()!;
+    models.importState(restored.modelAliases);
+    expect(models.get('sonnet')?.defaults.reasoning_effort).toBe(effort);
   });
 
   it.each([

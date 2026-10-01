@@ -179,7 +179,7 @@ describe('ModelRegistry dynamic Codex controls', () => {
     }
   });
 
-  it('maps advertised ultra to a safe multi-agent effort without forwarding ultra', () => {
+  it('preserves advertised ultra even when multi-agent metadata suggests another effort', () => {
     const target = catalogModel({
       controls: {
         reasoning: {
@@ -192,41 +192,80 @@ describe('ModelRegistry dynamic Codex controls', () => {
       },
     });
     const models = registry(target, { reasoning_effort: 'ultra', speed: 'standard' });
-    expect(models.get('sonnet')?.capabilities).toMatchObject({ ultra_lossy: true, ultra_mapped_effort: 'xhigh' });
-    expect(models.resolveControls(models.resolve('sonnet'))).toMatchObject({ reasoningEffort: 'xhigh', reasoningSource: 'alias' });
+    expect(models.get('sonnet')?.capabilities).toMatchObject({ ultra_lossy: false });
+    expect(models.get('sonnet')?.capabilities.ultra_mapped_effort).toBeUndefined();
+    expect(models.resolveControls(models.resolve('sonnet'))).toMatchObject({ reasoningEffort: 'ultra', reasoningSource: 'alias' });
   });
 
-  it('falls back from ultra to max and then to the last advertised non-ultra effort', () => {
-    const withMax = catalogModel({
+  it.each(['ultra', 'max', 'xhigh'])('keeps the distinct advertised effort %s for requests and alias defaults', (effort) => {
+    const target = catalogModel({
       controls: {
-        reasoning: { metadataKnown: true, supported: [{ effort: 'ultra' }, { effort: 'max' }] },
+        reasoning: { metadataKnown: true, supported: [{ effort: 'ultra' }, { effort: 'max' }, { effort: 'xhigh' }] },
         serviceTier: { metadataKnown: false, supported: [], fastMode: false },
       },
     });
-    expect(registry(withMax, { reasoning_effort: 'ultra', speed: 'standard' }).resolveControls(registry(withMax, { reasoning_effort: 'ultra', speed: 'standard' }).resolve('sonnet')).reasoningEffort).toBe('max');
+    const models = registry(target, { reasoning_effort: effort, speed: 'standard' });
+    expect(models.get('sonnet')?.capabilities).toMatchObject({ ultra_lossy: false });
+    expect(models.resolveControls(models.resolve('sonnet'))).toMatchObject({ reasoningEffort: effort, reasoningSource: 'alias' });
+    expect(models.resolveControls(models.resolve('sonnet'), { reasoningEffort: effort })).toMatchObject({ reasoningEffort: effort, reasoningSource: 'explicit' });
+  });
 
-    const ordered = catalogModel({
+  it('rejects unadvertised ultra instead of substituting max or xhigh', () => {
+    const target = catalogModel({
       controls: {
-        reasoning: { metadataKnown: true, supported: [{ effort: 'low' }, { effort: 'ultra' }, { effort: 'future-last' }] },
+        reasoning: { metadataKnown: true, supported: [{ effort: 'max' }, { effort: 'xhigh' }], multiAgent: { effort: 'ultra' } },
         serviceTier: { metadataKnown: false, supported: [], fastMode: false },
       },
     });
-    const models = registry(ordered, { reasoning_effort: 'ultra', speed: 'standard' });
-    expect(models.resolveControls(models.resolve('sonnet')).reasoningEffort).toBe('future-last');
+    const models = registry(target, { reasoning_effort: 'ultra', speed: 'standard' });
+    expect(models.get('sonnet')?.capabilities.ultra_mapped_effort).toBeUndefined();
+    expect(models.resolveControls(models.resolve('sonnet'))).toMatchObject({ reasoningSource: 'omit' });
+    expect(() => models.resolveControls(models.resolve('sonnet'), { reasoningEffort: 'ultra' })).toThrow(/Supported values: max, xhigh/);
   });
 
-  it('does not break model metadata when ultra has no safe non-ultra mapping', () => {
+  it('never infers effort strength from the ordering of discovered options', () => {
+    const target = catalogModel({
+      controls: {
+        reasoning: { metadataKnown: true, supported: [{ effort: 'low' }, { effort: 'ultra' }, { effort: 'max' }, { effort: 'future-last' }] },
+        serviceTier: { metadataKnown: false, supported: [], fastMode: false },
+      },
+    });
+    const models = registry(target, { reasoning_effort: 'ultra', speed: 'standard' });
+    expect(models.get('sonnet')?.capabilities.ultra_mapped_effort).toBeUndefined();
+    expect(models.resolveControls(models.resolve('sonnet')).reasoningEffort).toBe('ultra');
+  });
+
+  it('supports a catalog whose only native effort and discovered default is ultra', () => {
     const target = catalogModel({
       controls: {
         reasoning: { metadataKnown: true, supported: [{ effort: 'ultra' }], defaultEffort: 'ultra' },
         serviceTier: { metadataKnown: false, supported: [], fastMode: false },
       },
     });
-    const models = registry(target, { reasoning_effort: 'ultra', speed: 'standard' });
-    expect(models.get('sonnet')?.capabilities).toMatchObject({ ultra_lossy: true });
+    const models = registry(target);
+    expect(models.get('sonnet')?.capabilities).toMatchObject({ reasoning_effort: ['ultra'], ultra_lossy: false });
     expect(models.get('sonnet')?.capabilities.ultra_mapped_effort).toBeUndefined();
-    expect(models.resolveControls(models.resolve('sonnet')).reasoningEffort).toBeUndefined();
-    expect(() => models.resolveControls(models.resolve('sonnet'), { reasoningEffort: 'ultra' })).toThrow(/no explicit values|Supported values/);
+    expect(models.resolveControls(models.resolve('sonnet'))).toMatchObject({ reasoningEffort: 'ultra', reasoningSource: 'discovered' });
+    expect(models.resolveControls(models.resolve('sonnet'), { reasoningEffort: 'ultra' }).reasoningEffort).toBe('ultra');
+  });
+
+  it('preserves exact provider IDs and distinct future values across catalog merging and persistence', () => {
+    const target = catalogModel();
+    const efforts = ['low', 'light', 'Future_Deep', 'future-deep'];
+    target.controls!.reasoning.supported = efforts.map((effort) => ({ effort }));
+    const models = registry(target, { reasoning_effort: 'Future_Deep', speed: 'standard' });
+    expect(models.get('sonnet')?.capabilities.reasoning_effort).toEqual(efforts);
+    for (const effort of efforts) {
+      expect(models.resolveControls(models.resolve('sonnet'), { reasoningEffort: effort }).reasoningEffort).toBe(effort);
+    }
+    models.importState(models.exportState());
+    expect(models.resolveControls(models.resolve('sonnet')).reasoningEffort).toBe('Future_Deep');
+    models.update('sonnet', { defaults: { reasoning_effort: 'future-deep' } });
+    expect(models.resolveControls(models.resolve('sonnet')).reasoningEffort).toBe('future-deep');
+    models.update('sonnet', { defaults: { reasoning_effort: 'light' } });
+    models.importState(models.exportState());
+    expect(models.resolveControls(models.resolve('sonnet')).reasoningEffort).toBe('light');
+    expect(() => models.resolveControls(models.resolve('sonnet'), { reasoningEffort: 'future_deep' })).toThrow(/Unsupported reasoning_effort/);
   });
 
   it('keeps missing metadata unknown and safely omits invalid implicit defaults', () => {

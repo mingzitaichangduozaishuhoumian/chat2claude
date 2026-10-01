@@ -24,7 +24,9 @@ export interface ModelCapabilities {
   thinking: boolean;
   metadata_status: { reasoning: 'known' | 'unknown'; service_tier: 'known' | 'unknown' };
   fast_mode: boolean;
+  /** Legacy compatibility flag. Advertised reasoning efforts are forwarded unchanged. */
   ultra_lossy: boolean;
+  /** @deprecated No lossy Ultra mapping is performed. */
   ultra_mapped_effort?: string;
 }
 
@@ -70,6 +72,8 @@ export interface ModelResolution {
 
 export interface ExplicitModelControls {
   reasoningEffort?: unknown;
+  /** Internal account-routing constraint: the global catalog already resolved this native ID. */
+  reasoningEffortIsNative?: boolean;
   serviceTier?: unknown;
 }
 
@@ -233,7 +237,7 @@ export class ModelRegistry {
 
   resolveControls(resolution: ModelResolution, explicit: ExplicitModelControls = {}): ResolvedModelControls {
     const alias = resolution.model.source === 'alias' ? this.aliases.find((item) => item.id === resolution.model.id) : undefined;
-    const reasoning = resolveReasoningControl(resolution.target, explicit.reasoningEffort, alias?.defaults.reasoning_effort);
+    const reasoning = resolveReasoningControl(resolution.target, explicit.reasoningEffort, alias?.defaults.reasoning_effort, explicit.reasoningEffortIsNative);
     const serviceTier = resolveServiceTierControl(resolution.target, explicit.serviceTier, alias?.defaults.speed);
     return {
       ...(reasoning.value ? { reasoningEffort: reasoning.value } : {}),
@@ -246,11 +250,9 @@ export class ModelRegistry {
   accountControlRequirements(resolution: ModelResolution, explicit: ExplicitModelControls = {}): ExplicitModelControls {
     const resolved = this.resolveControls(resolution, explicit);
     return {
-      ...(explicit.reasoningEffort !== undefined
-        ? { reasoningEffort: explicit.reasoningEffort }
-        : resolved.reasoningSource === 'alias' && resolved.reasoningEffort
-          ? { reasoningEffort: resolved.reasoningEffort }
-          : {}),
+      ...((resolved.reasoningSource === 'explicit' || resolved.reasoningSource === 'alias') && resolved.reasoningEffort
+        ? { reasoningEffort: resolved.reasoningEffort, reasoningEffortIsNative: true }
+        : {}),
       ...(explicit.serviceTier !== undefined
         ? { serviceTier: explicit.serviceTier }
         : resolved.serviceTierSource === 'alias' && resolved.serviceTier
@@ -270,7 +272,7 @@ export class ModelRegistry {
       enabled: typeof patch.enabled === 'boolean' ? patch.enabled : current.enabled,
       capabilities: patch.capabilities === undefined ? current.capabilities : normalizeCapabilities(patch.capabilities),
       defaults: {
-        reasoning_effort: normalizeReasoningEffort(patch.defaults?.reasoning_effort, current.defaults.reasoning_effort),
+        reasoning_effort: readOptionalString(patch.defaults?.reasoning_effort) ?? current.defaults.reasoning_effort,
         speed: normalizeSpeedPreference(rawSpeed, current.defaults.speed),
       },
     };
@@ -439,7 +441,8 @@ function normalizeCapabilities(value: unknown): ModelCapabilities {
 function normalizeDefaults(value: unknown): ModelDefaults {
   const raw = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
   return {
-    reasoning_effort: normalizeReasoningEffort(raw.reasoning_effort, 'none'),
+    // Resolve compatibility aliases only after the target's native IDs are known.
+    reasoning_effort: readOptionalString(raw.reasoning_effort) ?? 'none',
     speed: normalizeSpeedPreference(raw.service_tier ?? raw.speed, 'standard'),
   };
 }
@@ -447,8 +450,6 @@ function normalizeDefaults(value: unknown): ModelDefaults {
 function effectiveCapabilities(model: ChatGptDiscoveredModel | undefined): ModelCapabilities {
   const controls = model?.controls;
   if (!controls) return unknownCapabilities();
-  const advertisesUltra = controls.reasoning.supported.some((option) => normalizeReasoningEffort(option.effort) === 'ultra');
-  const ultraMappedEffort = advertisesUltra ? mapUltraEffort(controls) : undefined;
   const serviceTiers: ChatGptServiceTierOption[] = [];
   let hasFast = false;
   for (const option of controls.serviceTier.supported) {
@@ -466,8 +467,7 @@ function effectiveCapabilities(model: ChatGptDiscoveredModel | undefined): Model
     thinking: controls.reasoning.supported.some((option) => normalizeReasoningEffort(option.effort) !== 'none'),
     metadata_status: { reasoning: controls.reasoning.metadataKnown ? 'known' : 'unknown', service_tier: controls.serviceTier.metadataKnown ? 'known' : 'unknown' },
     fast_mode: controls.serviceTier.fastMode,
-    ultra_lossy: advertisesUltra,
-    ...(ultraMappedEffort ? { ultra_mapped_effort: ultraMappedEffort } : {}),
+    ultra_lossy: false,
   };
 }
 
@@ -494,9 +494,9 @@ function emptyEffectiveDefaults(): { defaults: EffectiveModelDefaults; issues: s
   return { defaults: { reasoning_source: 'omit', service_tier_source: 'omit' }, issues: [] };
 }
 
-function resolveReasoningControl(model: ChatGptDiscoveredModel, explicit: unknown, aliasDefault: ReasoningEffort | undefined): { value?: string; source: ResolvedModelControls['reasoningSource'] } {
+function resolveReasoningControl(model: ChatGptDiscoveredModel, explicit: unknown, aliasDefault: ReasoningEffort | undefined, exact = false): { value?: string; source: ResolvedModelControls['reasoningSource'] } {
   if (explicit !== undefined) {
-    const value = validateReasoning(model, explicit, true);
+    const value = validateReasoning(model, explicit, true, exact);
     return { ...(value ? { value } : {}), source: 'explicit' };
   }
   const implicit = resolveImplicitReasoning(model, aliasDefault, []);
@@ -544,21 +544,14 @@ function resolveImplicitServiceTier(model: ChatGptDiscoveredModel, aliasDefault:
 
 const INVALID = Symbol('invalid-control');
 
-function validateReasoning(model: ChatGptDiscoveredModel, rawValue: unknown, explicit: true): string | undefined;
-function validateReasoning(model: ChatGptDiscoveredModel, rawValue: unknown, explicit: false): string | undefined | typeof INVALID;
-function validateReasoning(model: ChatGptDiscoveredModel, rawValue: unknown, explicit: boolean): string | undefined | typeof INVALID {
+function validateReasoning(model: ChatGptDiscoveredModel, rawValue: unknown, explicit: true, exact?: boolean): string | undefined;
+function validateReasoning(model: ChatGptDiscoveredModel, rawValue: unknown, explicit: false, exact?: boolean): string | undefined | typeof INVALID;
+function validateReasoning(model: ChatGptDiscoveredModel, rawValue: unknown, explicit: boolean, exact = false): string | undefined | typeof INVALID {
   if (typeof rawValue !== 'string' || !rawValue.trim()) return invalidControl(model, 'reasoning_effort', rawValue, supportedReasoningValues(model), explicit);
-  const normalized = normalizeReasoningEffort(rawValue);
-  if (normalized === 'none') {
-    const advertisedNone = findAdvertisedReasoning(model, 'none');
-    return advertisedNone ?? invalidControl(model, 'reasoning_effort', rawValue, supportedReasoningValues(model), explicit);
-  }
-  const advertised = findAdvertisedReasoning(model, normalized);
+  const advertised = exact
+    ? model.controls?.reasoning.supported.find((option) => option.effort === rawValue)?.effort
+    : findAdvertisedReasoning(model, rawValue.trim());
   if (!advertised) return invalidControl(model, 'reasoning_effort', rawValue, supportedReasoningValues(model), explicit);
-  if (normalized === 'ultra') {
-    const mapped = mapUltraEffort(model.controls!);
-    return mapped ?? invalidControl(model, 'reasoning_effort', rawValue, supportedReasoningValues(model).filter((value) => normalizeReasoningEffort(value) !== 'ultra'), explicit);
-  }
   return advertised;
 }
 
@@ -581,7 +574,10 @@ function invalidControl(model: ChatGptDiscoveredModel, name: string, value: unkn
 }
 
 function findAdvertisedReasoning(model: ChatGptDiscoveredModel, value: string): string | undefined {
-  return model.controls?.reasoning.supported.find((option) => normalizeReasoningEffort(option.effort) === value)?.effort;
+  const supported = model.controls?.reasoning.supported ?? [];
+  // Preserve exact provider IDs before considering spelling aliases such as off/none.
+  return supported.find((option) => option.effort === value)?.effort
+    ?? supported.find((option) => normalizeReasoningEffort(option.effort) === normalizeReasoningEffort(value))?.effort;
 }
 
 const FAST_TIERS = ['priority', 'fast', 'fastest'];
@@ -610,36 +606,6 @@ function supportedServiceTierValues(model: ChatGptDiscoveredModel): string[] {
   const values = model.controls?.serviceTier.supported.map((option) => option.id) ?? [];
   if (model.controls?.serviceTier.fastMode && !values.some((value) => value.toLowerCase() === 'priority')) values.push('priority');
   return ['default', 'auto', ...values.filter((value) => !['default', 'standard', 'auto'].includes(value.toLowerCase()))];
-}
-
-function mapUltraEffort(controls: ChatGptModelControlCapabilities): string | undefined {
-  const multiAgent = extractMultiAgentEffort(controls.reasoning.multiAgent);
-  if (multiAgent) return multiAgent;
-  const max = controls.reasoning.supported.find((option) => normalizeReasoningEffort(option.effort) === 'max')?.effort;
-  if (max) return max;
-  const nonUltra = controls.reasoning.supported.filter((option) => normalizeReasoningEffort(option.effort) !== 'ultra');
-  if (nonUltra.length) return nonUltra[nonUltra.length - 1].effort;
-  const defaultEffort = controls.reasoning.defaultEffort;
-  if (defaultEffort && normalizeReasoningEffort(defaultEffort) !== 'ultra') return defaultEffort;
-  return undefined;
-}
-
-function extractMultiAgentEffort(value: unknown): string | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const raw = value as Record<string, unknown>;
-  for (const key of ['effort', 'reasoning_effort', 'reasoningEffort', 'default_reasoning_level', 'defaultReasoningLevel']) {
-    const candidate = raw[key];
-    if (typeof candidate === 'string' && candidate.trim() && normalizeReasoningEffort(candidate) !== 'ultra') return candidate.trim();
-  }
-  const supported = raw.supported_reasoning_levels ?? raw.supportedReasoningLevels;
-  if (Array.isArray(supported)) {
-    for (let index = supported.length - 1; index >= 0; index -= 1) {
-      const item = supported[index];
-      const candidate = typeof item === 'string' ? item : item && typeof item === 'object' && !Array.isArray(item) ? (item as Record<string, unknown>).effort : undefined;
-      if (typeof candidate === 'string' && candidate.trim() && normalizeReasoningEffort(candidate) !== 'ultra') return candidate.trim();
-    }
-  }
-  return undefined;
 }
 
 function discoveredToRuntimeModel(model: ChatGptDiscoveredModel): RuntimeModel {
@@ -679,7 +645,7 @@ function mergeDiscoveredModels(models: ChatGptDiscoveredModel[]): ChatGptDiscove
   const knownControls = controls.filter((control): control is ChatGptModelControlCapabilities => control !== undefined);
   const reasoningOptions = uniqueBy(
     knownControls.flatMap((control) => control.reasoning.supported),
-    (option) => normalizeReasoningEffort(option.effort),
+    (option) => option.effort,
   );
   const serviceTierOptions = uniqueBy(
     knownControls.flatMap((control) => control.serviceTier.supported),

@@ -610,15 +610,31 @@ function controlSelectsHtml(model, defaults, aliasId) {
   return '<label>推理 ' + selectHtml(aliasId, 'reasoning_effort', reasoning, defaults.reasoning_effort) + '</label><label>服务层级 ' + selectHtml(aliasId, 'speed', tiers, currentTier) + '</label>';
 }
 function selectHtml(id, field, options, current) {
-  const normalized = String(current || '').toLowerCase();
-  if (current && !options.some((option) => String(option.value).toLowerCase() === normalized)) options = [{ value: current, label: current + '（配置不受目标支持）' }].concat(options);
-  return '<select data-field="' + field + '" data-id="' + esc(id) + '">' + options.map((option) => '<option value="' + esc(option.value) + '" ' + (option.provider ? 'data-i18n-ignore ' : '') + 'title="' + esc(option.description || '') + '" ' + (String(option.value).toLowerCase() === normalized ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('') + '</select>';
+  const isReasoning = field === 'reasoning_effort';
+  const selected = isReasoning ? reasoningSelectionValue(options, current) : String(current || '').toLowerCase();
+  const matches = (option) => (isReasoning ? String(option.value) : String(option.value).toLowerCase()) === selected;
+  if (current && !options.some(matches)) options = [{ value: current, label: current + '（配置不受目标支持）' }].concat(options);
+  return '<select data-field="' + field + '" data-id="' + esc(id) + '">' + options.map((option) => '<option value="' + esc(option.value) + '" ' + (option.provider ? 'data-i18n-ignore ' : '') + 'title="' + esc(option.description || '') + '" ' + (matches(option) ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('') + '</select>';
 }
-function reasoningLabel(effort) { const value = String(effort).toLowerCase(); if (value === 'low') return 'Light（官方 low）'; if (value === 'ultra') return 'Ultra（兼容最高强度）'; return effort; }
+function reasoningSelectionValue(options, current) {
+  const value = String(current || '');
+  if (options.some((option) => String(option.value) === value)) return value;
+  const known = knownReasoningEffort(value);
+  const fallback = known === undefined ? undefined : options.find((option) => knownReasoningEffort(option.value) === known);
+  return fallback ? String(fallback.value) : value;
+}
+function knownReasoningEffort(value) {
+  const normalized = String(value).trim().toLowerCase().replace(/_/g, '-');
+  if (normalized === 'off') return 'none';
+  if (normalized === 'light') return 'low';
+  if (normalized === 'extra-high') return 'xhigh';
+  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(normalized) ? normalized : undefined;
+}
+function reasoningLabel(effort) { if (effort === 'low') return 'Light（官方 low）'; if (effort === 'ultra') return 'Ultra（上游 ultra）'; return effort; }
 function capabilityStateHtml(model) {
   const capabilities = model.capabilities || unknownCapabilities(); const states = capabilities.metadata_status || {};
   const parts = ['推理元数据：' + (states.reasoning === 'known' ? '已发现' : '未知'), '服务层级元数据：' + (states.service_tier === 'known' ? '已发现' : '未知')];
-  if (capabilities.ultra_lossy) parts.push(capabilities.ultra_mapped_effort ? 'Ultra 会有损映射到 ' + capabilities.ultra_mapped_effort + '，不会把 ultra 发给上游' : 'Ultra 没有安全的非 ultra 映射；显式请求会拒绝，隐式默认会省略');
+  parts.push('已发现的推理档位按上游值原样传递；不支持的显式强度会被拒绝。');
   if (Array.isArray(model.configuration_issues) && model.configuration_issues.length) parts.push(model.configuration_issues.join('；'));
   return '<span class="muted">' + esc(parts.join(' · ')) + '</span>';
 }

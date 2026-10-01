@@ -154,7 +154,6 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   }
 
   async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent> {
-    validateSessionRequest(request);
     const secret = requireSessionSecret(context);
     const body = buildResponsesBody(request);
     const serialized = JSON.stringify(body);
@@ -657,16 +656,6 @@ function unixSecondsToIso(value: unknown): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-function validateSessionRequest(request: ChatGptCompletionRequest): void {
-  if (request.reasoningEffort?.trim().toLowerCase() === 'ultra') {
-    throw new ChatGptBackendError(
-      'The local-only reasoning effort "ultra" must be resolved to a target-supported upstream effort before calling the ChatGPT session backend.',
-      'invalid_request',
-      { status: 400 },
-    );
-  }
-}
-
 function httpBackendError(prefix: string, status: number): ChatGptBackendError {
   return new ChatGptBackendError(`${prefix}: HTTP ${status}`, backendErrorCodeForStatus(status), { status, safeDiagnostic: { httpStatus: status, failurePhase: 'response_headers' } });
 }
@@ -698,7 +687,9 @@ function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {
     instructions: '',
   };
   applyResponsesBodyOptions(body, request.backendOptions?.responsesBody);
-  if (request.reasoningEffort) body.reasoning = { effort: request.reasoningEffort };
+  // The model-control resolver has already selected the provider's effort token.
+  // Preserve it here, including native ultra and future catalog values.
+  if (request.reasoningEffort?.trim()) body.reasoning = { effort: request.reasoningEffort };
   // Discovery can advertise other tiers; only canonical priority is proven compatible.
   if (request.serviceTier === 'priority') body.service_tier = 'priority';
   const mappedTools = request.tools?.length ? request.tools.map((tool) => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: tool.strict ?? false })) : [];

@@ -2943,13 +2943,19 @@ describe('dynamic model controls across compatible routes', () => {
     }
   });
 
-  it('renders target-driven Admin controls and explicit Ultra lossiness labels', async () => {
+  it('renders target-driven Admin controls and native reasoning effort labels', async () => {
     const app = createApp(env);
     const response = await app.request('/admin');
     const html = await response.text();
     expect(html).toContain('Light（官方 low）');
-    expect(html).toContain('Ultra（兼容最高强度）');
-    expect(html).toContain('不会把 ultra 发给上游');
+    expect(html).toContain('Ultra（上游 ultra）');
+    expect(html).toContain('Ultra (provider ultra)');
+    expect(html).toContain('已发现的推理档位按上游值原样传递；不支持的显式强度会被拒绝。');
+    expect(html).toContain('Discovered reasoning efforts are forwarded with their original provider values; unsupported explicit efforts are rejected.');
+    expect(html).not.toContain('Ultra（兼容最高强度）');
+    expect(html).not.toContain('ultra_mapped_effort');
+    expect(html).not.toContain('ultra_lossy');
+    expect(html).not.toContain('有损映射到');
     expect(html).not.toContain("const effortOptions = ['off'");
     expect(html).not.toContain('1.5x');
     expect(html).not.toContain('2x');

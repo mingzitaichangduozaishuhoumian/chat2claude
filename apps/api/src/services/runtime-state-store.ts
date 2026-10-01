@@ -185,7 +185,7 @@ function validateAlias(value: unknown, index: number): AliasOverlay {
   const raw = strictObject(value, ['id', 'type', 'display_name', 'builtIn', 'enabled', 'backendModel', 'capabilities', 'defaults'], label, ['backendModel']);
   const capabilities = strictObject(raw.capabilities, undefined, `${label}.capabilities`);
   const defaults = strictObject(raw.defaults, ['reasoning_effort', 'speed'], `${label}.defaults`);
-  const reasoningEffort = normalizeReasoningEffort(nonEmptyString(defaults.reasoning_effort, `${label}.defaults.reasoning_effort`));
+  const reasoningEffort = nonEmptyString(defaults.reasoning_effort, `${label}.defaults.reasoning_effort`);
   const speed = normalizeSpeedPreference(nonEmptyString(defaults.speed, `${label}.defaults.speed`));
   const reasoning = nonEmptyStringArray(capabilities.reasoning_effort, `${label}.capabilities.reasoning_effort`).map((item) => normalizeReasoningEffort(item)).filter(unique);
   const serviceTiers = nonEmptyStringArray(capabilities.response_speed, `${label}.capabilities.response_speed`).map((item) => normalizeSpeedPreference(item)).filter(unique);

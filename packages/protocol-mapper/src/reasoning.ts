@@ -1,7 +1,7 @@
 import type { ClaudeMessagesRequest } from '@chatgpt-to-claude/claude-protocol';
 
-export type CanonicalReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | (string & {});
-export type ReasoningEffort = CanonicalReasoningEffort | 'ultra';
+export type CanonicalReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' | (string & {});
+export type ReasoningEffort = CanonicalReasoningEffort;
 export type SpeedPreference = 'standard' | 'priority' | (string & {});
 
 export interface ModelReasoningSpeedDefaults {
@@ -37,11 +37,14 @@ export function resolveReasoningSpeed(request: ClaudeMessagesRequest, defaults: 
 
 export function normalizeReasoningEffort(value: unknown, fallback: ReasoningEffort = DEFAULT_REASONING_EFFORT): ReasoningEffort {
   if (typeof value !== 'string' || !value.trim()) return fallback;
-  const normalized = value.trim().toLowerCase().replace(/_/g, '-');
+  const trimmed = value.trim();
+  const normalized = trimmed.toLowerCase().replace(/_/g, '-');
   if (normalized === 'off') return 'none';
   if (normalized === 'light') return 'low';
   if (normalized === 'extra-high') return 'xhigh';
-  return normalized as ReasoningEffort;
+  if (['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(normalized)) return normalized;
+  // Unknown provider IDs may be case-sensitive or distinguish underscores from hyphens.
+  return trimmed;
 }
 
 export function normalizeSpeedPreference(value: unknown, fallback: SpeedPreference = DEFAULT_SPEED_PREFERENCE): SpeedPreference {

@@ -34,7 +34,10 @@ function parseClaudeRequestBase(value: unknown, options: { requireMaxTokens: boo
   if (!Array.isArray(body.messages)) throw new Error('messages must be an array');
   if (body.system !== undefined) validateSystem(body.system);
   if (body.thinking !== undefined && (!body.thinking || typeof body.thinking !== 'object' || Array.isArray(body.thinking))) throw new Error('thinking must be an object');
-  if (body.output_config !== undefined && (!body.output_config || typeof body.output_config !== 'object' || Array.isArray(body.output_config))) throw new Error('output_config must be an object');
+  if (body.output_config !== undefined) {
+    if (!isPlainObject(body.output_config)) throw new Error('output_config must be an object');
+    if (body.output_config.effort !== undefined && (typeof body.output_config.effort !== 'string' || !body.output_config.effort.trim())) throw new Error('output_config.effort must be a non-empty string');
+  }
   if (body.reasoning_effort !== undefined && typeof body.reasoning_effort !== 'string') throw new Error('reasoning_effort must be a string');
   if (body.speed !== undefined && typeof body.speed !== 'string') throw new Error('speed must be a string');
   if (body.response_speed !== undefined && typeof body.response_speed !== 'string') throw new Error('response_speed must be a string');

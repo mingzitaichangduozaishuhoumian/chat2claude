@@ -285,6 +285,17 @@ Claude Code、Anthropic SDK、Cline 和 Roo 按 Claude/Anthropic 兼容客户端
 
 模型映射的 Backend Model 下拉只来自当前 discovery。专业模式中的 reasoning effort、service tier 和默认值也来自所选目标的能力元数据；元数据未知时不会假设所有控制项都可用。显式请求不支持的 `reasoning_effort` 或 service tier 会返回 400，而不是静默改写。
 
+### 思考强度的无损传递
+
+Claude 使用 `output_config.effort`（优先于 `reasoning_effort`），Chat Completions 使用 `reasoning_effort`，Responses 使用 `reasoning.effort`（优先于 `reasoning_effort`）。服务按实际选中账号的模型目录校验，然后把目录中的原始值传到上游 `reasoning.effort`，流式与非流式一致。
+
+- `ultra`、`max`、`xhigh` 是独立档位。目录声明支持哪个值，就传递哪个值；不会把 `ultra` 改成 `xhigh`、`max`，也不会根据选项顺序或 multi-agent 元数据猜测替代档位。
+- 原生值精确匹配优先；没有精确匹配时，兼容 `off → none`、`light → low`、`extra-high` / `extra_high → xhigh` 和已知档位的大小写。未知档位保留大小写及下划线，例如 `Future_Deep`。
+- Alias 保存和持久化保留配置值；已生效的 alias 默认强度也参与账号筛选，不能发送给仅支持其他档位的账号。
+- 显式值不受支持或缺少能力信息时返回 400，不调用上游。不合法的 `output_config.effort`（如 `null`、空字符串）也会拒绝。
+
+已有的隐式默认回退规则保持不变：alias 默认失效时，管理台显示配置问题，再使用有效的发现默认值，否则省略参数。这里的“无损”指已支持档位的参数保真，不代表不同模型的思考量相同，也不保证上游一定接受尚未刷新的目录信息。
+
 ### Token 计数
 
 `POST /v1/messages/count_tokens` 保持 Claude 兼容的响应 body 结构不变：

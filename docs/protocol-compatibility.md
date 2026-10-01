@@ -80,6 +80,8 @@ Use a Runtime API Key for all client smokes; do not use an Admin API Key as a no
 
 ## Design direction
 
+Reasoning effort is validated against the selected account's discovered model controls and forwarded using the original provider ID. Native `ultra`, `max`, and `xhigh` are distinct; no strength substitution is inferred from multi-agent metadata or catalog order. Known spelling aliases are resolved only after checking for an exact native match, and unknown IDs retain case and underscores. Unsupported explicit efforts are rejected before dispatch. See the usage guides for protocol field precedence and implicit-default fallback behavior. This is parameter fidelity, not a guarantee of equivalent reasoning across providers.
+
 1. Parse Claude/OpenAI requests into Canonical IR.
 2. Preserve non-text semantics in IR.
 3. Return an explicit fallback or error when the selected backend cannot support a feature.

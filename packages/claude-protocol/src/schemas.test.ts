@@ -1,6 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { parseClaudeCountTokensRequest, parseClaudeMessagesRequest } from './schemas.js';
 
+describe('Claude reasoning effort validation', () => {
+  const input = { model: 'sonnet', max_tokens: 64, messages: [], reasoning_effort: 'high' };
+
+  it.each([null, false, 1, {}, [], '', '   '])('rejects malformed output_config.effort instead of falling back (%j)', (effort) => {
+    const request = { ...input, output_config: { effort } };
+    expect(() => parseClaudeMessagesRequest(request)).toThrow('output_config.effort must be a non-empty string');
+    expect(() => parseClaudeCountTokensRequest(request)).toThrow('output_config.effort must be a non-empty string');
+  });
+
+  it.each(['ultra', 'max', 'xhigh', 'Future_Deep'])('preserves native output_config.effort %s for model validation', (effort) => {
+    expect(parseClaudeMessagesRequest({ ...input, output_config: { effort } }).output_config?.effort).toBe(effort);
+  });
+
+  it('accepts absent effort without inventing an override', () => {
+    expect(parseClaudeMessagesRequest({ ...input, output_config: {} })).toMatchObject({ reasoning_effort: 'high', output_config: {} });
+  });
+});
+
 describe('parseClaudeMessagesRequest content blocks', () => {
   const toolUse = (id: string) => ({ type: 'tool_use', id, name: 'lookup', input: {} });
   const result = (id: string) => ({ type: 'tool_result', tool_use_id: id, content: 'HISTORY_CANARY' });

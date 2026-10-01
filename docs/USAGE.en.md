@@ -291,6 +291,17 @@ The backend model list is not a static source-code table:
 
 The Backend Model choices in Admin come from the current discovery catalog. Professional mode also exposes the target model's reasoning-effort and service-tier metadata. When metadata is unknown, the service does not assume that every control is supported. An explicit unsupported `reasoning_effort` or service tier returns HTTP 400 instead of being silently rewritten.
 
+### Lossless reasoning-effort forwarding
+
+Claude uses `output_config.effort` before `reasoning_effort`; Chat Completions uses `reasoning_effort`; Responses uses `reasoning.effort` before `reasoning_effort`. Values are checked against the selected account's model catalog and forwarded as the original provider value in upstream `reasoning.effort`, for both streaming and non-streaming requests.
+
+- `ultra`, `max`, and `xhigh` remain distinct. An advertised value is never replaced by another level inferred from catalog order or multi-agent metadata.
+- Exact native IDs take precedence. Otherwise, compatibility aliases support `off → none`, `light → low`, `extra-high` / `extra_high → xhigh`, and case-insensitive known levels. Unknown IDs retain case and underscores, such as `Future_Deep`.
+- Alias configuration and persistence preserve the configured value. Effective alias defaults also constrain account selection to accounts supporting that effort.
+- Unsupported explicit values or missing capability information produce HTTP 400 before any upstream call. Malformed `output_config.effort` values, including `null` and empty strings, are rejected.
+
+The existing implicit-default fallback remains: an unsupported alias default is reported as a configuration issue in Admin, then a valid discovered default is used, or the parameter is omitted. Lossless forwarding means preserving supported parameter values; it does not assert equal reasoning across models or guarantee that stale discovery metadata matches current upstream acceptance.
+
 ### Token counting
 
 `POST /v1/messages/count_tokens` preserves the Claude-compatible body shape exactly:
