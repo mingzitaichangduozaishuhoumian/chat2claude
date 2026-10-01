@@ -29,19 +29,19 @@ const routes = [
 type Route = typeof routes[number];
 type WireCall = { url: string; method?: string; authorization: string | null; accountId: string | null; body: Record<string, unknown> };
 
-function discoveredModel(efforts: string[] | undefined): ChatGptDiscoveredModel {
+function discoveredModel(efforts: string[] | undefined, multiAgentReasoningEffort?: string): ChatGptDiscoveredModel {
   return {
     id: backendModel,
     ...(efforts === undefined ? {} : {
       controls: {
-        reasoning: { metadataKnown: true, supported: efforts.map((effort) => ({ effort })) },
+        reasoning: { metadataKnown: true, supported: efforts.map((effort) => ({ effort })), multiAgentVersion: 'v2', ...(multiAgentReasoningEffort ? { multiAgentReasoningEffort } : {}) },
         serviceTier: { metadataKnown: false, supported: [], fastMode: false },
       },
     }),
   };
 }
 
-function fixture(route: Route, supported: string[] | undefined, options: { firstSupported?: string[]; aliasDefault?: string } = {}) {
+function fixture(route: Route, supported: string[] | undefined, options: { firstSupported?: string[]; aliasDefault?: string; firstMultiAgentEffort?: string; multiAgentEffort?: string } = {}) {
   const calls: WireCall[] = [];
   const backend = new SessionChatGptBackend({
     baseUrl: 'https://chatgpt.test', timeoutMs: 1000,
@@ -72,7 +72,7 @@ function fixture(route: Route, supported: string[] | undefined, options: { first
       id, provider: 'chatgpt-session', capabilities: ['chatgpt-session', 'messages'],
       secret: { type: 'chatgpt-session', accessToken: `synthetic-token-${id}`, accountId: `synthetic-account-${id}` },
     });
-    modelRegistry.replaceAccountModels({ accountId: id, createdAt: account.createdAt }, [discoveredModel(efforts)]);
+    modelRegistry.replaceAccountModels({ accountId: id, createdAt: account.createdAt }, [discoveredModel(efforts, id === 'first' ? options.firstMultiAgentEffort : options.multiAgentEffort)]);
   }
   const app = route.create({ backend, accountPool, modelRegistry, requestLog: new RequestLog(), backendProvider: 'session' });
   const send = (stream: boolean, controls: Record<string, unknown> = {}) => app.request(route.path, {
@@ -99,7 +99,7 @@ async function expectWireEffort(result: ReturnType<typeof fixture>, response: Re
 }
 
 describe.each(routes)('$name lossless reasoning to the session wire', (route) => {
-  it.each(['ultra', 'max', 'xhigh', 'Future_Deep'].flatMap((effort) => [false, true].map((stream) => ({ effort, stream }))))(
+  it.each(['max', 'xhigh', 'Future_Deep'].flatMap((effort) => [false, true].map((stream) => ({ effort, stream }))))(
     'preserves $effort on the eligible account (stream=$stream)', async ({ effort, stream }) => {
       const result = fixture(route, [effort]);
       await expectWireEffort(result, await result.send(stream, route.controls(effort)), effort, stream);
@@ -115,9 +115,37 @@ describe.each(routes)('$name lossless reasoning to the session wire', (route) =>
     await expectWireEffort(result, await result.send(stream, route.controls(input)), effort, stream);
   });
 
-  it('preserves alias default ultra when selecting between xhigh and native ultra accounts', async () => {
-    const result = fixture(route, ['ultra'], { firstSupported: ['xhigh'], aliasDefault: 'ultra' });
-    await expectWireEffort(result, await result.send(true), 'ultra', true);
+  it.each([false, true])('executes Ultra with advertised base effort and caller delegation (stream=%s)', async (stream) => {
+    const result = fixture(route, ['medium', 'xhigh', 'max', 'ultra'], { firstSupported: ['xhigh', 'max'], multiAgentEffort: 'xhigh' });
+    await expectWireEffort(result, await result.send(stream, route.controls('ultra')), 'xhigh', stream);
+    const body = result.calls[0].body;
+    expect(body.input).toEqual(expect.arrayContaining([expect.objectContaining({ role: 'developer', content: expect.stringContaining('Proactive multi-agent delegation') })]));
+    expect(body).not.toHaveProperty('multi_agent');
+    expect(body).not.toHaveProperty('reasoningExecution');
+    expect(body).not.toHaveProperty('tools');
+  });
+
+  it('preserves alias default Ultra eligibility instead of routing to an account with only max', async () => {
+    const result = fixture(route, ['max', 'ultra'], { firstSupported: ['max'], aliasDefault: 'ultra' });
+    await expectWireEffort(result, await result.send(true), 'max', true);
+  });
+
+  it('resolves Ultra base effort after account selection rather than from the merged catalog', async () => {
+    const result = fixture(route, ['xhigh', 'max', 'ultra'], { firstSupported: ['xhigh', 'max', 'ultra'], multiAgentEffort: 'xhigh' });
+    const response = await result.send(false, route.controls('ultra'));
+    expect(await response.text()).toContain('ok');
+    expect(response.status).toBe(200);
+    expect(result.calls).toHaveLength(1);
+    expect(result.calls[0]).toMatchObject({ accountId: 'synthetic-account-first', body: { reasoning: { effort: 'max' } } });
+    expect(result.accountPool.list().map((account) => account.currentConcurrency)).toEqual([0, 0]);
+  });
+
+  it('does not let request JSON replace the trusted Ultra execution plan', async () => {
+    const result = fixture(route, ['xhigh', 'max', 'ultra'], { multiAgentEffort: 'xhigh' });
+    await expectWireEffort(result, await result.send(false, {
+      ...route.controls('ultra'), reasoningExecution: { effort: 'low', delegation: 'proactive' },
+      backendOptions: { responsesBody: { reasoning: { effort: 'low' }, multi_agent: { enabled: true } } },
+    }), 'xhigh', false);
   });
 
   it.each(['explicit', 'alias default'] as const)('keeps native light distinct from low for %s requests', async (source) => {
@@ -150,7 +178,7 @@ describe.each(routes)('$name lossless reasoning to the session wire', (route) =>
 
 describe('explicit reasoning field precedence', () => {
   it.each(routes.filter((route) => route.name !== 'OpenAI Chat'))('$name gives its nested effort priority over reasoning_effort and alias defaults', async (route) => {
-    const result = fixture(route, ['ultra'], { firstSupported: ['max'], aliasDefault: 'max' });
-    await expectWireEffort(result, await result.send(false, { reasoning_effort: 'max', ...route.controls('ultra') }), 'ultra', false);
+    const result = fixture(route, ['xhigh', 'ultra'], { firstSupported: ['max'], aliasDefault: 'max' });
+    await expectWireEffort(result, await result.send(false, { reasoning_effort: 'max', ...route.controls('ultra') }), 'xhigh', false);
   });
 });

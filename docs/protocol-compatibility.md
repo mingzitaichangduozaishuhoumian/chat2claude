@@ -73,14 +73,18 @@ Use a Runtime API Key for all client smokes; do not use an Admin API Key as a no
 | --- | --- | --- |
 | `dynamic_model_discovery` | `supported` | Backend model catalogs are discovered dynamically. |
 | `oauth_authorization_and_text_completion` | `partial` | Implemented with backend-dependent upstream availability. |
-| `reasoning_and_speed_selection` | `backend_dependent` | Controls are resolved safely but provider support varies. |
+| `reasoning_and_speed_selection` | `backend_dependent` | Ordinary effort values are preserved; Ultra resolves a base effort and encourages delegation through caller-supplied tools. Provider and client support determine execution. |
 | `image_generation_output` | `backend_dependent` | Safe image-generation output fields are mapped for OpenAI Responses only when supplied by the upstream backend. |
 | `tool_calls` | `unsupported` | Backend tool-call mappings are not implemented. |
 | `real_usage` | `unsupported` | Upstream usage parsing is not implemented. |
 
 ## Design direction
 
-Reasoning effort is validated against the selected account's discovered model controls and forwarded using the original provider ID. Native `ultra`, `max`, and `xhigh` are distinct; no strength substitution is inferred from multi-agent metadata or catalog order. Known spelling aliases are resolved only after checking for an exact native match, and unknown IDs retain case and underscores. Unsupported explicit efforts are rejected before dispatch. See the usage guides for protocol field precedence and implicit-default fallback behavior. This is parameter fidelity, not a guarantee of equivalent reasoning across providers.
+Reasoning effort is validated against the selected account's discovered model controls. Ordinary efforts, including `max`, `xhigh`, and future provider IDs, retain their original values. Known spelling aliases are resolved only after checking for an exact native match, and unknown IDs retain case and underscores. Unsupported explicit efforts are rejected before dispatch.
+
+Ultra is a mode adaptation. The selected value remains `ultra`, while upstream `reasoning.effort` follows the [Codex 0.155.0-alpha.9.2 resolver](https://github.com/openai/codex/blob/4607249e430dac1c961df4dc615beae88e33cec8/codex-rs/protocol/src/openai_models/reasoning_effort.rs#L10): a supported `multi_agent_reasoning_effort`, then supported `max`, then the last non-Ultra option, then `medium`. A developer instruction encourages proactive delegation through the caller's existing tools. The service does not create subagents or send a hosted multi-agent flag. Actual delegation, concurrency, and turns remain the client's responsibility; a client without delegation tools uses the main model directly. `capabilities.ultra_execution` exposes the resolved effort and `delegation: "caller_tools"`. This is not the complete Codex runtime or a guarantee of equivalent execution. See the usage guides for protocol field precedence, effective-default metadata, and implicit-default fallback behavior.
+
+Different account catalogs can resolve the same model's Ultra selection to different base efforts. Aggregated `ultra_execution` then exposes `account_dependent: true` without a single `reasoning_effort`; effective defaults expose `reasoning_account_dependent: true` without `upstream_reasoning_effort`. The base effort is resolved from the selected account's catalog during request routing, not from the union of account capabilities.
 
 1. Parse Claude/OpenAI requests into Canonical IR.
 2. Preserve non-text semantics in IR.

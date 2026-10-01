@@ -492,7 +492,7 @@ function sanitizeModelControls(value: ChatGptModelControlCapabilities, label: st
     ? strictObject(value, ['reasoning', 'serviceTier'], label)
     : value as unknown as Record<string, unknown>;
   const reasoningRaw = persisted
-    ? strictObject(raw.reasoning, ['metadataKnown', 'supported', 'defaultEffort', 'multiAgent'], `${label}.reasoning`, ['defaultEffort', 'multiAgent'])
+    ? strictObject(raw.reasoning, ['metadataKnown', 'supported', 'defaultEffort', 'multiAgent', 'multiAgentVersion', 'multiAgentReasoningEffort'], `${label}.reasoning`, ['defaultEffort', 'multiAgent', 'multiAgentVersion', 'multiAgentReasoningEffort'])
     : raw.reasoning as Record<string, unknown>;
   const serviceRaw = persisted
     ? strictObject(raw.serviceTier, ['metadataKnown', 'supported', 'defaultTier', 'fastMode'], `${label}.serviceTier`, ['defaultTier'])
@@ -508,6 +508,8 @@ function sanitizeModelControls(value: ChatGptModelControlCapabilities, label: st
       supported: reasoningSupported,
       ...(reasoningRaw.defaultEffort === undefined ? {} : { defaultEffort: nonEmptyString(reasoningRaw.defaultEffort, `${label}.reasoning.defaultEffort`) }),
       ...(reasoningRaw.multiAgent === undefined ? {} : { multiAgent: sanitizeMultiAgent(reasoningRaw.multiAgent, `${label}.reasoning.multiAgent`) }),
+      ...(reasoningRaw.multiAgentVersion === undefined ? {} : { multiAgentVersion: enumValue(reasoningRaw.multiAgentVersion, ['v1', 'v2'] as const, `${label}.reasoning.multiAgentVersion`) }),
+      ...(reasoningRaw.multiAgentReasoningEffort === undefined ? {} : { multiAgentReasoningEffort: nonEmptyString(reasoningRaw.multiAgentReasoningEffort, `${label}.reasoning.multiAgentReasoningEffort`) }),
     },
     serviceTier: {
       metadataKnown: booleanValue(serviceRaw.metadataKnown, `${label}.serviceTier.metadataKnown`),

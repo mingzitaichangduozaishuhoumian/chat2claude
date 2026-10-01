@@ -1,4 +1,4 @@
-import type { ChatGptCompletionRequest, ChatGptImageDetail, ChatGptInputContentPart, ChatGptInputItem, ChatGptMessage, ChatGptTool, ChatGptToolChoice } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptCompletionRequest, ChatGptImageDetail, ChatGptInputContentPart, ChatGptInputItem, ChatGptMessage, ChatGptReasoningExecution, ChatGptTool, ChatGptToolChoice } from '@chatgpt-to-claude/chatgpt-backend';
 import { validateClaudeToolContract, type ClaudeContentBlock, type ClaudeMessagesRequest, type ClaudeTool, type ClaudeToolChoice } from '@chatgpt-to-claude/claude-protocol';
 import { normalizeClaudeMessagesToCanonical, flattenCanonicalContentForTextBackend, type CanonicalContentBlock, type CanonicalMappingDiagnostic } from './canonical.js';
 import { resolveReasoningSpeed, type ReasoningSpeedDefaults } from './reasoning.js';
@@ -6,7 +6,7 @@ export { normalizeClaudeMessagesToCanonical, flattenCanonicalContentForTextBacke
 export interface BackendRequestOptions {
   backendModel?: string;
   backendOptions?: Record<string, unknown>;
-  resolvedControls?: { reasoningEffort?: string; serviceTier?: string };
+  resolvedControls?: { reasoningEffort?: string; reasoningExecution?: ChatGptReasoningExecution; serviceTier?: string };
 }
 
 export function mapClaudeRequestToChatGpt(request: ClaudeMessagesRequest, defaults: ReasoningSpeedDefaults = {}, options: BackendRequestOptions = {}): ChatGptCompletionRequest {
@@ -32,6 +32,7 @@ export function mapClaudeRequestToChatGpt(request: ClaudeMessagesRequest, defaul
     ...(options.resolvedControls
       ? {
           ...(options.resolvedControls.reasoningEffort === undefined ? {} : { reasoningEffort: options.resolvedControls.reasoningEffort }),
+          ...(options.resolvedControls.reasoningExecution === undefined ? {} : { reasoningExecution: { ...options.resolvedControls.reasoningExecution } }),
           ...(options.resolvedControls.serviceTier === undefined ? {} : { serviceTier: options.resolvedControls.serviceTier }),
         }
       : {

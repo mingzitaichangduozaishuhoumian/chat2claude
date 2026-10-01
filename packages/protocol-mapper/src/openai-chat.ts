@@ -1,4 +1,4 @@
-import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptFinishReason, ChatGptImageDetail, ChatGptInputContentPart, ChatGptInputItem, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptFinishReason, ChatGptImageDetail, ChatGptInputContentPart, ChatGptInputItem, ChatGptMessage, ChatGptReasoningExecution, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
 import { createMessageId } from '@chatgpt-to-claude/shared';
 import { estimateTokens } from './response.js';
 import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningSpeedDefaults } from './reasoning.js';
@@ -57,7 +57,7 @@ export interface OpenAiChatResponseToolCall { id: string; type: 'function'; func
 export interface OpenAiBackendRequestOptions {
   backendModel?: string;
   backendOptions?: Record<string, unknown>;
-  resolvedControls?: { reasoningEffort?: string; serviceTier?: string };
+  resolvedControls?: { reasoningEffort?: string; reasoningExecution?: ChatGptReasoningExecution; serviceTier?: string };
 }
 
 export function mapOpenAiChatRequestToChatGpt(request: OpenAiChatCompletionRequest, defaults: ReasoningSpeedDefaults = {}, options: OpenAiBackendRequestOptions = {}): ChatGptCompletionRequest {
@@ -76,6 +76,7 @@ export function mapOpenAiChatRequestToChatGpt(request: OpenAiChatCompletionReque
     ...(options.resolvedControls
       ? {
           ...(options.resolvedControls.reasoningEffort === undefined ? {} : { reasoningEffort: options.resolvedControls.reasoningEffort }),
+          ...(options.resolvedControls.reasoningExecution === undefined ? {} : { reasoningExecution: { ...options.resolvedControls.reasoningExecution } }),
           ...(options.resolvedControls.serviceTier === undefined ? {} : { serviceTier: options.resolvedControls.serviceTier }),
         }
       : {

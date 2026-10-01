@@ -179,7 +179,7 @@ describe('ModelRegistry dynamic Codex controls', () => {
     }
   });
 
-  it('preserves advertised ultra even when multi-agent metadata suggests another effort', () => {
+  it('preserves the selected Ultra mode and ignores the obsolete speculative multiAgent object', () => {
     const target = catalogModel({
       controls: {
         reasoning: {
@@ -194,7 +194,9 @@ describe('ModelRegistry dynamic Codex controls', () => {
     const models = registry(target, { reasoning_effort: 'ultra', speed: 'standard' });
     expect(models.get('sonnet')?.capabilities).toMatchObject({ ultra_lossy: false });
     expect(models.get('sonnet')?.capabilities.ultra_mapped_effort).toBeUndefined();
-    expect(models.resolveControls(models.resolve('sonnet'))).toMatchObject({ reasoningEffort: 'ultra', reasoningSource: 'alias' });
+    expect(models.resolveControls(models.resolve('sonnet'))).toMatchObject({ reasoningEffort: 'ultra', reasoningSource: 'alias', reasoningExecution: { effort: 'max', delegation: 'proactive' } });
+    expect(models.get('sonnet')?.capabilities.ultra_execution).toEqual({ reasoning_effort: 'max', delegation: 'caller_tools' });
+    expect(models.get('sonnet')?.effective_defaults).toMatchObject({ reasoning_effort: 'ultra', upstream_reasoning_effort: 'max', delegation: 'caller_tools' });
   });
 
   it.each(['ultra', 'max', 'xhigh'])('keeps the distinct advertised effort %s for requests and alias defaults', (effort) => {
@@ -223,7 +225,7 @@ describe('ModelRegistry dynamic Codex controls', () => {
     expect(() => models.resolveControls(models.resolve('sonnet'), { reasoningEffort: 'ultra' })).toThrow(/Supported values: max, xhigh/);
   });
 
-  it('never infers effort strength from the ordering of discovered options', () => {
+  it('prefers Max over the last catalog entry when no explicit Ultra base effort is declared', () => {
     const target = catalogModel({
       controls: {
         reasoning: { metadataKnown: true, supported: [{ effort: 'low' }, { effort: 'ultra' }, { effort: 'max' }, { effort: 'future-last' }] },
@@ -233,9 +235,10 @@ describe('ModelRegistry dynamic Codex controls', () => {
     const models = registry(target, { reasoning_effort: 'ultra', speed: 'standard' });
     expect(models.get('sonnet')?.capabilities.ultra_mapped_effort).toBeUndefined();
     expect(models.resolveControls(models.resolve('sonnet')).reasoningEffort).toBe('ultra');
+    expect(models.resolveControls(models.resolve('sonnet')).reasoningExecution?.effort).toBe('max');
   });
 
-  it('supports a catalog whose only native effort and discovered default is ultra', () => {
+  it('uses the Codex Medium fallback when the only discovered mode is Ultra', () => {
     const target = catalogModel({
       controls: {
         reasoning: { metadataKnown: true, supported: [{ effort: 'ultra' }], defaultEffort: 'ultra' },
@@ -247,6 +250,46 @@ describe('ModelRegistry dynamic Codex controls', () => {
     expect(models.get('sonnet')?.capabilities.ultra_mapped_effort).toBeUndefined();
     expect(models.resolveControls(models.resolve('sonnet'))).toMatchObject({ reasoningEffort: 'ultra', reasoningSource: 'discovered' });
     expect(models.resolveControls(models.resolve('sonnet'), { reasoningEffort: 'ultra' }).reasoningEffort).toBe('ultra');
+    expect(models.resolveControls(models.resolve('sonnet')).reasoningExecution?.effort).toBe('medium');
+  });
+
+  it.each([
+    { supported: ['xhigh', 'max', 'ultra'], preferred: 'xhigh', wire: 'xhigh' },
+    { supported: ['xhigh', 'max', 'ultra'], preferred: undefined, wire: 'max' },
+    { supported: ['xhigh', 'max', 'ultra'], preferred: 'low', wire: 'max' },
+    { supported: ['xhigh', 'max', 'ultra'], preferred: 'ultra', wire: 'max' },
+    { supported: ['xhigh', 'low', 'ultra'], preferred: undefined, wire: 'low' },
+    { supported: ['Future_Deep', 'ultra'], preferred: 'Future_Deep', wire: 'Future_Deep' },
+    { supported: ['Future_Deep', 'low', 'ultra'], preferred: 'future_deep', wire: 'low' },
+    { supported: ['ultra'], preferred: undefined, wire: 'medium' },
+    { supported: ['xhigh', 'ULTRA', 'ultra'], preferred: 'ULTRA', wire: 'xhigh' },
+  ])('matches the Codex Ultra resolver for $supported / $preferred', ({ supported, preferred, wire }) => {
+    const target = catalogModel();
+    target.controls!.reasoning = { metadataKnown: true, supported: supported.map((effort) => ({ effort })), multiAgentReasoningEffort: preferred };
+    const models = registry(target, { reasoning_effort: 'ultra', speed: 'standard' });
+    const resolution = models.resolve('sonnet');
+    expect(models.resolveControls(resolution)).toMatchObject({ reasoningEffort: 'ultra', reasoningExecution: { effort: wire, delegation: 'proactive' } });
+    expect(models.accountControlRequirements(resolution)).toMatchObject({ reasoningEffort: 'ultra', reasoningEffortIsNative: true });
+    expect(models.accountControlRequirements(resolution)).not.toHaveProperty('reasoningExecution');
+  });
+
+  it('recognizes a case-variant advertised Ultra mode while retaining its native account-routing ID', () => {
+    const target = catalogModel();
+    target.controls!.reasoning = { metadataKnown: true, supported: [{ effort: 'xhigh' }, { effort: 'ULTRA' }] };
+    const models = registry(target, { reasoning_effort: 'ULTRA', speed: 'standard' });
+    const resolution = models.resolve('sonnet');
+    expect(models.resolveControls(resolution)).toMatchObject({ reasoningEffort: 'ULTRA', reasoningExecution: { effort: 'xhigh', delegation: 'proactive' } });
+    expect(models.accountControlRequirements(resolution)).toMatchObject({ reasoningEffort: 'ULTRA', reasoningEffortIsNative: true });
+    expect(models.get('sonnet')!.effective_defaults.upstream_reasoning_effort).toBe('xhigh');
+  });
+
+  it.each(['max', 'xhigh', 'Future_Deep'])('does not enable Ultra delegation for %s', (effort) => {
+    const target = catalogModel();
+    target.controls!.reasoning = { metadataKnown: true, supported: ['ultra', effort].map((id) => ({ effort: id })), multiAgentReasoningEffort: effort };
+    const models = registry(target);
+    const controls = models.resolveControls(models.resolve('sonnet'), { reasoningEffort: effort });
+    expect(controls.reasoningEffort).toBe(effort);
+    expect(controls.reasoningExecution).toBeUndefined();
   });
 
   it('preserves exact provider IDs and distinct future values across catalog merging and persistence', () => {

@@ -3,6 +3,7 @@ import * as nodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ChatGptDiscoveredModel } from '@chatgpt-to-claude/chatgpt-backend';
 import { AdminOperationalState, type OperationalStateFileSystem } from './admin-operational-state.js';
 
 const directories: string[] = [];
@@ -13,6 +14,59 @@ afterEach(() => {
 });
 
 describe('AdminOperationalState', () => {
+  it('roundtrips versioned multi-agent controls without inventing missing efforts or persisting raw metadata', async () => {
+    const path = statePath();
+    const identity = { accountId: 'catalog-account', createdAt: '2026-10-01T00:00:00.000Z' };
+    const models: ChatGptDiscoveredModel[] = [
+      { id: 'astra', controls: { reasoning: { metadataKnown: true, supported: [], multiAgentVersion: 'v2', multiAgentReasoningEffort: 'xhigh' }, serviceTier: { metadataKnown: false, supported: [], fastMode: false } } },
+      { id: 'future', controls: { reasoning: { metadataKnown: true, supported: [], multiAgentVersion: 'v1', multiAgentReasoningEffort: 'Future_Deep' }, serviceTier: { metadataKnown: false, supported: [], fastMode: false } } },
+      { id: 'terra', controls: { reasoning: { metadataKnown: true, supported: [], multiAgentVersion: 'v2' }, serviceTier: { metadataKnown: false, supported: [], fastMode: false } } },
+    ];
+    const source = new AdminOperationalState({ path });
+    source.setDiscoveredModels(identity, models.map((model) => ({ ...model, raw: { accessToken: 'must-not-persist' } })));
+    await source.dispose();
+
+    const restored = new AdminOperationalState({ path });
+    expect(restored.hydrate()).toBe(true);
+    expect(restored.snapshot().accounts[0].discoveredModels).toEqual(models);
+    expect(readFileSync(path, 'utf8')).not.toContain('must-not-persist');
+    await restored.dispose();
+  });
+
+  it.each([
+    { field: 'multiAgentVersion', value: 'v3' },
+    { field: 'multiAgentVersion', value: 'V2' },
+    { field: 'multiAgentVersion', value: 2 },
+    { field: 'multiAgentVersion', value: null },
+    { field: 'multiAgentVersion', value: { version: 'v2' } },
+    { field: 'multiAgentReasoningEffort', value: '' },
+    { field: 'multiAgentReasoningEffort', value: '   ' },
+    { field: 'multiAgentReasoningEffort', value: 1 },
+    { field: 'multiAgentReasoningEffort', value: null },
+    { field: 'multiAgentReasoningEffort', value: { effort: 'xhigh' } },
+  ])('rejects malformed $field=$value at write and hydration boundaries', async ({ field, value }) => {
+    const path = statePath();
+    const identity = { accountId: 'catalog-account', createdAt: '2026-10-01T00:00:00.000Z' };
+    const model: ChatGptDiscoveredModel = { id: 'model', controls: {
+      reasoning: { metadataKnown: true, supported: [], multiAgentVersion: 'v2', multiAgentReasoningEffort: 'xhigh' },
+      serviceTier: { metadataKnown: false, supported: [], fastMode: false },
+    } };
+    const state = new AdminOperationalState({ path });
+    state.setDiscoveredModels(identity, [model]);
+    const malformed = { ...model, controls: { ...model.controls!, reasoning: { ...model.controls!.reasoning, [field]: value } } } as ChatGptDiscoveredModel;
+    expect(() => state.setDiscoveredModels(identity, [malformed])).toThrow(field);
+    expect(state.snapshot().accounts[0].discoveredModels).toEqual([model]);
+    await state.dispose();
+
+    const persisted = JSON.parse(readFileSync(path, 'utf8'));
+    persisted.accounts[0].discoveredModels[0].controls.reasoning[field] = value;
+    writeFileSync(path, JSON.stringify(persisted));
+    const restored = new AdminOperationalState({ path });
+    expect(() => restored.hydrate()).toThrow(field);
+    expect(restored.snapshot().accounts).toEqual([]);
+    await restored.dispose();
+  });
+
   it('roundtrips unknown/error reset credits and independent authoritative credit expiry', async () => {
     const path = statePath();
     const state = new AdminOperationalState({ path });

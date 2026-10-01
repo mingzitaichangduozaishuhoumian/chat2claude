@@ -128,6 +128,8 @@ Admin 控制台包含六个主要区域：
 
 控制台默认是简洁模式。专业模式会额外显示内部 ID、上游 ID、并发/冷却信息、安全错误码、discovery 诊断、完整动态模型列表、reasoning/service-tier 控制项、自定义 alias、手动 session 导入和 Admin API Key fallback。
 
+Ultra（主动协作）按模型目录解析基础推理强度，并鼓励使用客户端已有的委托工具。子代理由客户端执行；没有委托工具时直接完成任务。本服务不创建子代理，也不实现完整的 Codex 多代理运行时。详见[推理档位与 Ultra 主动协作](docs/USAGE.zh-CN.md#推理档位与-ultra-主动协作)。
+
 ## API 认证与 Key 类型
 
 `/v1/*` 接受 Runtime API Key 或预配置的 `API_KEYS`。可以使用：

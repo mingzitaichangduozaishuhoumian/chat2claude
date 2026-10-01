@@ -7,6 +7,7 @@ import type {
   ChatGptDiscoveredModel,
   ChatGptModelControlCapabilities,
   ChatGptReasoningLevelOption,
+  ChatGptReasoningExecution,
   ChatGptServiceTierOption,
 } from '@chatgpt-to-claude/chatgpt-backend';
 import {
@@ -24,10 +25,11 @@ export interface ModelCapabilities {
   thinking: boolean;
   metadata_status: { reasoning: 'known' | 'unknown'; service_tier: 'known' | 'unknown' };
   fast_mode: boolean;
-  /** Legacy compatibility flag. Advertised reasoning efforts are forwarded unchanged. */
+  /** Legacy flag; use ultra_execution to inspect Ultra's actual execution settings. */
   ultra_lossy: boolean;
-  /** @deprecated No lossy Ultra mapping is performed. */
+  /** @deprecated Use ultra_execution instead. */
   ultra_mapped_effort?: string;
+  ultra_execution?: { reasoning_effort?: string; delegation: 'caller_tools'; account_dependent?: true };
 }
 
 export interface ModelDefaults {
@@ -37,6 +39,9 @@ export interface ModelDefaults {
 
 export interface EffectiveModelDefaults {
   reasoning_effort?: string;
+  upstream_reasoning_effort?: string;
+  reasoning_account_dependent?: true;
+  delegation?: 'caller_tools';
   service_tier?: string;
   reasoning_source: 'alias' | 'discovered' | 'omit';
   service_tier_source: 'alias' | 'discovered' | 'omit';
@@ -78,7 +83,9 @@ export interface ExplicitModelControls {
 }
 
 export interface ResolvedModelControls {
+  /** Selected catalog mode, retained for account eligibility and caller-visible defaults. */
   reasoningEffort?: string;
+  reasoningExecution?: ChatGptReasoningExecution;
   serviceTier?: string;
   reasoningSource: 'explicit' | 'alias' | 'discovered' | 'omit';
   serviceTierSource: 'explicit' | 'alias' | 'discovered' | 'omit';
@@ -123,6 +130,11 @@ interface AccountModelCatalog {
   identity: AccountModelIdentity;
   active: boolean;
   models: ChatGptDiscoveredModel[];
+}
+
+/** Derived from eligible account catalogs only, never treated as provider metadata. */
+interface CatalogModel extends ChatGptDiscoveredModel {
+  ultraExecutionEfforts?: string[];
 }
 
 export interface ModelRegistrySnapshot {
@@ -238,9 +250,11 @@ export class ModelRegistry {
   resolveControls(resolution: ModelResolution, explicit: ExplicitModelControls = {}): ResolvedModelControls {
     const alias = resolution.model.source === 'alias' ? this.aliases.find((item) => item.id === resolution.model.id) : undefined;
     const reasoning = resolveReasoningControl(resolution.target, explicit.reasoningEffort, alias?.defaults.reasoning_effort, explicit.reasoningEffortIsNative);
+    const reasoningExecution = resolveReasoningExecution(resolution.target, reasoning.value);
     const serviceTier = resolveServiceTierControl(resolution.target, explicit.serviceTier, alias?.defaults.speed);
     return {
       ...(reasoning.value ? { reasoningEffort: reasoning.value } : {}),
+      ...(reasoningExecution ? { reasoningExecution } : {}),
       ...(serviceTier.value ? { serviceTier: serviceTier.value } : {}),
       reasoningSource: reasoning.source,
       serviceTierSource: serviceTier.source,
@@ -447,9 +461,11 @@ function normalizeDefaults(value: unknown): ModelDefaults {
   };
 }
 
-function effectiveCapabilities(model: ChatGptDiscoveredModel | undefined): ModelCapabilities {
+function effectiveCapabilities(model: CatalogModel | undefined): ModelCapabilities {
   const controls = model?.controls;
   if (!controls) return unknownCapabilities();
+  const ultra = controls.reasoning.supported.some((option) => isUltraEffort(option.effort))
+    ? ultraExecutionView(model) : undefined;
   const serviceTiers: ChatGptServiceTierOption[] = [];
   let hasFast = false;
   for (const option of controls.serviceTier.supported) {
@@ -468,6 +484,7 @@ function effectiveCapabilities(model: ChatGptDiscoveredModel | undefined): Model
     metadata_status: { reasoning: controls.reasoning.metadataKnown ? 'known' : 'unknown', service_tier: controls.serviceTier.metadataKnown ? 'known' : 'unknown' },
     fast_mode: controls.serviceTier.fastMode,
     ultra_lossy: false,
+    ...(ultra ? { ultra_execution: ultra } : {}),
   };
 }
 
@@ -475,13 +492,19 @@ function unknownCapabilities(): ModelCapabilities {
   return { reasoning_effort: [], reasoning_effort_options: [], response_speed: [], service_tiers: [], thinking: false, metadata_status: { reasoning: 'unknown', service_tier: 'unknown' }, fast_mode: false, ultra_lossy: false };
 }
 
-function effectiveDefaults(model: ChatGptDiscoveredModel, aliasDefaults?: ModelDefaults): { defaults: EffectiveModelDefaults; issues: string[] } {
+function effectiveDefaults(model: CatalogModel, aliasDefaults?: ModelDefaults): { defaults: EffectiveModelDefaults; issues: string[] } {
   const issues: string[] = [];
   const reasoning = resolveImplicitReasoning(model, aliasDefaults?.reasoning_effort, issues);
+  const execution = isUltraEffort(reasoning.value) ? ultraExecutionView(model) : undefined;
   const serviceTier = resolveImplicitServiceTier(model, aliasDefaults?.speed, issues);
   return {
     defaults: {
       ...(reasoning.value ? { reasoning_effort: reasoning.value } : {}),
+      ...(execution ? {
+        ...(execution.reasoning_effort ? { upstream_reasoning_effort: execution.reasoning_effort } : {}),
+        ...(execution.account_dependent ? { reasoning_account_dependent: true as const } : {}),
+        delegation: 'caller_tools' as const,
+      } : {}),
       ...(serviceTier.value ? { service_tier: serviceTier.value } : {}),
       reasoning_source: reasoning.source,
       service_tier_source: serviceTier.source,
@@ -492,6 +515,32 @@ function effectiveDefaults(model: ChatGptDiscoveredModel, aliasDefaults?: ModelD
 
 function emptyEffectiveDefaults(): { defaults: EffectiveModelDefaults; issues: string[] } {
   return { defaults: { reasoning_source: 'omit', service_tier_source: 'omit' }, issues: [] };
+}
+
+/** Codex 0.155.0-alpha.9.2 ModelInfo::resolve_reasoning_effort.
+ * Ultra is a client mode: resolve its base effort from the selected account's catalog,
+ * while preserving the selected Ultra token for account eligibility checks.
+ */
+function resolveReasoningExecution(model: ChatGptDiscoveredModel, selected: string | undefined): ChatGptReasoningExecution | undefined {
+  if (!isUltraEffort(selected)) return undefined;
+  const supported = model.controls?.reasoning.supported ?? [];
+  const preferred = model.controls?.reasoning.multiAgentReasoningEffort;
+  const effort = preferred && !isUltraEffort(preferred) && supported.some((option) => option.effort === preferred)
+    ? preferred
+    : supported.find((option) => option.effort === 'max')?.effort
+      ?? [...supported].reverse().find((option) => !isUltraEffort(option.effort))?.effort
+      ?? 'medium';
+  return { effort, delegation: 'proactive' };
+}
+
+function isUltraEffort(value: string | undefined): boolean { return value?.trim().toLowerCase() === 'ultra'; }
+
+function ultraExecutionView(model: CatalogModel): NonNullable<ModelCapabilities['ultra_execution']> {
+  const efforts = model.ultraExecutionEfforts ?? [resolveReasoningExecution(model, 'ultra')!.effort];
+  return {
+    ...(efforts.length === 1 ? { reasoning_effort: efforts[0] } : { account_dependent: true as const }),
+    delegation: 'caller_tools',
+  };
 }
 
 function resolveReasoningControl(model: ChatGptDiscoveredModel, explicit: unknown, aliasDefault: ReasoningEffort | undefined, exact = false): { value?: string; source: ResolvedModelControls['reasoningSource'] } {
@@ -639,7 +688,7 @@ function mergeDiscoveredCatalogs(catalogs: ChatGptDiscoveredModel[][]): ChatGptD
   return [...grouped.values()].map(mergeDiscoveredModels);
 }
 
-function mergeDiscoveredModels(models: ChatGptDiscoveredModel[]): ChatGptDiscoveredModel {
+function mergeDiscoveredModels(models: ChatGptDiscoveredModel[]): CatalogModel {
   const first = models[0];
   const controls = models.map((model) => model.controls);
   const knownControls = controls.filter((control): control is ChatGptModelControlCapabilities => control !== undefined);
@@ -654,8 +703,14 @@ function mergeDiscoveredModels(models: ChatGptDiscoveredModel[]): ChatGptDiscove
   const reasoningDefaults = uniqueDefined(knownControls.map((control) => control.reasoning.defaultEffort));
   const serviceTierDefaults = uniqueDefined(knownControls.map((control) => control.serviceTier.defaultTier));
   const multiAgentValues = uniqueDefined(knownControls.map((control) => control.reasoning.multiAgent), stableValueKey);
+  const multiAgentVersions = uniqueDefined(knownControls.map((control) => control.reasoning.multiAgentVersion));
+  const multiAgentReasoningEfforts = uniqueDefined(knownControls.map((control) => control.reasoning.multiAgentReasoningEffort));
+  const ultraExecutionEfforts = uniqueDefined(models
+    .filter((model) => model.controls?.reasoning.supported.some((option) => isUltraEffort(option.effort)))
+    .map((model) => resolveReasoningExecution(model, 'ultra')!.effort));
   return {
     id: first.id,
+    ...(ultraExecutionEfforts.length ? { ultraExecutionEfforts } : {}),
     ...(first.displayName ? { displayName: first.displayName } : {}),
     ...(first.capabilities ? { capabilities: { ...first.capabilities } } : {}),
     ...(knownControls.length > 0 ? {
@@ -665,6 +720,8 @@ function mergeDiscoveredModels(models: ChatGptDiscoveredModel[]): ChatGptDiscove
           supported: reasoningOptions.map((option) => ({ ...option })),
           ...(reasoningDefaults.length === 1 ? { defaultEffort: reasoningDefaults[0] } : {}),
           ...(multiAgentValues.length === 1 ? { multiAgent: multiAgentValues[0] } : {}),
+          ...(multiAgentVersions.length === 1 ? { multiAgentVersion: multiAgentVersions[0] } : {}),
+          ...(multiAgentReasoningEfforts.length === 1 ? { multiAgentReasoningEffort: multiAgentReasoningEfforts[0] } : {}),
         },
         serviceTier: {
           metadataKnown: controls.every((control) => control?.serviceTier.metadataKnown === true),
@@ -722,7 +779,7 @@ function cloneAccountCatalog(catalog: AccountModelCatalog): AccountModelCatalog 
 function cloneAliases(aliases: AliasOverlay[]): AliasOverlay[] { return aliases.map(cloneAlias); }
 function cloneAlias(alias: AliasOverlay): AliasOverlay { return { ...alias, capabilities: cloneCapabilities(alias.capabilities), defaults: { ...alias.defaults } }; }
 function cloneRuntimeModel(model: RuntimeModel): RuntimeModel { return { ...model, capabilities: cloneCapabilities(model.capabilities), defaults: { ...model.defaults }, effective_defaults: { ...model.effective_defaults }, configuration_issues: [...model.configuration_issues], discovered: model.discovered ? cloneDiscoveredModel(model.discovered) : undefined }; }
-function cloneCapabilities(value: ModelCapabilities): ModelCapabilities { return { ...value, reasoning_effort: [...value.reasoning_effort], reasoning_effort_options: value.reasoning_effort_options.map((option) => ({ ...option })), response_speed: [...value.response_speed], service_tiers: cloneServiceOptions(value.service_tiers), metadata_status: { ...value.metadata_status } }; }
+function cloneCapabilities(value: ModelCapabilities): ModelCapabilities { return { ...value, ...(value.ultra_execution ? { ultra_execution: { ...value.ultra_execution } } : {}), reasoning_effort: [...value.reasoning_effort], reasoning_effort_options: value.reasoning_effort_options.map((option) => ({ ...option })), response_speed: [...value.response_speed], service_tiers: cloneServiceOptions(value.service_tiers), metadata_status: { ...value.metadata_status } }; }
 function cloneServiceOptions(options: ChatGptServiceTierOption[]): ChatGptServiceTierOption[] { return options.map((option) => ({ ...option })); }
 function cloneDiscoveredModels(models: ChatGptDiscoveredModel[]): ChatGptDiscoveredModel[] { return models.map(cloneDiscoveredModel); }
 function cloneDiscoveredModel(model: ChatGptDiscoveredModel): ChatGptDiscoveredModel { return { ...model, capabilities: model.capabilities ? { ...model.capabilities } : undefined, controls: model.controls ? { reasoning: { ...model.controls.reasoning, supported: model.controls.reasoning.supported.map((option) => ({ ...option })) }, serviceTier: { ...model.controls.serviceTier, supported: cloneServiceOptions(model.controls.serviceTier.supported) } } : undefined }; }

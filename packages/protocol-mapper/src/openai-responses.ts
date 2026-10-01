@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptImageDetail, ChatGptImageGenerationCallOutputItem, ChatGptInputContentPart, ChatGptInputItem, ChatGptMessage, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptImageDetail, ChatGptImageGenerationCallOutputItem, ChatGptInputContentPart, ChatGptInputItem, ChatGptMessage, ChatGptReasoningExecution, ChatGptStreamEvent, ChatGptTool, ChatGptToolChoice, ChatGptUsage } from '@chatgpt-to-claude/chatgpt-backend';
 import { ChatGptBackendError, parseResponsesReplayItem, ResponsesReplayBudget } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { createMessageId } from '@chatgpt-to-claude/shared';
@@ -51,7 +51,7 @@ export interface OpenAiResponsesResponse {
 export interface OpenAiResponsesBackendRequestOptions {
   backendModel?: string;
   backendOptions?: Record<string, unknown>;
-  resolvedControls?: { reasoningEffort?: string; serviceTier?: string };
+  resolvedControls?: { reasoningEffort?: string; reasoningExecution?: ChatGptReasoningExecution; serviceTier?: string };
 }
 
 export function mapOpenAiResponsesRequestToChatGpt(request: OpenAiResponsesRequest, defaults: ReasoningSpeedDefaults = {}, options: OpenAiResponsesBackendRequestOptions = {}): ChatGptCompletionRequest {
@@ -66,6 +66,7 @@ export function mapOpenAiResponsesRequestToChatGpt(request: OpenAiResponsesReque
     ...(options.resolvedControls
       ? {
           ...(options.resolvedControls.reasoningEffort === undefined ? {} : { reasoningEffort: options.resolvedControls.reasoningEffort }),
+          ...(options.resolvedControls.reasoningExecution === undefined ? {} : { reasoningExecution: { ...options.resolvedControls.reasoningExecution } }),
           ...(options.resolvedControls.serviceTier === undefined ? {} : { serviceTier: options.resolvedControls.serviceTier }),
         }
       : {

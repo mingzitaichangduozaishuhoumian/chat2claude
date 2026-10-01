@@ -128,6 +128,8 @@ The Admin console has six main areas:
 
 The console opens in Simple mode. Professional mode adds internal IDs, upstream IDs, concurrency/cooldown details, safe error codes, discovery diagnostics, full dynamic model catalogs, reasoning/service-tier controls, custom aliases, manual session import, and Admin API Key fallback.
 
+Ultra (proactive collaboration) resolves a base reasoning effort from the model catalog and encourages the client's existing delegation tools. The client runs subagents; without delegation tools, the main model handles the task directly. This service does not create subagents or implement the complete Codex multi-agent runtime. See [Reasoning efforts and Ultra proactive collaboration](docs/USAGE.en.md#reasoning-efforts-and-ultra-proactive-collaboration).
+
 ## API authentication and key types
 
 `/v1/*` accepts Runtime API Keys or preconfigured `API_KEYS`. Use either:

@@ -630,11 +630,18 @@ function knownReasoningEffort(value) {
   if (normalized === 'extra-high') return 'xhigh';
   return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(normalized) ? normalized : undefined;
 }
-function reasoningLabel(effort) { if (effort === 'low') return 'Light（官方 low）'; if (effort === 'ultra') return 'Ultra（上游 ultra）'; return effort; }
+function reasoningLabel(effort) { if (effort === 'low') return 'Light（官方 low）'; if (effort === 'ultra') return 'Ultra（主动协作）'; return effort; }
 function capabilityStateHtml(model) {
   const capabilities = model.capabilities || unknownCapabilities(); const states = capabilities.metadata_status || {};
   const parts = ['推理元数据：' + (states.reasoning === 'known' ? '已发现' : '未知'), '服务层级元数据：' + (states.service_tier === 'known' ? '已发现' : '未知')];
-  parts.push('已发现的推理档位按上游值原样传递；不支持的显式强度会被拒绝。');
+  parts.push('普通推理档位按上游值原样传递；不支持的显式强度会被拒绝。');
+  const ultra = capabilities.ultra_execution;
+  if (ultra && ultra.delegation === 'caller_tools') {
+    if (ultra.account_dependent) parts.push('实际基础推理按所选账号的模型目录确定');
+    else if (typeof ultra.reasoning_effort === 'string') parts.push('Ultra 基础推理：' + ultra.reasoning_effort);
+    parts.push('主动协作依赖客户端提供并执行委托工具；没有委托工具时直接完成任务。');
+    parts.push('本服务不创建子代理；子代理执行、并行数和轮数由客户端控制。');
+  }
   if (Array.isArray(model.configuration_issues) && model.configuration_issues.length) parts.push(model.configuration_issues.join('；'));
   return '<span class="muted">' + esc(parts.join(' · ')) + '</span>';
 }

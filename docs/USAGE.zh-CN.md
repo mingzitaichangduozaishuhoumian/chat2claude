@@ -285,16 +285,24 @@ Claude Code、Anthropic SDK、Cline 和 Roo 按 Claude/Anthropic 兼容客户端
 
 模型映射的 Backend Model 下拉只来自当前 discovery。专业模式中的 reasoning effort、service tier 和默认值也来自所选目标的能力元数据；元数据未知时不会假设所有控制项都可用。显式请求不支持的 `reasoning_effort` 或 service tier 会返回 400，而不是静默改写。
 
-### 思考强度的无损传递
+### 推理档位与 Ultra 主动协作
 
-Claude 使用 `output_config.effort`（优先于 `reasoning_effort`），Chat Completions 使用 `reasoning_effort`，Responses 使用 `reasoning.effort`（优先于 `reasoning_effort`）。服务按实际选中账号的模型目录校验，然后把目录中的原始值传到上游 `reasoning.effort`，流式与非流式一致。
+Claude 使用 `output_config.effort`（优先于 `reasoning_effort`），Chat Completions 使用 `reasoning_effort`，Responses 使用 `reasoning.effort`（优先于 `reasoning_effort`）。服务按实际选中账号的模型目录校验，流式与非流式使用相同规则。
 
-- `ultra`、`max`、`xhigh` 是独立档位。目录声明支持哪个值，就传递哪个值；不会把 `ultra` 改成 `xhigh`、`max`，也不会根据选项顺序或 multi-agent 元数据猜测替代档位。
+- 普通推理档位保留目录中的原始值，包括 `max`、`xhigh` 和未来的 provider 值。`ultra` 表示主动协作模式，按下文解析基础推理档位，不把 `ultra` 字面值直接发给普通推理接口。
 - 原生值精确匹配优先；没有精确匹配时，兼容 `off → none`、`light → low`、`extra-high` / `extra_high → xhigh` 和已知档位的大小写。未知档位保留大小写及下划线，例如 `Future_Deep`。
 - Alias 保存和持久化保留配置值；已生效的 alias 默认强度也参与账号筛选，不能发送给仅支持其他档位的账号。
 - 显式值不受支持或缺少能力信息时返回 400，不调用上游。不合法的 `output_config.effort`（如 `null`、空字符串）也会拒绝。
 
-已有的隐式默认回退规则保持不变：alias 默认失效时，管理台显示配置问题，再使用有效的发现默认值，否则省略参数。这里的“无损”指已支持档位的参数保真，不代表不同模型的思考量相同，也不保证上游一定接受尚未刷新的目录信息。
+已有的隐式默认回退规则保持不变：alias 默认失效时，管理台显示配置问题，再使用有效的发现默认值，否则省略参数。参数保真不代表不同模型的思考量相同，也不保证上游一定接受尚未刷新的目录信息。
+
+**Ultra 的执行方式。** 用户和 alias 保存的选择仍是 `ultra`。普通上游请求的基础强度遵循 [Codex 0.155.0-alpha.9.2 的解析规则](https://github.com/openai/codex/blob/4607249e430dac1c961df4dc615beae88e33cec8/codex-rs/protocol/src/openai_models/reasoning_effort.rs#L10)：优先采用目录中有效且受支持的 `multi_agent_reasoning_effort`，否则依次使用受支持的 `max`、目录中最后一个非 Ultra 档位、`medium`。当前目录中 Astra 的例子是 `xhigh`，Terra 的例子是 `max`；实际值随账号和模型目录变化，Admin 会展示解析后的基础强度。
+
+服务在请求中增加主动委托的 developer 指令，并沿用调用方已提供的 `Agent`、`Task` 等委托工具。工具由客户端执行；没有委托工具时由主模型直接完成任务。服务不会为此创建子代理，也不会发送 hosted multi-agent 开关。这是 Ultra 的模式适配，不是完整的 Codex 多代理运行时；子代理是否实际执行、并行数和轮数均取决于客户端，不能承诺与 Codex 桌面端完全等效或“100% 无损”。
+
+模型能力中的 `ultra_execution` 使用 `{ "reasoning_effort": "xhigh", "delegation": "caller_tools" }` 这样的结构说明基础强度和客户端工具前提。有效默认值可同时保留 `reasoning_effort: "ultra"` 并提供 `upstream_reasoning_effort`、`delegation`。旧字段 `ultra_lossy: false` 仅为兼容保留，不代表完整运行时等效；已弃用的 `ultra_mapped_effort` 不再使用。
+
+同一模型在不同账号的目录中可能具有不同基础强度。聚合模型列表不会根据这些目录的并集猜测唯一值：此时 `ultra_execution` 返回 `account_dependent: true` 并省略 `reasoning_effort`；有效默认值返回 `reasoning_account_dependent: true` 并省略 `upstream_reasoning_effort`。Admin 显示“实际基础推理按所选账号的模型目录确定”，请求选定账号后才解析该次执行的基础强度。
 
 ### Token 计数
 

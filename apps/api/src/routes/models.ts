@@ -10,6 +10,8 @@ export interface PublicDiscoveredModel {
       metadataKnown: boolean;
       supported: ChatGptReasoningLevelOption[];
       defaultEffort?: string;
+      multiAgentVersion?: 'v1' | 'v2';
+      multiAgentReasoningEffort?: string;
     };
     serviceTier: {
       metadataKnown: boolean;
@@ -34,7 +36,7 @@ export interface PublicModel {
   effective_defaults: EffectiveModelDefaults;
   configuration_issues: string[];
   token_counting_mode: 'heuristic';
-  capability_projection: Pick<ModelCapabilities, 'reasoning_effort' | 'response_speed' | 'thinking' | 'metadata_status' | 'fast_mode' | 'ultra_lossy'>;
+  capability_projection: Pick<ModelCapabilities, 'reasoning_effort' | 'response_speed' | 'thinking' | 'metadata_status' | 'fast_mode' | 'ultra_lossy' | 'ultra_execution'>;
 }
 
 export interface ModelsRouteOptions { modelRegistry: ModelRegistry; ready?: Promise<unknown>; }
@@ -47,7 +49,7 @@ export function createModelsRoute(options: ModelsRouteOptions): Hono {
   });
 }
 
-function projectPublicModel(model: RuntimeModel): PublicModel {
+export function projectPublicModel(model: RuntimeModel): PublicModel {
   const { capabilities } = model;
   return {
     id: model.id,
@@ -55,7 +57,7 @@ function projectPublicModel(model: RuntimeModel): PublicModel {
     display_name: model.display_name,
     builtIn: model.builtIn,
     enabled: model.enabled,
-    defaults: { ...model.defaults },
+    defaults: { reasoning_effort: model.defaults.reasoning_effort, speed: model.defaults.speed },
     source: model.source,
     capabilities: {
       reasoning_effort: [...capabilities.reasoning_effort],
@@ -63,23 +65,33 @@ function projectPublicModel(model: RuntimeModel): PublicModel {
       response_speed: [...capabilities.response_speed],
       service_tiers: capabilities.service_tiers.map(projectPublicServiceTierOption),
       thinking: capabilities.thinking,
-      metadata_status: { ...capabilities.metadata_status },
+      metadata_status: { reasoning: capabilities.metadata_status.reasoning, service_tier: capabilities.metadata_status.service_tier },
       fast_mode: capabilities.fast_mode,
       ultra_lossy: capabilities.ultra_lossy,
       ...(capabilities.ultra_mapped_effort ? { ultra_mapped_effort: capabilities.ultra_mapped_effort } : {}),
+      ...(capabilities.ultra_execution ? { ultra_execution: projectPublicUltraExecution(capabilities.ultra_execution) } : {}),
     },
     ...(model.discovered ? { discovered: projectPublicDiscoveredModel(model.discovered) } : {}),
     status: model.status,
-    effective_defaults: { ...model.effective_defaults },
+    effective_defaults: {
+      ...(model.effective_defaults.reasoning_effort ? { reasoning_effort: model.effective_defaults.reasoning_effort } : {}),
+      ...(model.effective_defaults.upstream_reasoning_effort ? { upstream_reasoning_effort: model.effective_defaults.upstream_reasoning_effort } : {}),
+      ...(model.effective_defaults.reasoning_account_dependent === true ? { reasoning_account_dependent: true as const } : {}),
+      ...(model.effective_defaults.delegation ? { delegation: model.effective_defaults.delegation } : {}),
+      ...(model.effective_defaults.service_tier ? { service_tier: model.effective_defaults.service_tier } : {}),
+      reasoning_source: model.effective_defaults.reasoning_source,
+      service_tier_source: model.effective_defaults.service_tier_source,
+    },
     configuration_issues: [...model.configuration_issues],
     token_counting_mode: 'heuristic',
     capability_projection: {
       reasoning_effort: [...capabilities.reasoning_effort],
       response_speed: [...capabilities.response_speed],
       thinking: capabilities.thinking,
-      metadata_status: { ...capabilities.metadata_status },
+      metadata_status: { reasoning: capabilities.metadata_status.reasoning, service_tier: capabilities.metadata_status.service_tier },
       fast_mode: capabilities.fast_mode,
       ultra_lossy: capabilities.ultra_lossy,
+      ...(capabilities.ultra_execution ? { ultra_execution: projectPublicUltraExecution(capabilities.ultra_execution) } : {}),
     },
   };
 }
@@ -98,6 +110,8 @@ function projectPublicControls(controls: ChatGptModelControlCapabilities): Publi
       metadataKnown: controls.reasoning.metadataKnown,
       supported: controls.reasoning.supported.map(projectPublicReasoningOption),
       ...(controls.reasoning.defaultEffort ? { defaultEffort: controls.reasoning.defaultEffort } : {}),
+      ...(controls.reasoning.multiAgentVersion ? { multiAgentVersion: controls.reasoning.multiAgentVersion } : {}),
+      ...(controls.reasoning.multiAgentReasoningEffort ? { multiAgentReasoningEffort: controls.reasoning.multiAgentReasoningEffort } : {}),
     },
     serviceTier: {
       metadataKnown: controls.serviceTier.metadataKnown,
@@ -105,6 +119,14 @@ function projectPublicControls(controls: ChatGptModelControlCapabilities): Publi
       ...(controls.serviceTier.defaultTier ? { defaultTier: controls.serviceTier.defaultTier } : {}),
       fastMode: controls.serviceTier.fastMode,
     },
+  };
+}
+
+function projectPublicUltraExecution(execution: NonNullable<ModelCapabilities['ultra_execution']>): NonNullable<ModelCapabilities['ultra_execution']> {
+  return {
+    ...(execution.reasoning_effort ? { reasoning_effort: execution.reasoning_effort } : {}),
+    delegation: execution.delegation,
+    ...(execution.account_dependent === true ? { account_dependent: true as const } : {}),
   };
 }
 

@@ -291,16 +291,24 @@ The backend model list is not a static source-code table:
 
 The Backend Model choices in Admin come from the current discovery catalog. Professional mode also exposes the target model's reasoning-effort and service-tier metadata. When metadata is unknown, the service does not assume that every control is supported. An explicit unsupported `reasoning_effort` or service tier returns HTTP 400 instead of being silently rewritten.
 
-### Lossless reasoning-effort forwarding
+### Reasoning efforts and Ultra proactive collaboration
 
-Claude uses `output_config.effort` before `reasoning_effort`; Chat Completions uses `reasoning_effort`; Responses uses `reasoning.effort` before `reasoning_effort`. Values are checked against the selected account's model catalog and forwarded as the original provider value in upstream `reasoning.effort`, for both streaming and non-streaming requests.
+Claude uses `output_config.effort` before `reasoning_effort`; Chat Completions uses `reasoning_effort`; Responses uses `reasoning.effort` before `reasoning_effort`. Values are checked against the selected account's model catalog, with the same rules for streaming and non-streaming requests.
 
-- `ultra`, `max`, and `xhigh` remain distinct. An advertised value is never replaced by another level inferred from catalog order or multi-agent metadata.
+- Ordinary reasoning efforts retain the original catalog value, including `max`, `xhigh`, and future provider values. `ultra` selects proactive collaboration: its base reasoning effort is resolved as described below, and the literal `ultra` is not sent to the ordinary inference endpoint.
 - Exact native IDs take precedence. Otherwise, compatibility aliases support `off → none`, `light → low`, `extra-high` / `extra_high → xhigh`, and case-insensitive known levels. Unknown IDs retain case and underscores, such as `Future_Deep`.
 - Alias configuration and persistence preserve the configured value. Effective alias defaults also constrain account selection to accounts supporting that effort.
 - Unsupported explicit values or missing capability information produce HTTP 400 before any upstream call. Malformed `output_config.effort` values, including `null` and empty strings, are rejected.
 
-The existing implicit-default fallback remains: an unsupported alias default is reported as a configuration issue in Admin, then a valid discovered default is used, or the parameter is omitted. Lossless forwarding means preserving supported parameter values; it does not assert equal reasoning across models or guarantee that stale discovery metadata matches current upstream acceptance.
+The existing implicit-default fallback remains: an unsupported alias default is reported as a configuration issue in Admin, then a valid discovered default is used, or the parameter is omitted. Parameter fidelity does not assert equal reasoning across models or guarantee that stale discovery metadata matches current upstream acceptance.
+
+**How Ultra executes.** The user and alias selection remains `ultra`. The base effort sent in the ordinary upstream request follows the [Codex 0.155.0-alpha.9.2 resolver](https://github.com/openai/codex/blob/4607249e430dac1c961df4dc615beae88e33cec8/codex-rs/protocol/src/openai_models/reasoning_effort.rs#L10): prefer a valid, supported `multi_agent_reasoning_effort` from the catalog; otherwise use supported `max`, the last non-Ultra catalog option, or finally `medium`. Current catalog examples resolve Astra to `xhigh` and Terra to `max`; the actual value varies by account and model catalog and is displayed in Admin.
+
+The service adds a developer instruction encouraging proactive delegation and retains delegation tools already supplied by the caller, such as `Agent` or `Task`. The client executes these tools; without delegation tools, the main model handles the task directly. The service does not create subagents or send a hosted multi-agent flag. This adapts the Ultra mode without implementing the complete Codex multi-agent runtime. Whether subagents run, their concurrency, and their turns depend on the client; full equivalence with Codex Desktop or “100% lossless” execution is not promised.
+
+Model capabilities describe this with `ultra_execution`, for example `{ "reasoning_effort": "xhigh", "delegation": "caller_tools" }`. Effective defaults can retain `reasoning_effort: "ultra"` while exposing `upstream_reasoning_effort` and `delegation`. The legacy `ultra_lossy: false` field is retained for compatibility and does not imply runtime equivalence; deprecated `ultra_mapped_effort` is no longer used.
+
+The same model can resolve to different base efforts in different accounts' catalogs. The aggregate model list does not infer one effort from their union: `ultra_execution` instead returns `account_dependent: true` and omits `reasoning_effort`; effective defaults return `reasoning_account_dependent: true` and omit `upstream_reasoning_effort`. Admin explains that the actual base effort comes from the selected account's model catalog. Each request resolves its base effort after selecting an account.
 
 ### Token counting
 

@@ -2943,15 +2943,16 @@ describe('dynamic model controls across compatible routes', () => {
     }
   });
 
-  it('renders target-driven Admin controls and native reasoning effort labels', async () => {
+  it('renders target-driven Admin controls and Ultra collaboration guidance', async () => {
     const app = createApp(env);
     const response = await app.request('/admin');
     const html = await response.text();
     expect(html).toContain('Light（官方 low）');
-    expect(html).toContain('Ultra（上游 ultra）');
-    expect(html).toContain('Ultra (provider ultra)');
-    expect(html).toContain('已发现的推理档位按上游值原样传递；不支持的显式强度会被拒绝。');
-    expect(html).toContain('Discovered reasoning efforts are forwarded with their original provider values; unsupported explicit efforts are rejected.');
+    expect(html).toContain('Ultra（主动协作）');
+    expect(html).toContain('Ultra (proactive collaboration)');
+    expect(html).toContain('普通推理档位按上游值原样传递；不支持的显式强度会被拒绝。');
+    expect(html).toContain('Ultra 基础推理：');
+    expect(html).toContain('Proactive collaboration requires delegation tools supplied and executed by the client; without them, the model handles the task directly.');
     expect(html).not.toContain('Ultra（兼容最高强度）');
     expect(html).not.toContain('ultra_mapped_effort');
     expect(html).not.toContain('ultra_lossy');

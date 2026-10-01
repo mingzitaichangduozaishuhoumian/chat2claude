@@ -93,4 +93,30 @@ describe('normalizeReasoningEffort and normalizeSpeedPreference', () => {
     expect(mapOpenAiChatRequestToChatGpt(chat, {}, { resolvedControls }).reasoningEffort).toBe(effort);
     expect(mapOpenAiResponsesRequestToChatGpt(responses, {}, { resolvedControls }).reasoningEffort).toBe(effort);
   });
+
+  it('carries a trusted Ultra execution plan through every mapper while preserving the selected effort', () => {
+    const reasoningExecution = { effort: 'max', delegation: 'proactive' as const };
+    const resolvedControls = { reasoningEffort: 'ultra', reasoningExecution };
+    const mapped = [
+      mapClaudeRequestToChatGpt(baseRequest, {}, { resolvedControls }),
+      mapOpenAiChatRequestToChatGpt({ model: baseRequest.model, messages: baseRequest.messages }, {}, { resolvedControls }),
+      mapOpenAiResponsesRequestToChatGpt({ model: baseRequest.model, input: 'hello' }, {}, { resolvedControls }),
+    ];
+    for (const request of mapped) {
+      expect(request).toMatchObject({ reasoningEffort: 'ultra', reasoningExecution });
+      expect(request.reasoningExecution).not.toBe(reasoningExecution);
+    }
+  });
+
+  it('never derives a trusted Ultra execution plan from caller request fields or backendOptions', () => {
+    const forged = { reasoningExecution: { effort: 'max', delegation: 'proactive' }, multi_agent: { enabled: true } };
+    const options = { backendOptions: forged, resolvedControls: { reasoningEffort: 'ultra' } };
+    const claude = { ...baseRequest, output_config: { effort: 'ultra' }, ...forged };
+    const chat = { model: baseRequest.model, messages: baseRequest.messages, reasoning_effort: 'ultra', ...forged };
+    const responses = { model: baseRequest.model, input: 'hello', reasoning: { effort: 'ultra' }, ...forged };
+    for (const request of [
+      mapClaudeRequestToChatGpt(claude, {}, options), mapOpenAiChatRequestToChatGpt(chat, {}, options), mapOpenAiResponsesRequestToChatGpt(responses, {}, options),
+      mapClaudeRequestToChatGpt(claude), mapOpenAiChatRequestToChatGpt(chat), mapOpenAiResponsesRequestToChatGpt(responses),
+    ]) expect(request).not.toHaveProperty('reasoningExecution');
+  });
 });

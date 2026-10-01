@@ -4,6 +4,7 @@ import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptBackendCl
 import type { ChatGptSafeStatus, ChatGptStreamEvent } from './events.js';
 import { ChatGptBackendError, sanitizeBackendDiagnostic, type ChatGptBackendErrorCode, type ChatGptSafeDiagnostic } from './errors.js';
 import { ResponsesToolCalls } from './responses-tools.js';
+import { resolveSessionReasoningExecution } from './reasoning-execution.js';
 import { parseResponsesReplayItem, ResponsesReplay, ResponsesReplayBudget, validateImageGenerationCallLifecycle } from './responses-replay.js';
 
 export interface SessionChatGptBackendOptions {
@@ -677,6 +678,7 @@ function abortError(): Error {
  * stay in the IR but must never be serialized here (including via backendOptions).
  */
 function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {
+  const reasoningExecution = resolveSessionReasoningExecution(request);
   const replayBudget = new ResponsesReplayBudget();
   const body: JsonObject = {
     model: request.model,
@@ -687,9 +689,10 @@ function buildResponsesBody(request: ChatGptCompletionRequest): JsonObject {
     instructions: '',
   };
   applyResponsesBodyOptions(body, request.backendOptions?.responsesBody);
-  // The model-control resolver has already selected the provider's effort token.
-  // Preserve it here, including native ultra and future catalog values.
-  if (request.reasoningEffort?.trim()) body.reasoning = { effort: request.reasoningEffort };
+  if (reasoningExecution.effort !== undefined) body.reasoning = { effort: reasoningExecution.effort };
+  if (reasoningExecution.developerInstructions) {
+    body.input = [{ type: 'message', role: 'developer', content: reasoningExecution.developerInstructions }, ...(body.input as unknown[])];
+  }
   // Discovery can advertise other tiers; only canonical priority is proven compatible.
   if (request.serviceTier === 'priority') body.service_tier = 'priority';
   const mappedTools = request.tools?.length ? request.tools.map((tool) => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: tool.strict ?? false })) : [];
@@ -825,6 +828,9 @@ function normalizeModelControls(raw: JsonObject, capabilities: JsonObject | unde
   const supportedReasoning = normalizeReasoningOptions(supportedReasoningValue);
   const defaultEffort = readNonEmptyString(defaultReasoningValue);
   const multiAgent = firstDefined(sources, ['multi_agent_reasoning', 'multiAgentReasoning', 'multi_agent', 'multiAgent']);
+  const multiAgentVersionValue = readNonEmptyString(firstDefined(sources, ['multi_agent_version', 'multiAgentVersion']));
+  const multiAgentVersion = multiAgentVersionValue === 'v1' || multiAgentVersionValue === 'v2' ? multiAgentVersionValue : undefined;
+  const multiAgentReasoningEffort = readNonEmptyString(firstDefined(sources, ['multi_agent_reasoning_effort', 'multiAgentReasoningEffort']));
 
   const serviceTiersValue = firstDefined(sources, ['service_tiers', 'serviceTiers']);
   const additionalSpeedTiersValue = firstDefined(sources, ['additional_speed_tiers', 'additionalSpeedTiers']);
@@ -835,10 +841,12 @@ function normalizeModelControls(raw: JsonObject, capabilities: JsonObject | unde
 
   return {
     reasoning: {
-      metadataKnown: Array.isArray(supportedReasoningValue) || defaultEffort !== undefined || multiAgent !== undefined,
+      metadataKnown: Array.isArray(supportedReasoningValue) || defaultEffort !== undefined || multiAgent !== undefined || multiAgentVersion !== undefined || multiAgentReasoningEffort !== undefined,
       supported: supportedReasoning,
       defaultEffort,
       ...(multiAgent === undefined ? {} : { multiAgent }),
+      ...(multiAgentVersion === undefined ? {} : { multiAgentVersion }),
+      ...(multiAgentReasoningEffort === undefined ? {} : { multiAgentReasoningEffort }),
     },
     serviceTier: {
       metadataKnown: Array.isArray(serviceTiersValue) || Array.isArray(additionalSpeedTiersValue) || defaultTier !== undefined || fastMode,
