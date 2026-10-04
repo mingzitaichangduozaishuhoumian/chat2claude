@@ -8,12 +8,12 @@
     "node": "^22.15.0 || >=24.0.0"
   },
   "scripts": {
-    "start": "corepack pnpm build && corepack pnpm --filter @chatgpt-to-claude/api start",
+    "start": "node scripts/start.mjs",
     "setup": "corepack pnpm install",
     "check": "corepack pnpm build && corepack pnpm test && corepack pnpm typecheck",
     "dev": "corepack pnpm build && corepack pnpm --filter @chatgpt-to-claude/api dev",
-    "build": "corepack pnpm -r build",
-    "test": "vitest run",
+    "build": "node scripts/build.mjs",
+    "test": "vitest run && node --test scripts/build-cache.test.mjs",
     "typecheck": "corepack pnpm -r typecheck",
     "package:release": "node scripts/packaging/release.mjs",
     "package:smoke": "node scripts/packaging/smoke.mjs"

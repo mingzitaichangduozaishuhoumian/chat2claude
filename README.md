@@ -71,7 +71,7 @@ corepack pnpm check
 corepack pnpm start
 ```
 
-`start` 会先构建所有 workspace 包，再启动服务；首次安装后无需另行生成 `dist`。开发时使用 `corepack pnpm dev`，完成初始构建后监听 API 源码变化。
+`start` 只在首次启动、源码/编译配置/依赖变化或编译产物缺失、损坏时构建；普通重启会跳过 TypeScript 编译，直接启动一个 API 服务。`start.bat` / `start.sh` 同样生效，无需更换命令。`corepack pnpm build` 可强制重新构建，`corepack pnpm build --if-needed` 可单独检查并补齐构建而不启动服务。开发时使用 `corepack pnpm dev`，完成初始构建后监听 API 源码变化。
 
 默认地址：
 

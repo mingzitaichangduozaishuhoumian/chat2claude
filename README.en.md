@@ -71,7 +71,7 @@ corepack pnpm check
 corepack pnpm start
 ```
 
-`start` builds all workspace packages before launching the service, so a fresh installation does not need a separate `dist` build. Use `corepack pnpm dev` for an initial build followed by API source watching.
+`start` builds only on first use, when source, compiler configuration or dependencies change, or when compiled output is missing or modified. Ordinary restarts skip TypeScript compilation and launch a single API service. This also applies to `start.bat` and `start.sh`. Use `corepack pnpm build` to force a rebuild, or `corepack pnpm build --if-needed` to check and prepare the build without starting the service. Use `corepack pnpm dev` for an initial build followed by API source watching.
 
 Default address:
 
