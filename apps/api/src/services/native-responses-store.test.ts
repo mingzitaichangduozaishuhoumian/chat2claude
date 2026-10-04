@@ -2,6 +2,16 @@ import { inspect } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { ResponsesStore } from './responses-store.js';
 
+it.each(['public', 'private'] as const)('does not retain generated image output in %s storage projections', (source) => {
+  const store = new ResponsesStore();
+  const item = { type: 'image_generation_call', id: 'img', status: 'completed', result: 'YWJj' };
+  const response = { id: 'resp_image', object: 'response' as const, created_at: 0, model: 'm', status: 'completed' as const, output: source === 'public' ? [item] : [], output_text: '', usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } };
+  const context = { account: { id: 'a', incarnation: 1, provider: 'mock' as const }, model: 'm', output: source === 'private' ? [item] : [] };
+  expect(store.put('owner', { model: 'm', input: 'draw' }, response, context)).toBe(false);
+  expect(store.get('owner', response.id)).toBeUndefined();
+  expect(store.count()).toBe(0);
+});
+
 it('keeps payload out of store/handle inspection and bounds records and bytes', () => {
   const store = new ResponsesStore({ maxRecords: 1, maxBytes: 4096 });
   const request = { model: 'm', input: 'hello' };

@@ -4,6 +4,15 @@ import { loadEnv } from './env.js';
 import { DEFAULT_CODEX_CLIENT_VERSION } from '@chatgpt-to-claude/chatgpt-backend';
 
 describe('loadEnv', () => {
+  it('uses an independent five-minute image generation timeout', () => {
+    expect(loadEnv({ CHATGPT_REQUEST_TIMEOUT_MS: '50' }).chatGptImageRequestTimeoutMs).toBe(300_000);
+    expect(loadEnv({ CHATGPT_IMAGE_REQUEST_TIMEOUT_MS: '120000' }).chatGptImageRequestTimeoutMs).toBe(120_000);
+  });
+
+  it.each(['', '0', '-1', '1.5', 'NaN', '2147483648', 'PRIVATE_VALUE'])('rejects invalid image timeout safely (%s)', (value) => {
+    expect(() => loadEnv({ CHATGPT_IMAGE_REQUEST_TIMEOUT_MS: value })).toThrow('CHATGPT_IMAGE_REQUEST_TIMEOUT_MS must be an integer between 1 and 2147483647 ms.');
+  });
+
   it('uses direct outbound traffic by default and accepts HTTP/HTTPS proxies', () => {
     expect(loadEnv({}).outboundProxyUrl).toBeUndefined();
     expect(loadEnv({ OUTBOUND_PROXY_URL: ' ' }).outboundProxyUrl).toBeUndefined();

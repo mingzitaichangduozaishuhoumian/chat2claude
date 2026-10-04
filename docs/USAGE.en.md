@@ -294,13 +294,69 @@ Use a Runtime API Key for all client smoke checks; do not use an Admin API Key a
 | --- | --- | --- |
 | Claude Code | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` |
 | Anthropic SDK | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` |
-| OpenAI SDK | `http://127.0.0.1:3000/v1` | `/v1/chat/completions`, `/v1/responses`, `/v1/models` |
+| OpenAI SDK | `http://127.0.0.1:3000/v1` | `/v1/chat/completions`, `/v1/responses`, `/v1/images/generations`, `/v1/models` |
 | Cline | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/models` |
 | Roo | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/models` |
 | Continue | `http://127.0.0.1:3000/v1` | `/v1/chat/completions`, `/v1/models` |
 | Cherry Studio | `http://127.0.0.1:3000/v1` | `/v1/chat/completions`, `/v1/models` |
 
 Claude Code, Anthropic SDK, Cline, and Roo should be configured as Claude/Anthropic-compatible clients with the root origin. OpenAI SDK, Continue, and Cherry Studio should be configured as OpenAI-compatible clients with the versioned `/v1` origin.
+
+### Independent GPT Image generation
+
+Use `POST /v1/images/generations` with a Runtime API Key. The adapter reuses the current ChatGPT account and calls the Codex 0.160 Images service at `/backend-api/codex/images/generations`; it does not route the image model through the text Responses endpoint. The default is `gpt-image-2`. One real generation with this model has succeeded; other models and accounts still depend on upstream access.
+
+The OpenAI SDK uses the same versioned Base URL as the text resources:
+
+```ts
+import OpenAI from 'openai';
+import { writeFile } from 'node:fs/promises';
+
+const client = new OpenAI({
+  baseURL: 'http://127.0.0.1:3000/v1',
+  apiKey: '<runtime-api-key>',
+});
+const image = await client.images.generate({
+  model: 'gpt-image-2',
+  prompt: 'A simple blue circle on a white background',
+  size: '1024x1024', quality: 'low', n: 1,
+});
+const b64 = image.data?.[0]?.b64_json;
+if (!b64) throw new Error('No image returned');
+await writeFile('image.png', Buffer.from(b64, 'base64'));
+```
+
+```bash
+curl http://127.0.0.1:3000/v1/images/generations \
+  -H 'Authorization: Bearer <runtime-api-key>' \
+  -H 'content-type: application/json' \
+  -d '{"model":"gpt-image-2","prompt":"A simple blue circle","size":"1024x1024","quality":"low","n":1}'
+```
+
+JSON output contains `created`, `data[].b64_json` and `output_format: "png"`, plus available metadata/usage. Decode `b64_json` to obtain the PNG; the response does not contain a hosted image URL.
+
+| Parameter | Current adapter behavior |
+| --- | --- |
+| `model` | Defaults to `gpt-image-2`; other valid IDs are passed upstream without an availability guarantee. |
+| `prompt` | Required, nonempty, at most 32000 characters; request JSON is limited to 128 KiB. |
+| `n` | Integer 1..10; when `stream:true`, omit it or set it to 1. |
+| `quality` | `low`, `medium`, `high`, or `auto`. |
+| `size` | `auto` or `WIDTHxHEIGHT`; actual supported dimensions depend on the upstream model. |
+| `background` | `transparent`, `opaque`, or `auto`, forwarded to the image service. |
+| `response_format` / `output_format` | Omit them, or use `b64_json` / `png`. URL output, JPEG/WebP selection and compression are not implemented. |
+| `stream` / `partial_images` | `stream:true` emits only the final `image_generation.completed` event. `partial_images` must be omitted or 0. |
+
+The upstream Images service returns complete JSON, so `stream:true` waits for that result before sending SSE headers and one final image event. It does not provide progress images or reduce the wait for generation. Image edits and variations are not implemented. The independent timeout is `CHATGPT_IMAGE_REQUEST_TIMEOUT_MS=300000` (positive milliseconds). Serialized image base64 and metadata are bounded by 16 MiB per item, 64 MiB per bundle and 10 images. Text output limits and hidden reasoning/tool replay budgets are unchanged.
+
+When image generation is available in the adapter and an enabled account is available, `/v1/models` adds a descriptor with `source: "image_endpoint"`, `endpoint: "/v1/images/generations"`, `capabilities.image_generation: true` and `availability: "backend_dependent"`. This is not a discovered text-model entry or a guarantee for every account. Sending `gpt-image-2`, or an alias targeting it, to Messages, Chat Completions or Responses returns 400 and names the Images route.
+
+The separate `/v1/responses` adapter can forward upstream image previews and final images, including standard metadata. Preview events follow `response.output_item.added`; uncertain preceding output order can delay them until the final snapshot. A matching successful terminal image is required. This path has synthetic Session/HTTP coverage, but image-tool execution on the current host's Responses endpoint has not been verified with a real generation. Use the independent Images API for the verified path. Responses containing generated-image output are not stored, even with `store:true`: their returned response ID cannot be continued with `previous_response_id`; such a lookup returns 404 without another upstream call. Use `store:false` for these requests. Generated-image history editing/replay is not implemented.
+
+Directly resending an `image_generation_call` output item in a Responses input array also returns 400 before account acquisition or upstream dispatch. To supply an image for vision, send a supported `input_image` block; that existing input path is unaffected.
+
+Messages and Chat Completions do not return generated images. Unexpected image output produces an explicit 501 error, or a protocol SSE error if headers were already sent, rather than an empty successful answer. Input images for vision remain a separate supported mapping.
+
+References: [official image generation guide](https://developers.openai.com/api/docs/guides/image-generation), [Codex 0.160 image tool](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/ext/image-generation/src/tool.rs), and [Images client](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/codex-api/src/endpoint/images.rs). The public API supports more options than this adapter. SDK/curl examples are manual smoke paths; automated compatibility tests use synthetic upstream results.
 
 ## 6. Model aliases, discovery, and reasoning/speed controls
 
@@ -454,6 +510,7 @@ Common settings:
 CHATGPT_BACKEND=session
 CHATGPT_BASE_URL=https://chatgpt.com
 CHATGPT_REQUEST_TIMEOUT_MS=60000
+CHATGPT_IMAGE_REQUEST_TIMEOUT_MS=300000
 CHATGPT_RESPONSE_HEADER_TIMEOUT_MS=60000
 CHATGPT_STREAM_IDLE_TIMEOUT_MS=300000
 CHATGPT_STREAM_TOTAL_TIMEOUT_MS=0
@@ -465,11 +522,11 @@ HOST=127.0.0.1
 API_KEYS=<key-1>,<key-2>
 ```
 
-Session generation is decoupled from short operations. `CHATGPT_REQUEST_TIMEOUT_MS` defaults to 60000 and remains for OAuth/token/discovery/quota operations. `CHATGPT_RESPONSE_HEADER_TIMEOUT_MS` defaults to 60000 and bounds fetch-to-headers. `CHATGPT_STREAM_IDLE_TIMEOUT_MS` defaults to 300000: it starts at headers and resets on every nonempty raw body chunk, including reasoning, tools, SSE comments and split frames; empty chunks do not reset it. `CHATGPT_STREAM_TOTAL_TIMEOUT_MS` defaults to 0, explicitly disabling the absolute generation limit; a positive value bounds the entire fetch/generation even while active. Header/idle accept integers 1..2147483647; total also accepts 0. Invalid values fail startup. Timeouts remain backend code=timeout/status=504 with allowlisted timeoutKind=response_headers | stream_idle | stream_total. Caller cancellation wins and does not mark the account failed. Reader cancellation cleanup waits at most 250ms.
+Text session generation is decoupled from short operations. `CHATGPT_REQUEST_TIMEOUT_MS` defaults to 60000 and remains for OAuth/token/discovery/quota operations. `CHATGPT_RESPONSE_HEADER_TIMEOUT_MS` defaults to 60000 and bounds fetch-to-headers. `CHATGPT_STREAM_IDLE_TIMEOUT_MS` defaults to 300000: it starts at headers and resets on every nonempty raw body chunk, including reasoning, tools, SSE comments and split frames; empty chunks do not reset it. `CHATGPT_STREAM_TOTAL_TIMEOUT_MS` defaults to 0, explicitly disabling the absolute generation limit; a positive value bounds the entire fetch/generation even while active. Header/idle accept integers 1..2147483647; total also accepts 0. Invalid values fail startup. Timeouts remain backend code=timeout/status=504 with allowlisted timeoutKind=response_headers | stream_idle | stream_total. Caller cancellation wins and does not mark the account failed. Reader cancellation cleanup waits at most 250ms.
 
 Package migration: deprecated `timeoutMs` alone preserves its legacy absolute generation and short-operation limits. Supplying any new field selects phased semantics, with total disabled unless specified; `requestTimeoutMs` affects short operations only. The API explicitly supplies the new fields and never uses the old environment variable as a generation limit.
 
-`CHATGPT_BASE_URL` is the upstream URL used by the session backend for `/backend-api/codex/responses` and model discovery. It is not the client Base URL for Claude Code. Claude Code still uses the service root origin, for example `http://127.0.0.1:3000`.
+`CHATGPT_BASE_URL` is the upstream URL used by the session backend for `/backend-api/codex/responses`, `/backend-api/codex/images/generations` and model discovery. It is not the client Base URL for Claude Code. Claude Code still uses the service root origin, for example `http://127.0.0.1:3000`.
 
 ## 10. Verify a connection
 

@@ -84,6 +84,7 @@ it('commits a completed image only from the authoritative completed output', asy
   expect(events).toEqual([
     { type: 'upstream_ready' },
     { type: 'status_delta', status: 'image generation generating' },
+    { type: 'image_output', item: image },
     { type: 'done', finishReason: 'stop', outputItems: [image] },
   ]);
   expect(JSON.stringify(events)).not.toContain('image_secret_123');

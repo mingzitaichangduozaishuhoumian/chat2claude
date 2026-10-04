@@ -3,6 +3,7 @@ export type AdminLocale = 'zh-CN' | 'en';
 // Source-language keys keep copy shared by SSR, browser renderers and feedback.
 // Protocol identifiers and provider payloads are not translation keys.
 export const ADMIN_MESSAGES: Record<string, string> = {
+  '图片生成使用独立 Images API 和图片模型，不使用文本 alias。当前返回 PNG 的 b64_json；流式请求仅发送最终图片，不提供渐进预览。': 'Image generation uses a separate Images API and image model, without text aliases. Results contain PNG b64_json; streaming sends the final image only, with no partial previews.',
   '目录默认窗口：{0}': 'Catalog default window: {0}',
   '最大窗口：{0}': 'Maximum window: {0}',
   '窗口信息依账号而异': 'Window metadata varies by account',

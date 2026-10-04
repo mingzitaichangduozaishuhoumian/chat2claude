@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import { ChatGptBackendError, DEFAULT_CODEX_CLIENT_VERSION, SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, DEFAULT_CODEX_CLIENT_VERSION, MockChatGptBackend, SessionChatGptBackend, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptCompletionResponse, type ChatGptDiscoveredModel, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 import { createApp } from './app.js';
 import { createAdminRoute } from './routes/admin.js';
 import { createMessagesRoute } from './routes/messages.js';
@@ -2045,9 +2045,13 @@ describe('real-client compatibility smoke scenarios', () => {
       const baseUrl = scenario.baseUrl === 'root_origin' ? 'http://127.0.0.1:3000' : 'http://127.0.0.1:3000/v1';
       expect(baseUrl.endsWith('/v1')).toBe(scenario.baseUrl === 'versioned_v1');
       for (const endpoint of scenario.endpoints) {
-        const app = createApp(env);
+        const imageBackend = endpoint === '/v1/images/generations' ? Object.assign(new MockChatGptBackend(), {
+          generateImages: async () => ({ created: 0, data: [{ b64_json: 'YWJj' }], output_format: 'png' as const }),
+        }) : undefined;
+        const app = createApp(env, imageBackend ? { backend: imageBackend } : {});
         const res = await requestSmokeEndpoint(app, endpoint);
         expect(res.status, `${scenario.client} ${endpoint}`).toBe(200);
+        if (imageBackend) expect(await res.json()).toMatchObject({ output_format: 'png', data: [{ b64_json: 'YWJj' }] });
       }
     }
   });
@@ -2065,6 +2069,8 @@ async function requestSmokeEndpoint(app: Hono, endpoint: string): Promise<Respon
       return app.request(endpoint, { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', messages: [{ role: 'user', content: 'hello' }] }) });
     case '/v1/responses':
       return app.request(endpoint, { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'sonnet', input: 'hello' }) });
+    case '/v1/images/generations':
+      return app.request(endpoint, { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ model: 'gpt-image-2', prompt: 'A simple blue circle', n: 1 }) });
     default:
       throw new Error(`Unhandled smoke endpoint: ${endpoint}`);
   }

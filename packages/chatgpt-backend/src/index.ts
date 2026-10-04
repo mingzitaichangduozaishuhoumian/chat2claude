@@ -4,6 +4,8 @@ export * from './session.js';
 export * from './events.js';
 export * from './errors.js';
 export * from './codex-protocol.js';
+export { DEFAULT_CODEX_IMAGE_MODEL, DEFAULT_IMAGE_REQUEST_TIMEOUT_MS } from './images.js';
+export { RESPONSES_IMAGE_LIMITS, RESPONSES_IMAGE_PREVIEW_LIMITS, ResponsesImageBudget, ResponsesImagePartials } from './image-output.js';
 export { normalizeModelContext, MODEL_CONTEXT_FIELDS } from './model-context.js';
 export { normalizeMultiAgentMetadata, type ChatGptMultiAgentMetadata } from './multi-agent-metadata.js';
 export { canonicalToolArguments, type CanonicalJsonValue } from './json-arguments.js';

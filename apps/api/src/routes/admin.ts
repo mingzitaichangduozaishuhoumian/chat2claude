@@ -1,7 +1,7 @@
 import { presentPlan } from '../services/plan-presentation.js';
 import { modelContextView } from '../services/model-context.js';
 import { Hono } from 'hono';
-import { ChatGptBackendError, type ChatGptBackendClient, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, DEFAULT_CODEX_IMAGE_MODEL, type ChatGptBackendClient, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ReasoningEffort, SpeedPreference } from '@chatgpt-to-claude/protocol-mapper';
 import type { ChatGptBackendProvider } from '../config/env.js';
 import type { AccountPool } from '../services/account-pool.js';
@@ -483,6 +483,7 @@ function status(options: AdminRouteOptions) {
     backend: { enabled: true, provider: options.backendProvider, chatGptConnected: sessionAccounts.length > 0 },
     chatGptReady: sessionAccounts.length > 0 && Boolean(sonnet?.backendModel) && (envApiKeysConfigured || runtimeApiKeysConfigured),
     defaultEndpoint: 'POST /v1/messages',
+    imageGeneration: { endpoint: 'POST /v1/images/generations', defaultModel: DEFAULT_CODEX_IMAGE_MODEL, supported: Boolean(options.backend.generateImages), responseFormat: 'b64_json', outputFormat: 'png', streaming: 'final_only' },
     nextStep: sessionAccounts.length > 0
       ? 'ChatGPT session 已导入。请复制 API 配置调用 /v1/messages。'
       : '打开 /admin 点击“浏览器授权（Codex OAuth）”，新标签页会直接打开授权页；若被拦截可点击链接或复制 URL，完成后系统会自动初始化账号、模型和 API Key。',

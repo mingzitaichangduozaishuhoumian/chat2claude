@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { ChatGptCompletionResponse, ChatGptImageGenerationCallOutputItem, ChatGptImageGenerationCallStatus, ChatGptOutputItem, ChatGptReplayItem } from './client.js';
 import { ChatGptBackendError, type ChatGptReplayDebugDiagnostic } from './errors.js';
+import { imageMetadata, ResponsesImageBudget, RESPONSES_IMAGE_LIMITS } from './image-output.js';
 
 type JsonObject = Record<string, unknown>;
 export interface ResponsesReplayLimits { readonly itemBytes: number; readonly bundleBytes: number; readonly items: number; }
@@ -12,14 +13,14 @@ export const RESPONSES_INPUT_REPLAY_LIMITS = Object.freeze({ itemBytes: 8 * 1024
 /** Validate a provider image lifecycle without retaining any provider payload. */
 export function validateImageGenerationCallLifecycle(value: unknown): ChatGptImageGenerationCallStatus | undefined {
   if (!object(value) || value.type !== 'image_generation_call') return undefined;
-  fields(value, ['type', 'id', 'status', 'result', 'image_url', 'url', 'b64_json', 'image_base64', 'mime_type', 'revised_prompt']);
+  fields(value, ['type', 'id', 'status', 'result', 'image_url', 'url', 'b64_json', 'image_base64', 'mime_type', 'revised_prompt', 'action', 'background', 'output_format', 'quality', 'size']);
   if (!nonempty(value.id) || !isImageStatus(value.status)) throw invalidReplay();
-  if (value.mime_type !== undefined && typeof value.mime_type !== 'string' || value.revised_prompt !== undefined && typeof value.revised_prompt !== 'string') throw invalidReplay();
+  imageMetadata(value);
   for (const field of ['result', 'image_url', 'url', 'b64_json', 'image_base64']) {
     if (value[field] !== undefined && value[field] !== null && typeof value[field] !== 'string') throw invalidReplay();
   }
   if (value.status === 'completed' && !imageResult(value)) throw invalidReplay();
-  if (Buffer.byteLength(JSON.stringify(value), 'utf8') > RESPONSES_REPLAY_LIMITS.itemBytes) throw invalidReplay();
+  if (Buffer.byteLength(JSON.stringify(value), 'utf8') > RESPONSES_IMAGE_LIMITS.itemBytes) throw invalidReplay();
   return value.status;
 }
 
@@ -33,10 +34,9 @@ export function parseImageGenerationCallOutputItem(value: unknown): ChatGptImage
   if (!result) throw invalidReplay();
   const item: ChatGptImageGenerationCallOutputItem = {
     type: 'image_generation_call', id: image.id as string, status: 'completed', result,
-    ...(typeof image.mime_type === 'string' ? { mime_type: image.mime_type } : {}),
-    ...(typeof image.revised_prompt === 'string' ? { revised_prompt: image.revised_prompt } : {}),
+    ...imageMetadata(image),
   };
-  if (Buffer.byteLength(JSON.stringify(item), 'utf8') > RESPONSES_REPLAY_LIMITS.itemBytes) throw invalidReplay();
+  if (Buffer.byteLength(JSON.stringify(item), 'utf8') > RESPONSES_IMAGE_LIMITS.itemBytes) throw invalidReplay();
   return item;
 }
 
@@ -117,7 +117,7 @@ export class ResponsesReplayBudget {
 
 interface Snapshot { item: ChatGptReplayItem; index?: number; }
 interface ImageSnapshot { item: ChatGptImageGenerationCallOutputItem; index?: number; }
-interface ImageLifecycleSnapshot {
+interface ImageLifecycleSnapshot extends Omit<ChatGptImageGenerationCallOutputItem, 'type' | 'id' | 'status' | 'result'> {
   id: string;
   status: ChatGptImageGenerationCallStatus;
   result?: string;
@@ -162,7 +162,7 @@ class ImageSnapshots {
   readonly entries: ImageSnapshot[] = [];
   private readonly byId = new Map<string, ImageSnapshot>();
   private readonly byIndex = new Map<number, ImageSnapshot>();
-  private readonly budget = new ResponsesReplayBudget();
+  private readonly budget = new ResponsesImageBudget();
 
   add(item: ChatGptImageGenerationCallOutputItem, index?: number, allowDuplicate = true): void {
     const previous = this.lookup(item, index);
@@ -197,8 +197,7 @@ class ImageLifecycleSnapshots {
       id: value.id as string,
       status,
       ...(result === undefined ? {} : { result }),
-      ...(typeof value.mime_type === 'string' ? { mime_type: value.mime_type } : {}),
-      ...(typeof value.revised_prompt === 'string' ? { revised_prompt: value.revised_prompt } : {}),
+      ...imageMetadata(value),
     };
     const previous = this.byId.get(item.id);
     if (previous) {
@@ -318,7 +317,8 @@ export class ResponsesReplay {
       if (!isDeepStrictEqual(final.item, snapshot.item)) throw invalidReplay('done_snapshot_mismatch');
       if (snapshot.index !== undefined && snapshot.index !== final.index) throw invalidReplay('output_index_mismatch');
     }
-    if (Buffer.byteLength(JSON.stringify(projection), 'utf8') > 4 * 1024 * 1024) throw invalidReplay();
+    // Images have a separate budget. Text and opaque replay retain their old cap.
+    if (Buffer.byteLength(JSON.stringify(projection.filter((item) => item.type !== 'image_generation_call')), 'utf8') > 4 * 1024 * 1024) throw invalidReplay();
     const hasOutputItems = projection.length > 0;
       return ordered.length || hasOutputItems ? {
         ...(ordered.length ? { replayItems: ordered, replayEligible: ordered.length === response.output.length && ordered.some((item) => item.type === 'function_call') } : {}),

@@ -1,5 +1,6 @@
 import { ADMIN_PAGE_STYLES } from './admin-page-styles.js';
 import { adminPageClientScript } from './admin-page-client.js';
+import { DEFAULT_CODEX_IMAGE_MODEL } from '@chatgpt-to-claude/chatgpt-backend';
 
 interface AdminSetupStatus {
   apiKeysConfigured: boolean;
@@ -14,7 +15,12 @@ export function renderAdminPage(setupStatus: AdminSetupStatus): string {
   const curlTemplate = `curl __ORIGIN__/v1/messages \\
   -H 'content-type: application/json' \\
   -H 'x-api-key: <your-api-key>' \\
-  -d '{"model":"sonnet","max_tokens":128,"messages":[{"role":"user","content":"Hello"}]}'`;
+  -d '{"model":"sonnet","max_tokens":128,"messages":[{"role":"user","content":"Hello"}]}'
+
+curl __ORIGIN__/v1/images/generations \\
+  -H 'content-type: application/json' \\
+  -H 'x-api-key: <your-api-key>' \\
+  -d '{"model":"${DEFAULT_CODEX_IMAGE_MODEL}","prompt":"A watercolor tree","response_format":"b64_json","output_format":"png"}'`;
   return `<!doctype html>
 <html lang="zh-CN" data-admin-mode="simple">
 <head>
@@ -88,7 +94,7 @@ export function renderAdminPage(setupStatus: AdminSetupStatus): string {
           <section class="panel" aria-labelledby="runtime-api-keys-title"><div class="panel-heading"><div><h3 id="runtime-api-keys-title">Runtime API Keys</h3><p class="muted">客户端调用 <code>/v1/*</code> 使用的独立凭据，不是 Admin API Key。生成新 Key 不会撤销现有 Key；生成后的 Key 会固定保存，跨浏览器和服务重启保持有效，直至显式撤销。原始值只在本页面本次显示，请立即复制保存。当前 <strong id="api-keys-count">0</strong> 个；列表只显示安全前缀。</p></div><div class="row"><input id="runtime-api-key-name" maxlength="64" placeholder="Key 名称（可选）" aria-label="Runtime API Key 名称（可选）" /><button id="generate-runtime-api-key" type="button">生成新 Key</button><button id="refresh-api-keys" class="secondary" type="button">刷新 Key 列表</button></div></div><div id="runtime-api-key-once" class="one-time-key" hidden><div><strong>新生成的 Runtime API Key（仅本次显示）</strong><textarea id="api-key" class="secret-value" readonly rows="3" spellcheck="false" autocomplete="off" aria-label="新生成的 Runtime API Key" data-i18n-ignore></textarea><p id="runtime-key-copy-status" class="muted" role="status" aria-live="polite"></p></div><div class="row"><button id="copy-runtime-api-key" class="secondary" type="button">复制 Runtime API Key</button><button id="dismiss-runtime-api-key" class="secondary" type="button">清除显示</button></div></div><div id="api-keys"><div class="empty">正在读取 Runtime API Key。</div></div></section>
           <section id="api-config" class="panel"><h3>API 配置</h3><div class="stack"><p>Endpoint：<code id="endpoint"></code></p><p class="muted">将上方一次性显示的 Runtime API Key 安全保存后，再替换此示例中的占位符。</p><pre id="ready-curl"></pre></div></section>
 <section class="panel setup-recommended" aria-labelledby="claude-code-title"><div class="panel-heading"><h3 id="claude-code-title">直接接入 Claude Code（推荐）</h3><button id="copy-claude-code-config" type="button">复制 Claude Code 配置</button></div><p>无需第三方工具。将以下 env 合并到 Claude Code 的 ~/.claude/settings.json，保留已有设置，然后重启 Claude Code。</p><p>Base URL：<code id="base-url"></code></p><p class="muted">配置仅使用本次显示的 Runtime API Key；未显示时请替换占位符，不能使用 Admin API Key。清除显示会同时清除下方配置中的 Key。</p><pre id="claude-code-config" data-i18n-ignore></pre><p id="claude-code-copy-status" role="status" aria-live="polite"></p><p class="muted">模型 alias：haiku、sonnet、fable、opus。调用前请在模型映射中绑定后端；可使用 /model fable 切换到 Fable。</p></section>
-          <section class="panel" aria-labelledby="cc-switch-title"><div class="panel-heading"><h3 id="cc-switch-title">通过 CC Switch 接入（可选）</h3><button id="copy-cc-switch-config" class="secondary" type="button">复制 CC Switch 配置</button></div><p>CC Switch 仅是可选配置管理工具，不是必需项，也不是本项目依赖。已有 Claude Code 直连配置时无需安装。</p><p>在 CC Switch 中选择 Claude Code，新增自定义供应商，将以下 JSON 粘贴到供应商配置编辑器，保存并启用。Base URL 使用站点根地址，不追加 /v1。</p><pre id="cc-switch-config" data-i18n-ignore></pre><p id="cc-switch-copy-status" role="status" aria-live="polite"></p></section><section class="panel"><h3>curl 示例</h3><p class="muted">示例地址由当前页面 origin 生成。</p><pre id="curl-example" data-template="${escapeHtml(curlTemplate)}">${escapeHtml(curlTemplate)}</pre></section>
+          <section class="panel" aria-labelledby="cc-switch-title"><div class="panel-heading"><h3 id="cc-switch-title">通过 CC Switch 接入（可选）</h3><button id="copy-cc-switch-config" class="secondary" type="button">复制 CC Switch 配置</button></div><p>CC Switch 仅是可选配置管理工具，不是必需项，也不是本项目依赖。已有 Claude Code 直连配置时无需安装。</p><p>在 CC Switch 中选择 Claude Code，新增自定义供应商，将以下 JSON 粘贴到供应商配置编辑器，保存并启用。Base URL 使用站点根地址，不追加 /v1。</p><pre id="cc-switch-config" data-i18n-ignore></pre><p id="cc-switch-copy-status" role="status" aria-live="polite"></p></section><section class="panel"><h3>curl 示例</h3><p class="muted">示例地址由当前页面 origin 生成。</p><p class="muted">图片生成使用独立 Images API 和图片模型，不使用文本 alias。当前返回 PNG 的 b64_json；流式请求仅发送最终图片，不提供渐进预览。</p><pre id="curl-example" data-template="${escapeHtml(curlTemplate)}">${escapeHtml(curlTemplate)}</pre></section>
         </section>
         <section id="admin-access-module" class="admin-module" data-module-name="admin-access" role="tabpanel" aria-labelledby="admin-access-tab" hidden>
           <header class="module-header"><div><span class="eyebrow">06 / ADMIN ACCESS</span><h2>管理访问</h2><p>优先使用本机 HttpOnly 管理会话。Admin API Key 仅用于服务已由操作者自行连通后的外部管理。</p></div></header>

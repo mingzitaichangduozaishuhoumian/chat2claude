@@ -3,6 +3,7 @@ import type { ChatGptModelDiscoveryDiagnostic } from './client.js';
 export type ChatGptBackendErrorCode = 'unauthorized' | 'rate_limited' | 'upstream_error' | 'timeout' | 'network_error' | 'invalid_response' | 'invalid_request';
 
 const DIAGNOSTIC_VALUES = {
+  rateLimitScope: ['image_gen'],
   protocolStage: ['sse_decode', 'frame_validation', 'terminal', 'tool_finalization', 'replay_snapshot'],
   protocolReason: ['malformed_sse_json', 'invalid_lifecycle', 'invalid_text', 'invalid_part', 'invalid_output_item', 'invalid_frame', 'response_incomplete', 'missing_terminal', 'tool_finalization', 'replay_snapshot', 'bootstrap_limit'],
   eventType: ['error', 'response.error', 'response.failed', 'response.incomplete', 'response.completed', 'response.output_item.added', 'response.output_item.done', 'response.function_call_arguments.delta', 'response.function_call_arguments.done'],

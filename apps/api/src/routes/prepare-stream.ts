@@ -1,4 +1,4 @@
-import { ChatGptBackendError, type ChatGptStreamEvent } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, parseImageGenerationCallOutputItem, ResponsesImagePartials, type ChatGptStreamEvent } from '@chatgpt-to-claude/chatgpt-backend';
 
 export interface PreparedStream {
   events: AsyncIterable<ChatGptStreamEvent>;
@@ -99,6 +99,15 @@ export async function prepareStream(source: AsyncIterable<ChatGptStreamEvent>, o
 function validBusinessEvent(event: ChatGptStreamEvent): boolean {
   if (!event || typeof event !== 'object') return false;
   if (event.type === 'text_delta' || event.type === 'refusal_delta') return typeof event.text === 'string';
+  if (event.type === 'image_partial') {
+    try {
+      new ResponsesImagePartials().accept({ ...event.metadata, item_id: event.itemId, output_index: event.outputIndex, partial_image_index: event.partialImageIndex, partial_image_b64: event.partialImageB64 });
+      return true;
+    } catch { return false; }
+  }
+  if (event.type === 'image_output') {
+    try { return Boolean(parseImageGenerationCallOutputItem(event.item)); } catch { return false; }
+  }
   if (event.type === 'tool_call') return Boolean(event.toolCall && typeof event.toolCall.id === 'string' && event.toolCall.id && typeof event.toolCall.name === 'string' && event.toolCall.name && event.toolCall.input && typeof event.toolCall.input === 'object' && !Array.isArray(event.toolCall.input));
   return event.type === 'done' && event.terminalSuccessful !== false;
 }

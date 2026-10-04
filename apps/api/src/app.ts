@@ -10,6 +10,7 @@ import { createModelsRoute } from './routes/models.js';
 import { createMessagesRoute } from './routes/messages.js';
 import { createOpenAiChatRoute } from './routes/openai-chat.js';
 import { createOpenAiResponsesRoute } from './routes/openai-responses.js';
+import { createOpenAiImagesRoute } from './routes/openai-images.js';
 import { createCountTokensRoute } from './routes/count-tokens.js';
 import { createMetricsRoute } from './routes/metrics.js';
 import { createAdminRoute } from './routes/admin.js';
@@ -102,8 +103,9 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   app.route('/', healthRoute);
   app.use('/v1/*', accessLog(logger, env.accessLogFormat));
   app.use('/v1/*', apiKeyAuth(env.apiKeys, runtimeApiKeys));
-  app.route('/', createModelsRoute({ modelRegistry, ready: modelRegistryReady }));
+  app.route('/', createModelsRoute({ modelRegistry, ready: modelRegistryReady, backend, accountPool, backendProvider: env.chatGptBackend }));
   app.route('/', createCountTokensRoute());
+  app.route('/', createOpenAiImagesRoute({ logger, backend, requestLog, accountPool, operationalState, backendProvider: env.chatGptBackend, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs }));
   app.route('/', createMessagesRoute({ logger, backend, requestLog, modelRegistry, accountPool, operationalState, reasoningReplayStore, backendProvider: env.chatGptBackend, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createOpenAiChatRoute({ logger, backend, requestLog, modelRegistry, accountPool, operationalState, reasoningReplayStore, backendProvider: env.chatGptBackend, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.route('/', createOpenAiResponsesRoute({ logger, backend, requestLog, modelRegistry, accountPool, responsesStore, operationalState, backendProvider: env.chatGptBackend, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));

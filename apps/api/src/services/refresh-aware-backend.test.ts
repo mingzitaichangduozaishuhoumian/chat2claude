@@ -20,6 +20,48 @@ function setup(backend: ChatGptBackendClient) {
 }
 
 describe('RefreshAwareChatGptBackend', () => {
+  it('advertises images only for capable transports and retries only one unauthorized response', async () => {
+    expect(setup(backendFrom({})).wrapper.generateImages).toBeUndefined();
+    const calls: unknown[] = [];
+    const imageRequest = { model: 'gpt-image-2', prompt: 'A tree' };
+    const { wrapper, context, getRefreshes } = setup(backendFrom({ generateImages: async (body, ctx) => {
+      calls.push({ body, token: ctx?.account?.secret?.accessToken });
+      if (calls.length === 1) throw unauthorized();
+      return { created: 123, data: [{ b64_json: 'aW1hZ2U=' }] };
+    } }));
+    await expect(wrapper.generateImages!(imageRequest, context)).resolves.toMatchObject({ data: [{ b64_json: 'aW1hZ2U=' }] });
+    expect(calls).toEqual([{ body: imageRequest, token: 'access-1' }, { body: imageRequest, token: 'access-2' }]);
+    expect(getRefreshes()).toBe(1);
+  });
+
+  it.each(['timeout', 'upstream_error', 'rate_limited'] as const)('does not retry image %s errors', async (code) => {
+    let calls = 0;
+    const { wrapper, context, getRefreshes } = setup(backendFrom({ generateImages: async () => { calls++; throw new ChatGptBackendError('PRIVATE', code); } }));
+    await expect(wrapper.generateImages!({ prompt: 'A tree' }, context)).rejects.toMatchObject({ code });
+    expect(calls).toBe(1);
+    expect(getRefreshes()).toBe(0);
+  });
+
+  it('stops image retries after the second 401 and cancels before any retry', async () => {
+    let calls = 0;
+    const first = setup(backendFrom({ generateImages: async () => { calls++; throw unauthorized(); } }));
+    await expect(first.wrapper.generateImages!({ prompt: 'A tree' }, first.context)).rejects.toMatchObject({ code: 'unauthorized' });
+    expect(calls).toBe(2);
+    expect(first.getRefreshes()).toBe(1);
+    const controller = new AbortController();
+    const cancelled = setup(backendFrom({ generateImages: async () => { controller.abort(); throw unauthorized(); } }));
+    await expect(cancelled.wrapper.generateImages!({ prompt: 'A tree' }, { ...cancelled.context, signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(cancelled.getRefreshes()).toBe(0);
+  });
+
+  it('does not dispatch or refresh a cancelled image request', async () => {
+    let calls = 0;
+    const { wrapper, context, getRefreshes } = setup(backendFrom({ generateImages: async () => { calls++; return { created: 1, data: [{ b64_json: 'aW1hZ2U=' }] }; } }));
+    await expect(wrapper.generateImages!({ prompt: 'A tree' }, { ...context, signal: AbortSignal.abort() })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(calls).toBe(0);
+    expect(getRefreshes()).toBe(0);
+  });
+
   it.each(['stream', 'complete', 'models', 'discover', 'quota'] as const)('does not refresh or dispatch pre-aborted %s with expiring credentials', async (operation) => {
     let calls = 0;
     const transport = backendFrom({

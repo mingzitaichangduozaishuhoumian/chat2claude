@@ -35,7 +35,7 @@ interface StreamLogContext {
   metrics?: RequestSizeMetrics;
   terminal?: (fields: Record<string, unknown>) => void;
   lifecycle?: (fields: Record<string, unknown> & { lifecycle: 'start' | 'active' }) => void;
-  route: '/v1/messages' | '/v1/chat/completions' | '/v1/responses';
+  route: '/v1/messages' | '/v1/chat/completions' | '/v1/responses' | '/v1/images/generations';
   requestId?: string;
   logger?: Logger;
 }

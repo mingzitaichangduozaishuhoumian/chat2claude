@@ -24,6 +24,7 @@ export interface AppEnv {
   /** Private transport configuration; never serialize to logs or Admin responses. */
   outboundProxyUrl?: string;
   chatGptRequestTimeoutMs: number;
+  chatGptImageRequestTimeoutMs?: number;
   chatGptResponseHeaderTimeoutMs?: number;
   chatGptStreamIdleTimeoutMs?: number;
   chatGptStreamBootstrapTimeoutMs?: number;
@@ -63,6 +64,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     chatGptBaseUrl: source.CHATGPT_BASE_URL?.trim() || 'https://chatgpt.com',
     outboundProxyUrl: parseOutboundProxyUrl(source.OUTBOUND_PROXY_URL),
     chatGptRequestTimeoutMs: readNumber(source.CHATGPT_REQUEST_TIMEOUT_MS, 60000),
+    chatGptImageRequestTimeoutMs: parseStreamTimeout(source, 'CHATGPT_IMAGE_REQUEST_TIMEOUT_MS', 300_000),
     chatGptResponseHeaderTimeoutMs: parseStreamTimeout(source, 'CHATGPT_RESPONSE_HEADER_TIMEOUT_MS', 60_000),
     chatGptStreamBootstrapTimeoutMs: parseStreamTimeout(source, 'CHATGPT_STREAM_BOOTSTRAP_TIMEOUT_MS', 60_000),
     chatGptStreamIdleTimeoutMs: parseStreamTimeout(source, 'CHATGPT_STREAM_IDLE_TIMEOUT_MS', 300_000),

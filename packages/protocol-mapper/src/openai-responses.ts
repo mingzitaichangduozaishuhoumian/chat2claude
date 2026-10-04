@@ -5,6 +5,7 @@ import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { createMessageId } from '@chatgpt-to-claude/shared';
 import { estimateTokens } from './response.js';
 import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningSpeedDefaults } from './reasoning.js';
+import { imageReferences, NativeImageBudget, NativePreviewBudget, type ImagePartial } from './generated-images.js';
 
 export interface OpenAiResponsesRequest {
   model: string;
@@ -124,6 +125,7 @@ function normalizeOpenAiResponseFormat(responseFormat: Record<string, unknown>):
 
 export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequest, response: ChatGptCompletionResponse): OpenAiResponsesResponse {
   if (response.terminalSuccessful === false) throw invalidNativeOutput();
+  const imageBudget = new NativeImageBudget();
   const hasNativeMessage = response.outputItems?.some((item) => item.type === 'message') ?? false;
   const outputText = hasNativeMessage ? response.outputItems!.filter((item) => item.type === 'message').flatMap((item) => item.content.map((part) => part.type === 'output_text' ? part.text : '')).join('') : response.text ?? '';
   const refusal = response.refusal ?? '';
@@ -147,8 +149,13 @@ export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequ
   const replayCalls = new Set(replay.filter((item) => item.type === 'function_call').map((item) => item.call_id));
   for (const toolCall of response.toolCalls ?? []) if (!replayCalls.has(toolCall.id)) output.push({ id: `fc_${createMessageId()}`, type: 'function_call', status: 'completed', call_id: toolCall.id, name: toolCall.name, arguments: toolCall.rawArguments ?? JSON.stringify(toolCall.input ?? {}) });
   if (response.outputItems) {
+    const imageIds = new Set<string>();
     const nativeOutput = response.outputItems.map((item): Record<string, unknown> => {
-      const visible: Record<string, unknown> = { ...structuredClone(item) };
+      if (item.type === 'image_generation_call') {
+        if (imageIds.has(item.id)) throw invalidNativeOutput();
+        imageIds.add(item.id);
+      }
+      const visible: Record<string, unknown> = { ...structuredClone(item.type === 'image_generation_call' ? imageBudget.add(item) : item) };
       if (!request.include?.includes('reasoning.encrypted_content')) delete visible.encrypted_content;
       visible.id ??= `${item.type === 'message' ? 'msg' : item.type === 'image_generation_call' ? 'img' : 'fc'}_${createMessageId()}`;
       return visible;
@@ -186,7 +193,10 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
   const id = createResponsesId();
   const createdAt = currentUnixSeconds();
   let sequence = 0;
-  const emit = (type: string, fields: Record<string, unknown>) => responsesSse(type, { type, sequence_number: sequence++, ...fields });
+  const emit = (type: string, fields: Record<string, unknown>) => {
+    options.signal?.throwIfAborted();
+    return responsesSse(type, { type, sequence_number: sequence++, ...fields });
+  };
   yield emit('response.created', { response: { ...createMinimalResponse(id, createdAt, request.model, [], ''), status: 'in_progress' } });
   let terminal: Extract<ChatGptStreamEvent, { type: 'done' }> | undefined;
   let text = '';
@@ -195,6 +205,10 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
   const lastCodeUnit = { text_delta: 0, refusal_delta: 0 };
   const toolCalls: NonNullable<ChatGptCompletionResponse['toolCalls']> = [];
   const pendingImages: ChatGptImageGenerationCallOutputItem[] = [];
+  const imageBudget = new NativeImageBudget();
+  const previewBudget = new NativePreviewBudget();
+  const imagePreviews = new Map<string, { outputIndex: number; publishedIndex?: number; buffered: ImagePartial[] }>();
+  const imageAddedByIndex = new Map<number, string>();
   const output: Array<Record<string, unknown>> = [];
   let textOutput: Record<string, unknown> | undefined;
   let textOpen = false;
@@ -204,11 +218,31 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
   const addedIndexes = new Set<number>();
   const doneIndexes = new Set<number>();
   const publishedSnapshots = new Map<number, Record<string, unknown>>();
-  const emitFinalItem = function* (item: Record<string, unknown>, output_index: number) {
-    const initial: Record<string, unknown> = { ...item, status: 'in_progress', ...(item.type === 'function_call' ? { arguments: '' } : item.type === 'message' ? { content: [] } : {}) };
-    delete initial.encrypted_content;
+  const emitImageAdded = function* (itemId: string, output_index: number) {
+    if (imageAddedByIndex.get(output_index) === itemId) return;
+    if (addedIndexes.has(output_index) || output_index !== addedIndexes.size) throw invalidNativeOutput();
     addedIndexes.add(output_index);
-    yield emit('response.output_item.added', { output_index, item: initial });
+    imageAddedByIndex.set(output_index, itemId);
+    yield emit('response.output_item.added', { output_index, item: { type: 'image_generation_call', id: itemId, status: 'in_progress', result: null } });
+  };
+  const emitImagePartial = (partial: ImagePartial, output_index: number) => emit('response.image_generation_call.partial_image', {
+    item_id: partial.itemId, output_index, partial_image_index: partial.partialImageIndex,
+    partial_image_b64: partial.partialImageB64, ...partial.metadata,
+  });
+  const emitFinalItem = function* (item: Record<string, unknown>, output_index: number) {
+    if (item.type === 'image_generation_call') {
+      const preview = imagePreviews.get(item.id as string);
+      if (preview?.publishedIndex !== undefined && preview.publishedIndex !== output_index) throw invalidNativeOutput();
+      yield* emitImageAdded(item.id as string, output_index);
+      for (const partial of preview?.buffered ?? []) yield emitImagePartial(partial, output_index);
+      if (preview) preview.buffered = [];
+    } else {
+      if (addedIndexes.has(output_index) || output_index !== addedIndexes.size) throw invalidNativeOutput();
+      const initial: Record<string, unknown> = { ...item, status: 'in_progress', ...(item.type === 'function_call' ? { arguments: '' } : item.type === 'message' ? { content: [] } : {}) };
+      delete initial.encrypted_content;
+      addedIndexes.add(output_index);
+      yield emit('response.output_item.added', { output_index, item: initial });
+    }
     const fields = { item_id: item.id, output_index };
     if (item.type === 'function_call') {
       yield emit('response.function_call_arguments.delta', { ...fields, delta: item.arguments });
@@ -227,6 +261,25 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
     }
     doneIndexes.add(output_index);
     yield emit('response.output_item.done', { output_index, item });
+  };
+  const publishPrefix = function* (event: { projectedOutputIndex?: number; projectedOutputPrefix?: unknown[] }): Generator<string, number | undefined> {
+    if (event.projectedOutputIndex === undefined) return undefined;
+    if (!Number.isSafeInteger(event.projectedOutputIndex) || event.projectedOutputPrefix?.length !== event.projectedOutputIndex) throw invalidNativeOutput();
+    for (const [index, raw] of event.projectedOutputPrefix.entries()) {
+      const parsed = parseResponsesReplayItem(raw);
+      if (!parsed || parsed.type !== 'reasoning') throw invalidNativeOutput();
+      const item: Record<string, unknown> = { ...parsed };
+      if (!request.include?.includes('reasoning.encrypted_content')) delete item.encrypted_content;
+      const previous = publishedSnapshots.get(index);
+      if (previous) { if (!isDeepStrictEqual(previous, item)) throw invalidNativeOutput(); }
+      else {
+        bytes += Buffer.byteLength(JSON.stringify(item), 'utf8');
+        if (bytes > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
+        publishedSnapshots.set(index, item);
+        yield* emitFinalItem(item, index);
+      }
+    }
+    return event.projectedOutputIndex;
   };
   const finalizeIncrementalText = function* (finalItem?: Record<string, unknown>) {
     if (!textOutput || !textOpen) return;
@@ -288,8 +341,23 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
     yield emit('response.output_item.done', { output_index, item });
   };
   for await (const event of events) {
+    options.signal?.throwIfAborted();
     if (terminal) throw invalidNativeOutput();
-    if (event.type === 'text_delta' || event.type === 'refusal_delta') {
+    if (event.type === 'image_partial') {
+      const partial = previewBudget.add(event);
+      if ([...identifiedMessages.values()].some((message) => message.id === partial.itemId) || identifiedMessages.has(partial.outputIndex)) throw invalidNativeOutput();
+      let preview = imagePreviews.get(partial.itemId);
+      if (!preview) {
+        const hintedIndex = textOutput ? undefined : yield* publishPrefix(event);
+        const precedingArePublished = partial.outputIndex === addedIndexes.size;
+        const publishedIndex = textOutput ? undefined : hintedIndex ?? (precedingArePublished ? partial.outputIndex : undefined);
+        preview = { outputIndex: partial.outputIndex, ...(publishedIndex === undefined ? {} : { publishedIndex }), buffered: [] };
+        imagePreviews.set(partial.itemId, preview);
+        if (publishedIndex !== undefined) yield* emitImageAdded(partial.itemId, publishedIndex);
+      }
+      if (preview.publishedIndex === undefined) preview.buffered.push(partial);
+      else yield emitImagePartial(partial, preview.publishedIndex);
+    } else if (event.type === 'text_delta' || event.type === 'refusal_delta') {
       bytes += Buffer.byteLength(event.text, 'utf8');
       // A surrogate pair can straddle chunks: two isolated replacements cost six
       // UTF-8 bytes, whereas the concatenated code point costs four.
@@ -308,31 +376,11 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
       if (event.itemId !== undefined && event.outputIndex !== undefined && event.contentIndex !== undefined) {
         if (textOutput) throw invalidNativeOutput();
         const { itemId, outputIndex, contentIndex } = event;
+        if (imagePreviews.has(itemId) || [...imagePreviews.values()].some((preview) => preview.outputIndex === outputIndex)) throw invalidNativeOutput();
         let live = identifiedMessages.get(outputIndex);
         if (!live) {
           if ([...identifiedMessages.values()].some((message) => message.id === itemId)) throw invalidNativeOutput();
-          let hintedIndex: number | undefined;
-          if (event.projectedOutputIndex !== undefined && event.projectedOutputPrefix?.length === event.projectedOutputIndex) {
-            const prefix = event.projectedOutputPrefix.map((item) => {
-              const parsed = parseResponsesReplayItem(item);
-              if (!parsed || parsed.type !== 'reasoning') throw invalidNativeOutput();
-              const visible: Record<string, unknown> = { ...parsed };
-              if (!request.include?.includes('reasoning.encrypted_content')) delete visible.encrypted_content;
-              return visible;
-            });
-            for (const [index, item] of prefix.entries()) {
-              const previous = publishedSnapshots.get(index);
-              if (previous) { if (!isDeepStrictEqual(previous, item)) throw invalidNativeOutput(); }
-              else {
-                if (addedIndexes.has(index)) throw invalidNativeOutput();
-                bytes += Buffer.byteLength(JSON.stringify(item), 'utf8');
-                if (bytes > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
-                publishedSnapshots.set(index, item);
-                yield* emitFinalItem(item, index);
-              }
-            }
-            hintedIndex = event.projectedOutputIndex;
-          }
+          const hintedIndex = yield* publishPrefix(event);
           const precedingArePublished = outputIndex === 0 || addedIndexes.size >= outputIndex
             && [...addedIndexes].filter((index) => index < outputIndex).length === outputIndex;
           const publishedIndex = hintedIndex ?? (precedingArePublished ? outputIndex : undefined);
@@ -363,6 +411,12 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
         if (bytes > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
         continue;
       }
+      if (!textOutput && imagePreviews.size) {
+        if (event.type === 'refusal_delta') refusal += event.text;
+        else text += event.text;
+        if (bytes > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
+        continue;
+      }
       if (identifiedMessages.size) throw invalidNativeOutput();
       if (!textOutput) {
         textOutput = { id: `msg_${createMessageId()}`, type: 'message', role: 'assistant', status: 'in_progress', content: [] };
@@ -387,11 +441,10 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
       bytes += Buffer.byteLength(argumentsText, 'utf8') + Buffer.byteLength(event.toolCall.name, 'utf8') + event.toolCall.id.length;
       toolCalls.push(event.toolCall);
     } else if (event.type === 'image_output') {
-      if (event.item.status !== 'completed') throw invalidNativeOutput();
-      bytes += Buffer.byteLength(JSON.stringify(event.item), 'utf8');
-      pendingImages.push(structuredClone(event.item));
+      pendingImages.push(imageBudget.add(event.item));
     } else if (event.type === 'done') {
-      bytes += Buffer.byteLength(JSON.stringify(event), 'utf8');
+      for (const item of event.outputItems ?? []) if (item.type === 'image_generation_call') imageBudget.add(item);
+      bytes += Buffer.byteLength(JSON.stringify({ ...event, ...(event.outputItems ? { outputItems: imageReferences(event.outputItems) } : {}) }), 'utf8');
       terminal = event;
     }
     if (bytes > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
@@ -402,7 +455,11 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
   const response = { ...mapChatGptResponseToOpenAiResponses(request, completion), id, created_at: createdAt };
   const authoritative = [...response.output];
   reconcilePendingImages(pendingImages, authoritative);
-  if (identifiedMessages.size) {
+  for (const [itemId, preview] of imagePreviews) {
+    const index = authoritative.findIndex((item) => item.type === 'image_generation_call' && item.id === itemId);
+    if (index < 0 || preview.publishedIndex !== undefined && preview.publishedIndex !== index) throw invalidNativeOutput();
+  }
+  if (identifiedMessages.size || !textOutput && imagePreviews.size || publishedSnapshots.size) {
     const messagesById = new Map([...identifiedMessages.values()].map((message) => [message.id, message]));
     for (const id of messagesById.keys()) if (!authoritative.some((item) => item.type === 'message' && item.id === id)) throw invalidNativeOutput();
     for (const [index, item] of publishedSnapshots) if (!isDeepStrictEqual(authoritative[index], item)) throw invalidNativeOutput();
@@ -433,7 +490,7 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
   response.output = output;
   if (textOutput) response.output_text = text;
   for (const index of addedIndexes) if (!doneIndexes.has(index)) throw invalidNativeOutput();
-  if (Buffer.byteLength(JSON.stringify(response), 'utf8') > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
+  if (Buffer.byteLength(JSON.stringify({ ...response, output: imageReferences(response.output) }), 'utf8') > NATIVE_RESPONSES_OUTPUT_BYTES) throw invalidNativeOutput();
   options.signal?.throwIfAborted();
   await options.onCompleted?.(response, completion);
   yield emit('response.completed', { response });

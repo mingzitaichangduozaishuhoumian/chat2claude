@@ -22,6 +22,11 @@ export const RESPONSES_HISTORY_LIMITS = Object.freeze({ items: 4096, bytes: 8 * 
 const defaults = { ttlMs: 30 * 60_000, maxRecords: 1000, maxBytes: 64 * 1024 * 1024, maxRecordBytes: 2 * RESPONSES_HISTORY_LIMITS.bytes + 64 * 1024 };
 export function previousResponseNotFound(): ClaudeApiError { return new ClaudeApiError('Previous response not found.', 404, 'not_found_error'); }
 
+/** Generated image results cannot yet be replayed as provider image inputs. */
+export function hasGeneratedImageOutput(output: readonly unknown[] | undefined): boolean {
+  return output?.some((item) => item !== null && typeof item === 'object' && (item as { type?: unknown }).type === 'image_generation_call') ?? false;
+}
+
 /** No record/public payload getters or debug metadata. Only an explicit expansion
  * can release a detached history for backend dispatch. All persistence is local. */
 export class ResponsesStore {
@@ -43,6 +48,7 @@ export class ResponsesStore {
     this.#cleanup();
     if (!owner || !context?.account || !context.model || request.store === false || response.status !== 'completed' || !this.#limits.maxRecords || !this.#limits.ttlMs) return false;
     try {
+      if (hasGeneratedImageOutput(response.output) || hasGeneratedImageOutput(context.output)) return false;
       const input = toInput(request.input);
       const output = context.output;
       checkHistory([...input, ...output]);

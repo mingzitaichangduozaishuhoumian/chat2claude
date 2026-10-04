@@ -34,7 +34,7 @@ function documentedManifestRows(markdown: string): Array<{ protocol: string; fea
       rows.push({ protocol: 'claude_messages', feature: unquote(cells[0]), status: unquote(cells[1]), notes: cells[2] });
     }
     if (section === 'OpenAI compatibility routes' && cells.length >= 4) {
-      const protocol = cells[0] === 'Chat Completions' ? 'openai_chat_completions' : cells[0] === 'Responses' ? 'openai_responses' : cells[0];
+      const protocol = cells[0] === 'Chat Completions' ? 'openai_chat_completions' : cells[0] === 'Responses' ? 'openai_responses' : cells[0] === 'Images' ? 'openai_images' : cells[0];
       rows.push({ protocol, feature: unquote(cells[1]), status: unquote(cells[2]), notes: cells[3] });
     }
     if (section === 'ChatGPT/Codex backend' && cells.length >= 3) {

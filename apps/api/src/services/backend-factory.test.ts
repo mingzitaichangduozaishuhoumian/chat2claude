@@ -5,6 +5,21 @@ import { createChatGptBackend } from './backend-factory.js';
 import { candidateSessionContext } from './refresh-aware-backend.js';
 
 afterEach(() => vi.useRealTimers());
+it('keeps image generation on its configured independent timeout', async () => {
+  vi.useFakeTimers();
+  const env = loadEnv({ CHATGPT_BACKEND: 'session', CHATGPT_REQUEST_TIMEOUT_MS: '5', CHATGPT_IMAGE_REQUEST_TIMEOUT_MS: '90' });
+  const backend = createChatGptBackend(env, new AccountPool(), undefined, async () => new Promise(() => {}));
+  const context = candidateSessionContext({ id: 'test', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'SYNTHETIC_ONLY' } });
+  const result = backend.generateImages!({ prompt: 'A tree' }, context).catch((error) => error);
+  let settled = false;
+  void result.then(() => { settled = true; });
+  await vi.advanceTimersByTimeAsync(6);
+  expect(settled).toBe(false);
+  await vi.advanceTimersByTimeAsync(84);
+  expect(await result).toMatchObject({ code: 'timeout', status: 504 });
+  expect(vi.getTimerCount()).toBe(0);
+});
+
 it('API factory uses phased generation defaults while retaining short discovery limits and metric callbacks', async () => {
   vi.useFakeTimers();
   const env = loadEnv({ CHATGPT_BACKEND: 'session', CHATGPT_REQUEST_TIMEOUT_MS: '50' });

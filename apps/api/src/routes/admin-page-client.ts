@@ -57,7 +57,7 @@ let quotaRequestState = { status: 'idle', error: null };
 const pendingQuotaAccounts = new Set();
 let quotaRefreshAllPending = false;
 const curlExample = document.getElementById('curl-example');
-curlExample.textContent = curlExample.dataset.template.replace('__ORIGIN__', window.location.origin);
+curlExample.textContent = curlExample.dataset.template.replaceAll('__ORIGIN__', window.location.origin);
 document.getElementById('base-url').textContent = window.location.origin;
 document.getElementById('endpoint').textContent = window.location.origin + '/v1/messages';
 document.getElementById('ready-curl').textContent = curlExample.textContent;
@@ -306,7 +306,7 @@ function showReady(result) {
   if (hasRawKey) selectModule('api-access');
   document.getElementById('api-config').hidden = false;
   document.getElementById('endpoint').textContent = endpoint;
-  const curl = curlExample.dataset.template.replace('__ORIGIN__', window.location.origin);
+  const curl = curlExample.dataset.template.replaceAll('__ORIGIN__', window.location.origin);
   document.getElementById('ready-curl').textContent = curl; curlExample.textContent = curl;
   document.getElementById('key-state').textContent = '已配置';
   document.getElementById('auth-message').textContent = hasRawKey ? '初始化完成：已创建账号并生成 Runtime API Key，请立即复制保存。' : '授权完成：账号凭据已更新，现有 Runtime API Key 保持有效且不会再次显示原始值。';

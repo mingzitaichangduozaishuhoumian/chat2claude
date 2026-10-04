@@ -2,7 +2,7 @@
 
 [中文](README.md) | **English**
 
-`chatgpt-to-claude` is a TypeScript + Hono local compatibility layer. It exposes Claude Messages, OpenAI Chat Completions, OpenAI Responses, Models API, and related compatibility routes while connecting internally to either a mock backend or a real ChatGPT/Codex session backend.
+`chatgpt-to-claude` is a TypeScript + Hono local compatibility layer. It exposes Claude Messages, OpenAI Chat Completions, OpenAI Responses, Images, Models API, and related compatibility routes while connecting internally to either a mock backend or a real ChatGPT/Codex session backend.
 
 This project is intended for personal local/private use with ChatGPT/Codex accounts that you own or are explicitly authorized to operate. It is **not** a subscription resale service, public proxy, multi-tenant gateway, or traffic aggregation business. Do not resell personal subscription traffic or expose it to untrusted third parties at scale.
 
@@ -24,7 +24,7 @@ Design tradeoffs:
 - **Local/personal use first**: the service listens on `127.0.0.1` by default and is designed for a personal machine or private network. It is not for public proxying, subscription resale, traffic aggregation, or multi-tenant billing.
 - **Low operational burden**: the recommended path is Node.js + pnpm + the local `/admin` console. No database, Redis, Kubernetes, service mesh, or heavyweight API gateway is required to get started.
 - **Configuration lives in `/admin`**: account OAuth, model discovery, alias binding, Runtime API Key creation, and basic diagnostics are concentrated in the local Admin console, reducing manual config edits and secret copying across tools.
-- **Client-friendly surface**: one local service exposes Claude Messages, OpenAI Chat Completions, OpenAI Responses, and Models API routes for Claude Code, Anthropic SDK, OpenAI SDK, and OpenAI-compatible clients.
+- **Client-friendly surface**: one local service exposes Claude Messages, OpenAI Chat Completions, OpenAI Responses, Images, and Models API routes for Claude Code, Anthropic SDK, OpenAI SDK, and OpenAI-compatible clients.
 - **Lightweight does not mean toy**: the project still keeps OAuth/session maintenance, model aliases, Runtime/Admin key separation, stream-state tracking, request terminal-state accounting, and safe logging boundaries.
 - **Clear permission boundaries**: Runtime API Keys are for normal `/v1/*` clients only. Admin API Keys / configured `API_KEYS` are required for account management and global diagnostics; protected Admin APIs reject Runtime Keys.
 - **Logs are useful without leaking content**: logs keep timing, stream terminal state, event/byte counts, safe error categories, and diagnostics; they do not record prompts, tool arguments/results, raw provider payloads, Authorization headers, cookies, tokens, or proxy credentials.
@@ -228,6 +228,22 @@ const completion = await client.chat.completions.create({
 });
 ```
 
+### Independent Images API
+
+`POST /v1/images/generations` reuses an existing ChatGPT account through the Codex 0.160 Images service, defaulting to `gpt-image-2`. One real generation with this model has succeeded; access for other accounts/models remains upstream-dependent. Reuse the OpenAI SDK `client` above:
+
+```ts
+const image = await client.images.generate({
+  model: 'gpt-image-2', prompt: 'A simple blue circle on a white background',
+  size: '1024x1024', quality: 'low', n: 1,
+});
+// Decode image.data[0].b64_json to obtain a PNG.
+```
+
+The endpoint returns JSON/base64 PNG and accepts `n=1..10`. `stream:true` supports only `n=1` and emits one `image_generation.completed` event after the upstream JSON result. There are no partial previews: omit `partial_images` or set it to 0. The separate `CHATGPT_IMAGE_REQUEST_TIMEOUT_MS` defaults to 300000 ms. Image limits are 16 MiB per item, 64 MiB per bundle and 10 images; text and hidden replay limits are unchanged.
+
+The `/v1/models` descriptor with `source: "image_endpoint"` points to this separate route. Sending `gpt-image-2` or an alias bound to it to a text endpoint returns 400. Responses image-event conversion supports previews/final images when upstream provides them; real image-tool execution on the current Responses host remains unverified. Responses containing generated images are not stored, and their IDs cannot be continued with `previous_response_id`. Chat/Claude explicitly reject image output with 501 instead of empty success. See the [usage guide](docs/USAGE.en.md#independent-gpt-image-generation) for parameters, decoding and limitations.
+
 ## curl smoke tests
 
 ```bash
@@ -255,6 +271,7 @@ If `/v1/models` does not contain the alias you want, open **Models** in Admin, r
 CHATGPT_BACKEND=session
 CHATGPT_BASE_URL=https://chatgpt.com
 CHATGPT_REQUEST_TIMEOUT_MS=60000
+CHATGPT_IMAGE_REQUEST_TIMEOUT_MS=300000
 CHATGPT_RESPONSE_HEADER_TIMEOUT_MS=60000
 CHATGPT_STREAM_BOOTSTRAP_TIMEOUT_MS=60000
 CHATGPT_STREAM_IDLE_TIMEOUT_MS=300000

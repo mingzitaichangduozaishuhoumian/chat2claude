@@ -16,6 +16,7 @@ import { getAccessLogRequestId, getAccessLogStreamLifecycle, getAccessLogTermina
 import { acquireRequestAccount, checkSessionAccountAvailability } from './account-acquisition.js';
 import type { ReasoningReplayStore } from '../services/reasoning-replay-store.js';
 import { RequestReasoningReplay } from '../services/request-reasoning-replay.js';
+import { assertTextModelEndpoint } from './text-model-endpoint.js';
 
 export interface MessagesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; accountAcquireTimeoutMs?: number; sseKeepaliveIntervalMs?: number; logger?: Logger; reasoningReplayStore?: ReasoningReplayStore; }
 
@@ -29,6 +30,7 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
       metrics.sourceMessageCount = request.messages.length;
       metrics.sourceContentBlockCount = request.messages.reduce((sum, message) => sum + (typeof message.content === 'string' ? 1 : message.content.length), 0);
       setAccessLogMetadata(c, { model: request.model, stream: Boolean(request.stream) });
+      assertTextModelEndpoint(request.model, deps.modelRegistry);
       const explicitControls = {
         reasoningEffort: request.output_config?.effort ?? request.reasoning_effort,
         serviceTier: request.service_tier ?? request.speed ?? request.response_speed,

@@ -28,6 +28,7 @@ export function accountQuotaContext(account: NonNullable<ChatGptBackendRequestCo
 export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
   readonly discoverModels?: (context?: ChatGptBackendRequestContext) => Promise<ChatGptModelDiscoveryResult>;
   readonly consumeAccountResetCredit?: NonNullable<ChatGptBackendClient['consumeAccountResetCredit']>;
+  readonly generateImages?: NonNullable<ChatGptBackendClient['generateImages']>;
 
   constructor(
     private readonly transport: ChatGptBackendClient,
@@ -35,6 +36,8 @@ export class RefreshAwareChatGptBackend implements ChatGptBackendClient {
   ) {
     const discover = transport.discoverModels?.bind(transport);
     if (discover) this.discoverModels = (context) => this.withOneUnauthorizedRetry(context, discover);
+    const images = transport.generateImages?.bind(transport);
+    if (images) this.generateImages = (request, context) => this.withOneUnauthorizedRetry(context, (freshContext) => images(request, freshContext));
     const consume = transport.consumeAccountResetCredit?.bind(transport);
     // A mutation must use the operation's account snapshot. Credential refresh can
     // return an unrelated replacement account, so neither refresh nor retry here.

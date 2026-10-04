@@ -40,13 +40,38 @@ export type ChatGptReplayItem = ChatGptReasoningReplayItem | ChatGptFunctionCall
 export type ChatGptImageGenerationCallStatus = 'in_progress' | 'generating' | 'completed' | 'failed';
 
 /** A completed, authoritative image result safe to expose to protocol mappers. */
-export interface ChatGptImageGenerationCallOutputItem {
+export interface ChatGptImageGenerationMetadata {
+  action?: 'generate' | 'edit' | 'auto';
+  background?: 'transparent' | 'opaque' | 'auto';
+  output_format?: 'png' | 'webp' | 'jpeg';
+  quality?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'auto';
+  size?: string;
+  mime_type?: string;
+  revised_prompt?: string;
+}
+export interface ChatGptImageGenerationCallOutputItem extends ChatGptImageGenerationMetadata {
   type: 'image_generation_call';
   id: string;
   status: 'completed';
   result: string;
-  mime_type?: string;
-  revised_prompt?: string;
+}
+
+export interface ChatGptImageGenerationRequest {
+  prompt: string;
+  model?: string;
+  background?: 'transparent' | 'opaque' | 'auto';
+  n?: number;
+  quality?: 'low' | 'medium' | 'high' | 'auto';
+  size?: string;
+}
+export interface ChatGptImageGenerationResponse {
+  created: number;
+  data: Array<{ b64_json: string; generation_id?: string }>;
+  background?: 'transparent' | 'opaque' | 'auto';
+  quality?: 'low' | 'medium' | 'high' | 'auto';
+  size?: string;
+  output_format?: 'png' | 'webp' | 'jpeg';
+  usage?: ChatGptUsage;
 }
 
 export type ChatGptOutputItem = ChatGptReplayItem | ChatGptImageGenerationCallOutputItem | {
@@ -201,6 +226,7 @@ export interface ChatGptAccountQuota {
 }
 
 export interface ChatGptBackendClient {
+  generateImages?(request: ChatGptImageGenerationRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptImageGenerationResponse>;
   complete(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptCompletionResponse>;
   stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent>;
   listModels(context?: ChatGptBackendRequestContext): Promise<ChatGptDiscoveredModel[]>;

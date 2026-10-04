@@ -2,7 +2,7 @@
 
 **中文** | [English](README.en.md)
 
-`chatgpt-to-claude` 是一个 TypeScript + Hono 实现的本地兼容层：对外提供 Claude Messages、OpenAI Chat Completions、OpenAI Responses、Models API 等接口，对内连接 mock backend 或真实 ChatGPT/Codex session backend。
+`chatgpt-to-claude` 是一个 TypeScript + Hono 实现的本地兼容层：对外提供 Claude Messages、OpenAI Chat Completions、OpenAI Responses、Images、Models API 等接口，对内连接 mock backend 或真实 ChatGPT/Codex session backend。
 
 本项目面向使用本人控制或已获明确授权的 ChatGPT/Codex 账号的个人本地/私有场景。它不是订阅聚合、流量转售、多租户共享网关或公共代理服务；不要把个人订阅流量公开转售，或面向不特定第三方大规模共享。
 
@@ -24,7 +24,7 @@
 - **本地/个人使用优先**：默认监听 `127.0.0.1`，默认面向个人机器或私有网络；不面向公共代理、订阅转售、流量聚合或多租户计费场景。
 - **轻量运维**：推荐路径是 Node.js + pnpm + 本机 `/admin`。不要求数据库、Redis、Kubernetes、服务网格或重型 API gateway 才能启动。
 - **配置集中在 `/admin`**：账号 OAuth、模型 discovery、alias 绑定、Runtime API Key 创建和基础诊断都集中在本地管理台完成，减少手改配置和跨工具复制 secret。
-- **客户端友好**：一个本地服务同时提供 Claude Messages、OpenAI Chat Completions、OpenAI Responses 和 Models API，方便 Claude Code、Anthropic SDK、OpenAI SDK 以及 OpenAI 兼容客户端接入。
+- **客户端友好**：一个本地服务同时提供 Claude Messages、OpenAI Chat Completions、OpenAI Responses、Images 和 Models API，方便 Claude Code、Anthropic SDK、OpenAI SDK 以及 OpenAI 兼容客户端接入。
 - **轻量不等于玩具**：项目仍保留 OAuth/session 维护、模型 alias、Runtime/Admin key 分离、流式状态追踪、请求终态统计和安全日志边界。
 - **权限边界清楚**：Runtime API Key 只给普通客户端调用 `/v1/*`；Admin API Key / `API_KEYS` 才用于管理账号和全局诊断，受保护 Admin API 会拒绝 Runtime Key。
 - **日志可排障但不泄密**：记录请求耗时、stream 终态、events/bytes、错误分类和安全诊断；不记录 prompt、工具参数/结果、原始 provider payload、Authorization、cookie、token 或代理凭据。
@@ -228,6 +228,22 @@ const completion = await client.chat.completions.create({
 });
 ```
 
+### 独立 Images API
+
+`POST /v1/images/generations` 使用现有 ChatGPT 账号调用 Codex 0.160 Images 服务，默认模型 `gpt-image-2`。已完成一次该模型的真实生成验证；其他账号/模型仍由上游决定。OpenAI SDK 可沿用上面的 `client`：
+
+```ts
+const image = await client.images.generate({
+  model: 'gpt-image-2', prompt: '白色背景上的简洁蓝色圆形',
+  size: '1024x1024', quality: 'low', n: 1,
+});
+// image.data[0].b64_json 解码后是 PNG。
+```
+
+支持 JSON/base64 PNG、`n=1..10`。`stream:true` 仅支持 `n=1`，等上游 JSON 完成后发送一个 `image_generation.completed` 事件；没有中途预览，`partial_images` 只能省略或设为 0。独立超时 `CHATGPT_IMAGE_REQUEST_TIMEOUT_MS` 默认 300000 毫秒；图片限额为每项 16 MiB、每组 64 MiB、10 张，文本和隐藏 replay 限额不变。
+
+`/v1/models` 的 `source: "image_endpoint"` 描述项指向此独立路由；将 `gpt-image-2` 或绑定它的 alias 发到文本接口会得到 400。Responses 仅在上游提供图片事件时支持预览/最终图转换，当前宿主的 Responses 图片工具尚未真实验证；含生成图的 Responses 响应不存历史，返回 ID 不可用于 `previous_response_id`。Chat/Claude 收到图片输出会明确报 501，不返回空成功。完整参数、存图示例和限制见[使用说明](docs/USAGE.zh-CN.md#独立-gpt-image-生成)。
+
 ## curl 验证
 
 ```bash
@@ -255,6 +271,7 @@ curl http://127.0.0.1:3000/v1/chat/completions \
 CHATGPT_BACKEND=session
 CHATGPT_BASE_URL=https://chatgpt.com
 CHATGPT_REQUEST_TIMEOUT_MS=60000
+CHATGPT_IMAGE_REQUEST_TIMEOUT_MS=300000
 CHATGPT_RESPONSE_HEADER_TIMEOUT_MS=60000
 CHATGPT_STREAM_BOOTSTRAP_TIMEOUT_MS=60000
 CHATGPT_STREAM_IDLE_TIMEOUT_MS=300000

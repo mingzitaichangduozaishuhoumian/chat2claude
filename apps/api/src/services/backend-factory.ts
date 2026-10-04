@@ -11,6 +11,7 @@ export function createChatGptBackend(env: AppEnv, accountPool: AccountPool, dura
     const transport = new SessionChatGptBackend({
       fetch: outboundFetch, baseUrl: env.chatGptBaseUrl, clientVersion: env.codexClientVersion,
       requestTimeoutMs: env.chatGptRequestTimeoutMs,
+      imageRequestTimeoutMs: env.chatGptImageRequestTimeoutMs ?? 300_000,
       responseHeaderTimeoutMs: env.chatGptResponseHeaderTimeoutMs ?? 60_000,
       streamBootstrapTimeoutMs: env.chatGptStreamBootstrapTimeoutMs ?? 60_000,
       streamIdleTimeoutMs: env.chatGptStreamIdleTimeoutMs ?? 300_000,

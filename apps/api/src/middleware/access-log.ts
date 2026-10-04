@@ -107,7 +107,7 @@ export function getAccessLogRequestId(c: Context): string | undefined {
 export function setAccessLogMetadata(c: Context, metadata: AccessLogMetadata): void { c.set(ACCESS_LOG_METADATA, { ...c.get(ACCESS_LOG_METADATA), ...metadata }); }
 
 export function normalizeAccessPath(pathname: string): string {
-  if (pathname === '/v1/models' || pathname === '/v1/messages' || pathname === '/v1/messages/count_tokens' || pathname === '/v1/chat/completions' || pathname === '/v1/responses') return pathname;
+  if (pathname === '/v1/models' || pathname === '/v1/messages' || pathname === '/v1/messages/count_tokens' || pathname === '/v1/chat/completions' || pathname === '/v1/responses' || pathname === '/v1/images/generations') return pathname;
   if (pathname.startsWith('/v1/')) return '/v1/:unknown';
   if (pathname === '/admin/api/setup/status' || pathname === '/admin/api/auth/status' || pathname === '/admin/api/api-keys/dev-enable' || pathname === '/admin/api/auth/chatgpt/start' || pathname === '/admin/api/auth/chatgpt/callback' || pathname === '/admin/api/auth/chatgpt/complete' || pathname === '/admin/api/quotas' || pathname === '/admin/api/quotas/refresh' || pathname === '/admin/api/accounts' || pathname === '/admin/api/api-keys' || pathname === '/admin/api/models' || pathname === '/admin/api/models/reset' || pathname === '/admin/api/models/refresh') return pathname;
   if (/^\/admin\/api\/auth\/chatgpt\/[^/]+$/.test(pathname)) return '/admin/api/auth/chatgpt/:flowId';

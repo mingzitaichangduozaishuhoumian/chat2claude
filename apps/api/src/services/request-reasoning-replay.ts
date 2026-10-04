@@ -48,6 +48,11 @@ export class RequestReasoningReplay {
     // without done, and consumer cancellation cannot publish tentative replay.
     if (signal?.aborted) throw new DOMException('Request was cancelled.', 'AbortError');
     if (terminal) {
+      // Custom backends may expose images only on done, without image_output.
+      // Reject before the private output projection is removed or replay is saved.
+      if (terminal.outputItems?.some((item) => item.type === 'image_generation_call')) {
+        throw new ClaudeApiError('Generated image output is not supported by this text endpoint. Use /v1/images/generations or /v1/responses.', 501, 'api_error');
+      }
       this.complete(terminal, account, model, pool, signal);
       const { replayItems: _items, replayEligible: _eligible, outputItems: _output, ...visible } = terminal;
       yield visible;

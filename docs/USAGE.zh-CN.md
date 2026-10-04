@@ -288,13 +288,69 @@ const completion = await client.chat.completions.create({
 | --- | --- | --- |
 | Claude Code | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` |
 | Anthropic SDK | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` |
-| OpenAI SDK | `http://127.0.0.1:3000/v1` | `/v1/chat/completions`, `/v1/responses`, `/v1/models` |
+| OpenAI SDK | `http://127.0.0.1:3000/v1` | `/v1/chat/completions`, `/v1/responses`, `/v1/images/generations`, `/v1/models` |
 | Cline | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/models` |
 | Roo | `http://127.0.0.1:3000` | `/v1/messages`, `/v1/models` |
 | Continue | `http://127.0.0.1:3000/v1` | `/v1/chat/completions`, `/v1/models` |
 | Cherry Studio | `http://127.0.0.1:3000/v1` | `/v1/chat/completions`, `/v1/models` |
 
 Claude Code、Anthropic SDK、Cline 和 Roo 按 Claude/Anthropic 兼容客户端配置，Base URL 使用根 origin。OpenAI SDK、Continue 和 Cherry Studio 按 OpenAI 兼容客户端配置，Base URL 使用带 `/v1` 的版本化 origin。
+
+### 独立 GPT Image 生成
+
+使用 Runtime API Key 调用 `POST /v1/images/generations`。适配器沿用当前 ChatGPT 账号，接入 Codex 0.160 的 `/backend-api/codex/images/generations` 服务，不把图片模型发往文本 Responses 接口。默认模型是 `gpt-image-2`，已完成一次该模型的真实生成验证；其他模型及账号仍取决于上游权限。
+
+OpenAI SDK 继续使用带 `/v1` 的 Base URL：
+
+```ts
+import OpenAI from 'openai';
+import { writeFile } from 'node:fs/promises';
+
+const client = new OpenAI({
+  baseURL: 'http://127.0.0.1:3000/v1',
+  apiKey: '<runtime-api-key>',
+});
+const image = await client.images.generate({
+  model: 'gpt-image-2',
+  prompt: '白色背景上的简洁蓝色圆形',
+  size: '1024x1024', quality: 'low', n: 1,
+});
+const b64 = image.data?.[0]?.b64_json;
+if (!b64) throw new Error('没有返回图片');
+await writeFile('image.png', Buffer.from(b64, 'base64'));
+```
+
+```bash
+curl http://127.0.0.1:3000/v1/images/generations \
+  -H 'Authorization: Bearer <runtime-api-key>' \
+  -H 'content-type: application/json' \
+  -d '{"model":"gpt-image-2","prompt":"白色背景上的简洁蓝色圆形","size":"1024x1024","quality":"low","n":1}'
+```
+
+JSON 响应包含 `created`、`data[].b64_json`、`output_format: "png"` 以及可用的元数据/usage。将 `b64_json` 解码为 PNG 文件；接口不返回托管图片 URL。
+
+| 参数 | 当前适配器行为 |
+| --- | --- |
+| `model` | 默认 `gpt-image-2`；其他合法 ID 会传给上游，但不保证可用。 |
+| `prompt` | 必填、非空、最多 32000 字符；请求 JSON 最多 128 KiB。 |
+| `n` | 整数 1..10；`stream:true` 时只能省略或设为 1。 |
+| `quality` | `low`、`medium`、`high` 或 `auto`。 |
+| `size` | `auto` 或 `宽x高`；实际可用尺寸由上游模型决定。 |
+| `background` | `transparent`、`opaque` 或 `auto`，转发给图片服务。 |
+| `response_format` / `output_format` | 可省略，或分别设为 `b64_json` / `png`。尚未实现 URL 输出、JPEG/WebP 选择和压缩参数。 |
+| `stream` / `partial_images` | `stream:true` 仅发送最终的 `image_generation.completed` 事件；`partial_images` 只能省略或设为 0。 |
+
+上游 Images 服务返回完整 JSON，因此 `stream:true` 也会等生成结束后才发送 SSE headers 和一个最终图片事件，不提供中途预览，也不会缩短生成等待。图片编辑和 variations 尚未实现。独立超时为 `CHATGPT_IMAGE_REQUEST_TIMEOUT_MS=300000`，必须是正毫秒整数。序列化后的图片 base64 与元数据限制为每项 16 MiB、每组 64 MiB、最多 10 张；文本输出及隐藏 reasoning/tool replay 的限额不扩大。
+
+当适配器有图片能力且存在启用、可用的账号时，`/v1/models` 会添加 `source: "image_endpoint"`、`endpoint: "/v1/images/generations"`、`capabilities.image_generation: true`、`availability: "backend_dependent"` 的描述项。它不是文本模型发现结果，也不是所有账号均可用的保证。将 `gpt-image-2` 或指向它的 alias 发往 Messages、Chat Completions 或 Responses，会得到明确的 400 并提示 Images 路径。
+
+独立的 `/v1/responses` 适配器可在上游确实提供图片事件时转发预览、最终图及标准元数据。预览在 `response.output_item.added` 之后发送；前置输出顺序暂时未知时，会延迟到终态再发布。只有匹配的成功终态图片才能确认完成。这条转换路径有合成 Session/HTTP 测试覆盖，但尚未真实验证当前宿主的 Responses 图片工具能生成图片；已验证的生成路径是独立 Images API。含生成图输出的 Responses 响应不进入历史存储，即使设置 `store:true` 也一样：返回的 response ID 不能用于 `previous_response_id` 续聊，该查询返回 404，且不会再次调用上游。此类请求建议使用 `store:false`，当前不实现生成图历史的编辑或回放。
+
+将 `image_generation_call` 输出项直接放回 Responses 的 input 数组，也会在获取账号或请求上游前返回 400。如需提交图片做视觉理解，请使用已支持的 `input_image` 块；原有图片输入路径不受影响。
+
+Messages 和 Chat Completions 不输出生成图。若上游意外返回图片，会给出明确的 501；HTTP headers 已发送时则使用对应协议的 SSE error，不再返回空成功。用于视觉理解的输入图片属于另一条映射能力。
+
+参考：[官方图像生成指南](https://developers.openai.com/api/docs/guides/image-generation)、[Codex 0.160 图像工具](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/ext/image-generation/src/tool.rs)、[Images client](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/codex-api/src/endpoint/images.rs)。官方公共 API 的选项多于本适配器。SDK/curl 示例是手动 smoke 路径，自动兼容测试使用合成上游结果。
 
 ## 6. 模型 alias、discovery 与 reasoning/speed
 
@@ -448,6 +504,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 CHATGPT_BACKEND=session
 CHATGPT_BASE_URL=https://chatgpt.com
 CHATGPT_REQUEST_TIMEOUT_MS=60000
+CHATGPT_IMAGE_REQUEST_TIMEOUT_MS=300000
 CHATGPT_RESPONSE_HEADER_TIMEOUT_MS=60000
 CHATGPT_STREAM_IDLE_TIMEOUT_MS=300000
 CHATGPT_STREAM_TOTAL_TIMEOUT_MS=0
@@ -459,11 +516,11 @@ HOST=127.0.0.1
 API_KEYS=<key-1>,<key-2>
 ```
 
-Session 生成不再使用 OAuth 短请求总时限。`CHATGPT_REQUEST_TIMEOUT_MS` 默认 60000，仅用于 OAuth/token/discovery/配额等短操作。`CHATGPT_RESPONSE_HEADER_TIMEOUT_MS` 默认 60000，限制 fetch 到 headers；`CHATGPT_STREAM_IDLE_TIMEOUT_MS` 默认 300000，从 headers 后等待首个非空 raw body chunk，之后每个非空 chunk 都续期（reasoning、tool、SSE comment、拆分帧均算活动，空 chunk 不算）。`CHATGPT_STREAM_TOTAL_TIMEOUT_MS` 默认 0，明确关闭绝对生成上限；大于 0 时从 fetch 开始计时，即使流活跃也终止。前两项须为 1..2147483647 整数，总上限允许 0；非法配置拒绝启动。超时仍是 backend code=timeout/status=504，安全 timeoutKind 仅为 response_headers / stream_idle / stream_total；调用方取消优先，不计账号失败。reader.cancel 清理最多等待 250ms。
+文本 Session 生成不再使用 OAuth 短请求总时限。`CHATGPT_REQUEST_TIMEOUT_MS` 默认 60000，仅用于 OAuth/token/discovery/配额等短操作。`CHATGPT_RESPONSE_HEADER_TIMEOUT_MS` 默认 60000，限制 fetch 到 headers；`CHATGPT_STREAM_IDLE_TIMEOUT_MS` 默认 300000，从 headers 后等待首个非空 raw body chunk，之后每个非空 chunk 都续期（reasoning、tool、SSE comment、拆分帧均算活动，空 chunk 不算）。`CHATGPT_STREAM_TOTAL_TIMEOUT_MS` 默认 0，明确关闭绝对生成上限；大于 0 时从 fetch 开始计时，即使流活跃也终止。前两项须为 1..2147483647 整数，总上限允许 0；非法配置拒绝启动。超时仍是 backend code=timeout/status=504，安全 timeoutKind 仅为 response_headers / stream_idle / stream_total；调用方取消优先，不计账号失败。reader.cancel 清理最多等待 250ms。
 
 包 API 迁移：旧 `timeoutMs` 单独使用仍保留绝对总时限和短操作时限；它已 deprecated。传入任一新字段即启用新分阶段语义，未指定总上限默认为 0；`requestTimeoutMs` 只管短操作。API app 显式传入所有新字段，不把旧环境变量当作生成上限。
 
-`CHATGPT_BASE_URL` 是 session backend 请求上游 `/backend-api/codex/responses` 和 discovery 的地址，不是 Claude Code 的客户端 Base URL。客户端 Base URL 仍然是服务根 origin，例如 `http://127.0.0.1:3000`。
+`CHATGPT_BASE_URL` 是 session backend 请求上游 `/backend-api/codex/responses`、`/backend-api/codex/images/generations` 和 discovery 的地址，不是 Claude Code 的客户端 Base URL。客户端 Base URL 仍然是服务根 origin，例如 `http://127.0.0.1:3000`。
 
 ## 10. 连接验证
 

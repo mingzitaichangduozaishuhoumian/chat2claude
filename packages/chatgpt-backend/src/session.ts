@@ -1,4 +1,8 @@
 import { CODEX_ORIGINATOR, codexUserAgent, normalizeCodexClientVersion } from './codex-protocol.js';
+import { randomUUID } from 'node:crypto';
+import type { ChatGptImageGenerationRequest, ChatGptImageGenerationResponse } from './client.js';
+import { DEFAULT_IMAGE_REQUEST_TIMEOUT_MS, imageGenerationBody, parseImageGenerationResponse } from './images.js';
+import { RESPONSES_IMAGE_LIMITS, ResponsesImagePartials } from './image-output.js';
 import type { ChatGptModelDiscoveryDiagnostic, ChatGptModelDiscoveryResult, ChatGptReplayItem } from './client.js';
 import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputContentPart, ChatGptInputItem, ChatGptModelControlCapabilities, ChatGptQuotaWindow, ChatGptReasoningLevelOption, ChatGptServiceTierOption, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
 import type { ChatGptSafeStatus, ChatGptStreamEvent } from './events.js';
@@ -14,6 +18,7 @@ export interface SessionChatGptBackendOptions {
   /** @deprecated Legacy absolute generation and short-operation timeout. New fields take precedence. */
   timeoutMs?: number;
   requestTimeoutMs?: number;
+  imageRequestTimeoutMs?: number;
   responseHeaderTimeoutMs?: number;
   streamIdleTimeoutMs?: number;
   streamBootstrapTimeoutMs?: number;
@@ -29,6 +34,7 @@ type JsonObject = Record<string, unknown>;
 export class SessionChatGptBackend implements ChatGptBackendClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  private readonly imageTimeoutMs: number;
   private readonly streamTimeouts: { headers: number; idle: number; total: number; bootstrap: number };
   private readonly clientVersion: string;
   private readonly fetchImpl: typeof fetch;
@@ -36,6 +42,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
   constructor(options: SessionChatGptBackendOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.timeoutMs = options.requestTimeoutMs ?? options.timeoutMs ?? 60_000;
+    this.imageTimeoutMs = options.imageRequestTimeoutMs ?? DEFAULT_IMAGE_REQUEST_TIMEOUT_MS;
     const legacy = options.requestTimeoutMs === undefined && options.responseHeaderTimeoutMs === undefined && options.streamIdleTimeoutMs === undefined && options.streamTotalTimeoutMs === undefined && options.streamBootstrapTimeoutMs === undefined;
     this.streamTimeouts = {
       bootstrap: options.streamBootstrapTimeoutMs ?? 60_000,
@@ -49,6 +56,39 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
 
   async listModels(context?: ChatGptBackendRequestContext): Promise<ChatGptDiscoveredModel[]> {
     return (await this.discoverModels(context)).models;
+  }
+
+  async generateImages(request: ChatGptImageGenerationRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptImageGenerationResponse> {
+    const secret = requireSessionSecret(context);
+    const body = imageGenerationBody(request);
+    const headers = this.headers(secret, true, 'application/json');
+    headers.set('x-codex-image-turn-id', randomUUID());
+    const lifetime = createRequestLifetime(this.imageTimeoutMs, context?.signal);
+    try {
+      const response = await lifetime.run(() => this.fetchResponse(this.backendApiEndpoint('/codex/images/generations'), {
+        method: 'POST', headers, body: JSON.stringify(body),
+      }, lifetime.signal).then((response) => {
+        if (lifetime.signal.aborted) void cancelResponseBody(response);
+        return response;
+      }));
+      if (!response.ok) {
+        const diagnostic = await readHttpErrorDiagnostic(response, lifetime);
+        if (context?.signal?.aborted) throw abortError();
+        const code = response.status === 401 ? 'unauthorized' : response.status === 429 ? 'rate_limited' : response.status === 400 ? 'invalid_request' : 'upstream_error';
+        throw new ChatGptBackendError(`ChatGPT image generation failed: HTTP ${response.status}`, code, {
+          status: response.status, safeDiagnostic: { ...diagnostic, httpStatus: response.status, failurePhase: 'response_headers',
+            ...(response.status === 429 ? { rateLimitScope: response.headers.get('x-codex-active-limit')?.trim() === 'image_gen' ? 'image_gen' as const : 'unknown' as const } : {}) },
+        });
+      }
+      const payload = await readBoundedImageJson(response, lifetime);
+      if (context?.signal?.aborted) throw abortError();
+      return parseImageGenerationResponse(payload);
+    } catch (error) {
+      if (context?.signal?.aborted) throw abortError();
+      if (error instanceof ChatGptBackendError && error.safeDiagnostic?.failurePhase === 'response_headers') throw error;
+      lifetime.signal.throwIfAborted();
+      throw error;
+    } finally { lifetime.dispose(); }
   }
 
   async discoverModels(context?: ChatGptBackendRequestContext): Promise<ChatGptModelDiscoveryResult> {
@@ -180,7 +220,8 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       toolCount: tools.length,
       toolSchemaBytes: tools.reduce((sum: number, tool: unknown) => sum + (isPlainObject(tool) && tool.parameters !== undefined ? Buffer.byteLength(JSON.stringify(tool.parameters), 'utf8') : 0), 0),
     });
-    const lifetime = createRequestLifetime(this.streamTimeouts.total, context?.signal, this.streamTimeouts);
+    const lifetime = createRequestLifetime(this.streamTimeouts.total, context?.signal, { ...this.streamTimeouts,
+      ...(tools.some((tool) => isPlainObject(tool) && tool.type === 'image_generation') ? { bootstrapBytes: MAX_IMAGE_RESPONSE_FRAME_BYTES } : {}) });
     let httpStatus: number | undefined;
     try {
       const response = await lifetime.run(() => this.fetchResponse(this.backendApiEndpoint('/codex/responses'), {
@@ -206,6 +247,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       const completedReasoningPrefix = new Map<number, Extract<ChatGptReplayItem, { type: 'reasoning' }>>();
       const tools = new ResponsesToolCalls(httpStatus);
       const replay = new ResponsesReplay();
+      const imagePartials = new ResponsesImagePartials();
       let ready = false;
       let bootstrapFrames = 0;
       for await (const frame of iterateSseData(response, lifetime)) {
@@ -225,6 +267,9 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         // before publishing either the readiness barrier or any business event.
         const pending: ChatGptStreamEvent[] = [];
         const replayResult = replay.accept(type, parsed);
+        if (type === 'response.image_generation_call.partial_image') {
+          pending.push({ ...imagePartials.accept(parsed), ...earlyProjectedOutputIndex(parsed, completedReasoningPrefix) });
+        }
         if (type === 'response.output_item.done' && typeof parsed.output_index === 'number' && isPlainObject(parsed.item) && parsed.item.type === 'reasoning') {
           const item = parseResponsesReplayItem(parsed.item);
           if (item?.type === 'reasoning') completedReasoningPrefix.set(parsed.output_index, item);
@@ -250,6 +295,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         if (status) pending.push({ type: 'status_delta', status });
         const done = isDoneEvent({ ...parsed, type });
         if (done) {
+          imagePartials.finish(isPlainObject(parsed.response) ? parsed.response.output : undefined);
           for (const delta of completedContentDeltas(replayResult?.outputItems, parsed, streamedContent, streamedText, streamedRefusal)) {
             if (delta.type === 'text_delta') streamedText += delta.text;
             else streamedRefusal += delta.text;
@@ -258,6 +304,9 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
           for (const toolCall of tools.finish()) {
             sawToolCall = true;
             pending.push({ type: 'tool_call', toolCall });
+          }
+          for (const item of replayResult?.outputItems ?? []) {
+            if (item.type === 'image_generation_call') pending.push({ type: 'image_output', item });
           }
           pending.push({ type: 'done', finishReason: extractFinishReason(parsed) ?? (sawToolCall ? 'tool_calls' : streamedRefusal ? 'refusal' : 'stop'), ...(latestUsage ? { usage: latestUsage } : {}), ...replayResult });
         }
@@ -472,7 +521,7 @@ const SAFE_STATUS_BY_FRAME_TYPE = new Map<string, ChatGptSafeStatus>([
 ]);
 function isSupportedFrameType(type: unknown): type is string {
   return typeof type === 'string' && (TEXT_FRAME_TYPES.has(type) || PART_FRAME_TYPES.has(type) || TOOL_PROGRESS_TYPES.has(type)
-    || ['response.created', 'response.in_progress', 'response.completed', 'response.output_item.added', 'response.output_item.done', 'response.function_call_arguments.delta', 'response.function_call_arguments.done'].includes(type));
+    || ['response.created', 'response.in_progress', 'response.completed', 'response.output_item.added', 'response.output_item.done', 'response.function_call_arguments.delta', 'response.function_call_arguments.done', 'response.image_generation_call.partial_image'].includes(type));
 }
 
 function statusDeltaForFrameType(type: string): ChatGptSafeStatus | undefined {
@@ -492,6 +541,8 @@ function validateStreamFrame(type: unknown, frame: JsonObject, ready = false): b
   if (frame.item_id !== undefined) require(readNonEmptyString(frame.item_id));
   if (['response.created', 'response.in_progress', 'response.completed'].includes(type)) {
     require(isValidResponseLifecycle(type, frame.response) || (ready && isCompatibilityEmptyCompletion(type, frame.response)));
+  } else if (type === 'response.image_generation_call.partial_image') {
+    require(typeof frame.partial_image_b64 === 'string');
   } else if (TEXT_FRAME_TYPES.has(type)) {
     require(typeof frame[type.endsWith('.delta') ? 'delta' : type.startsWith('response.refusal.') ? 'refusal' : 'text'] === 'string');
   } else if (PART_FRAME_TYPES.has(type)) {
@@ -577,7 +628,7 @@ function isValidMessageOutputPart(value: unknown): boolean {
     || (value.type === 'refusal' && typeof value.refusal === 'string'));
 }
 
-function createRequestLifetime(timeoutMs: number, callerSignal?: AbortSignal, stream?: { headers: number; idle: number; total: number; bootstrap: number }) {
+function createRequestLifetime(timeoutMs: number, callerSignal?: AbortSignal, stream?: { headers: number; idle: number; total: number; bootstrap: number; bootstrapBytes?: number }) {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let phaseTimer: ReturnType<typeof setTimeout> | undefined;
@@ -620,8 +671,9 @@ function createRequestLifetime(timeoutMs: number, callerSignal?: AbortSignal, st
     },
     ready() { bootstrapReady = true; clearTimeout(bootstrapTimer); },
     bootstrapChunk(bytes: number) {
-      if (!bootstrapReady && (bootstrapBytes += bytes) > 8 * 1024 * 1024) throw invalidStreamResponse();
+      if (!bootstrapReady && (bootstrapBytes += bytes) > (stream?.bootstrapBytes ?? 8 * 1024 * 1024)) throw invalidStreamResponse();
     },
+    bootstrapPending(bytes: number) { if (!bootstrapReady && bootstrapBytes + bytes > (stream?.bootstrapBytes ?? 8 * 1024 * 1024)) throw invalidStreamResponse(); },
     activity,
     async run<T>(operation: () => Promise<T>): Promise<T> {
       controller.signal.throwIfAborted();
@@ -1106,7 +1158,45 @@ async function cancelResponseBody(response: Response): Promise<void> {
   finally { clearTimeout(timer); }
 }
 
+/** The Images endpoint is JSON, not SSE. Bound bytes before parsing base64 data. */
+async function readBoundedImageJson(response: Response, lifetime: ReturnType<typeof createRequestLifetime>): Promise<unknown> {
+  if (!response.body) throw new ChatGptBackendError('ChatGPT image response body was missing.', 'invalid_response', { status: 502 });
+  const reader = response.body.getReader();
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => cancellation ??= Promise.resolve().then(() => reader.cancel()).catch(() => {});
+  lifetime.signal.addEventListener('abort', cancel, { once: true });
+  if (lifetime.signal.aborted) cancel();
+  try {
+    const declaredLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declaredLength) && declaredLength > RESPONSES_IMAGE_LIMITS.bundleBytes) throw new ChatGptBackendError('ChatGPT image response exceeded the byte limit.', 'invalid_response', { status: 502 });
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    let bytes = 0;
+    let text = '';
+    while (true) {
+      const { value, done } = await lifetime.run(() => reader.read());
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > RESPONSES_IMAGE_LIMITS.bundleBytes) throw new ChatGptBackendError('ChatGPT image response exceeded the byte limit.', 'invalid_response', { status: 502 });
+      text += decoder.decode(value, { stream: true });
+    }
+    return JSON.parse(text + decoder.decode()) as unknown;
+  } catch (error) {
+    lifetime.signal.throwIfAborted();
+    if (error instanceof ChatGptBackendError) throw error;
+    throw new ChatGptBackendError('ChatGPT image response could not be read.', error instanceof SyntaxError ? 'invalid_response' : 'network_error', {
+      status: 502, safeDiagnostic: { httpStatus: response.status, failurePhase: 'response_body_read', bodyReadErrorFamily: bodyReadErrorFamily(error) },
+    });
+  } finally {
+    lifetime.signal.removeEventListener('abort', cancel);
+    lifetime.dispose();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([cancel(), new Promise<void>((resolve) => { timer = setTimeout(resolve, 250); })]); }
+    finally { clearTimeout(timer); try { reader.releaseLock(); } catch { /* best effort */ } }
+  }
+}
+
 interface SseFrame { event?: string; data: string; }
+const MAX_IMAGE_RESPONSE_FRAME_BYTES = RESPONSES_IMAGE_LIMITS.bundleBytes + 4 * 1024 * 1024 + 64 * 1024;
 
 async function* iterateSseData(response: Response, lifetime: ReturnType<typeof createRequestLifetime>): AsyncIterable<SseFrame> {
   if (!response.body) throw new ChatGptBackendError('ChatGPT session backend response body was missing.', 'invalid_response', {
@@ -1130,9 +1220,11 @@ async function* iterateSseData(response: Response, lifetime: ReturnType<typeof c
       const { value, done } = await lifetime.run(() => reader.read());
       if (done) break;
       if (value.byteLength > 0) lifetime.activity();
-      lifetime.bootstrapChunk(value.byteLength);
       buffer += decoder.decode(value, { stream: true });
-      yield* drainSseBuffer(buffer, (next) => { buffer = next; });
+      yield* drainSseBuffer(buffer, (next) => { buffer = next; }, (bytes) => lifetime.bootstrapChunk(bytes));
+      const bufferedBytes = Buffer.byteLength(buffer, 'utf8');
+      if (bufferedBytes > MAX_IMAGE_RESPONSE_FRAME_BYTES) throw invalidStreamResponse();
+      lifetime.bootstrapPending(bufferedBytes);
     }
   } finally {
     lifetime.signal.removeEventListener('abort', cancel);
@@ -1151,10 +1243,13 @@ async function* iterateSseData(response: Response, lifetime: ReturnType<typeof c
   yield* drainSseBuffer(buffer, (next) => { buffer = next; });
 }
 
-function* drainSseBuffer(buffer: string, setBuffer: (value: string) => void): Iterable<SseFrame> {
+function* drainSseBuffer(buffer: string, setBuffer: (value: string) => void, onFrame?: (bytes: number) => void): Iterable<SseFrame> {
   let boundary = findSseFrameBoundary(buffer);
   while (boundary) {
     const frame = buffer.slice(0, boundary.index);
+    const bytes = Buffer.byteLength(frame, 'utf8') + boundary.length;
+    if (bytes > MAX_IMAGE_RESPONSE_FRAME_BYTES) throw invalidStreamResponse();
+    onFrame?.(bytes);
     buffer = buffer.slice(boundary.index + boundary.length);
     const data = frame.split(/\r?\n/)
       .map((line) => line.startsWith('data:') ? line.slice(5).trimStart() : undefined)

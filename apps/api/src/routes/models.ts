@@ -1,7 +1,9 @@
 import { Hono } from 'hono';
 import { projectModelContext, type ModelContextView } from '../services/model-context.js';
 import type { EffectiveModelDefaults, ModelCapabilities, ModelDefaults, ModelRegistry, RuntimeModel } from '../services/model-registry.js';
-import type { ChatGptModelControlCapabilities, ChatGptReasoningLevelOption, ChatGptServiceTierOption } from '@chatgpt-to-claude/chatgpt-backend';
+import { DEFAULT_CODEX_IMAGE_MODEL, type ChatGptBackendClient, type ChatGptModelControlCapabilities, type ChatGptReasoningLevelOption, type ChatGptServiceTierOption } from '@chatgpt-to-claude/chatgpt-backend';
+import type { AccountPool } from '../services/account-pool.js';
+import { imageAccountAcquireOptions } from './image-account-eligibility.js';
 
 export interface PublicDiscoveredModel {
   id: string;
@@ -41,13 +43,39 @@ export interface PublicModel {
   capability_projection: Pick<ModelCapabilities, 'reasoning_effort' | 'response_speed' | 'thinking' | 'metadata_status' | 'fast_mode' | 'ultra_lossy' | 'ultra_execution'>;
 }
 
-export interface ModelsRouteOptions { modelRegistry: ModelRegistry; ready?: Promise<unknown>; }
+export interface PublicImageModel {
+  id: string;
+  type: 'model';
+  display_name: string;
+  source: 'image_endpoint';
+  endpoint: '/v1/images/generations';
+  capabilities: { image_generation: true };
+  availability: 'backend_dependent';
+}
+
+export interface ModelsRouteOptions {
+  modelRegistry: ModelRegistry;
+  ready?: Promise<unknown>;
+  backend?: Pick<ChatGptBackendClient, 'generateImages'>;
+  accountPool?: Pick<AccountPool, 'unavailableReason'>;
+  backendProvider?: 'mock' | 'session';
+}
 export function createModelsRoute(options: ModelsRouteOptions): Hono {
   return new Hono().get('/v1/models', async (c) => {
     if (options.ready) await options.ready;
-    return c.json({ data: options.modelRegistry.list()
+    const data: Array<PublicModel | PublicImageModel> = options.modelRegistry.list()
       .filter((model) => model.enabled && model.status !== 'unbound' && model.status !== 'stale')
-      .map(projectPublicModel) });
+      .map(projectPublicModel);
+    const imageUnavailable = options.accountPool?.unavailableReason(imageAccountAcquireOptions(options.backendProvider));
+    const imageAvailable = options.backend?.generateImages && options.accountPool && (imageUnavailable === undefined || imageUnavailable === 'account_busy');
+    if (imageAvailable) {
+      // This advertises a separate endpoint, not a text-catalog discovery result.
+      const image: PublicImageModel = { id: DEFAULT_CODEX_IMAGE_MODEL, type: 'model', display_name: 'GPT Image 2', source: 'image_endpoint', endpoint: '/v1/images/generations', capabilities: { image_generation: true }, availability: 'backend_dependent' };
+      const existing = data.findIndex((model) => model.id === image.id);
+      if (existing === -1) data.push(image);
+      else data[existing] = image;
+    }
+    return c.json({ data });
   });
 }
 

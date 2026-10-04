@@ -30,7 +30,13 @@ export interface ChatGptStatusDeltaEvent { type: 'status_delta'; status: ChatGpt
 export interface ChatGptToolCallEvent { type: 'tool_call'; toolCall: ChatGptToolCall; }
 /** Safe, allowlisted generated-image result. Native Responses only consumes this event. */
 export interface ChatGptImageOutputEvent { type: 'image_output'; item: ChatGptImageGenerationCallOutputItem; }
+/** Ephemeral preview; never a successful terminal image or implicit replay item. */
+export interface ChatGptImagePartialEvent {
+  type: 'image_partial'; itemId: string; outputIndex: number; partialImageIndex: number; partialImageB64: string;
+  metadata?: Pick<ChatGptImageGenerationCallOutputItem, 'background' | 'output_format' | 'quality' | 'size'>;
+  projectedOutputIndex?: number; projectedOutputPrefix?: ChatGptOutputItem[];
+}
 export interface ChatGptDoneEvent { type: 'done'; terminalSuccessful?: boolean; outputItems?: ChatGptOutputItem[]; /** Internal identity metadata; never client-visible output. */ outputContentIndices?: ChatGptOutputContentIndices[]; finishReason?: ChatGptFinishReason; usage?: ChatGptUsage; /** Internal carrier, never client-visible content. */ replayItems?: ChatGptReplayItem[]; /** Fixed internal completeness marker for implicit replay. */ replayEligible?: boolean; }
 /** Transport-only barrier; never content, usage, or replay. */
 export interface ChatGptUpstreamReadyEvent { type: 'upstream_ready'; }
-export type ChatGptStreamEvent = ChatGptTextDeltaEvent | ChatGptRefusalDeltaEvent | ChatGptReasoningDeltaEvent | ChatGptStatusDeltaEvent | ChatGptToolCallEvent | ChatGptImageOutputEvent | ChatGptDoneEvent | ChatGptUpstreamReadyEvent;
+export type ChatGptStreamEvent = ChatGptTextDeltaEvent | ChatGptRefusalDeltaEvent | ChatGptReasoningDeltaEvent | ChatGptStatusDeltaEvent | ChatGptToolCallEvent | ChatGptImageOutputEvent | ChatGptImagePartialEvent | ChatGptDoneEvent | ChatGptUpstreamReadyEvent;

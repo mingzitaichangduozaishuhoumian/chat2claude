@@ -6,7 +6,7 @@ import { parseResponsesReplayItem, ResponsesReplayBudget, RESPONSES_INPUT_REPLAY
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { mapChatGptResponseToOpenAiResponses, mapChatGptStreamToOpenAiResponsesSse, mapOpenAiResponsesRequestToChatGpt, readableStreamFromAsyncIterable, type OpenAiResponsesResponse, type OpenAiResponsesRequest, type ReasoningSpeedDefaults } from '@chatgpt-to-claude/protocol-mapper';
 import type { RequestLog } from '../services/request-log.js';
-import { previousResponseNotFound, RESPONSES_HISTORY_LIMITS, ResponsesStore } from '../services/responses-store.js';
+import { hasGeneratedImageOutput, previousResponseNotFound, RESPONSES_HISTORY_LIMITS, ResponsesStore } from '../services/responses-store.js';
 import { bindRequestHistory } from '../services/request-history-binding.js';
 import { ModelRegistryError, type ModelRegistry } from '../services/model-registry.js';
 import type { AccountPool, AccountProvider } from '../services/account-pool.js';
@@ -16,6 +16,7 @@ import { createAccountRequestTracker, requestErrorOutcome, trackStreamStatistics
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
 import { getAccessLogRequestId, getAccessLogStreamLifecycle, getAccessLogTerminal, setAccessLogMetadata } from '../middleware/access-log.js';
 import { acquireRequestAccount, checkSessionAccountAvailability } from './account-acquisition.js';
+import { assertTextModelEndpoint } from './text-model-endpoint.js';
 
 export interface OpenAiResponsesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; responsesStore?: ResponsesStore; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; accountAcquireTimeoutMs?: number; sseKeepaliveIntervalMs?: number; logger?: Logger; }
 
@@ -27,6 +28,7 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
       if (deps.ready) await deps.ready;
       const request = parseOpenAiResponsesRequest(await parseRequestJson(() => c.req.json()));
       setAccessLogMetadata(c, { model: request.model, stream: Boolean(request.stream) });
+      assertTextModelEndpoint(request.model, deps.modelRegistry);
       const ownerId = c.get('reasoningReplayOwner');
       const previous = request.previous_response_id ? responsesStore.get(ownerId, request.previous_response_id) : undefined;
       if (request.previous_response_id && !previous) throw previousResponseNotFound();
@@ -75,6 +77,7 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
         const commit = (response: OpenAiResponsesResponse, completion: ChatGptCompletionResponse) => {
           const current = deps.accountPool.get(account.id);
           if (request.store === false || !ownerId || backendContext.signal.aborted || completion.terminalSuccessful === false
+            || hasGeneratedImageOutput(completion.outputItems) || hasGeneratedImageOutput(response.output)
             || !current || !current.enabled || current.status !== 'available' || current.incarnation !== account.incarnation || current.provider !== account.provider) return;
           const full = mapChatGptResponseToOpenAiResponses({ ...downstreamRequest, include: ['reasoning.encrypted_content'] }, completion);
           responsesStore.put(ownerId, downstreamRequest, response, { account: { id: account.id, incarnation: account.incarnation, provider: account.provider }, model: backendRequest.model,
@@ -170,6 +173,7 @@ function validateResponsesInput(input: unknown): void {
   const budget = new ResponsesReplayBudget(RESPONSES_INPUT_REPLAY_LIMITS);
   for (const item of input) {
     if (!isObject(item)) throw new ClaudeApiError('input items must be objects');
+    if (item.type === 'image_generation_call') throw new ClaudeApiError('Generated image outputs cannot be replayed directly. Send the image as an input_image content part.', 400, 'invalid_request_error');
     if (item.type === 'reasoning' || item.type === 'function_call' && typeof item.arguments === 'string') {
       try {
         const parsed = parseResponsesReplayItem(item, RESPONSES_INPUT_REPLAY_LIMITS);

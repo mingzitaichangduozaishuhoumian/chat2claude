@@ -2,6 +2,7 @@ import type { ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptFinish
 import { createMessageId } from '@chatgpt-to-claude/shared';
 import { estimateTokens } from './response.js';
 import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningSpeedDefaults } from './reasoning.js';
+import { assertTextEvent, assertTextResponse } from './generated-images.js';
 
 export type OpenAiChatRole = 'system' | 'developer' | 'user' | 'assistant' | 'tool';
 
@@ -138,6 +139,7 @@ export function mapOpenAiToolChoice(toolChoice: OpenAiChatToolChoice | undefined
 }
 
 export function mapChatGptResponseToOpenAiChat(request: OpenAiChatCompletionRequest, response: ChatGptCompletionResponse): OpenAiChatCompletionResponse {
+  assertTextResponse(response, 'Chat Completions');
   const toolCalls = mapToolCalls(response.toolCalls);
   const completionText = response.text ?? '';
   const promptTokens = response.usage?.inputTokens ?? estimateTokens(JSON.stringify(request.messages));
@@ -165,6 +167,7 @@ export async function* mapChatGptStreamToOpenAiChatSse(request: OpenAiChatComple
   let usage: ChatGptUsage | undefined;
   yield openAiSse({ id, object: 'chat.completion.chunk', created, model: request.model, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });
   for await (const event of events) {
+    assertTextEvent(event, 'Chat Completions');
     if (event.type === 'text_delta') {
       yield openAiSse({ id, object: 'chat.completion.chunk', created, model: request.model, choices: [{ index: 0, delta: { content: event.text }, finish_reason: null }] });
     } else if (event.type === 'refusal_delta') {

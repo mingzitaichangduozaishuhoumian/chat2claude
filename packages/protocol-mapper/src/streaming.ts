@@ -4,6 +4,7 @@ import { encodeSseEvent } from '@chatgpt-to-claude/claude-protocol';
 import { createMessageId } from '@chatgpt-to-claude/shared';
 import { estimateClaudeInputTokens, estimateTokens } from './response.js';
 import { mapStopReason } from './stop-reason.js';
+import { assertTextEvent } from './generated-images.js';
 export function createClaudeStreamStart(request: ClaudeMessagesRequest): ClaudeMessageResponse {
   return { id: createMessageId(), type: 'message', role: 'assistant', model: request.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: estimateClaudeInputTokens(request), output_tokens: 0 } };
 }
@@ -16,6 +17,7 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
   let outputTokens: number | undefined;
   yield encodeSseEvent({ event: 'message_start', data: { type: 'message_start', message: createClaudeStreamStart(request) } });
   for await (const event of events) {
+    assertTextEvent(event, 'Claude Messages');
     if (event.type === 'text_delta' || event.type === 'refusal_delta') {
       if (thinkingBlockOpen) {
         yield encodeSseEvent({ event: 'content_block_stop', data: { type: 'content_block_stop', index: nextIndex } });

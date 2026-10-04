@@ -5,6 +5,7 @@ import { normalizeClaudeMessagesToCanonical } from './canonical.js';
 import { mapCanonicalInputItems, mapClaudeToolChoice, mapClaudeTools } from './request.js';
 import { mapStopReason } from './stop-reason.js';
 import { parseLosslessToolInput } from './lossless-tool-input.js';
+import { assertTextResponse } from './generated-images.js';
 export function mapChatGptResponseToClaude(request: ClaudeMessagesRequest, response: ChatGptCompletionResponse): ClaudeMessageResponse {
   return {
     id: createMessageId(),
@@ -18,6 +19,7 @@ export function mapChatGptResponseToClaude(request: ClaudeMessagesRequest, respo
   };
 }
 export function mapResponseContent(response: ChatGptCompletionResponse): ClaudeContentBlock[] {
+  assertTextResponse(response, 'Claude Messages');
   const content: ClaudeContentBlock[] = [];
   if (response.text) content.push({ type: 'text', text: response.text });
   if (response.refusal) content.push({ type: 'text', text: response.refusal });
