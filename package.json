@@ -19,7 +19,7 @@
     "package:smoke": "node scripts/packaging/smoke.mjs"
   },
   "devDependencies": {
-    "@types/node": "^22.10.7",
+    "@types/node": "^26.6.3",
     "playwright-core": "1.63.0",
     "tar": "7.5.22",
     "typescript": "^5.7.3",
