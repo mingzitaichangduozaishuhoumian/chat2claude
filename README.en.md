@@ -314,6 +314,8 @@ Or run the full check:
 corepack pnpm check
 ```
 
+After dependency updates, run `corepack pnpm audit` to check the lockfile against known security advisories. The test toolchain uses Vitest 4 and Vite 6; this revision was validated on Node.js 22.15.0.
+
 ## Documentation
 
 - [中文 README](README.md)

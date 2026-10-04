@@ -314,6 +314,8 @@ corepack pnpm typecheck
 corepack pnpm check
 ```
 
+更新依赖后，还可以运行 `corepack pnpm audit` 检查锁文件中的已知安全公告。测试工具链使用 Vitest 4 和 Vite 6；本轮验证环境为 Node.js 22.15.0。
+
 ## 文档
 
 - [English README](README.en.md)
