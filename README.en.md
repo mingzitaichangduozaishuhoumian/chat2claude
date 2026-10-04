@@ -355,6 +355,8 @@ corepack pnpm check
 
 After dependency updates, run `corepack pnpm audit` to check the lockfile against known security advisories. The test toolchain uses Vitest 4 and Vite 6; this revision was validated on Node.js 22.15.0.
 
+GitHub Actions defines a Windows/Linux × Node.js 22.15.0/24 matrix, with dependency auditing and package verification on Linux Node 24. A `v*` tag triggers release automation: packages are published only after Linux build verification and the bundled Windows runtime checks pass. Manual runs produce verification artifacts without publishing a release.
+
 Commit changes before building release archives:
 
 ```bash

@@ -355,6 +355,8 @@ corepack pnpm check
 
 更新依赖后，还可以运行 `corepack pnpm audit` 检查锁文件中的已知安全公告。测试工具链使用 Vitest 4 和 Vite 6；本轮验证环境为 Node.js 22.15.0。
 
+GitHub Actions 配置了 Windows/Linux × Node.js 22.15.0/24 的检查矩阵；Linux Node 24 还执行依赖审计和安装包验证。`v*` 标签会触发发布工作流，只有 Linux 构建验证及 Windows 内置运行时检查都通过后才公开软件包；手动运行只生成检查工件，不发布版本。
+
 制作发布包时，先提交变更，再运行：
 
 ```bash
