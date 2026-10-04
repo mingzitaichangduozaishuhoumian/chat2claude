@@ -9,3 +9,20 @@ export function assertTextModelEndpoint(model: string, registry: Pick<ModelRegis
     throw new ClaudeApiError('This model uses the Images API. Use /v1/images/generations.', 400, 'invalid_request_error');
   }
 }
+
+/** Admin writes validate explicit new configuration; persisted legacy aliases
+ * still load so their owners can disable, unbind, correct or delete them.
+ */
+export function assertTextAliasConfiguration(input: Record<string, unknown>, current?: { id: string; backendModel?: string; enabled: boolean }): void {
+  const isImage = (value: unknown) => typeof value === 'string' && imageModelIds.has(value.trim());
+  const invalid = () => new ClaudeApiError('Image models use the Images API at /v1/images/generations; they cannot be used as text aliases or targets.', 400, 'invalid_request_error');
+  if (!current) {
+    if (isImage(input.id) || isImage(input.backendModel)) throw invalid();
+    return;
+  }
+  const target = typeof input.backendModel === 'string' ? input.backendModel.trim() || undefined
+    : input.backendModel === null ? undefined : current.backendModel;
+  const disablingExistingTarget = input.enabled === false && target === current.backendModel;
+  if (isImage(input.backendModel) && !disablingExistingTarget
+    || input.enabled === true && (isImage(current.id) || isImage(target))) throw invalid();
+}

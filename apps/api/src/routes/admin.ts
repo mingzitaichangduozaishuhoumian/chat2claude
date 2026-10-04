@@ -1,6 +1,8 @@
 import { presentPlan } from '../services/plan-presentation.js';
 import { modelContextView } from '../services/model-context.js';
 import { availableImageModels } from './image-models.js';
+import { assertTextAliasConfiguration } from './text-model-endpoint.js';
+import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { Hono } from 'hono';
 import { ChatGptBackendError, DEFAULT_CODEX_IMAGE_MODEL, type ChatGptBackendClient, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ReasoningEffort, SpeedPreference } from '@chatgpt-to-claude/protocol-mapper';
@@ -274,6 +276,7 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     if (options.ready) await options.ready;
     try {
       const input = await readJson(c.req);
+      assertTextAliasConfiguration(input);
       const create = () => options.modelRegistry.create(input);
       const model = options.durableState ? options.durableState.transaction(create) : create();
       return c.json({ model, view: adminModelsView(options) }, 201);
@@ -286,8 +289,11 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     let patch: Record<string, unknown>;
     try {
       patch = await readJson(c.req);
+      const current = options.modelRegistry.exportState().find((model) => model.id === c.req.param('id'));
+      if (current) assertTextAliasConfiguration(patch, current);
     } catch (error) {
       if (error instanceof AdminRequestError) return c.json({ error: error.message }, error.status);
+      if (error instanceof ClaudeApiError) return c.json({ error: error.message }, 400);
       throw error;
     }
     const update = () => options.modelRegistry.update(c.req.param('id'), patch);

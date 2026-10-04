@@ -3,6 +3,7 @@ import { adminPageClientScript } from './routes/admin-page-client.js';
 import { renderAdminPage } from './routes/admin-page.js';
 import { adminPageViewSource, renderAccountCards, renderImageModels, type AdminAccountView } from './routes/admin-page-view.js';
 import type { PublicImageModel } from './routes/models.js';
+import { localizeAdminMarkup } from './routes/admin-page-i18n.js';
 
 const image: PublicImageModel = { id: 'gpt-image-2', type: 'model', display_name: 'GPT Image 2', source: 'image_endpoint', endpoint: '/v1/images/generations', capabilities: { image_generation: true }, availability: 'backend_dependent' };
 const script = adminPageClientScript();
@@ -100,6 +101,27 @@ describe('Visible independent image models in Admin', () => {
     expect(html).not.toContain('<img');
     expect(html).not.toContain('<svg');
     expect(html).not.toContain('href=');
+  });
+
+  it('excludes image targets from text choices and explains legacy bindings without hiding vision-capable chat models', async () => {
+    const f = modelsHarness();
+    f.setPayload({
+      aliases: [{ id: 'sonnet', backendModel: image.id, defaults: {}, enabled: true, context: { metadata_status: 'known', context_window: 1_000_000 } }],
+      discovered: [{ id: image.id }, { id: 'future-image', source: 'image_endpoint' }, { id: 'vision-chat', capabilities: { input_image: true } }],
+      imageModels: [],
+    });
+    await f.loadModels();
+    const choices = f.elements.get('model-backend')!.innerHTML;
+    expect(choices).toContain('vision-chat');
+    expect(choices).not.toMatch(/gpt-image-2|future-image/);
+    const mappings = f.elements.get('models')!.innerHTML;
+    expect(mappings).toMatch(/<option value="gpt-image-2" disabled selected>/);
+    expect(mappings).toContain('图片模型无法通过文本 alias 调用');
+    expect(mappings).toContain('/v1/images/generations');
+    expect(mappings).not.toMatch(/data-field="reasoning_effort"|data-field="speed"|1,000,000/);
+    const english = localizeAdminMarkup(mappings, 'en');
+    expect(english).toContain('gpt-image-2 (image model; use the Images API)');
+    expect(english).toContain('Image models cannot be called through text aliases.');
   });
 
   it('places an image panel in the models page without a professional-only restriction', () => {

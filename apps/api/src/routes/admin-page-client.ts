@@ -1,5 +1,6 @@
 import { adminPageViewSource } from './admin-page-view.js';
 import { adminPageLocaleSource } from './admin-page-locale.js';
+import { CODEX_IMAGE_MODEL_IDS } from '@chatgpt-to-claude/chatgpt-backend';
 
 export function adminPageClientScript(): string {
   return `${adminPageViewSource()}
@@ -559,7 +560,7 @@ async function loadModels() {
     const builtInAliases = aliases.filter((model) => model.builtIn);
     document.getElementById('model-availability').innerHTML = builtInAliases.length ? '<div class="row">' + builtInAliases.map((model) => '<span class="state-badge neutral"><code>' + esc(model.id) + '</code>：' + (model.status === 'unbound' ? '未绑定，请在下方模型映射中选择后端模型并保存' : esc(model.status || '-')) + '</span>').join('') + '</div>' : '<div class="empty">暂无内置 alias。</div>';
     document.getElementById('model-backend').innerHTML = backendOptionsHtml('', discovered, true);
-    document.getElementById('models').innerHTML = aliases.length ? discoverySection + '<div class="table-wrap"><table><thead><tr><th>Alias</th><th>Backend Model</th><th data-professional-only>状态</th><th>启用</th><th data-professional-only>目标能力与默认参数</th><th>操作</th></tr></thead><tbody>' + aliases.map((model) => '<tr><td><code>' + esc(model.id) + '</code>' + (model.builtIn ? ' <span class="muted">内置</span>' : '') + '</td><td><select data-field="backendModel" data-id="' + esc(model.id) + '" aria-label="Alias ' + esc(model.id) + ' 的 Backend Model">' + backendOptionsHtml(model.backendModel || '', discovered, true) + '</select><div data-context-for="' + esc(model.id) + '">' + modelContextHtml(model) + '</div><div data-model-save-status="' + esc(model.id) + '" class="model-save-status" role="status" aria-live="polite"></div></td><td data-professional-only>' + esc(model.status || '-') + '</td><td><input type="checkbox" data-field="enabled" data-id="' + esc(model.id) + '" aria-label="Alias ' + esc(model.id) + ' 是否启用" ' + (model.enabled ? 'checked' : '') + ' /></td><td data-professional-only><div class="stack" data-controls-for="' + esc(model.id) + '">' + controlSelectsHtml(model, model.defaults, model.id) + capabilityStateHtml(model) + '</div></td><td><button data-save-model="' + esc(model.id) + '">保存</button>' + (model.builtIn ? '' : ' <button class="secondary" data-professional-only data-delete-model="' + esc(model.id) + '">删除</button>') + '</td></tr>').join('') + '</tbody></table></div>' : discoverySection + '<div class="empty">暂无 alias overlay。</div>';
+    document.getElementById('models').innerHTML = aliases.length ? discoverySection + '<div class="table-wrap"><table><thead><tr><th>Alias</th><th>Backend Model</th><th data-professional-only>状态</th><th>启用</th><th data-professional-only>目标能力与默认参数</th><th>操作</th></tr></thead><tbody>' + aliases.map((model) => '<tr><td><code>' + esc(model.id) + '</code>' + (model.builtIn ? ' <span class="muted">内置</span>' : '') + '</td><td><select data-field="backendModel" aria-describedby="text-model-mapping-note" data-id="' + esc(model.id) + '" aria-label="Alias ' + esc(model.id) + ' 的 Backend Model">' + backendOptionsHtml(model.backendModel || '', discovered, true) + '</select><div data-context-for="' + esc(model.id) + '">' + modelContextHtml(model) + '</div><div data-model-save-status="' + esc(model.id) + '" class="model-save-status" role="status" aria-live="polite"></div></td><td data-professional-only>' + esc(model.status || '-') + '</td><td><input type="checkbox" data-field="enabled" data-id="' + esc(model.id) + '" aria-label="Alias ' + esc(model.id) + ' 是否启用" ' + (model.enabled ? 'checked' : '') + ' /></td><td data-professional-only><div class="stack" data-controls-for="' + esc(model.id) + '">' + controlSelectsHtml(model, model.defaults, model.id) + capabilityStateHtml(model) + '</div></td><td><button data-save-model="' + esc(model.id) + '">保存</button>' + (model.builtIn ? '' : ' <button class="secondary" data-professional-only data-delete-model="' + esc(model.id) + '">删除</button>') + '</td></tr>').join('') + '</tbody></table></div>' : discoverySection + '<div class="empty">暂无 alias overlay。</div>';
     bindModelActions(aliases, discovered);
   } catch (error) { overviewLoadState.models = 'error'; const failure = loadFailureHtml('模型数据加载失败，未加载。', error); document.getElementById('model-availability').innerHTML = failure; document.getElementById('models').innerHTML = failure; document.getElementById('image-models').innerHTML = failure; }
   renderOverviewPanel();
@@ -590,7 +591,7 @@ async function saveModel(id, button) {
     status.className = 'model-save-status' + (tone ? ' ' + tone : '');
   };
   const patch = { backendModel: byField('backendModel').value, enabled: byField('enabled').checked };
-  if (document.documentElement.dataset.adminMode === 'professional') patch.defaults = { reasoning_effort: byField('reasoning_effort').value, service_tier: byField('speed').value };
+  if (document.documentElement.dataset.adminMode === 'professional' && byField('reasoning_effort') && byField('speed')) patch.defaults = { reasoning_effort: byField('reasoning_effort').value, service_tier: byField('speed').value };
   setStatus('正在保存…', 'neutral');
   if (button) button.disabled = true;
   try {
@@ -607,12 +608,16 @@ async function saveModel(id, button) {
   }
 }
 function backendOptionsHtml(current, discovered, allowEmpty) {
-  const values = discovered.map((model) => ({ value: model.id, label: model.display_name || model.id, provider: true }));
-  if (current && !values.some((option) => option.value === current)) values.unshift({ value: current, label: current + '（已失效）' });
+  const values = discovered.filter((model) => !isImageBackendModel(model)).map((model) => ({ value: model.id, label: model.display_name || model.id, provider: true }));
+  if (current && !values.some((option) => option.value === current)) {
+    const image = isImageBackendModel(discovered.find((model) => model.id === current) || { id: current });
+    values.unshift({ value: current, label: current + (image ? '（图片模型，请改用 Images API）' : '（已失效）'), disabled: image });
+  }
   if (allowEmpty) values.unshift({ value: '', label: '未绑定' });
-  return values.map((option) => '<option value="' + esc(option.value) + '" ' + (option.provider ? 'data-i18n-ignore ' : '') + (option.value === current ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('');
+  return values.map((option) => '<option value="' + esc(option.value) + '" ' + (option.provider ? 'data-i18n-ignore ' : '') + (option.disabled ? 'disabled ' : '') + (option.value === current ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('');
 }
 function controlSelectsHtml(model, defaults, aliasId) {
+  if (isImageBackendModel(model)) return '<p class="muted">图片请求不使用文本推理强度或服务层级。</p>';
   const capabilities = model.capabilities || unknownCapabilities();
   const reasoning = (capabilities.reasoning_effort_options || []).map((option) => ({ value: option.effort, label: reasoningLabel(option.effort), description: option.description }));
   const isFast = (value) => ['fast', 'fastest', 'priority'].includes(String(value || '').toLowerCase());
@@ -623,6 +628,9 @@ function controlSelectsHtml(model, defaults, aliasId) {
   if (supportsFast || isFast(defaults.speed)) tiers.push({ value: 'priority', label: supportsFast ? 'Fast' : 'Fast（配置不受目标支持）' });
   tiers.push(...supportedTiers.filter((option) => !isFast(option.id) && !['standard', 'default', 'auto'].includes(String(option.id).toLowerCase())).map((option) => ({ value: option.id, label: option.name || option.id, description: option.description, provider: true })));
   return '<label>推理 ' + selectHtml(aliasId, 'reasoning_effort', reasoning, defaults.reasoning_effort) + '</label><label>服务层级 ' + selectHtml(aliasId, 'speed', tiers, currentTier) + '</label>';
+}
+function isImageBackendModel(model) {
+  return ${JSON.stringify(CODEX_IMAGE_MODEL_IDS)}.includes(model.backendModel || model.id) || model.source === 'image_endpoint';
 }
 function selectHtml(id, field, options, current) {
   const isReasoning = field === 'reasoning_effort';
@@ -647,6 +655,7 @@ function knownReasoningEffort(value) {
 }
 function reasoningLabel(effort) { if (effort === 'low') return 'Light（官方 low）'; if (effort === 'ultra') return 'Ultra（主动协作）'; return effort; }
 function capabilityStateHtml(model) {
+  if (isImageBackendModel(model)) return '';
   const capabilities = model.capabilities || unknownCapabilities(); const states = capabilities.metadata_status || {};
   const parts = ['推理元数据：' + (states.reasoning === 'known' ? '已发现' : '未知'), '服务层级元数据：' + (states.service_tier === 'known' ? '已发现' : '未知')];
   parts.push('普通推理档位按上游值原样传递；不支持的显式强度会被拒绝。');
@@ -663,6 +672,7 @@ function capabilityStateHtml(model) {
 function capabilitySummary(capabilities) { const value = capabilities || unknownCapabilities(); return 'reasoning: ' + ((value.reasoning_effort || []).join(', ') || '未知') + '; service tiers: ' + ((value.response_speed || []).join(', ') || '未知'); }
 function unknownCapabilities() { return { reasoning_effort_options: [], service_tiers: [], metadata_status: { reasoning: 'unknown', service_tier: 'unknown' } }; }
 function modelContextHtml(model) {
+  if (isImageBackendModel(model)) return '<p class="model-mapping-note">图片模型无法通过文本 alias 调用。请选择文本后端或清空绑定；生成图片请使用 /v1/images/generations。</p>';
   const metadata = model.context || {};
   const context = ['known', 'account_dependent'].includes(metadata.metadata_status) ? metadata : {};
   const validTokens = (value) => Number.isSafeInteger(value) && value > 0;

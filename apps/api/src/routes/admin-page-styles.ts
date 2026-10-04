@@ -126,6 +126,13 @@ dd { min-width: 0; margin: 2px 0 0; overflow-wrap: anywhere; }
 .image-model-endpoint > span { color: var(--ink-soft); font-size: 12px; }
 .image-model-list code { overflow-wrap: anywhere; }
 .image-model-note, .image-model-empty { margin: 10px 0 0; font-size: 12px; }
+.model-type-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 20px; margin-top: 16px; }
+.model-type-grid > div { min-width: 0; border-left: 3px solid var(--accent); padding-left: 14px; }
+.model-type-grid h4 { margin: 0 0 8px; }
+.model-type-grid p { margin: 8px 0; font-size: 13px; }
+.model-type-endpoints { display: grid; gap: 3px; font-size: 12px; }
+.model-type-note { margin: 16px 0 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; }
+.model-mapping-note { border-left: 3px solid var(--accent); padding: 10px 12px; background: var(--accent-soft); }
 .account-settings { display: grid; grid-template-columns: minmax(0, 1fr) minmax(120px, 0.4fr); gap: 10px; margin-top: 12px; border-top: 1px dashed var(--line-strong); padding-top: 12px; }
 .account-settings label { display: grid; gap: 5px; font-weight: 700; }
 .account-settings .form-actions { grid-column: 1 / -1; }
