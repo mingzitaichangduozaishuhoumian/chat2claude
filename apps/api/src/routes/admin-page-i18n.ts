@@ -3,6 +3,13 @@ export type AdminLocale = 'zh-CN' | 'en';
 // Source-language keys keep copy shared by SSR, browser renderers and feedback.
 // Protocol identifiers and provider payloads are not translation keys.
 export const ADMIN_MESSAGES: Record<string, string> = {
+  '文本模型': 'Text models',
+  '图片模型': 'Image models',
+  'Images 接口': 'Images endpoint',
+  '正在读取图片模型。': 'Loading image models.',
+  '通过独立 Images API 生成图片，不使用文本 alias。': 'Generate images through the separate Images API, without text aliases.',
+  '当前没有可用的图片模型。请检查账号状态和授权，以及后端是否支持图片接口。': 'No image models are currently available. Check account status, authorization, and whether the backend supports the Images API.',
+  '图片型号来自内置目录，独立于上游发现的文本模型；是否可调用取决于账号权限、额度和上游支持。': 'Image models come from a built-in catalog, separate from upstream-discovered text models; availability depends on account permissions, quota, and upstream support.',
   '图片生成使用独立 Images API 和图片模型，不使用文本 alias。当前返回 PNG 的 b64_json；流式请求仅发送最终图片，不提供渐进预览。': 'Image generation uses a separate Images API and image model, without text aliases. Results contain PNG b64_json; streaming sends the final image only, with no partial previews.',
   '目录默认窗口：{0}': 'Catalog default window: {0}',
   '最大窗口：{0}': 'Maximum window: {0}',

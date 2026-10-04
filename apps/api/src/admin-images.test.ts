@@ -14,10 +14,12 @@ it('advertises a separate Images API and image-model example without adding it t
   try {
     const status = await (await app.request('/admin/api/setup/status')).json();
     expect(status).toMatchObject({ imageGeneration: { endpoint: 'POST /v1/images/generations', defaultModel: 'gpt-image-2', supported: true, responseFormat: 'b64_json', outputFormat: 'png', streaming: 'final_only' } });
-    const models = await (await app.request('/v1/models', { headers: { authorization: 'Bearer synthetic-key' } })).json();
+    const models = await (await app.request('/v1/models', { headers: { authorization: 'Bearer synthetic-key' } })).json() as { data: Array<{ source?: string }> };
     expect(models).toMatchObject({ data: expect.arrayContaining([{ id: 'gpt-image-2', type: 'model', display_name: 'GPT Image 2', source: 'image_endpoint', endpoint: '/v1/images/generations', capabilities: { image_generation: true }, availability: 'backend_dependent' }]) });
-    const catalog = await (await app.request('/admin/api/models', { headers: { authorization: 'Bearer synthetic-key' } })).text();
-    expect(catalog).not.toContain('gpt-image-2');
+    const catalog = await (await app.request('/admin/api/models', { headers: { authorization: 'Bearer synthetic-key' } })).json() as { aliases: unknown[]; discovered: unknown[]; combined: unknown[]; imageModels: unknown[] };
+    expect(catalog.imageModels).toEqual(models.data.filter((model: { source?: string }) => model.source === 'image_endpoint'));
+    expect(catalog.imageModels).toHaveLength(5);
+    expect(JSON.stringify({ aliases: catalog.aliases, discovered: catalog.discovered, combined: catalog.combined })).not.toContain('gpt-image-2');
     const page = await (await app.request('/admin')).text();
     expect(page).toContain('__ORIGIN__/v1/images/generations');
     expect(page).toContain('&quot;model&quot;:&quot;gpt-image-2&quot;');

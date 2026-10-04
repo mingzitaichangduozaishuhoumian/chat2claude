@@ -116,6 +116,16 @@ dd { min-width: 0; margin: 2px 0 0; overflow-wrap: anywhere; }
 .professional-detail { margin: 12px 0; border-top: 1px dashed var(--line-strong); padding-top: 12px; }
 .model-disclosure ul { display: grid; gap: 7px; margin: 10px 0 0; padding: 0; list-style: none; }
 .model-disclosure li { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 7px; }
+.account-model-counts { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 5px; }
+.account-model-counts > span { white-space: nowrap; }
+.account-image-models { margin: 12px 0; padding: 12px; border: 1px solid var(--line); background: var(--surface); }
+.account-image-models h4 { margin: 0 0 8px; }
+.image-model-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.image-model-list li { display: flex; flex-wrap: wrap; gap: 10px 20px; justify-content: space-between; min-width: 0; }
+.image-model-identity, .image-model-endpoint { display: grid; gap: 4px; min-width: 0; }
+.image-model-endpoint > span { color: var(--ink-soft); font-size: 12px; }
+.image-model-list code { overflow-wrap: anywhere; }
+.image-model-note, .image-model-empty { margin: 10px 0 0; font-size: 12px; }
 .account-settings { display: grid; grid-template-columns: minmax(0, 1fr) minmax(120px, 0.4fr); gap: 10px; margin-top: 12px; border-top: 1px dashed var(--line-strong); padding-top: 12px; }
 .account-settings label { display: grid; gap: 5px; font-weight: 700; }
 .account-settings .form-actions { grid-column: 1 / -1; }

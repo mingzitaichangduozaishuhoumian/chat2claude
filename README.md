@@ -230,7 +230,7 @@ const completion = await client.chat.completions.create({
 
 ### 独立 Images API
 
-`POST /v1/images/generations` 使用现有 ChatGPT 账号调用 Codex 0.160 Images 服务，默认模型 `gpt-image-2`。已完成一次该模型的真实生成验证；其他账号/模型仍由上游决定。OpenAI SDK 可沿用上面的 `client`：
+`POST /v1/images/generations` 使用现有 ChatGPT 账号调用 Codex 0.160 Images 服务，默认模型 `gpt-image-2`。该默认模型已完成一次真实生成验证；其余内置型号仅完成注册与原值转发回归，未逐个真实出图，实际可用性由上游账号决定。OpenAI SDK 可沿用上面的 `client`：
 
 ```ts
 const image = await client.images.generate({
@@ -242,7 +242,9 @@ const image = await client.images.generate({
 
 支持 JSON/base64 PNG、`n=1..10`。`stream:true` 仅支持 `n=1`，等上游 JSON 完成后发送一个 `image_generation.completed` 事件；没有中途预览，`partial_images` 只能省略或设为 0。独立超时 `CHATGPT_IMAGE_REQUEST_TIMEOUT_MS` 默认 300000 毫秒；图片限额为每项 16 MiB、每组 64 MiB、10 张，文本和隐藏 replay 限额不变。
 
-`/v1/models` 的 `source: "image_endpoint"` 描述项指向此独立路由；将 `gpt-image-2` 或绑定它的 alias 发到文本接口会得到 400。Responses 仅在上游提供图片事件时支持预览/最终图转换，当前宿主的 Responses 图片工具尚未真实验证；含生成图的 Responses 响应不存历史，返回 ID 不可用于 `previous_response_id`。Chat/Claude 收到图片输出会明确报 501，不返回空成功。完整参数、存图示例和限制见[使用说明](docs/USAGE.zh-CN.md#独立-gpt-image-生成)。
+`/v1/models` 的 `source: "image_endpoint"` 描述项指向此独立路由；将任一内置图片型号或绑定它的 alias 发到文本接口会得到 400。Responses 仅在上游提供图片事件时支持预览/最终图转换，当前宿主的 Responses 图片工具尚未真实验证；含生成图的 Responses 响应不存历史，返回 ID 不可用于 `previous_response_id`。Chat/Claude 收到图片输出会明确报 501，不返回空成功。完整参数、存图示例和限制见[使用说明](docs/USAGE.zh-CN.md#独立-gpt-image-生成)。
+
+Admin 账号卡片分别显示文本模型与图片接口模型数量，例如 10 个文本模型、5 个图片接口模型；图片计数只统计本服务当前展示的接口模型项，不代表 OpenAI 全部图片型号。模型页在简洁和专业模式下都有独立图片模型面板。当前内置 `gpt-image-1.5`、`gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.5`，与 [CPA 的内置注册项](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/registry/model_definitions.go#L245)一致；裸 ID `gpt-image-2.5` 原值透传，不重命名成 Flare/Sunburst。2.5 系列的明确型号可使用 `xhigh`/`max` 质量，完整范围见使用说明。这些图片项来自独立的 `imageModels` 字段，不混入文本 `discoveredModels` 或 alias 候选，也不表示已验证该账号的图片生成权限。
 
 ## curl 验证
 

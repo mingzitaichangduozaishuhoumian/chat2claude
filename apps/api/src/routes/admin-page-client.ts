@@ -7,7 +7,7 @@ let currentFlowId = null;
 let pollTimer = null;
 let accountsCache = [];
 let quotasCache = [];
-let modelsCache = { aliases: [], discovered: [] };
+let modelsCache = { aliases: [], discovered: [], imageModels: [] };
 let apiKeysCache = [];
 let requestDiagnosticsCache = [];
 let requestDiagnosticsState = 'loading';
@@ -551,7 +551,9 @@ async function loadModels() {
     const body = await getJson('/admin/api/models');
     const aliases = Array.isArray(body.aliases) ? body.aliases : (Array.isArray(body.models) ? body.models : []);
     const discovered = Array.isArray(body.discovered) ? body.discovered : [];
-    modelsCache = { aliases, discovered }; overviewLoadState.models = 'loaded';
+    const imageModels = Array.isArray(body.imageModels) ? body.imageModels : [];
+    modelsCache = { aliases, discovered, imageModels }; overviewLoadState.models = 'loaded';
+    document.getElementById('image-models').innerHTML = renderImageModels(imageModels);
     const discoveryHtml = discovered.length ? '<div class="row">' + discovered.map((model) => '<span class="state-badge neutral" title="' + esc(capabilitySummary(model.capabilities)) + '">' + esc(model.id) + '</span>').join('') + '</div>' : '<div class="empty">Backend discovery 暂无模型；不会假设所有控制项都可用。</div>';
     const discoverySection = '<div data-professional-only><p class="muted">Backend discovery（选项与顺序直接来自 catalog）</p>' + discoveryHtml + '</div>';
     const builtInAliases = aliases.filter((model) => model.builtIn);
@@ -559,7 +561,7 @@ async function loadModels() {
     document.getElementById('model-backend').innerHTML = backendOptionsHtml('', discovered, true);
     document.getElementById('models').innerHTML = aliases.length ? discoverySection + '<div class="table-wrap"><table><thead><tr><th>Alias</th><th>Backend Model</th><th data-professional-only>状态</th><th>启用</th><th data-professional-only>目标能力与默认参数</th><th>操作</th></tr></thead><tbody>' + aliases.map((model) => '<tr><td><code>' + esc(model.id) + '</code>' + (model.builtIn ? ' <span class="muted">内置</span>' : '') + '</td><td><select data-field="backendModel" data-id="' + esc(model.id) + '" aria-label="Alias ' + esc(model.id) + ' 的 Backend Model">' + backendOptionsHtml(model.backendModel || '', discovered, true) + '</select><div data-context-for="' + esc(model.id) + '">' + modelContextHtml(model) + '</div><div data-model-save-status="' + esc(model.id) + '" class="model-save-status" role="status" aria-live="polite"></div></td><td data-professional-only>' + esc(model.status || '-') + '</td><td><input type="checkbox" data-field="enabled" data-id="' + esc(model.id) + '" aria-label="Alias ' + esc(model.id) + ' 是否启用" ' + (model.enabled ? 'checked' : '') + ' /></td><td data-professional-only><div class="stack" data-controls-for="' + esc(model.id) + '">' + controlSelectsHtml(model, model.defaults, model.id) + capabilityStateHtml(model) + '</div></td><td><button data-save-model="' + esc(model.id) + '">保存</button>' + (model.builtIn ? '' : ' <button class="secondary" data-professional-only data-delete-model="' + esc(model.id) + '">删除</button>') + '</td></tr>').join('') + '</tbody></table></div>' : discoverySection + '<div class="empty">暂无 alias overlay。</div>';
     bindModelActions(aliases, discovered);
-  } catch (error) { overviewLoadState.models = 'error'; const failure = loadFailureHtml('模型数据加载失败，未加载。', error); document.getElementById('model-availability').innerHTML = failure; document.getElementById('models').innerHTML = failure; }
+  } catch (error) { overviewLoadState.models = 'error'; const failure = loadFailureHtml('模型数据加载失败，未加载。', error); document.getElementById('model-availability').innerHTML = failure; document.getElementById('models').innerHTML = failure; document.getElementById('image-models').innerHTML = failure; }
   renderOverviewPanel();
 }
 function bindModelActions(aliases, discovered) {

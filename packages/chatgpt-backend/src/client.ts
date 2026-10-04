@@ -61,14 +61,14 @@ export interface ChatGptImageGenerationRequest {
   model?: string;
   background?: 'transparent' | 'opaque' | 'auto';
   n?: number;
-  quality?: 'low' | 'medium' | 'high' | 'auto';
+  quality?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'auto';
   size?: string;
 }
 export interface ChatGptImageGenerationResponse {
   created: number;
   data: Array<{ b64_json: string; generation_id?: string }>;
   background?: 'transparent' | 'opaque' | 'auto';
-  quality?: 'low' | 'medium' | 'high' | 'auto';
+  quality?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'auto';
   size?: string;
   output_format?: 'png' | 'webp' | 'jpeg';
   usage?: ChatGptUsage;

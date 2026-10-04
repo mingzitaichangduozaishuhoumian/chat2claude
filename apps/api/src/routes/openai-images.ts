@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { ChatGptBackendError, DEFAULT_CODEX_IMAGE_MODEL, type ChatGptBackendClient, type ChatGptImageGenerationRequest, type ChatGptImageGenerationResponse } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, DEFAULT_CODEX_IMAGE_MODEL, isSupportedImageQuality, type ChatGptBackendClient, type ChatGptImageGenerationRequest, type ChatGptImageGenerationResponse } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { readableStreamFromAsyncIterable } from '@chatgpt-to-claude/protocol-mapper';
 import type { Logger } from '@chatgpt-to-claude/shared';
@@ -111,7 +111,7 @@ function parseImageRequest(value: unknown): ImageRequest {
   if (raw.response_format !== undefined && raw.response_format !== 'b64_json') throw new ClaudeApiError('Only response_format=b64_json is supported.');
   if (raw.output_format !== undefined && raw.output_format !== 'png') throw new ClaudeApiError('Only output_format=png is supported.');
   if (raw.background !== undefined && !['transparent', 'opaque', 'auto'].includes(raw.background as string)) throw new ClaudeApiError('background must be transparent, opaque, or auto.');
-  if (raw.quality !== undefined && !['low', 'medium', 'high', 'auto'].includes(raw.quality as string)) throw new ClaudeApiError('quality must be low, medium, high, or auto.');
+  if (raw.quality !== undefined && !isSupportedImageQuality(model, raw.quality)) throw new ClaudeApiError('Unsupported image quality for the requested model.');
   if (raw.size !== undefined && (typeof raw.size !== 'string' || (raw.size !== 'auto' && !/^[1-9]\d{0,4}x[1-9]\d{0,4}$/.test(raw.size)))) throw new ClaudeApiError('size must be auto or a widthxheight value.');
   return { model, prompt: raw.prompt, stream: raw.stream === true,
     ...(raw.n === undefined ? {} : { n: raw.n as number }),

@@ -5,6 +5,7 @@ import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptQuotaWind
 import type { AccountView } from '../services/account-pool.js';
 import type { AccountQuotaResult } from '../services/account-quota-service.js';
 import type { ModelContextView } from '../services/model-context.js';
+import type { PublicImageModel } from './models.js';
 
 // Local bindings keep serialized renderer functions independent of module-loader aliases.
 const localizeAdminMarkup = sharedLocalizeAdminMarkup;
@@ -28,11 +29,19 @@ export interface AdminAccountView extends AccountView {
   plan?: PlanPresentation;
   discovery?: ModelDiscoveryState;
   discoveredModels: Array<{ id: string; displayName?: string; context?: ModelContextView }>;
+  imageModels?: PublicImageModel[];
 }
 
 export function renderAccountCards(accounts: AdminAccountView[], locale: AdminLocale = 'zh-CN'): string {
   if (!accounts.length) return localizeAdminMarkup('<div class="empty-state"><strong>尚未添加 ChatGPT 账号</strong><span>使用“添加 ChatGPT 账号”完成正常的浏览器授权流程。</span></div>', locale);
   return localizeAdminMarkup(`<div class="account-grid">${accounts.map(renderAccountCard).join('')}</div>`, locale);
+}
+
+/** Image endpoint descriptors stay separate from discovered text catalogs and aliases. */
+export function renderImageModels(models: PublicImageModel[] | undefined, locale: AdminLocale = 'zh-CN'): string {
+  const images = Array.isArray(models) ? models : [];
+  if (!images.length) return localizeAdminMarkup('<p class="empty image-model-empty">当前没有可用的图片模型。请检查账号状态和授权，以及后端是否支持图片接口。</p>', locale);
+  return localizeAdminMarkup(`<ul class="image-model-list">${images.map((model) => `<li><div class="image-model-identity"><strong data-i18n-ignore>${esc(model.display_name || model.id)}</strong><code>${esc(model.id)}</code></div><div class="image-model-endpoint"><span>Images 接口</span><code>POST ${esc(model.endpoint)}</code></div></li>`).join('')}</ul><p class="muted image-model-note">图片型号来自内置目录，独立于上游发现的文本模型；是否可调用取决于账号权限、额度和上游支持。</p>`, locale);
 }
 
 export function renderQuotaCards(quotas: AccountQuotaResult[], accounts: AdminAccountView[] = [], locale: AdminLocale = 'zh-CN'): string {
@@ -116,6 +125,7 @@ function renderAccountCard(account: AdminAccountView): string {
   const stats = account.requestStats;
   const identity = account.email || account.label;
   const health = accountHealth(account);
+  const imageModels = Array.isArray(account.imageModels) ? account.imageModels : [];
   const modelItems = account.discoveredModels.length
     ? account.discoveredModels.map((model) => `<li><div><code>${esc(model.id)}</code>${model.displayName && model.displayName !== model.id ? ` <span data-i18n-ignore>${esc(model.displayName)}</span>` : ''}</div><div class="muted" title="窗口来自上游模型目录，不代表客户端或当前会话的实际配置。">${modelContextSummary(model.context).map((part) => `<div>${esc(part)}</div>`).join('')}</div></li>`).join('')
     : '<li class="muted">尚未发现动态模型</li>';
@@ -124,9 +134,10 @@ function renderAccountCard(account: AdminAccountView): string {
     <dl class="account-summary">
       <div><dt>套餐</dt><dd>${esc(planPresentationText(account.plan ?? presentPlan(undefined, account.planType)))}</dd></div>
       <div><dt>启用</dt><dd>${account.enabled ? '已启用' : '已停用'}</dd></div>
-      <div><dt>模型数量</dt><dd>${numberHtml(account.modelCount)} · <span>${esc(discoveryMessage(account.discovery ?? unknownDiscovery(), account.modelCount))}</span></dd></div>
+      <div><dt>模型数量</dt><dd><span class="account-model-counts"><span><strong>${numberHtml(account.modelCount)}</strong> <span>文本模型</span></span><span><strong>${numberHtml(imageModels.length)}</strong> <span>图片模型</span></span></span><span class="muted">${esc(discoveryMessage(account.discovery ?? unknownDiscovery(), account.modelCount))}</span></dd></div>
       <div><dt>最近活动</dt><dd>${timeHtml(stats.lastRequestAt || account.lastUsedAt)}</dd></div>
     </dl>
+    <section class="account-image-models" aria-label="图片模型"><h4>图片模型</h4>${renderImageModels(imageModels)}</section>
     <p class="muted">5x/20x 是套餐类别标识，不代表当前剩余额度。</p>
     <div class="stat-line" aria-label="请求结果统计"><span>成功 ${stats.successfulRequests}</span><span>失败 ${stats.failedRequests}</span><span>取消 ${stats.cancelledRequests}</span><span>总计 ${stats.totalRequests}</span><span>进行中 ${stats.inFlight}</span></div>
     <div class="professional-detail" data-professional-only>
@@ -279,7 +290,7 @@ function esc(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char);
 }
 
-const browserFunctions = [renderAdminOverview, renderRequestInspector, timeHtml, numberHtml, presentPlan, planPresentationText, discoveryMessage, unknownDiscovery, renderAccountCards, renderQuotaCards, renderAccountCard, modelContextSummary, modelContextTokenText, renderQuotaCard, renderResetCredits, renderAdditionalLimit, renderMeter, renderUnavailable, accountHealth, quotaState, allowanceText, validPercent, formatPercent, formatDuration, formatTime, relativeReset, relativeSeconds, esc];
+const browserFunctions = [renderAdminOverview, renderRequestInspector, timeHtml, numberHtml, presentPlan, planPresentationText, discoveryMessage, unknownDiscovery, renderAccountCards, renderImageModels, renderQuotaCards, renderAccountCard, modelContextSummary, modelContextTokenText, renderQuotaCard, renderResetCredits, renderAdditionalLimit, renderMeter, renderUnavailable, accountHealth, quotaState, allowanceText, validPercent, formatPercent, formatDuration, formatTime, relativeReset, relativeSeconds, esc];
 
 export function adminPageViewSource(): string {
   return adminPageI18nSource() + '\n' + browserFunctions.map((fn) => fn.toString()).join('\n');

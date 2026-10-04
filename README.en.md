@@ -230,7 +230,7 @@ const completion = await client.chat.completions.create({
 
 ### Independent Images API
 
-`POST /v1/images/generations` reuses an existing ChatGPT account through the Codex 0.160 Images service, defaulting to `gpt-image-2`. One real generation with this model has succeeded; access for other accounts/models remains upstream-dependent. Reuse the OpenAI SDK `client` above:
+`POST /v1/images/generations` reuses an existing ChatGPT account through the Codex 0.160 Images service, defaulting to `gpt-image-2`. One real generation with this default model has succeeded. The other built-ins have registration and unchanged-ID forwarding coverage, not individual real-generation verification; access remains account-dependent. Reuse the OpenAI SDK `client` above:
 
 ```ts
 const image = await client.images.generate({
@@ -242,7 +242,9 @@ const image = await client.images.generate({
 
 The endpoint returns JSON/base64 PNG and accepts `n=1..10`. `stream:true` supports only `n=1` and emits one `image_generation.completed` event after the upstream JSON result. There are no partial previews: omit `partial_images` or set it to 0. The separate `CHATGPT_IMAGE_REQUEST_TIMEOUT_MS` defaults to 300000 ms. Image limits are 16 MiB per item, 64 MiB per bundle and 10 images; text and hidden replay limits are unchanged.
 
-The `/v1/models` descriptor with `source: "image_endpoint"` points to this separate route. Sending `gpt-image-2` or an alias bound to it to a text endpoint returns 400. Responses image-event conversion supports previews/final images when upstream provides them; real image-tool execution on the current Responses host remains unverified. Responses containing generated images are not stored, and their IDs cannot be continued with `previous_response_id`. Chat/Claude explicitly reject image output with 501 instead of empty success. See the [usage guide](docs/USAGE.en.md#independent-gpt-image-generation) for parameters, decoding and limitations.
+The `/v1/models` descriptors with `source: "image_endpoint"` point to this separate route. Sending a registered image model or an alias bound to it to a text endpoint returns 400. Responses image-event conversion supports previews/final images when upstream provides them; real image-tool execution on the current Responses host remains unverified. Responses containing generated images are not stored, and their IDs cannot be continued with `previous_response_id`. Chat/Claude explicitly reject image output with 501 instead of empty success. See the [usage guide](docs/USAGE.en.md#independent-gpt-image-generation) for parameters, decoding and limitations.
+
+Admin account cards count text models and image endpoint models separately, for example 10 text models and 5 image endpoint models. The image count covers the entries currently exposed by this service, not every OpenAI image model. The Models page has a separate image model panel in both Simple and Professional modes. Built-ins are `gpt-image-1.5`, `gpt-image-2`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst` and `gpt-image-2.5`, matching [CPA registration](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/registry/model_definitions.go#L245). Bare `gpt-image-2.5` is forwarded unchanged, not renamed to Flare/Sunburst. The documented 2.5 IDs also accept `xhigh`/`max` quality; see the usage guide for the exact set. These entries come from `imageModels`, not text `discoveredModels` or alias choices, and do not claim verified image-generation permission for the account.
 
 ## curl smoke tests
 

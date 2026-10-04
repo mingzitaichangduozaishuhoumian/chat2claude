@@ -12,6 +12,21 @@ function devScript(): string {
 }
 
 describe('Admin browser source under the tsx development loader', () => {
+  it('serializes the visible image model renderer in both locales without loader globals', () => {
+    const script = devScript();
+    const source = script.slice(0, script.indexOf('let currentFlowId'));
+    const models = [{ id: 'gpt-image-2', display_name: 'GPT Image 2', endpoint: '/v1/images/generations' }];
+    for (const locale of ['zh-CN', 'en']) {
+      const html = runInNewContext(source + '\nrenderImageModels(models, locale)', { models, locale });
+      expect(html).toContain('gpt-image-2');
+      expect(html).toContain('POST /v1/images/generations');
+      expect(html).toContain(locale === 'en' ? 'Image models come from a built-in catalog' : '图片型号来自内置目录');
+      expect(html).toContain(locale === 'en' ? 'availability depends on account permissions, quota, and upstream support' : '是否可调用取决于账号权限、额度和上游支持');
+      expect(runInNewContext(source + '\nrenderImageModels(undefined, locale)', { locale })).toContain(locale === 'en' ? 'No image models' : '当前没有可用的图片模型');
+    }
+    expect(source).not.toMatch(/\b__name\b/);
+  });
+
   it('serializes catalog window helpers used by model mappings and per-account model lists', () => {
     const script = devScript();
     const source = script.slice(0, script.indexOf('let currentFlowId'));

@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
-import type { ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
+import { CODEX_IMAGE_MODEL_IDS, type ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import { createModelsRoute } from './routes/models.js';
 import { createOpenAiImagesRoute } from './routes/openai-images.js';
 import { createOpenAiChatRoute } from './routes/openai-chat.js';
@@ -35,9 +35,12 @@ function fixture() {
 }
 
 describe('Independent image model descriptor', () => {
-  it('advertises only the verified default endpoint model without modifying text catalogs', async () => {
+  it('advertises the five endpoint model IDs without claiming account verification or changing text catalogs', async () => {
     const f = fixture();
-    expect(await f.models()).toEqual([{ id: 'gpt-image-2', type: 'model', display_name: 'GPT Image 2', source: 'image_endpoint', endpoint: '/v1/images/generations', capabilities: { image_generation: true }, availability: 'backend_dependent' }]);
+    expect(await f.models()).toEqual([
+      ['gpt-image-1.5', 'GPT Image 1.5'], ['gpt-image-2', 'GPT Image 2'],
+      ['gpt-image-2.5-flare', 'GPT Image 2.5 Flare'], ['gpt-image-2.5-sunburst', 'GPT Image 2.5 Sunburst'], ['gpt-image-2.5', 'GPT Image 2.5'],
+    ].map(([id, display_name]) => ({ id, display_name, type: 'model', source: 'image_endpoint', endpoint: '/v1/images/generations', capabilities: { image_generation: true }, availability: 'backend_dependent' })));
     expect(f.modelRegistry.list()).toEqual([]);
     expect(f.modelRegistry.adminView().discovered).toEqual([]);
     expect(() => f.modelRegistry.resolve('gpt-image-2')).toThrow();
@@ -62,14 +65,14 @@ describe('Independent image model descriptor', () => {
     expect(f.backend.generateImages).toHaveBeenCalledOnce();
   });
 
-  it.each(['native', 'stale-alias', 'bound-alias', 'same-name-alias'])('rejects %s image models before text account acquisition or backend dispatch', async (kind) => {
+  it.each(CODEX_IMAGE_MODEL_IDS.flatMap((imageModel) => ['native', 'stale-alias', 'bound-alias', 'same-name-alias'].map((kind) => ({ imageModel, kind }))))('rejects $kind $imageModel before text account acquisition or backend dispatch', async ({ kind, imageModel }) => {
     const f = fixture();
     const acquire = vi.spyOn(f.accountPool, 'acquireAsync');
-    let model = 'gpt-image-2';
+    let model: string = imageModel;
     if (kind === 'stale-alias' || kind === 'bound-alias') {
       model = 'image-alias';
-      f.modelRegistry.create({ id: model, backendModel: 'gpt-image-2' });
-      if (kind === 'bound-alias') f.modelRegistry.replaceDiscoveredModels([{ id: 'gpt-image-2' }]);
+      f.modelRegistry.create({ id: model, backendModel: imageModel });
+      if (kind === 'bound-alias') f.modelRegistry.replaceDiscoveredModels([{ id: imageModel }]);
     } else if (kind === 'same-name-alias') {
       f.modelRegistry.create({ id: model, backendModel: 'text-model' });
       f.modelRegistry.replaceDiscoveredModels([{ id: 'text-model' }]);
@@ -110,16 +113,16 @@ describe('Independent image model descriptor', () => {
   it('retains a busy available model and restores it after account re-enable or cooldown expiry', async () => {
     const f = fixture();
     const lease = f.accountPool.acquire({ provider: 'chatgpt-session' })!;
-    expect(await f.models()).toHaveLength(1);
+    expect(await f.models()).toHaveLength(5);
     f.accountPool.release(lease);
     f.accountPool.update('session', { enabled: false });
     expect(await f.models()).toEqual([]);
     f.accountPool.update('session', { enabled: true });
-    expect(await f.models()).toHaveLength(1);
+    expect(await f.models()).toHaveLength(5);
     f.accountPool.update('session', { status: 'cooldown', cooldownUntil: '2026-10-04T00:01:00Z' });
     expect(await f.models()).toEqual([]);
     f.setNow(new Date('2026-10-04T00:01:01Z'));
-    expect(await f.models()).toHaveLength(1);
+    expect(await f.models()).toHaveLength(5);
   });
 
   it.each([
@@ -145,7 +148,7 @@ describe('Independent image model descriptor', () => {
     f.accountPool.remove('session');
     f.accountPool.add({ id: 'unconfigured', provider: 'chatgpt-session' });
     f.accountPool.add({ id: 'configured', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'synthetic-configured-token', expiresAt: '2000-01-01T00:00:00Z' } });
-    expect(await f.models()).toHaveLength(1);
+    expect(await f.models()).toHaveLength(5);
     const response = await f.app.request('/v1/images/generations', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'A tree' }) });
     expect(response.status).toBe(200);
     expect(f.backend.generateImages).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ account: expect.objectContaining({ id: 'configured' }) }));
@@ -164,7 +167,7 @@ describe('Independent image model descriptor', () => {
       return Response.json({ created: 1, data: [{ b64_json: 'aW1hZ2U=' }] });
     });
     f.backend.generateImages = createChatGptBackend(loadEnv({ CHATGPT_BACKEND: 'session' }), f.accountPool, undefined, upstream).generateImages;
-    expect(await f.models()).toHaveLength(1);
+    expect(await f.models()).toHaveLength(5);
     expect((await f.app.request('/v1/images/generations', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: 'A tree' }) })).status).toBe(200);
     expect(upstream).toHaveBeenCalledOnce();
     expect(f.accountPool.get('unconfigured')).toMatchObject({ status: 'available', currentConcurrency: 0 });
@@ -175,7 +178,7 @@ describe('Independent image model descriptor', () => {
     const f = fixture();
     f.modelRegistry.replaceDiscoveredModels([{ id: 'gpt-image-2' }]);
     const models = await f.models();
-    expect(models).toHaveLength(1);
+    expect(models).toHaveLength(5);
     expect(models[0]).toMatchObject({ source: 'image_endpoint', endpoint: '/v1/images/generations' });
     expect(models[0]).not.toHaveProperty('discovered');
     expect(f.modelRegistry.resolve('gpt-image-2').model.source).toBe('discovered');

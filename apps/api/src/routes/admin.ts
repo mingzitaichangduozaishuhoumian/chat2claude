@@ -1,5 +1,6 @@
 import { presentPlan } from '../services/plan-presentation.js';
 import { modelContextView } from '../services/model-context.js';
+import { availableImageModels } from './image-models.js';
 import { Hono } from 'hono';
 import { ChatGptBackendError, DEFAULT_CODEX_IMAGE_MODEL, type ChatGptBackendClient, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ReasoningEffort, SpeedPreference } from '@chatgpt-to-claude/protocol-mapper';
@@ -254,7 +255,7 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
         } catch { /* Discovery metadata independently reports persistence availability. */ }
       } }, internalAccount);
       const account = accountsWithRequestStats(options, quotaService).find((item) => item.id === id);
-      return c.json({ ...outcome, account, view: options.modelRegistry.adminView() }, outcome.requestFailed ? 502 : 200);
+      return c.json({ ...outcome, account, view: adminModelsView(options) }, outcome.requestFailed ? 502 : 200);
     }
     try {
       const result = options.backend.healthCheck ? await options.backend.healthCheck({ account: internalAccount }) : { ok: true };
@@ -267,7 +268,7 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
 
   app.get('/admin/api/models', async (c) => {
     if (options.ready) await options.ready;
-    return c.json(options.modelRegistry.adminView());
+    return c.json(adminModelsView(options));
   });
   app.post('/admin/api/models', async (c) => {
     if (options.ready) await options.ready;
@@ -275,7 +276,7 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
       const input = await readJson(c.req);
       const create = () => options.modelRegistry.create(input);
       const model = options.durableState ? options.durableState.transaction(create) : create();
-      return c.json({ model, view: options.modelRegistry.adminView() }, 201);
+      return c.json({ model, view: adminModelsView(options) }, 201);
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : 'Invalid model alias' }, 400);
     }
@@ -291,14 +292,14 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     }
     const update = () => options.modelRegistry.update(c.req.param('id'), patch);
     const model = options.durableState ? options.durableState.transaction(update) : update();
-    return model ? c.json({ model, view: options.modelRegistry.adminView() }) : c.json({ error: 'Model alias not found' }, 404);
+    return model ? c.json({ model, view: adminModelsView(options) }) : c.json({ error: 'Model alias not found' }, 404);
   });
   app.delete('/admin/api/models/:id', async (c) => {
     if (options.ready) await options.ready;
     try {
       const remove = () => options.modelRegistry.remove(c.req.param('id'));
       const model = options.durableState ? options.durableState.transaction(remove) : remove();
-      return model ? c.json({ ok: true, model, view: options.modelRegistry.adminView() }) : c.json({ error: 'Model alias not found' }, 404);
+      return model ? c.json({ ok: true, model, view: adminModelsView(options) }) : c.json({ error: 'Model alias not found' }, 404);
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : 'Invalid model alias deletion' }, 400);
     }
@@ -307,19 +308,26 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     if (options.ready) await options.ready;
     const reset = () => options.modelRegistry.reset();
     const models = options.durableState ? options.durableState.transaction(reset) : reset();
-    return c.json({ models, view: options.modelRegistry.adminView() });
+    return c.json({ models, view: adminModelsView(options) });
   });
   app.post('/admin/api/models/refresh', async (c) => {
     if (options.ready) await options.ready;
-    if (options.backendProvider !== 'session') return c.json(await options.modelRegistry.refreshFromBackend(options.backend));
+    if (options.backendProvider !== 'session') {
+      await options.modelRegistry.refreshFromBackend(options.backend);
+      return c.json(adminModelsView(options));
+    }
     const accounts = options.accountPool.snapshot().accounts.filter((account) =>
       account.provider === 'chatgpt-session' && account.enabled && account.status === 'available');
     if (accounts.length === 0) return c.json({ error: 'No available chatgpt-session account. Import and health-check a ChatGPT session account before refreshing models.' }, 409);
     const refreshedAccounts = [];
     for (const account of accounts) refreshedAccounts.push(await refreshAccountModels(options, account));
-    return c.json({ ...options.modelRegistry.adminView(), refreshedAccounts });
+    return c.json({ ...adminModelsView(options), refreshedAccounts });
   });
   return app;
+}
+
+function adminModelsView(options: AdminRouteOptions) {
+  return { ...options.modelRegistry.adminView(), imageModels: availableImageModels(options) };
 }
 
 function accountsWithRequestStats(options: AdminRouteOptions, quotaService?: AccountQuotaService) {
@@ -344,6 +352,7 @@ function accountsWithRequestStats(options: AdminRouteOptions, quotaService?: Acc
       discoveryMessage: discoveryMessage(operational?.discovery ?? unknownDiscovery(), discoveredModels.length),
       plan: presentPlan(quotas.find((quota) => quota.accountId === account.id && quota.createdAt === account.createdAt) ?? operational?.quotaCache, account.planType),
       modelCount: discoveredModels.length,
+      imageModels: availableImageModels(options, account.id),
       discoveredModels: discoveredModels.map((model) => ({ id: model.id, ...(model.displayName ? { displayName: model.displayName } : {}), context: modelContextView(model.context) })),
     };
   });
