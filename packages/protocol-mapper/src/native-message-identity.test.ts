@@ -164,4 +164,42 @@ describe('native Responses message identities', () => {
     expect(events.filter((event) => event.type === 'response.content_part.added').map((event) => event.content_index)).toEqual([0, 1]);
     expect(events.filter((event) => event.type === 'response.output_text.delta').map((event) => event.delta)).toEqual(['First. ', 'Second.']);
   });
+
+  it.each([0, 1])('projects text after omitted content without exposing raw content indices (output=%s)', async (outputIndex) => {
+    const rawMessage = message('msg_filtered_parts', [{ type: 'future_content', secret: 'must-not-leak' }, textPart('Answer.')]);
+    const expected = message('msg_filtered_parts', [textPart('Answer.')]);
+    const events = await project([
+      { type: 'response.output_text.delta', item_id: rawMessage.id, output_index: outputIndex, content_index: 1, delta: 'Answer.' },
+      { type: 'response.completed', response: { status: 'completed', output: [...(outputIndex ? [{ type: 'web_search_call', id: 'web_1', status: 'completed' }] : []), rawMessage] } },
+    ]);
+    expect(events.at(-1)!.response.output).toEqual([expected]);
+    expect(events.filter((event) => event.type === 'response.content_part.added').map((event) => event.content_index)).toEqual([0]);
+    expect(events.filter((event) => event.type === 'response.output_text.delta').map((event) => event.delta)).toEqual(['Answer.']);
+    expect(JSON.stringify(events)).not.toContain('must-not-leak');
+  });
+
+  it('keeps final-only and live repeated text distinct across omitted content', async () => {
+    const rawMessage = message('msg_repeated_parts', [textPart('Repeated.'), { type: 'future_content' }, textPart('Repeated.'), { type: 'refusal', refusal: 'Declined.' }]);
+    const expected = message('msg_repeated_parts', [textPart('Repeated.'), textPart('Repeated.'), { type: 'refusal', refusal: 'Declined.' }]);
+    const events = await project([
+      { type: 'response.output_text.delta', item_id: rawMessage.id, output_index: 0, content_index: 2, delta: 'Repeated.' },
+      { type: 'response.refusal.delta', item_id: rawMessage.id, output_index: 0, content_index: 3, delta: 'Declined.' },
+      { type: 'response.completed', response: { status: 'completed', output: [rawMessage] } },
+    ]);
+    expect(events.at(-1)!.response.output).toEqual([expected]);
+    expect(events.filter((event) => event.type === 'response.content_part.added').map((event) => event.content_index)).toEqual([0, 1, 2]);
+    expect(events.filter((event) => event.type === 'response.output_text.delta').map((event) => [event.content_index, event.delta])).toEqual([[0, 'Repeated.'], [1, 'Repeated.']]);
+  });
+
+  it('retains an already-published text prefix while projecting later content gaps', async () => {
+    const rawMessage = message('msg_partial_parts', [textPart('First.'), { type: 'future_content' }, textPart('Second.')]);
+    const expected = message('msg_partial_parts', [textPart('First.'), textPart('Second.')]);
+    const events = await project([
+      { type: 'response.output_text.delta', item_id: rawMessage.id, output_index: 0, content_index: 0, delta: 'First.' },
+      { type: 'response.output_text.delta', item_id: rawMessage.id, output_index: 0, content_index: 2, delta: 'Sec' },
+      { type: 'response.completed', response: { status: 'completed', output: [rawMessage] } },
+    ]);
+    expect(events.at(-1)!.response.output).toEqual([expected]);
+    expect(events.filter((event) => event.type === 'response.output_text.delta').map((event) => [event.content_index, event.delta])).toEqual([[0, 'First.'], [1, 'Second.']]);
+  });
 });

@@ -52,7 +52,7 @@ export async function* mapChatGptStreamToClaudeSse(request: ClaudeMessagesReques
       }
       const toolIndex = nextIndex;
       yield encodeSseEvent({ event: 'content_block_start', data: { type: 'content_block_start', index: toolIndex, content_block: { type: 'tool_use', id: event.toolCall.id, name: event.toolCall.name, input: {} } } });
-      const partialJson = JSON.stringify(event.toolCall.input ?? {});
+      const partialJson = event.toolCall.rawArguments ?? JSON.stringify(event.toolCall.input ?? {});
       yield encodeSseEvent({ event: 'content_block_delta', data: { type: 'content_block_delta', index: toolIndex, delta: { type: 'input_json_delta', partial_json: partialJson } } });
       yield encodeSseEvent({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolIndex } });
       nextIndex += 1;

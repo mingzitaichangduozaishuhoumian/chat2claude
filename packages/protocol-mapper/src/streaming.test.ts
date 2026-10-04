@@ -10,6 +10,22 @@ import { mapChatGptStreamToClaudeSse, readableStreamFromAsyncIterable } from './
 const request: ClaudeMessagesRequest = { model: 'sonnet', max_tokens: 64, messages: [{ role: 'user', content: 'hello' }] };
 
 describe('mapChatGptStreamToClaudeSse', () => {
+  it('preserves validated provider JSON precision in streamed tool arguments', async () => {
+    const rawArguments = ' { "id": 9007199254740993, "ratio": 1.0000000000000001, "name": "\\u96ea" } ';
+    const item = { type: 'function_call', id: 'fc_precise', call_id: 'call_precise', name: 'lookup', arguments: rawArguments };
+    const frames = [
+      { type: 'response.output_item.done', output_index: 0, item },
+      { type: 'response.completed', response: { status: 'completed', output: [item] } },
+    ];
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('')) });
+    const context = { account: { id: 'synthetic', provider: 'chatgpt-session' as const, secret: { type: 'chatgpt-session' as const, accessToken: 'synthetic-token' } } };
+    const events = parseClaudeData(await collect(mapChatGptStreamToClaudeSse(request, backend.stream(mapClaudeRequestToChatGpt(request), context))));
+    const deltas = events.filter((event) => event.type === 'content_block_delta').map((event) => event.delta as { type: string; partial_json?: string });
+    expect(deltas.filter((delta) => delta.type === 'input_json_delta').map((delta) => delta.partial_json).join('')).toBe(rawArguments);
+    expect(events.find((event) => event.type === 'content_block_start')).toMatchObject({ content_block: { type: 'tool_use', id: 'call_precise', name: 'lookup', input: {} } });
+    expect(events.find((event) => event.type === 'message_delta')).toMatchObject({ delta: { stop_reason: 'tool_use' } });
+  });
+
   it('uses the shared Claude input estimate in message_start usage', async () => {
     const countedRequest = { ...request, system: 'Answer precisely.', tools: [{ name: 'lookup', input_schema: { type: 'object', properties: { key: { type: 'string' } } } }] };
     const events = parseClaudeData(await collect(mapChatGptStreamToClaudeSse(countedRequest, async function* () {

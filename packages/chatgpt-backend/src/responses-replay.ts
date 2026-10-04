@@ -218,7 +218,7 @@ export class ResponsesReplay {
   private readonly done = new ReplaySnapshots();
   private readonly images = new ImageSnapshots();
 
-  accept(type: unknown, frame: JsonObject): Pick<ChatGptCompletionResponse, 'replayItems' | 'replayEligible' | 'outputItems'> | undefined {
+  accept(type: unknown, frame: JsonObject): Pick<ChatGptCompletionResponse, 'replayItems' | 'replayEligible' | 'outputItems' | 'outputContentIndices'> | undefined {
     try {
       if (type === 'response.output_item.done') {
       const item = frame.item;
@@ -254,22 +254,29 @@ export class ResponsesReplay {
     const budget = new ResponsesReplayBudget();
     const ordered: ChatGptReplayItem[] = [];
     const projection: ChatGptOutputItem[] = [];
+    const outputContentIndices: NonNullable<ChatGptCompletionResponse['outputContentIndices']> = [];
     if (response.output.length > RESPONSES_REPLAY_LIMITS.items) throw invalidReplay();
     for (const [index, raw] of response.output.entries()) {
       if (object(raw) && raw.type === 'message') {
         if (!Array.isArray(raw.content) || raw.content.length > RESPONSES_REPLAY_LIMITS.items) throw invalidReplay();
         const content: Extract<ChatGptOutputItem, { type: 'message' }>['content'] = [];
-        for (const part of raw.content) {
+        const indices: number[] = [];
+        for (const [contentIndex, part] of raw.content.entries()) {
           if (!object(part)) throw invalidReplay();
           if (part.type === 'output_text') {
             if (typeof part.text !== 'string') throw invalidReplay();
             content.push({ type: 'output_text', text: part.text, annotations: [] });
+            indices.push(contentIndex);
           } else if (part.type === 'refusal') {
             if (typeof part.refusal !== 'string') throw invalidReplay();
             content.push({ type: 'refusal', refusal: part.refusal });
+            indices.push(contentIndex);
           }
         }
         projection.push({ type: 'message', role: 'assistant', ...(typeof raw.id === 'string' ? { id: raw.id } : {}), status: 'completed', content });
+        if (typeof raw.id === 'string' && indices.some((sourceIndex, projectedIndex) => sourceIndex !== projectedIndex)) {
+          outputContentIndices.push({ itemId: raw.id, indices });
+        }
       }
       const imageStatus = validateImageGenerationCallLifecycle(raw);
       if (imageStatus !== undefined) {
@@ -316,6 +323,7 @@ export class ResponsesReplay {
       return ordered.length || hasOutputItems ? {
         ...(ordered.length ? { replayItems: ordered, replayEligible: ordered.length === response.output.length && ordered.some((item) => item.type === 'function_call') } : {}),
         ...(hasOutputItems ? { outputItems: projection } : {}),
+        ...(outputContentIndices.length ? { outputContentIndices } : {}),
       } : undefined;
     } catch (error) {
       if (!(error instanceof ChatGptBackendError) || error.safeDiagnostic?.protocolStage !== 'replay_snapshot') throw error;

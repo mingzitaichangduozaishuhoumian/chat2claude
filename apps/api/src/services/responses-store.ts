@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { canonicalToolArguments } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import type { OpenAiResponsesInputItem, OpenAiResponsesRequest, OpenAiResponsesResponse } from '@chatgpt-to-claude/protocol-mapper';
 import type { Account } from './account-pool.js';
@@ -111,7 +112,7 @@ function equivalent(a: OpenAiResponsesInputItem, b: OpenAiResponsesInputItem): b
     try {
       const { id: _aId, status: _aStatus, ...aWire } = a;
       const { id: _bId, status: _bStatus, ...bWire } = b;
-      return isDeepStrictEqual({ ...aWire, arguments: JSON.parse(String(a.arguments)) }, { ...bWire, arguments: JSON.parse(String(b.arguments)) });
+      return isDeepStrictEqual({ ...aWire, arguments: canonicalToolArguments(a.arguments) }, { ...bWire, arguments: canonicalToolArguments(b.arguments) });
     } catch { return false; }
   }
   return isDeepStrictEqual(a, b);

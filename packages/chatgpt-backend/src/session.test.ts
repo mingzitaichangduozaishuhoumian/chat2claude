@@ -125,7 +125,7 @@ describe('SessionChatGptBackend', () => {
       { type: 'response.completed', response: { status: 'completed' } },
     ];
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse(frames) });
-    await expect(backend.complete(request, context)).resolves.toEqual({ text: '', finishReason: 'tool_calls', toolCalls: [{ id: 'call_1', name: 'lookup', input: { q: 'x' } }] });
+    await expect(backend.complete(request, context)).resolves.toEqual({ text: '', finishReason: 'tool_calls', toolCalls: [{ id: 'call_1', name: 'lookup', input: { q: 'x' }, rawArguments: '{"q":"x"}' }] });
   });
 
   it('does not treat empty added arguments as a complete empty object', async () => {
@@ -154,7 +154,7 @@ describe('SessionChatGptBackend', () => {
     for await (const event of backend.stream(request, context)) events.push(event);
     expect(events).toEqual([
       { type: 'upstream_ready' },
-      { type: 'tool_call', toolCall: { id: 'call_1', name: 'lookup', input: { q: 'x' } } },
+      { type: 'tool_call', toolCall: { id: 'call_1', name: 'lookup', input: { q: 'x' }, rawArguments: item.arguments } },
       { type: 'done', finishReason: 'stop' },
     ]);
   });
@@ -181,7 +181,7 @@ describe('SessionChatGptBackend', () => {
       { type: 'response.completed', response: { status: 'completed' } },
     ]) });
     await expect(backend.complete(request, context)).resolves.toEqual({ text: '', finishReason: 'tool_calls', toolCalls: [
-      { id: 'call_1', name: 'lookup', input: { q: 'x' } },
+      { id: 'call_1', name: 'lookup', input: { q: 'x' }, rawArguments: '{"q":"x"}' },
     ] });
   });
 
@@ -225,7 +225,7 @@ describe('SessionChatGptBackend', () => {
     expect(result.text).toBe('');
     expect(result.toolCalls).toHaveLength(2);
     expect(result.toolCalls).toEqual(expect.arrayContaining([
-      { id: 'call_a', name: 'first', input: { a: 1 } }, { id: 'call_b', name: 'second', input: { b: 2 } },
+      { id: 'call_a', name: 'first', input: { a: 1 }, rawArguments: '{"a":1}' }, { id: 'call_b', name: 'second', input: { b: 2 }, rawArguments: '{"b":2}' },
     ]));
   });
 
@@ -1012,7 +1012,7 @@ describe('SessionChatGptBackend', () => {
       tools: [{ type: 'function', name: 'get_weather', description: 'weather', parameters: { type: 'object', properties: { city: { type: 'string' } } }, strict: true }],
       tool_choice: { type: 'function', name: 'get_weather' },
     });
-    expect(response).toEqual({ text: '', finishReason: 'tool_calls', toolCalls: [{ id: 'call_1', name: 'get_weather', input: { city: 'Paris' } }] });
+    expect(response).toEqual({ text: '', finishReason: 'tool_calls', toolCalls: [{ id: 'call_1', name: 'get_weather', input: { city: 'Paris' }, rawArguments: '{"city":"Paris"}' }] });
   });
 
   it('throws a clear error when the session secret is missing', async () => {

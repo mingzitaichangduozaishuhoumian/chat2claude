@@ -69,6 +69,8 @@ Use a Runtime API Key for all client smokes; do not use an Admin API Key as a no
 
 Native Responses preserves message IDs, text/refusal content, and the order of the safe output projection. Added-item and added-content events use consecutive indexes for SDK compatibility. When preceding output items or content parts cannot yet be projected safely, affected text is buffered until the completed snapshot supplies their order. A validated encrypted reasoning prefix can be published before live message text. Claude and Chat Completions continue to expose text/refusal deltas directly.
 
+Function-call argument strings are retained for Chat Completions, native Responses, and Claude streaming JSON deltas. Replay matching and tool snapshot validation compare numeric tokens without rounding through JavaScript numbers. Comparisons accept at most 64 levels of nesting; number tokens with exponents longer than 128 digits require identical spelling and may conservatively reject reformatted snapshots. Claude non-streaming `tool_use.input` remains a JavaScript object, so its numeric values have JavaScript precision limits; use string fields in tool schemas for identifiers or decimal values that require exact preservation.
+
 ## ChatGPT/Codex backend
 
 | Manifest feature | Status | Notes |

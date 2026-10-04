@@ -16,6 +16,28 @@ const history: ChatGptInputItem[] = [
 ];
 
 describe('ReasoningReplayStore', () => {
+  it.each([
+    ['9007199254740992', '9007199254740993'],
+    ['0.10000000000000001', '0.1'],
+    ['1e-400', '2e-400'],
+  ])('does not attach hidden replay for distinct numeric arguments %s and %s', (stored, incoming) => {
+    const store = new ReasoningReplayStore();
+    expect(store.put(scope, account, { replayEligible: true, replayItems: [reasoning, { ...call, arguments: `{"id":${stored}}` }] })).toBe(true);
+    const input: ChatGptInputItem[] = [{ type: 'function_call', callId: 'call', name: 'lookup', arguments: `{"id":${incoming}}` }, history[2]];
+    expect(store.find(scope, input)).toBeUndefined();
+    const matching: ChatGptInputItem[] = [{ ...input[0], arguments: ` { "id": ${stored} } ` } as ChatGptInputItem, history[2]];
+    expect(store.find(scope, matching)?.apply(matching, account, 'model')).toEqual([
+      { type: 'replay', item: reasoning }, { type: 'replay', item: { ...call, arguments: `{"id":${stored}}` } }, history[2],
+    ]);
+  });
+
+  it('does not match already-rounded unsafe integer object arguments to provider wire arguments', () => {
+    const store = new ReasoningReplayStore();
+    expect(store.put(scope, account, { replayEligible: true, replayItems: [reasoning, { ...call, arguments: '{"id":9007199254740992}' }] })).toBe(true);
+    const input: ChatGptInputItem[] = [{ type: 'function_call', callId: 'call', name: 'lookup', arguments: JSON.parse('{"id":9007199254740993}') }, history[2]];
+    expect(store.find(scope, input)).toBeUndefined();
+  });
+
   it('clones private state, returns opaque affinity handles and structurally replays a matching group', () => {
     const store = new ReasoningReplayStore();
     const items = structuredClone(bundle);

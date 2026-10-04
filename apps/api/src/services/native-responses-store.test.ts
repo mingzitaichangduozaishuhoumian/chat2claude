@@ -1,5 +1,5 @@
 import { inspect } from 'node:util';
-import { expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { ResponsesStore } from './responses-store.js';
 
 it('keeps payload out of store/handle inspection and bounds records and bytes', () => {
@@ -37,4 +37,35 @@ it('retains accepted large histories instead of silently dropping them at half t
   expect(store.put('owner', request, response, context)).toBe(true);
   expect(store.get('owner', response.id)!.expand('next', context.account, context.model)[0].content).toBe(request.input);
   expect(store.stats().bytes).toBeLessThan(64 * 1024 * 1024);
+});
+
+describe('Responses history argument equivalence', () => {
+  function history(argumentsText: string) {
+    const store = new ResponsesStore();
+    const account = { id: 'a', incarnation: 1, provider: 'mock' as const };
+    const call = { type: 'function_call', id: 'fc', call_id: 'call', name: 'lookup', arguments: argumentsText };
+    const response = { id: 'resp', object: 'response' as const, created_at: 0, model: 'm', status: 'completed' as const, output: [], output_text: '', usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } };
+    expect(store.put('owner', { model: 'm', input: 'hello' }, response, { account, model: 'm', output: [call] })).toBe(true);
+    return { expand: (value: unknown) => store.get('owner', 'resp')!.expand([{ ...call, arguments: value }], account, 'm'), call };
+  }
+
+  it.each([
+    ['9007199254740992', '9007199254740993'],
+    ['0.10000000000000001', '0.1'],
+    ['1e400', '1e500'],
+    ['1e-400', '2e-400'],
+  ])('rejects distinct JSON numbers %s and %s instead of silently restoring the older call', (stored, incoming) => {
+    const f = history(`{"id":${stored}}`);
+    expect(() => f.expand(`{"id":${incoming}}`)).toThrow('Conflicting previous response input.');
+  });
+
+  it('still recognizes equivalent formatting and retains the exact stored argument text', () => {
+    const f = history(' { "nested": [true, null, "1e3"], "id": 1000.00 } ');
+    expect(f.expand('{"id":1e3,"nested":[true,null,"1e3"]}')).toEqual([{ type: 'message', role: 'user', content: 'hello' }, f.call]);
+  });
+
+  it('matches identical large numbers without converting them to JavaScript numbers', () => {
+    const f = history('{"id":9007199254740993}');
+    expect(f.expand(' { "id": 9007199254740993 } ').at(-1)).toEqual(f.call);
+  });
 });

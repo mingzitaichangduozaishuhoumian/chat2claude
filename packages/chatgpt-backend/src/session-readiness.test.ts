@@ -276,7 +276,7 @@ it('accepts an otherwise-empty completed envelope only after a validated event o
   for await (const event of backend(frame({ type: 'response.output_item.done', item }) + frame({ type: 'response.completed', response: {} })).stream(request, context)) events.push(event);
   expect(events).toEqual([
     { type: 'upstream_ready' },
-    { type: 'tool_call', toolCall: { id: 'call_1', name: 'lookup', input: {} } },
+    { type: 'tool_call', toolCall: { id: 'call_1', name: 'lookup', input: {}, rawArguments: '{}' } },
     { type: 'done', finishReason: 'tool_calls' },
   ]);
 });

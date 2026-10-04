@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { parseResponsesReplayItem, ResponsesReplayBudget, type ChatGptCompletionResponse, type ChatGptInputItem, type ChatGptReplayItem } from '@chatgpt-to-claude/chatgpt-backend';
+import { canonicalToolArguments, parseResponsesReplayItem, ResponsesReplayBudget, type ChatGptCompletionResponse, type ChatGptInputItem, type ChatGptReplayItem } from '@chatgpt-to-claude/chatgpt-backend';
 import type { Account, AccountProvider } from './account-pool.js';
 
 export interface ReplayScope { owner?: string; provider: AccountProvider; model: string; }
@@ -58,7 +58,7 @@ export class ReasoningReplayStore {
         budget.add(parsed);
         return parsed;
       });
-      const calls = replayItems.filter((item) => item.type === 'function_call').map((item) => ({ id: item.call_id, name: item.name, arguments: canonicalArguments(item.arguments) }));
+      const calls = replayItems.filter((item) => item.type === 'function_call').map((item) => ({ id: item.call_id, name: item.name, arguments: canonicalToolArguments(item.arguments) }));
       if (!calls.length || new Set(calls.map((call) => call.id)).size !== calls.length) return false;
       const data: RecordData = { owner: scope.owner, provider: scope.provider, model: scope.model,
         account: { id: account.id, incarnation: account.incarnation, provider: account.provider }, calls, replayItems };
@@ -152,7 +152,7 @@ function latestGroup(input: ChatGptInputItem[] | undefined): { start: number; en
     while (start > 0 && input[start - 1].type === 'function_call') start--;
     const calls = input.slice(start, last + 1).map((item) => {
       if (item.type !== 'function_call' || !item.callId || !item.name) throw new Error('Invalid call group.');
-      return { id: item.callId, name: item.name, arguments: canonicalArguments(item.arguments) };
+      return { id: item.callId, name: item.name, arguments: canonicalToolArguments(item.arguments) };
     });
     const ids = new Set(calls.map((call) => call.id));
     if (ids.size !== calls.length || input.slice(0, start).some((item) => item.type === 'function_call' && ids.has(item.callId))) return undefined;
@@ -164,19 +164,5 @@ function latestGroup(input: ChatGptInputItem[] | undefined): { start: number; en
   } catch { return undefined; }
 }
 
-function canonicalArguments(value: unknown): unknown {
-  const parsed: unknown = typeof value === 'string' ? JSON.parse(value) : value;
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid call arguments.');
-  return canonical(parsed, 0);
-}
-function canonical(value: unknown, depth: number): unknown {
-  if (depth > 64) throw new Error('Invalid call arguments.');
-  if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)) return value;
-  if (Array.isArray(value)) return value.map((item) => canonical(item, depth + 1));
-  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical((value as Record<string, unknown>)[key], depth + 1)]));
-  }
-  throw new Error('Invalid call arguments.');
-}
 function hash(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function scopeKey(scope: ReplayScope, callKey: string): string { return hash([scope.owner, scope.provider, scope.model, callKey]); }

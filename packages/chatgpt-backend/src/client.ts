@@ -61,12 +61,14 @@ export type ChatGptInputItem =
   | { type: 'function_call_output'; callId: string; output: string | ChatGptInputContentPart[]; isError?: boolean };
 export interface ChatGptTool { name: string; description?: string; inputSchema: Record<string, unknown>; strict?: boolean; raw?: unknown; }
 export type ChatGptToolChoice = { type: 'auto' | 'any' | 'none' } | { type: 'tool'; name: string };
-export interface ChatGptToolCall { id: string; name: string; input: unknown; }
+export interface ChatGptToolCall { id: string; name: string; input: unknown; /** Validated original JSON arguments for protocols that carry a string. */ rawArguments?: string; }
 export interface ChatGptUsage { inputTokens?: number; outputTokens?: number; totalTokens?: number; raw?: unknown; }
 /** Trusted execution plan resolved against the selected account's model catalog. */
 export interface ChatGptReasoningExecution { effort: string; delegation: 'proactive'; }
 export interface ChatGptCompletionRequest { messages: ChatGptMessage[]; inputItems?: ChatGptInputItem[]; maxTokens: number; model: string; reasoningEffort?: ChatGptReasoningEffort; reasoningExecution?: ChatGptReasoningExecution; serviceTier?: ChatGptServiceTier; /** @deprecated Use serviceTier. */ speedPreference?: ChatGptSpeedPreference; temperature?: number; topP?: number; stopSequences?: string[]; parallelToolCalls?: boolean; tools?: ChatGptTool[]; toolChoice?: ChatGptToolChoice; backendOptions?: Record<string, unknown>; }
-export interface ChatGptCompletionResponse { /** False for legacy EOF compatibility; native Responses must reject it. */ terminalSuccessful?: boolean; /** Ordered text/replay projection for native Responses only. */ outputItems?: ChatGptOutputItem[]; text: string; refusal?: string; finishReason: ChatGptFinishReason; toolCalls?: ChatGptToolCall[]; usage?: ChatGptUsage; /** Successful provider output order; internal only. */ replayItems?: ChatGptReplayItem[]; /** Entire completed output is replayable reasoning/tools with at least one tool. */ replayEligible?: boolean; }
+/** Internal projected-content position to provider content_index mapping. */
+export interface ChatGptOutputContentIndices { itemId: string; indices: number[]; }
+export interface ChatGptCompletionResponse { /** Internal identity metadata; never client-visible output. */ outputContentIndices?: ChatGptOutputContentIndices[]; /** False for legacy EOF compatibility; native Responses must reject it. */ terminalSuccessful?: boolean; /** Ordered text/replay projection for native Responses only. */ outputItems?: ChatGptOutputItem[]; text: string; refusal?: string; finishReason: ChatGptFinishReason; toolCalls?: ChatGptToolCall[]; usage?: ChatGptUsage; /** Successful provider output order; internal only. */ replayItems?: ChatGptReplayItem[]; /** Entire completed output is replayable reasoning/tools with at least one tool. */ replayEligible?: boolean; }
 export interface ChatGptReasoningLevelOption { effort: string; description?: string; }
 export interface ChatGptServiceTierOption { id: string; name?: string; description?: string; }
 export interface ChatGptModelControlCapabilities {

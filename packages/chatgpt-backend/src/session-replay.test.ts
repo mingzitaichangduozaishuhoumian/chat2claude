@@ -42,12 +42,12 @@ describe('session ordered opaque replay', () => {
     const outputItems = [reasoning, { type: 'message', role: 'assistant', status: 'completed', content: [] }, call, output[3]];
     expect(stream).toEqual([
       { type: 'upstream_ready' },
-      { type: 'tool_call', toolCall: { id: 'call_1', name: 'lookup', input: { q: 'x' } } },
+      { type: 'tool_call', toolCall: { id: 'call_1', name: 'lookup', input: { q: 'x' }, rawArguments: call.arguments } },
       { type: 'done', finishReason: 'tool_calls', replayItems: [reasoning, call, output[3]], replayEligible: false, outputItems },
     ]);
     expect(JSON.stringify(stream.filter((event) => event.type !== 'done'))).not.toContain(canary);
     await expect(backend(frames).complete(request, context)).resolves.toEqual({
-      text: '', finishReason: 'tool_calls', toolCalls: [{ id: 'call_1', name: 'lookup', input: { q: 'x' } }], replayItems: [reasoning, call, output[3]], replayEligible: false, outputItems,
+      text: '', finishReason: 'tool_calls', toolCalls: [{ id: 'call_1', name: 'lookup', input: { q: 'x' }, rawArguments: call.arguments }], replayItems: [reasoning, call, output[3]], replayEligible: false, outputItems,
     });
   });
 

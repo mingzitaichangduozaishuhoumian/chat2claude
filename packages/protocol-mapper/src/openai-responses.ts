@@ -145,7 +145,7 @@ export function mapChatGptResponseToOpenAiResponses(request: OpenAiResponsesRequ
     output.push(visible);
   }
   const replayCalls = new Set(replay.filter((item) => item.type === 'function_call').map((item) => item.call_id));
-  for (const toolCall of response.toolCalls ?? []) if (!replayCalls.has(toolCall.id)) output.push({ id: `fc_${createMessageId()}`, type: 'function_call', status: 'completed', call_id: toolCall.id, name: toolCall.name, arguments: JSON.stringify(toolCall.input ?? {}) });
+  for (const toolCall of response.toolCalls ?? []) if (!replayCalls.has(toolCall.id)) output.push({ id: `fc_${createMessageId()}`, type: 'function_call', status: 'completed', call_id: toolCall.id, name: toolCall.name, arguments: toolCall.rawArguments ?? JSON.stringify(toolCall.input ?? {}) });
   if (response.outputItems) {
     const nativeOutput = response.outputItems.map((item): Record<string, unknown> => {
       const visible: Record<string, unknown> = { ...structuredClone(item) };
@@ -244,14 +244,24 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
     yield emit('response.output_item.done', { output_index, item: completed });
     textOpen = false;
   };
-  const finalizeIdentifiedMessage = function* (item: Record<string, unknown>, output_index: number, live: LiveMessage) {
+  const finalizeIdentifiedMessage = function* (item: Record<string, unknown>, output_index: number, live: LiveMessage, sourceIndices?: number[]) {
     if (item.type !== 'message' || item.id !== live.id || !Array.isArray(item.content)) throw invalidNativeOutput();
-    for (const index of live.parts.keys()) if (index >= item.content.length) throw invalidNativeOutput();
+    // The safe projection can omit unsupported content parts. Match the original
+    // stream identities through backend metadata, never by equal text values.
+    const indices = sourceIndices ?? item.content.map((_part, index) => index);
+    if (indices.length !== item.content.length || indices.some((index, position) => !Number.isSafeInteger(index) || index < 0 || position > 0 && index <= indices[position - 1])) throw invalidNativeOutput();
+    const projectedIndices = new Map(indices.map((sourceIndex, index) => [sourceIndex, index]));
+    const projectedParts = new Map([...live.parts].map(([sourceIndex, part]) => {
+      const index = projectedIndices.get(sourceIndex);
+      if (index === undefined) throw invalidNativeOutput();
+      return [index, part] as const;
+    }));
+    for (const [index, part] of live.parts) if (part.published && indices[index] !== index) throw invalidNativeOutput();
     if (live.publishedIndex !== undefined && live.publishedIndex !== output_index) throw invalidNativeOutput();
     // Omitted provider items may precede this message. Until the final safe
     // projection is known, their raw indices cannot be exposed as client indices.
     if (live.publishedIndex === undefined) {
-      for (const [index, previous] of live.parts) {
+      for (const [index, previous] of projectedParts) {
         const part = item.content[index] as Record<string, unknown>;
         const value = previous.type === 'refusal_delta' ? part.refusal : part.text;
         if (part.type !== (previous.type === 'refusal_delta' ? 'refusal' : 'output_text') || typeof value !== 'string' || !value.startsWith(previous.text)) throw invalidNativeOutput();
@@ -265,7 +275,7 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
       const type = isRefusal ? 'refusal_delta' : 'text_delta';
       const value = isRefusal ? part.refusal : part.text;
       if (typeof value !== 'string') throw invalidNativeOutput();
-      const previous = live.parts.get(content_index);
+      const previous = projectedParts.get(content_index);
       if (previous && (previous.type !== type || !value.startsWith(previous.text))) throw invalidNativeOutput();
       const fields = { item_id: live.id, output_index, content_index };
       if (!previous?.published) yield emit('response.content_part.added', { ...fields, part: { ...part, ...(isRefusal ? { refusal: '' } : { text: '' }) } });
@@ -373,7 +383,7 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
       else text += event.text;
       yield emit(isRefusal ? 'response.refusal.delta' : 'response.output_text.delta', { item_id: textOutput.id, output_index: output.indexOf(textOutput), content_index: contentIndex, delta: event.text });
     } else if (event.type === 'tool_call') {
-      const argumentsText = JSON.stringify(event.toolCall.input ?? {});
+      const argumentsText = event.toolCall.rawArguments ?? JSON.stringify(event.toolCall.input ?? {});
       bytes += Buffer.byteLength(argumentsText, 'utf8') + Buffer.byteLength(event.toolCall.name, 'utf8') + event.toolCall.id.length;
       toolCalls.push(event.toolCall);
     } else if (event.type === 'image_output') {
@@ -399,7 +409,7 @@ export async function* mapChatGptStreamToOpenAiResponsesSse(request: OpenAiRespo
     for (const [index, item] of authoritative.entries()) {
       if (publishedSnapshots.has(index)) continue;
       const live = typeof item.id === 'string' ? messagesById.get(item.id) : undefined;
-      if (live) yield* finalizeIdentifiedMessage(item, index, live);
+      if (live) yield* finalizeIdentifiedMessage(item, index, live, terminal.outputContentIndices?.find((entry) => entry.itemId === live.id)?.indices);
       else yield* emitFinalItem(item, index);
     }
     output.push(...authoritative);

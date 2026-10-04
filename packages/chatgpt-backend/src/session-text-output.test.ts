@@ -129,6 +129,30 @@ describe('session visible text and refusal output', () => {
     ]);
   });
 
+  it('keeps internal source content indices when unknown provider parts are projected away', async () => {
+    const item = { ...message('output_text', 'same'), content: [
+      { type: 'future_part', secret: 'PRIVATE_UNKNOWN_CONTENT' },
+      { type: 'output_text', text: 'same', annotations: [] },
+      { type: 'future_part', secret: 'PRIVATE_UNKNOWN_CONTENT' },
+      { type: 'refusal', refusal: 'same' },
+    ] };
+    const frames = [
+      { type: 'response.output_text.delta', item_id: 'msg_synthetic', output_index: 0, content_index: 1, delta: 'same' },
+      { type: 'response.refusal.delta', item_id: 'msg_synthetic', output_index: 0, content_index: 3, delta: 'same' },
+      { type: 'response.completed', response: { status: 'completed', output: [item] } },
+    ];
+    const events: ChatGptStreamEvent[] = [];
+    for await (const event of backend(frames).stream(request, context)) events.push(event);
+    const terminal = events.find((event) => event.type === 'done');
+    expect(terminal).toMatchObject({ outputContentIndices: [{ itemId: 'msg_synthetic', indices: [1, 3] }] });
+    const response = await backend(frames).complete(request, context);
+    expect(response).toMatchObject({ text: 'same', refusal: 'same', outputContentIndices: [{ itemId: 'msg_synthetic', indices: [1, 3] }] });
+    expect(response.outputItems?.[0]).toEqual({ ...message('output_text', 'same'), content: [item.content[1], item.content[3]] });
+    expect(JSON.stringify(events)).not.toContain('PRIVATE_UNKNOWN_CONTENT');
+    expect(JSON.stringify(response.outputItems)).not.toContain('indices');
+    expect(events.filter((event) => event.type === 'text_delta' || event.type === 'refusal_delta')).toHaveLength(2);
+  });
+
   it.each([
     { item_id: '' }, { output_index: -1 }, { content_index: 1.5 },
   ])('rejects malformed delta identities before exposing them: %j', async (identity) => {

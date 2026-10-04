@@ -270,11 +270,11 @@ function normalizeImageDetail(value: unknown): ChatGptImageDetail | undefined {
 }
 
 function mapToolCalls(toolCalls: ChatGptCompletionResponse['toolCalls']): OpenAiChatResponseToolCall[] | undefined {
-  return toolCalls?.map((toolCall) => ({ id: toolCall.id, type: 'function', function: { name: toolCall.name, arguments: JSON.stringify(toolCall.input ?? {}) } }));
+  return toolCalls?.map((toolCall) => ({ id: toolCall.id, type: 'function', function: { name: toolCall.name, arguments: toolCall.rawArguments ?? JSON.stringify(toolCall.input ?? {}) } }));
 }
 
 function mapToolCallDelta(toolCall: NonNullable<ChatGptCompletionResponse['toolCalls']>[number], index: number) {
-  return { index, id: toolCall.id, type: 'function' as const, function: { name: toolCall.name, arguments: JSON.stringify(toolCall.input ?? {}) } };
+  return { index, id: toolCall.id, type: 'function' as const, function: { name: toolCall.name, arguments: toolCall.rawArguments ?? JSON.stringify(toolCall.input ?? {}) } };
 }
 
 function normalizeOpenAiStop(stop: OpenAiChatCompletionRequest['stop']): string[] | undefined {

@@ -1,5 +1,7 @@
 import type { ChatGptToolCall } from './client.js';
+import { isDeepStrictEqual } from 'node:util';
 import { ChatGptBackendError } from './errors.js';
+import { canonicalToolArguments } from './json-arguments.js';
 
 type JsonObject = Record<string, unknown>;
 interface PendingCall { itemId?: string; index?: number; callId?: string; name?: string; delta: string; addedArguments?: string; arguments?: string; emitted?: boolean; }
@@ -48,7 +50,7 @@ export class ResponsesToolCalls {
   compatibility(call: ChatGptToolCall): ChatGptToolCall[] {
     const previous = this.emitted.get(call.id);
     if (previous) {
-      if (previous.name !== call.name || stable(previous.input) !== stable(call.input)) throw this.invalid();
+      if (previous.name !== call.name || !isDeepStrictEqual(this.canonicalArguments(previous.rawArguments ?? previous.input), this.canonicalArguments(call.rawArguments ?? call.input))) throw this.invalid();
       return [];
     }
     this.emitted.set(call.id, call);
@@ -82,10 +84,10 @@ export class ResponsesToolCalls {
 
   private setArguments(call: PendingCall, value: unknown, added = false): void {
     if (typeof value !== 'string') throw this.invalid();
-    const parsed = this.parseArguments(value);
-    if (!added && call.delta && stable(this.parseArguments(call.delta)) !== stable(parsed)
-      || call.addedArguments !== undefined && stable(this.parseArguments(call.addedArguments)) !== stable(parsed)
-      || call.arguments !== undefined && stable(this.parseArguments(call.arguments)) !== stable(parsed)) throw this.invalid();
+    const parsed = this.canonicalArguments(value);
+    if (!added && call.delta && !isDeepStrictEqual(this.canonicalArguments(call.delta), parsed)
+      || call.addedArguments !== undefined && !isDeepStrictEqual(this.canonicalArguments(call.addedArguments), parsed)
+      || call.arguments !== undefined && !isDeepStrictEqual(this.canonicalArguments(call.arguments), parsed)) throw this.invalid();
     if (added) call.addedArguments = value;
     else call.arguments = value;
   }
@@ -97,7 +99,7 @@ export class ResponsesToolCalls {
     this.setArguments(call, args);
     const input = this.parseArguments(args);
     call.emitted = true;
-    return this.compatibility({ id: call.callId, name: call.name, input });
+    return this.compatibility({ id: call.callId, name: call.name, input, rawArguments: args });
   }
 
   private parseArguments(value: string): JsonObject {
@@ -105,6 +107,10 @@ export class ResponsesToolCalls {
     try { parsed = JSON.parse(value); } catch { throw this.invalid(); }
     if (!object(parsed)) throw this.invalid();
     return parsed as JsonObject;
+  }
+
+  private canonicalArguments(value: unknown) {
+    try { return canonicalToolArguments(value); } catch { throw this.invalid(); }
   }
 
   private invalid(): ChatGptBackendError {
@@ -118,9 +124,3 @@ function object(value: unknown): JsonObject | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : undefined;
 }
 function string(value: unknown): string | undefined { return typeof value === 'string' && value.length > 0 ? value : undefined; }
-function stable(value: unknown): string | undefined {
-  return JSON.stringify(value, (_key, item: unknown) => {
-    const record = object(item);
-    return record ? Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]])) : item;
-  });
-}

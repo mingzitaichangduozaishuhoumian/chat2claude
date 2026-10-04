@@ -31,6 +31,20 @@ function assertOutputLifecycleReconciles(events: Array<Record<string, any>>) {
 }
 
 describe('native Responses replay projection', () => {
+  it.each([false, true])('preserves raw tool arguments without an authoritative replay snapshot (stream=%s)', async (stream) => {
+    const rawArguments = ' { "id": 9007199254740993, "ratio": 1.0000000000000001 } ';
+    const toolCall = { id: 'call_precise', name: 'lookup', input: JSON.parse(rawArguments), rawArguments };
+    if (!stream) {
+      const response = mapChatGptResponseToOpenAiResponses(request, { text: '', finishReason: 'tool_calls', toolCalls: [toolCall] });
+      expect(response.output[0].arguments).toBe(rawArguments);
+      return;
+    }
+    const events = await collect([{ type: 'tool_call', toolCall }, { type: 'done', finishReason: 'tool_calls' }]);
+    expect(events.find((event) => event.type === 'response.function_call_arguments.delta')?.delta).toBe(rawArguments);
+    expect(events.at(-1).response.output[0].arguments).toBe(rawArguments);
+    assertOutputLifecycleReconciles(events);
+  });
+
   it('maps reasoning structurally, excluding it from text fallback', () => {
     const mapped = mapOpenAiResponsesRequestToChatGpt({ ...request, input: [reasoning, call] });
     expect(mapped.inputItems?.[0]).toEqual({ type: 'replay', item: reasoning });

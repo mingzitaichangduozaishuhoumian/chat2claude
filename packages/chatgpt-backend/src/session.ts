@@ -139,6 +139,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
     let replayItems: ChatGptReplayItem[] | undefined;
     let replayEligible: boolean | undefined;
     let outputItems: ChatGptCompletionResponse['outputItems'];
+    let outputContentIndices: ChatGptCompletionResponse['outputContentIndices'];
     let terminalSuccessful: boolean | undefined;
     const toolCalls: ChatGptToolCall[] = [];
     for await (const event of this.stream(request, context)) {
@@ -150,6 +151,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
         if (event.usage) usage = event.usage;
         if (event.replayItems) { replayItems = event.replayItems; replayEligible = event.replayEligible; }
         if (event.outputItems) outputItems = event.outputItems;
+        if (event.outputContentIndices) outputContentIndices = event.outputContentIndices;
         terminalSuccessful = event.terminalSuccessful;
       }
     }
@@ -160,7 +162,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       text = parts.map((part) => part.type === 'output_text' ? part.text : '').join('');
       refusal = parts.map((part) => part.type === 'refusal' ? part.refusal : '').join('');
     }
-    return { text, ...(refusal ? { refusal } : {}), finishReason, ...(toolCalls.length ? { toolCalls } : {}), ...(usage ? { usage } : {}), ...(replayItems ? { replayItems, replayEligible } : {}), ...(outputItems ? { outputItems } : {}), ...(terminalSuccessful === false ? { terminalSuccessful } : {}) };
+    return { text, ...(refusal ? { refusal } : {}), finishReason, ...(toolCalls.length ? { toolCalls } : {}), ...(usage ? { usage } : {}), ...(replayItems ? { replayItems, replayEligible } : {}), ...(outputItems ? { outputItems } : {}), ...(outputContentIndices ? { outputContentIndices } : {}), ...(terminalSuccessful === false ? { terminalSuccessful } : {}) };
   }
 
   async *stream(request: ChatGptCompletionRequest, context?: ChatGptBackendRequestContext): AsyncIterable<ChatGptStreamEvent> {
@@ -1084,9 +1086,14 @@ async function readHttpErrorDiagnostic(response: Response, lifetime: ReturnType<
 }
 
 async function cancelResponseBody(response: Response): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await response.body?.cancel();
+    // A transport's cancel hook may never settle. Cleanup must not disable the
+    // short-operation timeout or trap caller cancellation in runWithTimeout.
+    const cancellation = response.body?.cancel().catch(() => {});
+    await Promise.race([cancellation, new Promise<void>((resolve) => { timer = setTimeout(resolve, 250); })]);
   } catch { /* Cleanup must not replace the HTTP error. */ }
+  finally { clearTimeout(timer); }
 }
 
 interface SseFrame { event?: string; data: string; }
