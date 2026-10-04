@@ -4,6 +4,7 @@ import { createMessageId } from '@chatgpt-to-claude/shared';
 import { normalizeClaudeMessagesToCanonical } from './canonical.js';
 import { mapCanonicalInputItems, mapClaudeToolChoice, mapClaudeTools } from './request.js';
 import { mapStopReason } from './stop-reason.js';
+import { parseLosslessToolInput } from './lossless-tool-input.js';
 export function mapChatGptResponseToClaude(request: ClaudeMessagesRequest, response: ChatGptCompletionResponse): ClaudeMessageResponse {
   return {
     id: createMessageId(),
@@ -20,7 +21,7 @@ export function mapResponseContent(response: ChatGptCompletionResponse): ClaudeC
   const content: ClaudeContentBlock[] = [];
   if (response.text) content.push({ type: 'text', text: response.text });
   if (response.refusal) content.push({ type: 'text', text: response.refusal });
-  for (const toolCall of response.toolCalls ?? []) content.push({ type: 'tool_use', id: toolCall.id, name: toolCall.name, input: toolCall.input });
+  for (const toolCall of response.toolCalls ?? []) content.push({ type: 'tool_use', id: toolCall.id, name: toolCall.name, input: toolCall.rawArguments === undefined ? toolCall.input : parseLosslessToolInput(toolCall.rawArguments) });
   if (!content.length) content.push({ type: 'text', text: '' });
   return content;
 }

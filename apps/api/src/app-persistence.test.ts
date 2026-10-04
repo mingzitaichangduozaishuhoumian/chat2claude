@@ -69,8 +69,8 @@ describe('createApp runtime state hydration', () => {
       expect(models.discovered.map((model) => model.id).sort()).toEqual(['synthetic-accepted-second', 'synthetic-cached-first']);
       expect(models.aliases.find((alias) => alias.id === 'sonnet')?.backendModel).toBe('synthetic-accepted-second');
       expect(await (await app.request('/admin/api/accounts', { headers })).json()).toMatchObject({ accounts: [
-        expect.objectContaining({ id: first.id, discoveredModels: [{ id: 'synthetic-cached-first' }] }),
-        expect.objectContaining({ id: 'startup-second', discovery: expect.objectContaining({ status: 'success' }), discoveredModels: [{ id: 'synthetic-accepted-second' }] }),
+        expect.objectContaining({ id: first.id, discoveredModels: [{ id: 'synthetic-cached-first', context: { metadata_status: 'unknown' } }] }),
+        expect.objectContaining({ id: 'startup-second', discovery: expect.objectContaining({ status: 'success' }), discoveredModels: [{ id: 'synthetic-accepted-second', context: { metadata_status: 'unknown' } }] }),
       ] });
       expect(store.load()?.modelAliases.find((alias) => alias.id === 'sonnet')?.backendModel).toBe('synthetic-accepted-second');
       expect(saveSpy).toHaveBeenCalledTimes(2);

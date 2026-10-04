@@ -318,6 +318,14 @@ Claude Code、Anthropic SDK、Cline 和 Roo 按 Claude/Anthropic 兼容客户端
 
 模型映射的 Backend Model 下拉只来自当前 discovery。专业模式中的 reasoning effort、service tier 和默认值也来自所选目标的能力元数据；元数据未知时不会假设所有控制项都可用。显式请求不支持的 `reasoning_effort` 或 service tier 会返回 400，而不是静默改写。
 
+### 模型上下文窗口
+
+模型映射会显示目标模型的**目录默认窗口**与**最大窗口**；切换目标时同步更新。专业模式另显示目录提供的有效比例、分别按默认/最大窗口估算的可用 token 预算及自动压缩阈值。账号卡片的完整模型目录可查看各账号的具体窗口。
+
+这些值来自账号模型目录，不代表客户端或当前会话已经使用了相同设置。缺失值显示为未知；多个账号的同一模型数值不一致或部分未知时，页面标注“随账号变化”，只展示所有候选账号共有的数值。刷新账号模型目录后会更新并持久化这些信息。
+
+`/v1/models` 和管理模型接口同时提供 `context` 对象，包含 `metadata_status`（`known`、`unknown`、`account_dependent`）及目录实际提供的 `context_window`、`max_context_window`、`effective_context_window_percent`、`auto_compact_token_limit`。服务不会根据模型名称猜测或补出上限。
+
 ### 推理档位与 Ultra 主动协作
 
 Claude 使用 `output_config.effort`（优先于 `reasoning_effort`），Chat Completions 使用 `reasoning_effort`，Responses 使用 `reasoning.effort`（优先于 `reasoning_effort`）。服务按实际选中账号的模型目录校验，流式与非流式使用相同规则。

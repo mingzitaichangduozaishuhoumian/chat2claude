@@ -12,6 +12,21 @@ function devScript(): string {
 }
 
 describe('Admin browser source under the tsx development loader', () => {
+  it('serializes catalog window helpers used by model mappings and per-account model lists', () => {
+    const script = devScript();
+    const source = script.slice(0, script.indexOf('let currentFlowId'));
+    const modelHelpers = script.slice(script.indexOf('function backendOptionsHtml('), script.indexOf("document.getElementById('create-model-form')"));
+    const model = { context: { metadata_status: 'known', context_window: 272_000, max_context_window: 1_050_000, effective_context_window_percent: 90 } };
+    for (const locale of ['zh-CN', 'en']) {
+      const html = runInNewContext(source + '\n' + modelHelpers + '\nlocalizeAdminMarkup(modelContextHtml(model), locale)', { model, locale });
+      expect(html).toContain(locale === 'en' ? 'Catalog default window: 272,000 tokens' : '目录默认窗口：272,000 tokens');
+      expect(html).toContain(locale === 'en' ? 'Maximum window: 1,050,000 tokens' : '最大窗口：1,050,000 tokens');
+      expect(html).toContain('244,800 tokens');
+      expect(html).toContain('945,000 tokens');
+    }
+    expect(source).not.toMatch(/\b__name\b/);
+  });
+
   it('serializes reset-credit cards in both locales without loader globals or credit IDs', () => {
     const script = devScript();
     const source = script.slice(0, script.indexOf('let currentFlowId'));

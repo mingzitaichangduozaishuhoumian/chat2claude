@@ -89,7 +89,14 @@ export interface ChatGptModelControlCapabilities {
     fastMode: boolean;
   };
 }
-export interface ChatGptDiscoveredModel { id: string; displayName?: string; capabilities?: Record<string, unknown>; controls?: ChatGptModelControlCapabilities; raw?: unknown; }
+/** Explicit provider catalog values only. Missing fields remain unknown. */
+export interface ChatGptModelContextMetadata {
+  contextWindow?: number;
+  maxContextWindow?: number;
+  effectiveContextWindowPercent?: number;
+  autoCompactTokenLimit?: number;
+}
+export interface ChatGptDiscoveredModel { id: string; displayName?: string; capabilities?: Record<string, unknown>; controls?: ChatGptModelControlCapabilities; context?: ChatGptModelContextMetadata; raw?: unknown; }
 
 /** Allowlisted operational metadata only. Never attach provider payloads or error text. */
 export interface ChatGptModelDiscoveryDiagnostic {

@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MODEL_CONTEXT_FIELDS, normalizeModelContext } from '@chatgpt-to-claude/chatgpt-backend';
+import { modelContextView, projectModelContext, type ModelContextView } from './model-context.js';
 import type {
   ChatGptBackendClient,
   ChatGptBackendRequestContext,
@@ -60,6 +62,7 @@ export interface AliasOverlay {
 }
 
 export interface RuntimeModel extends Omit<AliasOverlay, 'capabilities'> {
+  context: ModelContextView;
   source: 'alias' | 'discovered';
   backendModel?: string;
   capabilities: ModelCapabilities;
@@ -135,6 +138,7 @@ interface AccountModelCatalog {
 /** Derived from eligible account catalogs only, never treated as provider metadata. */
 interface CatalogModel extends ChatGptDiscoveredModel {
   ultraExecutionEfforts?: string[];
+  contextAccountDependent?: true;
 }
 
 export interface ModelRegistrySnapshot {
@@ -370,6 +374,7 @@ export class ModelRegistry {
     return {
       ...cloneAlias(alias),
       capabilities,
+      context: modelContextView(discovered?.context, (discovered as CatalogModel | undefined)?.contextAccountDependent),
       source: 'alias',
       discovered: discovered ? cloneDiscoveredModel(discovered) : undefined,
       status: !alias.backendModel ? 'unbound' : discovered ? 'bound' : 'stale',
@@ -667,6 +672,7 @@ function discoveredToRuntimeModel(model: ChatGptDiscoveredModel): RuntimeModel {
     enabled: true,
     backendModel: model.id,
     capabilities: effectiveCapabilities(model),
+    context: modelContextView(model.context, (model as CatalogModel).contextAccountDependent),
     defaults: normalizeDefaults(undefined),
     effective_defaults: effective.defaults,
     configuration_issues: effective.issues,
@@ -690,6 +696,14 @@ function mergeDiscoveredCatalogs(catalogs: ChatGptDiscoveredModel[][]): ChatGptD
 
 function mergeDiscoveredModels(models: ChatGptDiscoveredModel[]): CatalogModel {
   const first = models[0];
+  const contexts = models.map((model) => normalizeModelContext(model.context));
+  const context: NonNullable<ChatGptDiscoveredModel['context']> = {};
+  let contextAccountDependent = false;
+  for (const field of MODEL_CONTEXT_FIELDS) {
+    const values = new Set(contexts.map((value) => value?.[field]));
+    if (values.size > 1) contextAccountDependent = true;
+    else if (contexts[0]?.[field] !== undefined) context[field] = contexts[0][field];
+  }
   const controls = models.map((model) => model.controls);
   const knownControls = controls.filter((control): control is ChatGptModelControlCapabilities => control !== undefined);
   const reasoningOptions = uniqueBy(
@@ -710,6 +724,8 @@ function mergeDiscoveredModels(models: ChatGptDiscoveredModel[]): CatalogModel {
     .map((model) => resolveReasoningExecution(model, 'ultra')!.effort));
   return {
     id: first.id,
+    ...(Object.keys(context).length ? { context } : {}),
+    ...(contextAccountDependent ? { contextAccountDependent: true as const } : {}),
     ...(ultraExecutionEfforts.length ? { ultraExecutionEfforts } : {}),
     ...(first.displayName ? { displayName: first.displayName } : {}),
     ...(first.capabilities ? { capabilities: { ...first.capabilities } } : {}),
@@ -778,11 +794,11 @@ function cloneAccountCatalog(catalog: AccountModelCatalog): AccountModelCatalog 
 
 function cloneAliases(aliases: AliasOverlay[]): AliasOverlay[] { return aliases.map(cloneAlias); }
 function cloneAlias(alias: AliasOverlay): AliasOverlay { return { ...alias, capabilities: cloneCapabilities(alias.capabilities), defaults: { ...alias.defaults } }; }
-function cloneRuntimeModel(model: RuntimeModel): RuntimeModel { return { ...model, capabilities: cloneCapabilities(model.capabilities), defaults: { ...model.defaults }, effective_defaults: { ...model.effective_defaults }, configuration_issues: [...model.configuration_issues], discovered: model.discovered ? cloneDiscoveredModel(model.discovered) : undefined }; }
+function cloneRuntimeModel(model: RuntimeModel): RuntimeModel { return { ...model, context: projectModelContext(model.context), capabilities: cloneCapabilities(model.capabilities), defaults: { ...model.defaults }, effective_defaults: { ...model.effective_defaults }, configuration_issues: [...model.configuration_issues], discovered: model.discovered ? cloneDiscoveredModel(model.discovered) : undefined }; }
 function cloneCapabilities(value: ModelCapabilities): ModelCapabilities { return { ...value, ...(value.ultra_execution ? { ultra_execution: { ...value.ultra_execution } } : {}), reasoning_effort: [...value.reasoning_effort], reasoning_effort_options: value.reasoning_effort_options.map((option) => ({ ...option })), response_speed: [...value.response_speed], service_tiers: cloneServiceOptions(value.service_tiers), metadata_status: { ...value.metadata_status } }; }
 function cloneServiceOptions(options: ChatGptServiceTierOption[]): ChatGptServiceTierOption[] { return options.map((option) => ({ ...option })); }
 function cloneDiscoveredModels(models: ChatGptDiscoveredModel[]): ChatGptDiscoveredModel[] { return models.map(cloneDiscoveredModel); }
-function cloneDiscoveredModel(model: ChatGptDiscoveredModel): ChatGptDiscoveredModel { return { ...model, capabilities: model.capabilities ? { ...model.capabilities } : undefined, controls: model.controls ? { reasoning: { ...model.controls.reasoning, supported: model.controls.reasoning.supported.map((option) => ({ ...option })) }, serviceTier: { ...model.controls.serviceTier, supported: cloneServiceOptions(model.controls.serviceTier.supported) } } : undefined }; }
+function cloneDiscoveredModel(model: ChatGptDiscoveredModel): ChatGptDiscoveredModel { return { ...model, ...(model.context ? { context: normalizeModelContext(model.context) } : {}), capabilities: model.capabilities ? { ...model.capabilities } : undefined, controls: model.controls ? { reasoning: { ...model.controls.reasoning, supported: model.controls.reasoning.supported.map((option) => ({ ...option })) }, serviceTier: { ...model.controls.serviceTier, supported: cloneServiceOptions(model.controls.serviceTier.supported) } } : undefined }; }
 function unique<T>(value: T, index: number, list: T[]): boolean { return list.indexOf(value) === index; }
 function readNonEmptyString(value: unknown, label: string): string { if (typeof value === 'string' && value.trim()) return value.trim(); throw new Error(`Invalid model alias overlay config at ${label}: expected a non-empty string.`); }
 function readOptionalString(value: unknown): string | undefined { return typeof value === 'string' && value.trim() ? value.trim() : undefined; }

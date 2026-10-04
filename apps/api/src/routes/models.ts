@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { projectModelContext, type ModelContextView } from '../services/model-context.js';
 import type { EffectiveModelDefaults, ModelCapabilities, ModelDefaults, ModelRegistry, RuntimeModel } from '../services/model-registry.js';
 import type { ChatGptModelControlCapabilities, ChatGptReasoningLevelOption, ChatGptServiceTierOption } from '@chatgpt-to-claude/chatgpt-backend';
 
@@ -23,6 +24,7 @@ export interface PublicDiscoveredModel {
 }
 
 export interface PublicModel {
+  context: ModelContextView;
   id: string;
   type: 'model';
   display_name: string;
@@ -59,6 +61,7 @@ export function projectPublicModel(model: RuntimeModel): PublicModel {
     enabled: model.enabled,
     defaults: { reasoning_effort: model.defaults.reasoning_effort, speed: model.defaults.speed },
     source: model.source,
+    context: projectModelContext(model.context),
     capabilities: {
       reasoning_effort: [...capabilities.reasoning_effort],
       reasoning_effort_options: capabilities.reasoning_effort_options.map(projectPublicReasoningOption),

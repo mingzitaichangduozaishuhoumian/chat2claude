@@ -14,6 +14,49 @@ afterEach(() => {
 });
 
 describe('AdminOperationalState', () => {
+  it('roundtrips explicit provider context metadata without raw extensions or invented defaults', async () => {
+    const path = statePath();
+    const identity = { accountId: 'context-account', createdAt: '2026-10-04T00:00:00.000Z' };
+    const models: ChatGptDiscoveredModel[] = [
+      { id: 'known', context: { contextWindow: 270_000, maxContextWindow: 1_050_000, effectiveContextWindowPercent: 95, autoCompactTokenLimit: 250_000 } },
+      { id: 'partial', context: { maxContextWindow: 640_000 } },
+      { id: 'unknown' },
+    ];
+    const state = new AdminOperationalState({ path });
+    const input = structuredClone(models);
+    Object.assign(input[0].context!, { privateExtension: 'CONTEXT_PRIVATE_CANARY' });
+    state.setDiscoveredModels(identity, input);
+    input[0].context!.contextWindow = 1;
+    state.snapshot().accounts[0].discoveredModels[0].context!.contextWindow = 2;
+    await state.dispose();
+    const restored = new AdminOperationalState({ path });
+    expect(restored.hydrate()).toBe(true);
+    expect(restored.snapshot().accounts[0].discoveredModels).toEqual(models);
+    expect(readFileSync(path, 'utf8')).not.toContain('CONTEXT_PRIVATE_CANARY');
+    await restored.dispose();
+  });
+
+  it.each([
+    ['contextWindow', 0], ['contextWindow', '270000'], ['maxContextWindow', -1],
+    ['maxContextWindow', Number.MAX_SAFE_INTEGER + 1], ['effectiveContextWindowPercent', 101],
+    ['effectiveContextWindowPercent', 95.5], ['autoCompactTokenLimit', null],
+  ])('rejects malformed context %s at write and hydration boundaries', async (field, value) => {
+    const path = statePath();
+    const identity = { accountId: 'context-account', createdAt: '2026-10-04T00:00:00.000Z' };
+    const state = new AdminOperationalState({ path });
+    state.setDiscoveredModels(identity, [{ id: 'model', context: { contextWindow: 123_456 } }]);
+    const malformed = { id: 'model', context: { [field]: value } } as ChatGptDiscoveredModel;
+    expect(() => state.setDiscoveredModels(identity, [malformed])).toThrow(field);
+    expect(state.snapshot().accounts[0].discoveredModels[0].context).toEqual({ contextWindow: 123_456 });
+    await state.dispose();
+    const persisted = JSON.parse(readFileSync(path, 'utf8'));
+    persisted.accounts[0].discoveredModels[0].context[field] = value;
+    writeFileSync(path, JSON.stringify(persisted));
+    const restored = new AdminOperationalState({ path });
+    expect(() => restored.hydrate()).toThrow(field);
+    await restored.dispose();
+  });
+
   it('roundtrips versioned multi-agent controls without inventing missing efforts or persisting raw metadata', async () => {
     const path = statePath();
     const identity = { accountId: 'catalog-account', createdAt: '2026-10-01T00:00:00.000Z' };

@@ -4,10 +4,11 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@9.15.4",
+  "engines": { "node": "^22.15.0 || >=24.0.0" },
   "scripts": {
     "start": "corepack pnpm build && corepack pnpm --filter @chatgpt-to-claude/api start",
     "setup": "corepack pnpm install",
-    "check": "corepack pnpm test && corepack pnpm build && corepack pnpm typecheck",
+    "check": "corepack pnpm build && corepack pnpm test && corepack pnpm typecheck",
     "dev": "corepack pnpm build && corepack pnpm --filter @chatgpt-to-claude/api dev",
     "build": "corepack pnpm -r build",
     "test": "vitest run",

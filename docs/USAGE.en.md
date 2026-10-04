@@ -324,6 +324,14 @@ The backend model list is not a static source-code table:
 
 The Backend Model choices in Admin come from the current discovery catalog. Professional mode also exposes the target model's reasoning-effort and service-tier metadata. When metadata is unknown, the service does not assume that every control is supported. An explicit unsupported `reasoning_effort` or service tier returns HTTP 400 instead of being silently rewritten.
 
+### Model context windows
+
+Model mappings show the target model's **catalog default window** and **maximum window**, updating when the target changes. Professional mode also shows the catalog's usable percentage, estimated usable token budgets for the default and maximum windows separately, and the compaction threshold when provided. The full model catalog on each account card shows that account's specific windows.
+
+These values come from account catalogs; they do not imply that a client or active session already uses those settings. Missing values remain unknown. When accounts disagree or some accounts omit a field, the page marks the model as account-dependent and shows only values shared by every candidate account. Refreshing account catalogs updates and persists this information.
+
+`/v1/models` and Admin model endpoints expose a `context` object with `metadata_status` (`known`, `unknown`, or `account_dependent`) and the provided `context_window`, `max_context_window`, `effective_context_window_percent`, and `auto_compact_token_limit` fields. The service never infers limits from model names.
+
 ### Reasoning efforts and Ultra proactive collaboration
 
 Claude uses `output_config.effort` before `reasoning_effort`; Chat Completions uses `reasoning_effort`; Responses uses `reasoning.effort` before `reasoning_effort`. Values are checked against the selected account's model catalog, with the same rules for streaming and non-streaming requests.

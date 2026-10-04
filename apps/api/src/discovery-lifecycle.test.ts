@@ -34,6 +34,28 @@ function fixture() {
 }
 
 describe('discovery lifecycle stages 3–5', () => {
+  it('projects discovered context windows into model and account admin views', async () => {
+    const f = fixture();
+    f.backend.discoverModels = async () => ({ status: 'success', models: [
+      { id: 'synthetic-alpha', context: { contextWindow: 270_000, maxContextWindow: 1_050_000, effectiveContextWindowPercent: 95, autoCompactTokenLimit: 250_000 }, raw: { secret: 'CONTEXT_PRIVATE_CANARY' } },
+      { id: 'synthetic-unknown' },
+    ] });
+    const view = { metadata_status: 'known', context_window: 270_000, max_context_window: 1_050_000, effective_context_window_percent: 95, auto_compact_token_limit: 250_000 };
+    const refreshed = await (await f.route.request('/admin/api/models/refresh', { method: 'POST' })).json();
+    expect(refreshed).toMatchObject({ discovered: [
+      { id: 'synthetic-alpha', context: view }, { id: 'synthetic-unknown', context: { metadata_status: 'unknown' } },
+    ] });
+    const models = await (await f.route.request('/admin/api/models')).json();
+    expect(models).toMatchObject({ discovered: [
+      { id: 'synthetic-alpha', context: view }, { id: 'synthetic-unknown', context: { metadata_status: 'unknown' } },
+    ] });
+    const accounts = await (await f.route.request('/admin/api/accounts')).json();
+    expect(accounts).toMatchObject({ accounts: [{ discoveredModels: [
+      { id: 'synthetic-alpha', context: view }, { id: 'synthetic-unknown', context: { metadata_status: 'unknown' } },
+    ] }] });
+    expect(JSON.stringify([models, accounts])).not.toContain('CONTEXT_PRIVATE_CANARY');
+  });
+
   it('retains catalog and quota after parser failure, accepts partial and explicit empty, and isolates routing', async () => {
     const f = fixture();
     await f.route.request('/admin/api/quotas/synthetic-account/refresh', { method: 'POST' });

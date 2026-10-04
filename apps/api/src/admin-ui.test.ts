@@ -301,6 +301,26 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     await app.dispose();
   });
 
+  it('shows each account model catalog window so differing accounts can be compared', () => {
+    const accounts = [
+      account({ id: 'first', discoveredModels: [{ id: 'shared-model', context: { metadata_status: 'known', context_window: 272_000, max_context_window: 1_050_000 } }] }),
+      account({ id: 'second', discoveredModels: [{ id: 'shared-model', context: { metadata_status: 'known', context_window: 128_000 } }] }),
+    ];
+    const browserRender = new Function(`${adminPageViewSource()}\nreturn renderAccountCards;`)();
+    for (const locale of ['zh-CN', 'en'] as const) {
+      const html = renderAccountCards(accounts, locale);
+      expect(browserRender(accounts, locale)).toBe(html);
+      const first = html.match(/data-account-id="first"[\s\S]*?<\/article>/)?.[0];
+      const second = html.match(/data-account-id="second"[\s\S]*?<\/article>/)?.[0];
+      expect(first).toContain('272,000 tokens');
+      expect(first).toContain('1,050,000 tokens');
+      expect(second).toContain('128,000 tokens');
+      expect(second).not.toContain('1,050,000');
+      expect(second).toContain(locale === 'en' ? 'Maximum window: Unknown' : '最大窗口：未知');
+      expect(first).toContain(locale === 'en' ? 'Catalog default window:' : '目录默认窗口：');
+    }
+  });
+
   it('renders account fixtures for empty, healthy, disabled, error, multiple, and long-text states', () => {
     expect(renderAccountCards([])).toContain('尚未添加 ChatGPT 账号');
 

@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import * as nodeFs from 'node:fs';
 import { dirname } from 'node:path';
+import { MODEL_CONTEXT_FIELDS, normalizeModelContext, type ChatGptModelContextMetadata } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptDiscoveredModel, ChatGptModelControlCapabilities, ChatGptQuotaWindow, ChatGptReasoningLevelOption, ChatGptServiceTierOption } from '@chatgpt-to-claude/chatgpt-backend';
 
 import type { ChatGptModelDiscoveryResult } from '@chatgpt-to-claude/chatgpt-backend';
@@ -476,7 +477,7 @@ function sanitizeDiscoveredModels(models: ChatGptDiscoveredModel[]): ChatGptDisc
 function validateDiscoveredModels(value: unknown, label: string): ChatGptDiscoveredModel[] {
   if (!Array.isArray(value)) throw invalid(`${label} must be an array`);
   const models = value.map((model, index) => {
-    const raw = strictObject(model, ['id', 'displayName', 'controls'], `${label}[${index}]`, ['displayName', 'controls']);
+    const raw = strictObject(model, ['id', 'displayName', 'controls', 'context'], `${label}[${index}]`, ['displayName', 'controls', 'context']);
     return sanitizeDiscoveredModel(raw as unknown as ChatGptDiscoveredModel, `${label}[${index}]`, true);
   });
   if (new Set(models.map((model) => model.id)).size !== models.length) throw invalid(`${label} contains duplicate ids`);
@@ -487,7 +488,17 @@ function sanitizeDiscoveredModel(model: ChatGptDiscoveredModel, label: string, p
   const id = nonEmptyString(model.id, `${label}.id`);
   const displayName = model.displayName === undefined ? undefined : nonEmptyString(model.displayName, `${label}.displayName`);
   const controls = model.controls === undefined ? undefined : sanitizeModelControls(model.controls, `${label}.controls`, persisted);
-  return { id, ...(displayName ? { displayName } : {}), ...(controls ? { controls } : {}) };
+  const context = model.context === undefined ? undefined : sanitizeModelContext(model.context, `${label}.context`, persisted);
+  return { id, ...(displayName ? { displayName } : {}), ...(controls ? { controls } : {}), ...(context ? { context } : {}) };
+}
+
+function sanitizeModelContext(value: unknown, label: string, persisted: boolean): ChatGptModelContextMetadata {
+  const raw = persisted ? strictObject(value, [...MODEL_CONTEXT_FIELDS], label, [...MODEL_CONTEXT_FIELDS]) : objectValue(value, label);
+  const context = normalizeModelContext(raw) ?? {};
+  for (const field of MODEL_CONTEXT_FIELDS) {
+    if (raw[field] !== undefined && context[field] === undefined) throw invalid(`${label}.${field} must be a positive safe integer${field === 'effectiveContextWindowPercent' ? ' no greater than 100' : ''}`);
+  }
+  return context;
 }
 
 function sanitizeModelControls(value: ChatGptModelControlCapabilities, label: string, persisted: boolean): ChatGptModelControlCapabilities {

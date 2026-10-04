@@ -1,4 +1,5 @@
 import { presentPlan } from '../services/plan-presentation.js';
+import { modelContextView } from '../services/model-context.js';
 import { Hono } from 'hono';
 import { ChatGptBackendError, type ChatGptBackendClient, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 import type { ReasoningEffort, SpeedPreference } from '@chatgpt-to-claude/protocol-mapper';
@@ -343,7 +344,7 @@ function accountsWithRequestStats(options: AdminRouteOptions, quotaService?: Acc
       discoveryMessage: discoveryMessage(operational?.discovery ?? unknownDiscovery(), discoveredModels.length),
       plan: presentPlan(quotas.find((quota) => quota.accountId === account.id && quota.createdAt === account.createdAt) ?? operational?.quotaCache, account.planType),
       modelCount: discoveredModels.length,
-      discoveredModels: discoveredModels.map((model) => ({ id: model.id, ...(model.displayName ? { displayName: model.displayName } : {}) })),
+      discoveredModels: discoveredModels.map((model) => ({ id: model.id, ...(model.displayName ? { displayName: model.displayName } : {}), context: modelContextView(model.context) })),
     };
   });
 }

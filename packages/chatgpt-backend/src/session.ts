@@ -5,6 +5,7 @@ import type { ChatGptSafeStatus, ChatGptStreamEvent } from './events.js';
 import { ChatGptBackendError, sanitizeBackendDiagnostic, type ChatGptBackendErrorCode, type ChatGptSafeDiagnostic } from './errors.js';
 import { ResponsesToolCalls } from './responses-tools.js';
 import { resolveSessionReasoningExecution } from './reasoning-execution.js';
+import { normalizeModelContext } from './model-context.js';
 import { parseResponsesReplayItem, RESPONSES_INPUT_REPLAY_LIMITS, ResponsesReplay, ResponsesReplayBudget, validateImageGenerationCallLifecycle } from './responses-replay.js';
 
 export interface SessionChatGptBackendOptions {
@@ -941,11 +942,19 @@ function normalizeDiscoveredModel(value: unknown): ChatGptDiscoveredModel | unde
   if (!id) return undefined;
   const displayName = readNonEmptyString(raw.display_name) ?? readNonEmptyString(raw.displayName) ?? readNonEmptyString(raw.title) ?? readNonEmptyString(raw.name);
   const capabilities = isPlainObject(raw.capabilities) ? { ...raw.capabilities } : undefined;
+  const sources = [raw, capabilities].filter((source): source is JsonObject => Boolean(source));
+  const context = normalizeModelContext({
+    contextWindow: firstDefined(sources, ['context_window', 'contextWindow']),
+    maxContextWindow: firstDefined(sources, ['max_context_window', 'maxContextWindow']),
+    effectiveContextWindowPercent: firstDefined(sources, ['effective_context_window_percent', 'effectiveContextWindowPercent']),
+    autoCompactTokenLimit: firstDefined(sources, ['auto_compact_token_limit', 'autoCompactTokenLimit']),
+  });
   return {
     id,
     displayName,
     capabilities,
     controls: normalizeModelControls(raw, capabilities),
+    ...(context ? { context } : {}),
     raw,
   };
 }

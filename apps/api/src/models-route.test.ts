@@ -7,6 +7,7 @@ function runtimeModel(): RuntimeModel {
     id: 'sonnet', type: 'model', display_name: 'Sonnet', builtIn: true, enabled: true,
     backendModel: 'astra', defaults: { reasoning_effort: 'ultra', speed: 'standard' },
     source: 'alias', status: 'bound',
+    context: { metadata_status: 'unknown' },
     effective_defaults: { reasoning_effort: 'ultra', upstream_reasoning_effort: 'xhigh', delegation: 'caller_tools', reasoning_source: 'alias', service_tier_source: 'omit' },
     configuration_issues: [],
     discovered: {

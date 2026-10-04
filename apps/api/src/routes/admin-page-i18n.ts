@@ -3,6 +3,16 @@ export type AdminLocale = 'zh-CN' | 'en';
 // Source-language keys keep copy shared by SSR, browser renderers and feedback.
 // Protocol identifiers and provider payloads are not translation keys.
 export const ADMIN_MESSAGES: Record<string, string> = {
+  '目录默认窗口：{0}': 'Catalog default window: {0}',
+  '最大窗口：{0}': 'Maximum window: {0}',
+  '窗口信息依账号而异': 'Window metadata varies by account',
+  '窗口来自上游模型目录，不代表客户端或当前会话的实际配置。': 'Windows come from the upstream model catalog and do not describe the actual client or current session configuration.',
+  '仅显示各账号一致的值；其他窗口信息取决于所选账号的目录，也可能未知。': 'Only values shared by all accounts are shown; other window metadata depends on the selected account catalog and may be unknown.',
+  '目录有效比例：{0}%': 'Catalog effective percentage: {0}%',
+  '默认窗口有效预算（估算）：{0}（默认窗口 × {1}%）': 'Default-window effective budget (estimated): {0} (default window × {1}%)',
+  '最大窗口有效预算（估算）：{0}（最大窗口 × {1}%）': 'Maximum-window effective budget (estimated): {0} (maximum window × {1}%)',
+  '目录自动压缩阈值：{0}': 'Catalog auto-compaction threshold: {0}',
+  '自动压缩是否启用由客户端决定。': 'The client decides whether auto-compaction is enabled.',
   '上游套餐': 'Provider plan',
   '套餐未知': 'Plan unknown',
   '套餐来自陈旧观察': 'Plan from a stale observation',

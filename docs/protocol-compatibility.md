@@ -69,13 +69,14 @@ Use a Runtime API Key for all client smokes; do not use an Admin API Key as a no
 
 Native Responses preserves message IDs, text/refusal content, and the order of the safe output projection. Added-item and added-content events use consecutive indexes for SDK compatibility. When preceding output items or content parts cannot yet be projected safely, affected text is buffered until the completed snapshot supplies their order. A validated encrypted reasoning prefix can be published before live message text. Claude and Chat Completions continue to expose text/refusal deltas directly.
 
-Function-call argument strings are retained for Chat Completions, native Responses, and Claude streaming JSON deltas. Replay matching and tool snapshot validation compare numeric tokens without rounding through JavaScript numbers. Comparisons accept at most 64 levels of nesting; number tokens with exponents longer than 128 digits require identical spelling and may conservatively reject reformatted snapshots. Claude non-streaming `tool_use.input` remains a JavaScript object, so its numeric values have JavaScript precision limits; use string fields in tool schemas for identifiers or decimal values that require exact preservation.
+Function-call argument strings are retained for Chat Completions, native Responses, and Claude streaming JSON deltas. Replay matching and tool snapshot validation compare numeric tokens without rounding through JavaScript numbers. Comparisons accept at most 64 levels of nesting; number tokens with exponents longer than 128 digits require identical spelling and may conservatively reject reformatted snapshots. Claude non-streaming `tool_use.input` also preserves upstream numeric values in HTTP JSON: numbers that would lose precision use native raw JSON primitives, while ordinary values remain normal JavaScript values. This requires Node.js 22.15.0 or a supported newer runtime with `JSON.rawJSON` and JSON parser source context; missing capabilities return a clear error. A client that parses the result into floating-point numbers can still lose precision, and values already rounded by a custom backend without the original argument string cannot be recovered.
 
 ## ChatGPT/Codex backend
 
 | Manifest feature | Status | Notes |
 | --- | --- | --- |
 | `dynamic_model_discovery` | `supported` | Backend model catalogs are discovered dynamically. |
+| `context_window_metadata` | `backend_dependent` | Catalog limits are shown without inferred defaults; missing or conflicting account values remain unknown or account-dependent. |
 | `oauth_authorization_and_text_completion` | `partial` | Implemented with backend-dependent upstream availability. |
 | `reasoning_and_speed_selection` | `backend_dependent` | Ordinary effort values are preserved; Ultra resolves a base effort and encourages delegation through caller-supplied tools. Provider and client support determine execution. |
 | `image_generation_output` | `backend_dependent` | Safe image-generation output fields are mapped for OpenAI Responses only when supplied by the upstream backend. |

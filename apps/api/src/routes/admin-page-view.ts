@@ -4,6 +4,7 @@ import { discoveryMessage as sharedDiscoveryMessage, unknownDiscovery as sharedU
 import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptQuotaWindow } from '@chatgpt-to-claude/chatgpt-backend';
 import type { AccountView } from '../services/account-pool.js';
 import type { AccountQuotaResult } from '../services/account-quota-service.js';
+import type { ModelContextView } from '../services/model-context.js';
 
 // Local bindings keep serialized renderer functions independent of module-loader aliases.
 const localizeAdminMarkup = sharedLocalizeAdminMarkup;
@@ -26,7 +27,7 @@ export interface AdminAccountView extends AccountView {
   modelCount: number;
   plan?: PlanPresentation;
   discovery?: ModelDiscoveryState;
-  discoveredModels: Array<{ id: string; displayName?: string }>;
+  discoveredModels: Array<{ id: string; displayName?: string; context?: ModelContextView }>;
 }
 
 export function renderAccountCards(accounts: AdminAccountView[], locale: AdminLocale = 'zh-CN'): string {
@@ -100,12 +101,23 @@ function numberHtml(value: number): string {
   return `<span data-admin-number="${value}">${value}</span>`;
 }
 
+function modelContextTokenText(value: number | undefined): string {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value.toLocaleString('en-US') + ' tokens' : '未知';
+}
+
+function modelContextSummary(metadata: ModelContextView | undefined): string[] {
+  const context = metadata && ['known', 'account_dependent'].includes(metadata.metadata_status) ? metadata : undefined;
+  const summary = ['目录默认窗口：' + modelContextTokenText(context?.context_window), '最大窗口：' + modelContextTokenText(context?.max_context_window)];
+  if (metadata?.metadata_status === 'account_dependent') summary.push('窗口信息依账号而异');
+  return summary;
+}
+
 function renderAccountCard(account: AdminAccountView): string {
   const stats = account.requestStats;
   const identity = account.email || account.label;
   const health = accountHealth(account);
   const modelItems = account.discoveredModels.length
-    ? account.discoveredModels.map((model) => `<li><code>${esc(model.id)}</code>${model.displayName && model.displayName !== model.id ? `<span data-i18n-ignore>${esc(model.displayName)}</span>` : ''}</li>`).join('')
+    ? account.discoveredModels.map((model) => `<li><div><code>${esc(model.id)}</code>${model.displayName && model.displayName !== model.id ? ` <span data-i18n-ignore>${esc(model.displayName)}</span>` : ''}</div><div class="muted" title="窗口来自上游模型目录，不代表客户端或当前会话的实际配置。">${modelContextSummary(model.context).map((part) => `<div>${esc(part)}</div>`).join('')}</div></li>`).join('')
     : '<li class="muted">尚未发现动态模型</li>';
   return `<article class="account-card" data-account-id="${esc(account.id)}">
     <header class="card-header"><div class="identity"><span class="eyebrow">${esc(account.provider === 'chatgpt-session' ? 'ChatGPT Account' : 'Mock Account')}</span><h3 data-i18n-ignore>${esc(account.label)}</h3><p class="wrap-anywhere" data-i18n-ignore>${esc(identity)}</p></div><span class="state-badge ${health.tone}">${esc(health.label)}</span></header>
@@ -267,7 +279,7 @@ function esc(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char);
 }
 
-const browserFunctions = [renderAdminOverview, renderRequestInspector, timeHtml, numberHtml, presentPlan, planPresentationText, discoveryMessage, unknownDiscovery, renderAccountCards, renderQuotaCards, renderAccountCard, renderQuotaCard, renderResetCredits, renderAdditionalLimit, renderMeter, renderUnavailable, accountHealth, quotaState, allowanceText, validPercent, formatPercent, formatDuration, formatTime, relativeReset, relativeSeconds, esc];
+const browserFunctions = [renderAdminOverview, renderRequestInspector, timeHtml, numberHtml, presentPlan, planPresentationText, discoveryMessage, unknownDiscovery, renderAccountCards, renderQuotaCards, renderAccountCard, modelContextSummary, modelContextTokenText, renderQuotaCard, renderResetCredits, renderAdditionalLimit, renderMeter, renderUnavailable, accountHealth, quotaState, allowanceText, validPercent, formatPercent, formatDuration, formatTime, relativeReset, relativeSeconds, esc];
 
 export function adminPageViewSource(): string {
   return adminPageI18nSource() + '\n' + browserFunctions.map((fn) => fn.toString()).join('\n');

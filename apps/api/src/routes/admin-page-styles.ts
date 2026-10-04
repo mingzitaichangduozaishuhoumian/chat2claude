@@ -161,6 +161,13 @@ summary { cursor: pointer; font-weight: 800; min-height: 44px; padding: 8px 0; }
 table { width: 100%; min-width: 780px; border-collapse: collapse; font-size: 13px; }
 th, td { border-bottom: 1px solid var(--line); padding: 10px; text-align: left; vertical-align: top; }
 th { color: var(--ink-soft); background: var(--surface-muted); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+[data-admin-mode="professional"] .model-mapping-panel th:nth-child(1), [data-admin-mode="professional"] .model-mapping-panel td:nth-child(1) { min-width: 96px; white-space: nowrap; }
+[data-admin-mode="professional"] .model-mapping-panel th:nth-child(2), [data-admin-mode="professional"] .model-mapping-panel td:nth-child(2) { min-width: 260px; }
+[data-admin-mode="professional"] .model-mapping-panel th:nth-child(3), [data-admin-mode="professional"] .model-mapping-panel td:nth-child(3) { min-width: 88px; white-space: nowrap; }
+[data-admin-mode="professional"] .model-mapping-panel th:nth-child(4) { min-width: 64px; white-space: nowrap; }
+[data-admin-mode="professional"] .model-mapping-panel th:nth-child(5), [data-admin-mode="professional"] .model-mapping-panel td:nth-child(5) { min-width: 320px; }
+[data-admin-mode="professional"] .model-mapping-panel th:last-child, [data-admin-mode="professional"] .model-mapping-panel td:last-child { min-width: 104px; white-space: nowrap; }
+[data-admin-mode="professional"] .model-mapping-panel td button { white-space: nowrap; }
 [data-admin-mode="simple"] .model-mapping-panel table { min-width: 0; table-layout: fixed; }
 [data-admin-mode="simple"] .model-mapping-panel th, [data-admin-mode="simple"] .model-mapping-panel td { padding: 8px 6px; overflow-wrap: anywhere; }
 [data-admin-mode="simple"] .model-mapping-panel th:nth-child(1) { width: 24%; }
