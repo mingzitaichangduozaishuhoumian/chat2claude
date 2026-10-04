@@ -490,6 +490,7 @@ curl http://127.0.0.1:3000/v1/messages \
 | 地址出现重复 `/v1` | `ANTHROPIC_BASE_URL` 错误地包含 `/v1`；改为服务根 origin。 |
 | `message.role must be user or assistant` | Claude Messages 的 `messages` 只使用 `user`/`assistant`；系统提示放顶层 `system`。不要把 Claude 请求发到 OpenAI 兼容路径。 |
 | alias 未绑定、stale 或 disabled | 在模型映射刷新 discovery，选择当前存在的 backend model，启用 alias 并保存。 |
+| 刷新成功但缺少新模型 | 专业模式查看 discovery 的 `clientVersion`；上游可能按客户端版本返回目录。升级服务，移除或更新旧的 `CODEX_CLIENT_VERSION` 覆盖值，然后重启并刷新账号模型。当前兼容基线为 `0.160.0`。 |
 | OAuth callback 无法连接 localhost | 复制完整 callback URL，粘贴到账号与授权页面提交；服务会校验 redirect URI、state 和参数。 |
 | 配额显示未知或陈旧 | 这是 provider 返回状态的真实表示；按账号或全部刷新，不能把未知当作 0%。 |
 | 重启后页面不记得模式/语言 | 模式和语言只记在当前浏览器 localStorage；换浏览器、清除站点存储或隐私模式会恢复默认。 |

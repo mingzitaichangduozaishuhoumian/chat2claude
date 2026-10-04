@@ -1,4 +1,4 @@
-import { ChatGptBackendError, CODEX_ORIGINATOR, normalizeCodexClientVersion, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptModelDiscoveryDiagnostic, type ChatGptModelDiscoveryResult } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, CODEX_ORIGINATOR, normalizeCodexClientVersion, normalizeMultiAgentMetadata, type ChatGptBackendClient, type ChatGptBackendRequestContext, type ChatGptDiscoveredModel, type ChatGptModelDiscoveryDiagnostic, type ChatGptModelDiscoveryResult } from '@chatgpt-to-claude/chatgpt-backend';
 
 export interface ModelDiscoveryState {
   status: 'unknown' | 'success' | 'empty' | 'partial' | 'error';
@@ -17,10 +17,24 @@ export function unknownDiscovery(): ModelDiscoveryState {
 export async function discoverAccountModels(backend: ChatGptBackendClient, context: ChatGptBackendRequestContext): Promise<ChatGptModelDiscoveryResult> {
   if (backend.discoverModels) {
     const result = await backend.discoverModels(context);
-    return { status: result.status, models: result.models, ...(result.diagnostic ? { diagnostic: safeDiscoveryDiagnostic(result.diagnostic) } : {}) };
+    return { status: result.status, models: result.models.map(normalizeOptionalMultiAgentMetadata), ...(result.diagnostic ? { diagnostic: safeDiscoveryDiagnostic(result.diagnostic) } : {}) };
   }
-  const models = await backend.listModels(context);
+  const models = (await backend.listModels(context)).map(normalizeOptionalMultiAgentMetadata);
   return { models, status: models.length ? 'success' : 'unknown' };
+}
+
+/** Keep optional metadata identical before the registry and persistence receive it. */
+function normalizeOptionalMultiAgentMetadata(model: ChatGptDiscoveredModel): ChatGptDiscoveredModel {
+  if (model.controls?.reasoning.multiAgent === undefined) return model;
+  const { multiAgent, ...reasoning } = model.controls.reasoning;
+  const normalized = normalizeMultiAgentMetadata(multiAgent);
+  return {
+    ...model,
+    controls: {
+      ...model.controls,
+      reasoning: { ...reasoning, ...(normalized === undefined ? {} : { multiAgent: normalized }) },
+    },
+  };
 }
 
 export function discoveryFailure(error: unknown): Pick<ModelDiscoveryState, 'error' | 'diagnostic'> {

@@ -414,7 +414,7 @@ function bindAccountActions() {
   document.querySelectorAll('[data-account-toggle]').forEach((button) => button.addEventListener('click', async () => {
     await withPendingButton(button, button.textContent, async () => {
       const enabled = button.dataset.enabled !== 'true';
-      const body = await patchJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.accountToggle), { enabled }); renderResult(body); await loadAccounts();
+      const body = await patchJson('/admin/api/accounts/' + encodeURIComponent(button.dataset.accountToggle), { enabled }); renderResult(body); await Promise.all([loadAccounts(), loadModels()]);
     });
   }));
   document.querySelectorAll('[data-account-settings]').forEach((button) => button.addEventListener('click', () => { document.querySelector('[data-account-settings-form="' + CSS.escape(button.dataset.accountSettings) + '"]').hidden = false; }));

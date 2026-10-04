@@ -70,6 +70,36 @@ describe('Admin mutation feedback', () => {
     expect(actions.button.disabled).toBe(false);
   });
 
+  it.each(['true', 'false'])('refreshes models and accounts after changing account enabled=%s', async (enabled) => {
+    let click!: () => Promise<void>;
+    const button = { disabled: false, textContent: 'Toggle', dataset: { accountToggle: 'fixture', enabled },
+      addEventListener: (_event: string, callback: typeof click) => { click = callback; },
+    };
+    const document = { querySelectorAll: (selector: string) => selector === '[data-account-toggle]' ? [button] : [] };
+    let finishPatch!: (value: unknown) => void;
+    const patchJson = vi.fn(() => new Promise((resolve) => { finishPatch = resolve; }));
+    const renderResult = vi.fn();
+    const loadAccounts = vi.fn(async () => {});
+    let finishModels!: () => void;
+    const loadModels = vi.fn(() => new Promise<void>((resolve) => { finishModels = resolve; }));
+    const binding = script.slice(script.indexOf('function bindAccountActions()'), script.indexOf('function updateManualAccountOptions('));
+    new Function('document', 'patchJson', 'renderResult', 'loadAccounts', 'loadModels', `${pendingHelper}\n${binding}\nbindAccountActions();`)(document, patchJson, renderResult, loadAccounts, loadModels);
+
+    const pending = click();
+    expect(button.disabled).toBe(true);
+    expect(patchJson).toHaveBeenCalledWith('/admin/api/accounts/fixture', { enabled: enabled !== 'true' });
+    expect(loadAccounts).not.toHaveBeenCalled();
+    expect(loadModels).not.toHaveBeenCalled();
+    finishPatch({ account: { enabled: enabled !== 'true' } });
+    await vi.waitFor(() => expect(loadModels).toHaveBeenCalledOnce());
+    expect(loadAccounts).toHaveBeenCalledOnce();
+    expect(button.disabled).toBe(true);
+    finishModels();
+    await pending;
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toBe('Toggle');
+  });
+
   it.each([
     ['[data-account-toggle]', 'accountToggle'],
     ['[data-account-settings-form]', 'accountSettingsForm'],

@@ -1,6 +1,6 @@
 // Protocol baseline, not this package's version. Match the current Codex CLI identity
 // used by chatgpt.com for model discovery so account catalogs are not artificially stale.
-export const DEFAULT_CODEX_CLIENT_VERSION = '0.155.0';
+export const DEFAULT_CODEX_CLIENT_VERSION = '0.160.0';
 export const CODEX_ORIGINATOR = 'codex_cli_rs';
 
 /** Strict SemVer, including official prereleases; never echo an invalid value. */

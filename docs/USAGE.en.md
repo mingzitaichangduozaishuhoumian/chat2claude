@@ -496,6 +496,7 @@ If `GET /v1/models` does not contain `sonnet`, refresh discovery in Admin and co
 | The URL contains a repeated `/v1` | `ANTHROPIC_BASE_URL` incorrectly includes `/v1`; use the service root origin. |
 | `message.role must be user or assistant` | Claude Messages `messages` may contain only `user` and `assistant`; put system instructions in the top-level `system` field. Do not send Claude Code traffic to the OpenAI-compatible route. |
 | An alias is unbound, stale, or disabled | Refresh discovery, select an available backend model, enable the alias, and save it in **Model mapping**. |
+| Discovery succeeds but new models are missing | Check discovery `clientVersion` in Professional mode; the upstream can filter its catalog by client version. Update the service, remove or update an old `CODEX_CLIENT_VERSION` override, then restart and refresh account models. The current compatibility baseline is `0.160.0`. |
 | OAuth callback cannot connect to localhost | Paste the complete callback URL into **Accounts & authorization**; the service validates its redirect URI, state, and parameters. |
 | Quota is unknown or stale | This reflects the provider response. Refresh the account or all accounts; do not interpret unknown as zero. |
 | Language or mode is forgotten after restart | Language and mode are browser-local `localStorage` preferences; another browser, cleared site storage, or private browsing restores the defaults. |

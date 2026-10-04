@@ -270,6 +270,8 @@ DATA_DIR=./data
 
 `CHATGPT_BASE_URL` 是上游 ChatGPT/Codex 地址，不是 Claude Code 的客户端 Base URL。
 
+模型目录可能受请求客户端版本控制。如果刷新成功却缺少新模型，请升级服务，并在专业模式检查 discovery 诊断中的 `clientVersion`。当前兼容基线为 `0.160.0`；可用 `CODEX_CLIENT_VERSION` 显式覆盖，旧环境变量也会覆盖更新后的默认值。修改版本后需重启服务并刷新账号模型。
+
 ## 持久化与安全
 
 默认数据目录是 `apps/api/data`，可用 `DATA_DIR` 修改。runtime state 保存账号 session、Runtime API Key 和 alias overlay；operational state 保存净化后的管理统计、discovery/cache、quota cache 和诊断信息。

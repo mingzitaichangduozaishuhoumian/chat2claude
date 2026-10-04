@@ -270,6 +270,8 @@ DATA_DIR=./data
 
 `CHATGPT_BASE_URL` is the upstream ChatGPT/Codex URL. It is not the client Base URL for Claude Code.
 
+The model catalog can depend on the requested client version. If discovery succeeds but omits new models, update the service and check `clientVersion` in the Professional-mode discovery diagnostics. The current compatibility baseline is `0.160.0`; `CODEX_CLIENT_VERSION` explicitly overrides it, including an older environment value retained after an update. Restart the service and refresh account models after changing the version.
+
 ## Persistence and secret handling
 
 The default data directory is `apps/api/data`; override it with `DATA_DIR`. Runtime state stores account sessions, Runtime API Keys, and alias overlays. Operational state stores sanitized admin statistics, discovery/cache data, quota cache, and diagnostics.

@@ -6,6 +6,7 @@ import { ChatGptBackendError, sanitizeBackendDiagnostic, type ChatGptBackendErro
 import { ResponsesToolCalls } from './responses-tools.js';
 import { resolveSessionReasoningExecution } from './reasoning-execution.js';
 import { normalizeModelContext } from './model-context.js';
+import { normalizeMultiAgentMetadata } from './multi-agent-metadata.js';
 import { parseResponsesReplayItem, RESPONSES_INPUT_REPLAY_LIMITS, ResponsesReplay, ResponsesReplayBudget, validateImageGenerationCallLifecycle } from './responses-replay.js';
 
 export interface SessionChatGptBackendOptions {
@@ -965,7 +966,7 @@ function normalizeModelControls(raw: JsonObject, capabilities: JsonObject | unde
   const defaultReasoningValue = firstDefined(sources, ['default_reasoning_level', 'defaultReasoningLevel']);
   const supportedReasoning = normalizeReasoningOptions(supportedReasoningValue);
   const defaultEffort = readNonEmptyString(defaultReasoningValue);
-  const multiAgent = firstDefined(sources, ['multi_agent_reasoning', 'multiAgentReasoning', 'multi_agent', 'multiAgent']);
+  const multiAgent = normalizeMultiAgentMetadata(firstDefined(sources, ['multi_agent_reasoning', 'multiAgentReasoning', 'multi_agent', 'multiAgent']));
   const multiAgentVersionValue = readNonEmptyString(firstDefined(sources, ['multi_agent_version', 'multiAgentVersion']));
   const multiAgentVersion = multiAgentVersionValue === 'v1' || multiAgentVersionValue === 'v2' ? multiAgentVersionValue : undefined;
   const multiAgentReasoningEffort = readNonEmptyString(firstDefined(sources, ['multi_agent_reasoning_effort', 'multiAgentReasoningEffort']));

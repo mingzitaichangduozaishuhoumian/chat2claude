@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ChatGptBackendError, type ChatGptBackendClient, type ChatGptModelDiscoveryDiagnostic, type ChatGptModelDiscoveryResult } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, SessionChatGptBackend, type ChatGptBackendClient, type ChatGptDiscoveredModel, type ChatGptModelDiscoveryDiagnostic, type ChatGptModelDiscoveryResult } from '@chatgpt-to-claude/chatgpt-backend';
 import { AdminOperationalState } from './services/admin-operational-state.js';
 import { AccountPool } from './services/account-pool.js';
 import { ModelRegistry } from './services/model-registry.js';
@@ -34,6 +34,55 @@ function fixture() {
 }
 
 describe('discovery lifecycle stages 3–5', () => {
+  it.each([
+    { label: 'boolean', metadata: true, expected: undefined },
+    { label: 'null', metadata: null, expected: undefined },
+    { label: 'invalid field', metadata: { reasoning_effort: null }, expected: undefined },
+    { label: 'mixed fields', metadata: { effort: ' xhigh ', reasoning_effort: null, supported_reasoning_levels: [' low ', null, { effort: ' max ', token: 'OPTIONAL_METADATA_CANARY' }], authorization: 'OPTIONAL_METADATA_CANARY' }, expected: { effort: 'xhigh', supported_reasoning_levels: ['low', { effort: 'max' }] } },
+  ])('keeps live, account and persisted catalogs consistent with optional multi-agent $label metadata', async ({ metadata, expected }) => {
+    for (const source of ['session', 'typed-backend', 'legacy-backend'] as const) {
+      const f = fixture();
+      f.operationalState.setDiscoveredModels(f.identity, [{ id: 'old-model' }]);
+      f.modelRegistry.replaceAccountModels(f.identity, [{ id: 'old-model' }]);
+      const candidate: ChatGptDiscoveredModel = { id: 'new-model', controls: {
+        reasoning: { metadataKnown: true, supported: [{ effort: 'low' }, { effort: 'max' }, { effort: 'ultra' }], multiAgent: metadata },
+        serviceTier: { metadataKnown: false, supported: [], fastMode: false },
+      } };
+      if (source === 'session') {
+        const session = new SessionChatGptBackend({ baseUrl: 'https://synthetic.invalid/backend-api', fetch: async () => new Response(JSON.stringify({ models: [{
+          slug: 'new-model', supported_reasoning_levels: ['low', 'max', 'ultra'], multi_agent: metadata,
+        }] }), { headers: { 'content-type': 'application/json' } }) });
+        f.backend.discoverModels = (context) => session.discoverModels(context);
+      } else if (source === 'typed-backend') {
+        f.backend.discoverModels = async () => ({ status: 'success', models: [candidate] });
+      } else {
+        delete f.backend.discoverModels;
+        f.backend.listModels = async () => [candidate];
+      }
+
+      const response = await f.route.request('/admin/api/models/refresh', { method: 'POST' });
+      expect(response.status, source).toBe(200);
+      const refreshed = await response.json();
+      expect(refreshed, source).toMatchObject({ refreshedAccounts: [{ ok: true, modelCount: 1, discovery: { status: 'success' } }] });
+      expect(refreshed, source).not.toHaveProperty('refreshedAccounts.0.warning');
+      expect(f.modelRegistry.adminView().discovered.map((model) => model.id), source).toEqual(['new-model']);
+      const live = f.modelRegistry.snapshot().accountCatalogs[0].models[0];
+      expect(live.controls?.reasoning.multiAgent, source).toEqual(expected);
+      const accounts = await (await f.route.request('/admin/api/accounts')).json();
+      expect(accounts, source).toMatchObject({ accounts: [{ modelCount: 1, discovery: { status: 'success' }, discoveredModels: [{ id: 'new-model' }] }] });
+      const operational = f.operationalState.snapshot().accounts[0];
+      expect(operational.discoveredModelIds, source).toEqual(['new-model']);
+      expect(operational.discoveredModels[0].controls?.reasoning.multiAgent, source).toEqual(expected);
+      expect(JSON.stringify([refreshed, accounts, operational]), source).not.toContain('OPTIONAL_METADATA_CANARY');
+      f.operationalState.flushSync();
+      const restored = new AdminOperationalState({ path: f.path }); states.push(restored);
+      expect(restored.hydrate(), source).toBe(true);
+      expect(restored.snapshot().accounts[0].discoveredModels, source).toEqual(operational.discoveredModels);
+      // Backend-owned catalog objects must remain untouched by API sanitization.
+      expect(candidate.controls?.reasoning.multiAgent, source).toBe(metadata);
+    }
+  });
+
   it('projects discovered context windows into model and account admin views', async () => {
     const f = fixture();
     f.backend.discoverModels = async () => ({ status: 'success', models: [
