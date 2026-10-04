@@ -113,16 +113,17 @@ dd { min-width: 0; margin: 2px 0 0; overflow-wrap: anywhere; }
 .stat-line { margin-bottom: 12px; color: var(--ink-soft); font-family: var(--font-mono); font-size: 12px; }
 .stat-line span { border-left: 2px solid var(--line-strong); padding-left: 7px; }
 [data-admin-mode="simple"] [data-professional-only], [data-admin-mode="simple"] [id="admin-key-fallback"] { display: none !important; }
-.professional-detail { margin: 12px 0; border-top: 1px dashed var(--line-strong); padding-top: 12px; }
-.model-disclosure ul { display: grid; gap: 7px; margin: 10px 0 0; padding: 0; list-style: none; }
-.model-disclosure li { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 7px; }
+.professional-detail { margin: 12px 0; }
+.account-model-groups { display: grid; gap: 8px; margin: 14px 0; }
+.model-group-count { display: inline-block; min-width: 25px; margin-left: 6px; padding: 0 6px; border: 1px solid var(--line); border-radius: 3px; font: 12px/1.6 var(--font-mono); text-align: center; color: var(--ink-soft); background: var(--surface-muted); }
+.model-chip-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.model-chip-list li { min-width: 0; max-width: 100%; border: 1px solid var(--line); padding: 6px 9px; border-radius: 3px; background: var(--surface); font-size: 13px; }
+.model-context-disclosure { margin-top: 12px; }
+.model-context-list { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.model-context-list li { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 8px; font-size: 12px; }
 .account-model-counts { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 5px; }
 .account-model-counts > span { white-space: nowrap; }
-.account-image-models { margin: 12px 0; padding: 12px; border: 1px solid var(--line); background: var(--surface); }
-.account-image-models h4 { margin: 0 0 8px; }
-.image-model-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
-.image-model-list li { display: flex; flex-wrap: wrap; gap: 10px 20px; justify-content: space-between; min-width: 0; }
-.image-model-identity, .image-model-endpoint { display: grid; gap: 4px; min-width: 0; }
+.image-model-endpoint { display: flex; flex-wrap: wrap; gap: 4px 10px; min-width: 0; margin-top: 12px; font-size: 12px; }
 .image-model-endpoint > span { color: var(--ink-soft); font-size: 12px; }
 .image-model-list code { overflow-wrap: anywhere; }
 .image-model-note, .image-model-empty { margin: 10px 0 0; font-size: 12px; }
@@ -133,6 +134,8 @@ dd { min-width: 0; margin: 2px 0 0; overflow-wrap: anywhere; }
 .model-type-endpoints { display: grid; gap: 3px; font-size: 12px; }
 .model-type-note { margin: 16px 0 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; }
 .model-mapping-note { border-left: 3px solid var(--accent); padding: 10px 12px; background: var(--accent-soft); }
+.model-discovery-help { margin: 12px 0; }
+details.panel { padding: 10px 16px; }
 .account-settings { display: grid; grid-template-columns: minmax(0, 1fr) minmax(120px, 0.4fr); gap: 10px; margin-top: 12px; border-top: 1px dashed var(--line-strong); padding-top: 12px; }
 .account-settings label { display: grid; gap: 5px; font-weight: 700; }
 .account-settings .form-actions { grid-column: 1 / -1; }

@@ -4,6 +4,14 @@ export type AdminLocale = 'zh-CN' | 'en';
 // Protocol identifiers and provider payloads are not translation keys.
 export const ADMIN_MESSAGES: Record<string, string> = {
   '文本模型': 'Text models',
+  '上下文窗口详情': 'Context window details',
+  '账号诊断': 'Account diagnostics',
+  '上游模型目录': 'Upstream model catalog',
+  '未绑定，请在文本模型映射中选择后端模型并保存': 'Unbound; choose and save a backend in Text model mappings',
+  '：未绑定，请在文本模型映射中选择后端模型并保存': ': Unbound; choose and save a backend in Text model mappings',
+  'Sonnet 会在首次授权时自动选择后端。Haiku、Fable 和 Opus 如显示“未绑定”，请在文本模型映射中选择后端模型并保存后再调用；简洁模式即可完成绑定。': 'Sonnet selects a backend on first authorization. If Haiku, Fable, or Opus is unbound, choose and save a backend in Text model mappings before calling it. Binding is available in simple mode.',
+  '文本 alias 用于对话和代码；生成图片请使用 Images API。': 'Text aliases are for chat and code; use the Images API to generate images.',
+  '模型按类型折叠展示；专业模式可展开上下文详情和账号诊断。': 'Model lists are collapsed by type. Professional mode adds expandable context details and account diagnostics.',
   '图片模型': 'Image models',
   '文本与图片：调用方式不同': 'Text and images use different APIs',
   '文本模型 · 对话与代码': 'Text models · chat and code',

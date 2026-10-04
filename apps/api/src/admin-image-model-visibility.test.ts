@@ -50,17 +50,19 @@ describe('Visible independent image models in Admin', () => {
   it.each(['zh-CN', 'en'] as const)('shows separate text/image counts and image routing outside professional details (%s)', (locale) => {
     const fixture = account([image]);
     const html = renderAccountCards([fixture], locale);
-    const simple = html.split('<div class="professional-detail"')[0];
+    const simple = html.split('<details class="professional-detail"')[0];
     expect(simple).toContain('<span data-admin-number="10">10</span>');
     expect(simple).toContain('<span data-admin-number="1">1</span>');
     expect(simple).toContain(locale === 'en' ? 'Text models' : '文本模型');
     expect(simple).toContain(locale === 'en' ? 'Image models' : '图片模型');
-    expect(simple).toContain('<strong data-i18n-ignore>GPT Image 2</strong>');
-    expect(simple).toContain('<code>gpt-image-2</code>');
+    expect(simple).toContain('<code title="GPT Image 2">gpt-image-2</code>');
     expect(simple).toContain('POST /v1/images/generations');
     expect(simple).toContain(locale === 'en' ? 'Image models come from a built-in catalog, separate from upstream-discovered text models' : '图片型号来自内置目录，独立于上游发现的文本模型');
     expect(simple).toContain(locale === 'en' ? 'availability depends on account permissions, quota, and upstream support' : '是否可调用取决于账号权限、额度和上游支持');
-    expect(html).toContain(locale === 'en' ? 'Full discovered model catalog (10)' : '动态模型完整列表（10）');
+    expect(html).toContain(locale === 'en' ? 'Context window details' : '上下文窗口详情');
+    expect(html).toContain('<details class="model-disclosure" data-model-group="text">');
+    expect(html).toContain('<details class="model-disclosure" data-model-group="image">');
+    expect(html).not.toMatch(/<details[^>]*\sopen(?:\s|>)/);
     expect(fixture.modelCount).toBe(10);
     expect(fixture.discoveredModels).toHaveLength(10);
     const browser = new Function(`${adminPageViewSource()}\nreturn renderAccountCards;`)();
@@ -78,11 +80,12 @@ describe('Visible independent image models in Admin', () => {
   it('counts and lists multiple supplied image models without assuming a fixed catalog', async () => {
     const second = { ...image, id: 'synthetic-image-alt', display_name: 'Synthetic Image Alternative' };
     const html = renderAccountCards([account([image, second])], 'en');
-    const simple = html.split('<div class="professional-detail"')[0];
+    const simple = html.split('<details class="professional-detail"')[0];
     expect(simple).toContain('<span data-admin-number="10">10</span>');
     expect(simple).toContain('<span data-admin-number="2">2</span>');
-    expect(simple).toContain('<code>gpt-image-2</code>');
-    expect(simple).toContain('<code>synthetic-image-alt</code>');
+    expect(simple).toContain('>gpt-image-2</code>');
+    expect(simple).toContain('>synthetic-image-alt</code>');
+    expect(simple.match(/POST \/v1\/images\/generations/g)).toHaveLength(1);
     const f = modelsHarness();
     f.setPayload({ aliases: [], discovered: account().discoveredModels, imageModels: [image, second] });
     await f.loadModels();
@@ -124,12 +127,13 @@ describe('Visible independent image models in Admin', () => {
     expect(english).toContain('Image models cannot be called through text aliases.');
   });
 
-  it('places an image panel in the models page without a professional-only restriction', () => {
+  it('places a collapsed image group in the models page in both modes', () => {
     const html = renderAdminPage({ apiKeysConfigured: true, defaultReasoningEffort: 'medium', defaultResponseSpeed: 'standard', backend: { provider: 'session' }, nextStep: 'Ready' });
-    const panel = html.match(/<section class="panel image-models-panel"[\s\S]*?<\/section>/)![0];
+    const panel = html.match(/<details class="panel image-models-panel"[\s\S]*?<\/details>/)![0];
     expect(panel).toContain('id="image-models"');
     expect(panel).toContain('通过独立 Images API 生成图片，不使用文本 alias。');
     expect(panel).not.toContain('data-professional-only');
+    expect(panel).not.toMatch(/<details[^>]*\sopen(?:\s|>)/);
   });
 
   it('loads the independent panel without adding images to text alias options and clears old entries on legacy responses', async () => {

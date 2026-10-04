@@ -41,7 +41,8 @@ export function renderAccountCards(accounts: AdminAccountView[], locale: AdminLo
 export function renderImageModels(models: PublicImageModel[] | undefined, locale: AdminLocale = 'zh-CN'): string {
   const images = Array.isArray(models) ? models : [];
   if (!images.length) return localizeAdminMarkup('<p class="empty image-model-empty">当前没有可用的图片模型。请检查账号状态和授权，以及后端是否支持图片接口。</p>', locale);
-  return localizeAdminMarkup(`<ul class="image-model-list">${images.map((model) => `<li><div class="image-model-identity"><strong data-i18n-ignore>${esc(model.display_name || model.id)}</strong><code>${esc(model.id)}</code></div><div class="image-model-endpoint"><span>Images 接口</span><code>POST ${esc(model.endpoint)}</code></div></li>`).join('')}</ul><p class="muted image-model-note">图片型号来自内置目录，独立于上游发现的文本模型；是否可调用取决于账号权限、额度和上游支持。</p>`, locale);
+  const endpoints = [...new Set(images.map((model) => model.endpoint))];
+  return localizeAdminMarkup(`<ul class="image-model-list model-chip-list">${images.map((model) => `<li><code title="${esc(model.display_name || model.id)}">${esc(model.id)}</code></li>`).join('')}</ul><div class="image-model-endpoint"><span>Images 接口</span>${endpoints.map((endpoint) => `<code>POST ${esc(endpoint)}</code>`).join('')}</div><p class="muted image-model-note">图片型号来自内置目录，独立于上游发现的文本模型；是否可调用取决于账号权限、额度和上游支持。</p>`, locale);
 }
 
 export function renderQuotaCards(quotas: AccountQuotaResult[], accounts: AdminAccountView[] = [], locale: AdminLocale = 'zh-CN'): string {
@@ -137,10 +138,16 @@ function renderAccountCard(account: AdminAccountView): string {
       <div><dt>模型数量</dt><dd><span class="account-model-counts"><span><strong>${numberHtml(account.modelCount)}</strong> <span>文本模型</span></span><span><strong>${numberHtml(imageModels.length)}</strong> <span>图片模型</span></span></span><span class="muted">${esc(discoveryMessage(account.discovery ?? unknownDiscovery(), account.modelCount))}</span></dd></div>
       <div><dt>最近活动</dt><dd>${timeHtml(stats.lastRequestAt || account.lastUsedAt)}</dd></div>
     </dl>
-    <section class="account-image-models" aria-label="图片模型"><h4>图片模型</h4>${renderImageModels(imageModels)}</section>
     <p class="muted">5x/20x 是套餐类别标识，不代表当前剩余额度。</p>
     <div class="stat-line" aria-label="请求结果统计"><span>成功 ${stats.successfulRequests}</span><span>失败 ${stats.failedRequests}</span><span>取消 ${stats.cancelledRequests}</span><span>总计 ${stats.totalRequests}</span><span>进行中 ${stats.inFlight}</span></div>
-    <div class="professional-detail" data-professional-only>
+    <div class="account-model-groups">
+      <details class="model-disclosure" data-model-group="text"><summary><span>文本模型</span> <span class="model-group-count">${numberHtml(account.modelCount)}</span></summary>
+        <ul class="model-chip-list">${account.discoveredModels.length ? account.discoveredModels.map((model) => `<li><code title="${esc(model.displayName || model.id)}">${esc(model.id)}</code></li>`).join('') : '<li class="muted">尚未发现动态模型</li>'}</ul>
+        <details class="model-context-disclosure" data-professional-only><summary>上下文窗口详情</summary><ul class="model-context-list">${modelItems}</ul></details>
+      </details>
+      <details class="model-disclosure" data-model-group="image"><summary><span>图片模型</span> <span class="model-group-count">${numberHtml(imageModels.length)}</span></summary>${renderImageModels(imageModels)}</details>
+    </div>
+    <details class="professional-detail" data-professional-only><summary>账号诊断</summary>
       <dl class="technical-list">
         <div><dt>内部 ID</dt><dd><code class="wrap-anywhere">${esc(account.id)}</code></dd></div>
         <div><dt>上游 ID</dt><dd><code class="wrap-anywhere">${esc(account.upstreamAccountId || '不可用')}</code></dd></div>
@@ -151,8 +158,7 @@ function renderAccountCard(account: AdminAccountView): string {
       </dl>
       <p class="wrap-anywhere">最近发现尝试：${timeHtml(account.discovery?.attemptedAt)} · 最近成功：${timeHtml(account.discovery?.succeededAt)}</p>
       ${account.discovery?.diagnostic ? `<p class="wrap-anywhere">安全发现诊断：<code>${esc(JSON.stringify(account.discovery.diagnostic))}</code></p>` : ''}
-      <details class="model-disclosure"><summary>动态模型完整列表（${account.modelCount}）</summary><ul>${modelItems}</ul></details>
-    </div>
+    </details>
     <div class="card-actions" aria-label="${esc(account.label)} 账号操作">
       <button type="button" class="secondary" data-account-health="${esc(account.id)}">刷新健康与模型</button>
       ${account.provider === 'chatgpt-session' ? `<button type="button" class="secondary" data-account-reauthorize="${esc(account.id)}" data-reauthorize-account="${esc(account.id)}">重新授权</button>` : ''}

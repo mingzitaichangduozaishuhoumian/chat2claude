@@ -55,7 +55,7 @@ ${adminPageViewSource()}\n${helpers}\n${load}\nreturn loadModels;`)(document, as
     expect(table).toMatch(/<button[^>]*data-professional-only[^>]*data-delete-model="custom"/);
     expect(table).toContain('<button data-save-model="custom">保存</button>');
     expect(table).toContain('<div data-model-save-status="custom" class="model-save-status" role="status" aria-live="polite"></div>');
-    expect(table).toMatch(/<div data-professional-only><p class="muted">Backend discovery/);
+    expect(table).toMatch(/<details class="model-discovery-help" data-professional-only><summary>上游模型目录<\/summary>/);
     await app.dispose();
   });
 
