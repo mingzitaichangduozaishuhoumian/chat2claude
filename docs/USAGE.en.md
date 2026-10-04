@@ -304,7 +304,9 @@ Claude Code, Anthropic SDK, Cline, and Roo should be configured as Claude/Anthro
 
 ### Independent GPT Image generation
 
-Use `POST /v1/images/generations` with a Runtime API Key. The adapter reuses the current ChatGPT account and calls the Codex 0.160 Images service at `/backend-api/codex/images/generations`; it does not route the image model through the text Responses endpoint. The default remains `gpt-image-2`, with one successful real-generation check. Other built-ins have registration and unchanged-ID forwarding coverage but have not each been tested with a real generation; model/account access remains upstream-dependent.
+Use `POST /v1/images/generations` with a Runtime API Key. The adapter reuses the current ChatGPT account and calls the Codex 0.160 Images service at `/backend-api/codex/images/generations`; it does not route the image model through the text Responses endpoint. The default remains `gpt-image-2`. On 2026-10-04, each of the five built-ins completed one real generation on one account, all with HTTP 200, a final `image_generation.completed` SSE event and a decodable PNG. The requested model IDs were forwarded unchanged.
+
+The checks used `quality:low`, `n:1`, `background:opaque` and `stream:true`, taking approximately 13.4–15.5 seconds per image. Although `size:1024x1024` was requested, every decoded PNG measured `1254×1254`; image bytes were delivered unchanged, without service-side resizing. Requested size is therefore not a guarantee of exact output dimensions: inspect the decoded image. This record does not verify all accounts, higher quality, multi-image batches or edits.
 
 The OpenAI SDK uses the same versioned Base URL as the text resources:
 

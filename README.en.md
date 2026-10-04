@@ -2,6 +2,8 @@
 
 [中文](README.md) | **English**
 
+Current version: **0.2.0** · [Changelog](CHANGELOG.md)
+
 `chatgpt-to-claude` is a TypeScript + Hono local compatibility layer. It exposes Claude Messages, OpenAI Chat Completions, OpenAI Responses, Images, Models API, and related compatibility routes while connecting internally to either a mock backend or a real ChatGPT/Codex session backend.
 
 This project is intended for personal local/private use with ChatGPT/Codex accounts that you own or are explicitly authorized to operate. It is **not** a subscription resale service, public proxy, multi-tenant gateway, or traffic aggregation business. Do not resell personal subscription traffic or expose it to untrusted third parties at scale.
@@ -230,7 +232,7 @@ const completion = await client.chat.completions.create({
 
 ### Independent Images API
 
-`POST /v1/images/generations` reuses an existing ChatGPT account through the Codex 0.160 Images service, defaulting to `gpt-image-2`. One real generation with this default model has succeeded. The other built-ins have registration and unchanged-ID forwarding coverage, not individual real-generation verification; access remains account-dependent. Reuse the OpenAI SDK `client` above:
+`POST /v1/images/generations` reuses an existing ChatGPT account through the Codex 0.160 Images service, defaulting to `gpt-image-2`. On 2026-10-04, all five built-ins each passed one `quality:low`, `n:1` check on one account: HTTP 200, final SSE completion and PNG decoding, taking approximately 13.4–15.5 seconds each. A requested `1024x1024` produced `1254×1254` PNGs in every case; this does not guarantee exact dimensions, access for every account or higher-quality settings. Reuse the OpenAI SDK `client` above:
 
 ```ts
 const image = await client.images.generate({

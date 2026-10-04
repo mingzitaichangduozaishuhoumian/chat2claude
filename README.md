@@ -2,6 +2,8 @@
 
 **中文** | [English](README.en.md)
 
+当前版本：**0.2.0** · [更新记录](CHANGELOG.md)
+
 `chatgpt-to-claude` 是一个 TypeScript + Hono 实现的本地兼容层：对外提供 Claude Messages、OpenAI Chat Completions、OpenAI Responses、Images、Models API 等接口，对内连接 mock backend 或真实 ChatGPT/Codex session backend。
 
 本项目面向使用本人控制或已获明确授权的 ChatGPT/Codex 账号的个人本地/私有场景。它不是订阅聚合、流量转售、多租户共享网关或公共代理服务；不要把个人订阅流量公开转售，或面向不特定第三方大规模共享。
@@ -230,7 +232,7 @@ const completion = await client.chat.completions.create({
 
 ### 独立 Images API
 
-`POST /v1/images/generations` 使用现有 ChatGPT 账号调用 Codex 0.160 Images 服务，默认模型 `gpt-image-2`。该默认模型已完成一次真实生成验证；其余内置型号仅完成注册与原值转发回归，未逐个真实出图，实际可用性由上游账号决定。OpenAI SDK 可沿用上面的 `client`：
+`POST /v1/images/generations` 使用现有 ChatGPT 账号调用 Codex 0.160 Images 服务，默认模型 `gpt-image-2`。2026-10-04，五个内置型号已在一个账号上以 `quality:low`、`n:1` 各完成一次实测，HTTP 200、最终 SSE 事件和 PNG 解码均通过，耗时约 13.4–15.5 秒。请求 `1024x1024` 时实际 PNG 均为 `1254×1254`；这不保证精确尺寸、所有账号或更高质量档位。OpenAI SDK 可沿用上面的 `client`：
 
 ```ts
 const image = await client.images.generate({

@@ -298,7 +298,9 @@ Claude Code、Anthropic SDK、Cline 和 Roo 按 Claude/Anthropic 兼容客户端
 
 ### 独立 GPT Image 生成
 
-使用 Runtime API Key 调用 `POST /v1/images/generations`。适配器沿用当前 ChatGPT 账号，接入 Codex 0.160 的 `/backend-api/codex/images/generations` 服务，不把图片模型发往文本 Responses 接口。默认模型仍是 `gpt-image-2`，已完成一次真实生成验证。其余内置型号仅完成注册与原值转发回归，未逐个真实出图；其他模型及账号仍取决于上游权限。
+使用 Runtime API Key 调用 `POST /v1/images/generations`。适配器沿用当前 ChatGPT 账号，接入 Codex 0.160 的 `/backend-api/codex/images/generations` 服务，不把图片模型发往文本 Responses 接口。默认模型仍是 `gpt-image-2`。2026-10-04，五个内置型号已在一个账号上分别完成一次真实生成，全部获得 HTTP 200、最终 `image_generation.completed` SSE 事件和可解码的 PNG；模型 ID 原样发送。
+
+实测条件为 `quality:low`、`n:1`、`background:opaque`、`stream:true`，每张耗时约 13.4–15.5 秒。请求 `size:1024x1024`，实际 PNG 均为 `1254×1254`，图片原样交付，服务没有重新缩放。因此请求尺寸不能作为精确输出尺寸保证，应检查解码后的图片；该记录也不证明所有账号、更高质量、多图批次或编辑操作已验证。
 
 OpenAI SDK 继续使用带 `/v1` 的 Base URL：
 

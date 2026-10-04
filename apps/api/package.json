@@ -1,6 +1,6 @@
 {
   "name": "@chatgpt-to-claude/api",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "engines": { "node": "^22.15.0 || >=24.0.0" },
   "main": "dist/index.js",
