@@ -1,0 +1,49 @@
+name: Bug report / 问题反馈
+description: Report a reproducible, non-sensitive defect / 报告可复现的非敏感缺陷
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Usage questions belong in [Discussions](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/discussions). Report vulnerabilities [privately](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/security/advisories/new).
+        Do not include tokens, cookies, API keys, runtime-state files, complete prompts or raw upstream logs. Redact screenshots and commands.
+        使用问题请到 Discussions，漏洞请私密报告。不要贴 OAuth token、cookie、API key、runtime state、完整 prompt 或原始上游日志；截图和命令也需脱敏。
+  - type: input
+    id: version
+    attributes:
+      label: Version / 版本
+      placeholder: Release version or commit SHA / 发布版本或 commit SHA
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform / 平台
+      description: OS and architecture; Node.js version if using a source checkout / 系统与架构；源码运行时附 Node.js 版本
+      placeholder: Windows 11 x64, Node.js 22.15.0
+    validations:
+      required: true
+  - type: input
+    id: installation
+    attributes:
+      label: Installation method / 安装方式
+      placeholder: Source checkout + start.bat, release archive, or another method / 源码启动、发布归档或其他方式
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction and behavior / 最小复现与行为
+      description: Use synthetic input. Explain what you expected and what happened / 使用合成输入，说明预期与实际结果
+      placeholder: |
+        1. Steps / 操作步骤
+        2. Expected / 预期
+        3. Actual / 实际
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized details (optional) / 脱敏信息（可选）
+      description: Endpoint, model ID, HTTP status or a short safe error excerpt. No secrets, state exports or full request/response logs / 可附接口、模型 ID、状态码或简短安全错误信息，不要完整日志或状态导出

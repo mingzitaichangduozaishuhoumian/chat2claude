@@ -2,11 +2,23 @@
 
 **中文** | [English](README.en.md)
 
-当前版本：**0.2.0** · [更新记录](CHANGELOG.md)
+当前版本：**0.2.1** · [下载](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/latest) · [安装与升级](INSTALL.md) · [更新记录](CHANGELOG.md)
 
 `chatgpt-to-claude` 是一个 TypeScript + Hono 实现的本地兼容层：对外提供 Claude Messages、OpenAI Chat Completions、OpenAI Responses、Images、Models API 等接口，对内连接 mock backend 或真实 ChatGPT/Codex session backend。
 
 本项目面向使用本人控制或已获明确授权的 ChatGPT/Codex 账号的个人本地/私有场景。它不是订阅聚合、流量转售、多租户共享网关或公共代理服务；不要把个人订阅流量公开转售，或面向不特定第三方大规模共享。
+
+## 下载与安装
+
+| 安装包 | 适合谁 |
+| --- | --- |
+| [Windows x64 免安装 ZIP](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.2.1/chat2claude-v0.2.1-windows-x64.zip) | 已包含 Node.js；解压后双击 `start.bat`。 |
+| [通用 Node ZIP](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.2.1/chat2claude-v0.2.1-node.zip) | 已安装受支持 Node.js 的 Windows、Linux 或 macOS。 |
+| [通用 Node TAR.GZ](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.2.1/chat2claude-v0.2.1-node.tar.gz) | Linux/macOS，解压后运行 `sh start.sh`。 |
+
+这些包已包含编译后的服务与生产依赖，无需 pnpm 或自行构建。启动后打开 `http://127.0.0.1:3000/admin`，完成账号授权。通用包推荐 Node.js 24 LTS；GitHub 的 **Source code** 下载项需要按下方源码步骤安装。
+
+[SHA-256 校验文件](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.2.1/SHA256SUMS) · [配置、数据迁移与升级](INSTALL.md) · [使用讨论](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/discussions) · [报告问题](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/issues/new/choose)
 
 ## 我们的项目不一样在哪里
 
@@ -34,6 +46,10 @@
 一句话：它不是要把所有代理能力都塞进一个大平台，而是把 **个人 ChatGPT/Codex 账号会话** 稳定、清晰、低负担地适配成本机 Claude/OpenAI 兼容 API。
 
 ## 快速开始
+
+以下是源码启动步骤；使用发布包请看上面的[下载与安装](#下载与安装)。
+
+源码开发需要 Node.js 22.15.0 以上的 22.x，或 Node.js 24 及以上版本，以及 Corepack。项目固定使用 pnpm 9.15.4；Node.js 25 及以上需另行安装 Corepack。
 
 Windows：
 
@@ -69,7 +85,7 @@ http://127.0.0.1:3000
 http://127.0.0.1:3000/admin
 ```
 
-默认 backend 是 `mock`。正常使用 ChatGPT/Codex session 时，打开 `/admin` 完成账号授权、模型发现和 Runtime API Key 生成。
+`start.bat` / `start.sh` 默认使用 `session` 后端；直接运行 `corepack pnpm start` 且未设置 `CHATGPT_BACKEND` 时使用 `mock`。使用 ChatGPT/Codex session 时，在 `/admin` 完成账号授权、模型发现和 Runtime API Key 生成。
 
 ### 自定义端口和监听地址
 
@@ -339,8 +355,21 @@ corepack pnpm check
 
 更新依赖后，还可以运行 `corepack pnpm audit` 检查锁文件中的已知安全公告。测试工具链使用 Vitest 4 和 Vite 6；本轮验证环境为 Node.js 22.15.0。
 
+制作发布包时，先提交变更，再运行：
+
+```bash
+corepack pnpm package:release
+corepack pnpm package:smoke
+```
+
+产物写入 `dist-release/`。构建需要 Git、已按锁文件安装的开发依赖和下载官方 Node.js 运行时的网络连接；浏览器检查需要本机 Chrome 或 Edge，可通过 `PACKAGE_SMOKE_BROWSER_PATH` 指定。打包会从独立源码快照重新构建，默认拒绝脏工作区；`--allow-dirty` 只用于预检，带有该标记的包不应发布。
+
 ## 文档
 
+- [安装包、配置与升级](INSTALL.md)
+- [贡献指南](CONTRIBUTING.md)
+- [获得帮助](SUPPORT.md)
+- [安全报告](SECURITY.md) · [社区行为约定](CODE_OF_CONDUCT.md)
 - [English README](README.en.md)
 - [中文使用指南](docs/USAGE.zh-CN.md)
 - [English usage guide](docs/USAGE.en.md)

@@ -2,11 +2,23 @@
 
 [中文](README.md) | **English**
 
-Current version: **0.2.0** · [Changelog](CHANGELOG.md)
+Current version: **0.2.1** · [Download](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/latest) · [Install and upgrade](INSTALL.md) · [Changelog](CHANGELOG.md)
 
 `chatgpt-to-claude` is a TypeScript + Hono local compatibility layer. It exposes Claude Messages, OpenAI Chat Completions, OpenAI Responses, Images, Models API, and related compatibility routes while connecting internally to either a mock backend or a real ChatGPT/Codex session backend.
 
 This project is intended for personal local/private use with ChatGPT/Codex accounts that you own or are explicitly authorized to operate. It is **not** a subscription resale service, public proxy, multi-tenant gateway, or traffic aggregation business. Do not resell personal subscription traffic or expose it to untrusted third parties at scale.
+
+## Download and install
+
+| Package | Intended use |
+| --- | --- |
+| [Windows x64 portable ZIP](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.2.1/chat2claude-v0.2.1-windows-x64.zip) | Includes Node.js. Extract and run `start.bat`. |
+| [Universal Node ZIP](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.2.1/chat2claude-v0.2.1-node.zip) | Windows, Linux or macOS with a supported Node.js installation. |
+| [Universal Node TAR.GZ](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.2.1/chat2claude-v0.2.1-node.tar.gz) | Linux/macOS: extract and run `sh start.sh`. |
+
+Packages include the compiled service and production dependencies; no pnpm or build step is needed. Open `http://127.0.0.1:3000/admin` after startup and authorize your account. Node.js 24 LTS is recommended for the universal packages. GitHub's **Source code** downloads require the source setup below.
+
+[SHA-256 checksums](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.2.1/SHA256SUMS) · [Configuration, migration and upgrades](INSTALL.md) · [Discussions](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/discussions) · [Report an issue](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/issues/new/choose)
 
 ## What makes this project different
 
@@ -34,6 +46,10 @@ Design tradeoffs:
 In short: it is not trying to pack every proxy feature into one large platform. It adapts a **personal ChatGPT/Codex account session** into a local Claude/OpenAI-compatible API with stable behavior, clear boundaries, and low operational overhead.
 
 ## Quick start
+
+These steps start a source checkout. For release archives, see [Download and install](#download-and-install).
+
+Source development requires Node.js 22.x starting at 22.15.0, or Node.js 24 and newer, plus Corepack. The project pins pnpm 9.15.4; Node.js 25 and newer require a separate Corepack installation.
 
 Windows:
 
@@ -69,7 +85,7 @@ Open the Admin console:
 http://127.0.0.1:3000/admin
 ```
 
-The default backend is `mock`. For normal ChatGPT/Codex session usage, open `/admin` to complete account authorization, model discovery, and Runtime API Key creation.
+`start.bat` / `start.sh` default to the `session` backend. Running `corepack pnpm start` directly without `CHATGPT_BACKEND` uses `mock`. For ChatGPT/Codex session use, complete account authorization, model discovery, and Runtime API Key creation in `/admin`.
 
 ### Custom port and host
 
@@ -339,8 +355,21 @@ corepack pnpm check
 
 After dependency updates, run `corepack pnpm audit` to check the lockfile against known security advisories. The test toolchain uses Vitest 4 and Vite 6; this revision was validated on Node.js 22.15.0.
 
+Commit changes before building release archives:
+
+```bash
+corepack pnpm package:release
+corepack pnpm package:smoke
+```
+
+Outputs go to `dist-release/`. Building requires Git, development dependencies installed from the lockfile, and network access to download the official Node.js runtime. Browser verification requires Chrome or Edge; override its location with `PACKAGE_SMOKE_BROWSER_PATH`. Packaging rebuilds an isolated source snapshot and rejects a dirty checkout by default. `--allow-dirty` is for preflight checks only; do not publish those marked artifacts.
+
 ## Documentation
 
+- [Packages, configuration and upgrades](INSTALL.md)
+- [Contributing](CONTRIBUTING.md)
+- [Support](SUPPORT.md)
+- [Security reporting](SECURITY.md) · [Code of conduct](CODE_OF_CONDUCT.md)
 - [中文 README](README.md)
 - [English usage guide](docs/USAGE.en.md)
 - [中文使用指南](docs/USAGE.zh-CN.md)

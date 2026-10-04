@@ -1,15 +1,32 @@
 {
   "name": "@chatgpt-to-claude/protocol-mapper",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
-  "engines": { "node": "^22.15.0 || >=24.0.0" },
+  "engines": {
+    "node": "^22.15.0 || >=24.0.0"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit" },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
   "dependencies": {
     "@chatgpt-to-claude/chatgpt-backend": "workspace:*",
     "@chatgpt-to-claude/claude-protocol": "workspace:*",
     "@chatgpt-to-claude/shared": "workspace:*"
-  }
+  },
+  "license": "MIT",
+  "files": [
+    "dist/**",
+    "!dist/**/*.test.*",
+    "!dist/**/*.map",
+    "LICENSE"
+  ]
 }

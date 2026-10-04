@@ -1,5 +1,21 @@
 # Changelog / 更新记录
 
+## 0.2.1 — 2026-10-04
+
+### 中文
+
+- 新增 Windows x64 免安装包（内置经官方校验的 Node.js 24 运行时）及通用 Node ZIP/TAR.GZ；包含编译产物和生产依赖，无需用户安装 pnpm 或构建。
+- 提供发布包启动器、可选 `.env`、独立数据目录、版本来源清单和 SHA-256 校验文件；补充首次安装、源码版迁移和保留账号的升级说明。
+- 完善贡献指南、安全报告、使用支持、社区行为约定、Issue 表单和 PR 模板；配置依赖更新，并启用仓库私密漏洞报告与依赖安全修复。
+- 保留 0.2.0 的 API 和五型号图片支持。修正 README 对源码启动器和手动启动默认后端的说明。
+
+### English
+
+- Added a Windows x64 portable package with an officially verified Node.js 24 runtime, plus universal Node ZIP/TAR.GZ archives. Production dependencies and compiled application files are included.
+- Added launchers, optional `.env` loading, an independent data directory, release provenance and SHA-256 checksums; documented installation, source migration and upgrades that retain account data.
+- Added contribution, security, support and conduct guidance, issue forms and a pull-request template. Configured dependency updates and enabled private vulnerability reporting and dependency security fixes.
+- Retained the 0.2.0 API and five image-model presets. Clarified the different backend defaults of source launchers and direct manual startup.
+
 ## 0.2.0 — 2026-10-04
 
 ### 中文

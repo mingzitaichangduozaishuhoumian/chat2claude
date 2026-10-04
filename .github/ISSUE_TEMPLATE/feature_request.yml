@@ -1,0 +1,30 @@
+name: Feature request / 功能建议
+description: Describe a concrete need and proposed behavior / 描述具体需求和预期行为
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For setup or usage help, use [Discussions](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/discussions). Security concerns belong in [private reports](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/security/advisories/new).
+        Use synthetic examples without credentials, runtime-state files, complete prompts or raw logs.
+        安装/使用问题请到 Discussions，安全问题请私密报告。示例请使用合成数据，不要包含账号凭据、runtime state、完整 prompt 或原始日志。
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case / 问题或使用场景
+      description: What are you trying to do, and where does current behavior fall short? / 想完成什么，当前行为哪里不足？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior / 建议行为
+      description: Describe the result you want; include alternatives if useful / 描述期望结果，可补充替代方案
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Relevant context (optional) / 相关背景（可选）
+      description: Client, protocol, version or compatibility constraints. Keep examples small and sanitized / 客户端、协议、版本或兼容性约束，示例请简短脱敏

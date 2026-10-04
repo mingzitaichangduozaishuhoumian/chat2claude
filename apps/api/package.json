@@ -1,8 +1,10 @@
 {
   "name": "@chatgpt-to-claude/api",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
-  "engines": { "node": "^22.15.0 || >=24.0.0" },
+  "engines": {
+    "node": "^22.15.0 || >=24.0.0"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -22,5 +24,12 @@
   },
   "devDependencies": {
     "tsx": "^4.23.15"
-  }
+  },
+  "license": "MIT",
+  "files": [
+    "dist/**",
+    "!dist/**/*.test.*",
+    "!dist/**/*.map",
+    "LICENSE"
+  ]
 }

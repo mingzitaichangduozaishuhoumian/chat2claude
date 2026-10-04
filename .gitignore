@@ -12,3 +12,4 @@ coverage/
 **/.claude/
 .omc-session-review.diff
 apps/api/data/
+dist-release/

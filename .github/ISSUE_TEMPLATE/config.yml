@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Usage questions / 使用问题
+    url: https://github.com/mingzitaichangduozaishuhoumian/chat2claude/discussions
+    about: Ask about setup, configuration and clients in Discussions / 安装、配置和客户端问题请到 Discussions
+  - name: Private vulnerability report / 私密漏洞报告
+    url: https://github.com/mingzitaichangduozaishuhoumian/chat2claude/security/advisories/new
+    about: Report security issues privately; never include real credentials / 私密报告安全问题，不要提交真实凭据
