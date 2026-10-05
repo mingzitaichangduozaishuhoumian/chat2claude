@@ -1,5 +1,29 @@
 # Changelog / 更新记录
 
+## Unreleased
+
+以下应用改进已合入 `main`，尚未包含在 v0.2.1 安装包中。仓库自动化已启用。
+
+The following application changes are on `main` and are not included in the v0.2.1 archives. Repository automation is already enabled.
+
+### 中文
+
+- 账号模型按文本、图片分类计数并默认折叠，展开后使用紧凑型号标签；图片接口地址只显示一次。专业模式的账号诊断、上下文详情及模型页使用说明按需展开。
+- 明确区分文本 alias 与图片生成接口；保存时拒绝已知图片型号作为新文本 alias 或后端目标，历史误绑仍可禁用、解绑、修正或删除。
+- 源码启动改为按需编译：复用未变化的成功构建，源码、配置、依赖或产物变化时重建。保留强制构建命令，并提供 `build --if-needed` 预检。
+- 启用 GitHub Actions CI 和标签自动发包；手动发包流程只生成验证工件，不发布或覆盖现有版本。
+- 更新中英 README 的源码升级、分类界面、启动方式和源码版/安装包数据目录说明。
+
+### English
+
+- Grouped account models into collapsed text/image catalogs with compact model-ID labels and a single Images endpoint per group. Account diagnostics, context details, and model-page guidance expand on demand.
+- Distinguished text aliases from image generation. Admin now rejects registered image IDs as new text aliases or backend targets while keeping legacy bindings repairable and removable.
+- Added source build caching: reuse unchanged successful builds and rebuild when source, configuration, dependencies, or outputs change. Forced builds remain available; `build --if-needed` prepares the build without starting the service.
+- Enabled GitHub Actions CI and tag-based releases. Manual packaging runs produce verification artifacts without publishing or overwriting releases.
+- Updated both READMEs with source updates, grouped model controls, startup behavior, and source/package data-directory differences.
+
+**验证 / Verification（2026-10-05，`cf88c77`）：** [Windows/Linux × Node 22/24 CI](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/runs/37273614978) 全部通过 / passed；[自动打包试运行 / packaging dry run](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/runs/37273646542) 完成 Linux 构建与同批 Windows 运行时验证 / passed Linux build and Windows runtime checks. 未执行发布步骤 / publication was skipped.
+
 ## 0.2.1 — 2026-10-04
 
 ### 中文
@@ -29,7 +53,7 @@
 
 独立 Images SSE 只有最终图片，没有渐进预览；流式仅允许 `n=1`，`partial_images` 只能为 0 或省略。图片编辑、variations 和生成图隐式历史续聊仍不支持。Responses 的图片事件转换有合成测试覆盖，当前宿主的 Responses 图片工具不因此视为已真实验证。Chat/Claude 收到图片输出时明确报错。
 
-发布前本地验证记录为 **2330 项测试通过，并通过 build / typecheck**。这不是 GitHub CI 结果：CI 工作流仍待具备 workflow 权限后发布，本版尚无 GitHub Actions 执行结果。
+v0.2.0 发布时，本地验证记录为 **2330 项测试通过，并通过 build / typecheck**；当时尚无该标签的 GitHub Actions 执行结果。后续 `main` 分支的云端验证记录见上方 Unreleased，不追溯视为本标签的 CI 验证。
 
 ### English
 
@@ -42,6 +66,6 @@
 
 Standalone Images SSE delivers only the final image, with no progressive previews; streaming requires `n=1`, and `partial_images` must be 0 or omitted. Edits, variations and implicit generated-image history remain unsupported. Synthetic coverage of Responses image events does not establish real image-tool access on the current host. Chat/Claude explicitly reject generated image output.
 
-Pre-release local validation: **2330 tests passed, plus build and typecheck**. No GitHub CI success is claimed: publishing the workflow still requires workflow permission, and this release has no GitHub Actions run result.
+At the time of the v0.2.0 release, local validation passed **2330 tests, plus build and typecheck**; there was no GitHub Actions result for that tag. Later validation on `main` is recorded under Unreleased above and does not retroactively validate this release tag.
 
 See [usage / 使用说明](docs/USAGE.en.md), [中文使用说明](docs/USAGE.zh-CN.md), and the [protocol compatibility matrix](docs/protocol-compatibility.md) for the full contract.

@@ -2,7 +2,11 @@
 
 **中文** | [English](README.en.md)
 
-当前版本：**0.2.1** · [下载](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/latest) · [安装与升级](INSTALL.md) · [更新记录](CHANGELOG.md)
+最新发布版：**0.2.1** · [下载](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/latest) · [安装与升级](INSTALL.md) · [更新记录](CHANGELOG.md)
+
+[![CI](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/workflows/ci.yml)
+
+本文说明当前 `main` 分支。模型分类折叠、图片型号防误绑和源码按需编译等改进已合入 `main`，尚未包含在 v0.2.1 安装包中；详见[未发布变更](CHANGELOG.md#unreleased)。使用这些改进请按下方源码步骤运行，已发布安装包本身无需编译。
 
 `chatgpt-to-claude` 是一个 TypeScript + Hono 实现的本地兼容层：对外提供 Claude Messages、OpenAI Chat Completions、OpenAI Responses、Images、Models API 等接口，对内连接 mock backend 或真实 ChatGPT/Codex session backend。
 
@@ -51,16 +55,23 @@
 
 源码开发需要 Node.js 22.15.0 以上的 22.x，或 Node.js 24 及以上版本，以及 Corepack。项目固定使用 pnpm 9.15.4；Node.js 25 及以上需另行安装 Corepack。
 
-Windows：
+首次获取源码并进入项目目录：
 
-```bat
-start.bat
+```bash
+git clone https://github.com/mingzitaichangduozaishuhoumian/chat2claude.git
+cd chat2claude
+```
+
+Windows（PowerShell）：
+
+```powershell
+.\start.bat
 ```
 
 Git Bash、Linux 或 macOS：
 
 ```bash
-./start.sh
+sh ./start.sh
 ```
 
 手动安装、检查并启动：
@@ -72,6 +83,8 @@ corepack pnpm start
 ```
 
 `start` 只在首次启动、源码/编译配置/依赖变化或编译产物缺失、损坏时构建；普通重启会跳过 TypeScript 编译，直接启动一个 API 服务。`start.bat` / `start.sh` 同样生效，无需更换命令。`corepack pnpm build` 可强制重新构建，`corepack pnpm build --if-needed` 可单独检查并补齐构建而不启动服务。开发时使用 `corepack pnpm dev`，完成初始构建后监听 API 源码变化。
+
+首次构建时的 `Scope: 5 of 6 workspace projects` 表示编译五个内部子包，不是启动五个服务。`check` 会执行完整构建、测试和类型检查，日常启动无需先运行它。
 
 默认地址：
 
@@ -87,6 +100,17 @@ http://127.0.0.1:3000/admin
 
 `start.bat` / `start.sh` 默认使用 `session` 后端；直接运行 `corepack pnpm start` 且未设置 `CHATGPT_BACKEND` 时使用 `mock`。使用 ChatGPT/Codex session 时，在 `/admin` 完成账号授权、模型发现和 Runtime API Key 生成。
 
+### 更新已有源码
+
+先在服务窗口按 Ctrl+C 停止旧进程，保留 `apps/api/data/`（或自定义 `DATA_DIR`）、现有环境变量和加密密钥。在项目目录执行：
+
+```bash
+git pull --ff-only
+corepack pnpm install --frozen-lockfile
+```
+
+然后按原有端口配置运行 `start.bat` 或 `sh ./start.sh`。启动器会自动判断是否需要重新编译；升级发布包的方法见[安装与升级](INSTALL.md)。
+
 ### 自定义端口和监听地址
 
 默认端口是 `3000`。如果该端口被占用，或你想同时运行多个实例，可以设置 `PORT`。
@@ -94,21 +118,21 @@ http://127.0.0.1:3000/admin
 Git Bash、Linux 或 macOS：
 
 ```bash
-PORT=3100 corepack pnpm start
+PORT=3100 sh ./start.sh
 ```
 
 PowerShell：
 
 ```powershell
 $env:PORT = "3100"
-corepack pnpm start
+.\start.bat
 ```
 
 CMD：
 
 ```bat
 set "PORT=3100"
-corepack pnpm start
+start.bat
 ```
 
 端口改成 `3100` 后，对应地址也要一起改：
@@ -140,13 +164,22 @@ OAuth 不会启动独立 Chrome 或新 profile。若浏览器拦截弹窗，或�
 Admin 控制台包含六个主要区域：
 
 1. **概览**：查看账号 ready 状态、动态模型、可用 alias、Runtime Key 数量、配额缓存和最近账号活动摘要。
-2. **账号与授权**：运行 Codex OAuth、恢复或取消 flow、检查账号健康与模型、重新授权、启用/停用、编辑或删除账号；专业模式提供手动 session 导入。
-3. **模型**：把已发现 backend model 绑定到 alias，刷新 discovery，启用/停用 alias，设置默认控制项；专业模式可管理自定义 alias。
+2. **账号与授权**：运行 Codex OAuth、检查账号健康与模型、重新授权、启用/停用、编辑或删除账号。文本模型、图片模型分类计数并默认折叠，展开后显示紧凑的型号标签。
+3. **模型映射**：优先展示文本 alias 的选择、启用和保存；图片目录、内置 alias 帮助和调用说明默认折叠。专业模式可设置推理、服务层级并管理自定义 alias。
 4. **API 接入**：生成、命名、复制、列出和撤销 Runtime API Key；查看 Base URL、endpoint 和动态 curl 示例。
 5. **配额**：读取 provider allowance 缓存，刷新单个账号或全部账号，并区分 fresh、stale、error、unknown 状态。
 6. **管理访问**：默认使用本机 HttpOnly 管理会话；专业模式在操作者自行让服务可达后提供 Admin API Key fallback。
 
-控制台默认是简洁模式。专业模式会额外显示内部 ID、上游 ID、并发/冷却信息、安全错误码、discovery 诊断、完整动态模型列表、reasoning/service-tier 控制项、自定义 alias、手动 session 导入和 Admin API Key fallback。
+控制台默认是简洁模式，两种模式都能展开文本和图片目录。专业模式增加可折叠的**账号诊断**与**上下文窗口详情**，以及 reasoning/service-tier 控制项、自定义 alias、手动 session 导入和 Admin API Key fallback。诊断和长说明按需展开，图片接口地址在每个分组中只显示一次。
+
+### 文本与图片模型
+
+| 类型 | 调用与映射 | 参数区别 |
+| --- | --- | --- |
+| 文本/代码模型 | 使用 alias 或文本型号调用 Messages、Chat Completions、Responses 接口 | 推理强度、服务层级按模型目录支持情况处理；页面窗口信息不代表客户端当前实际配置。 |
+| 图片生成模型 | 直接使用图片型号调用 `POST /v1/images/generations`，无需创建文本 alias | 使用 `prompt`、`size`、`quality` 等图片参数；不接受文本推理强度、服务层级或上下文设置字段。 |
+
+支持图片输入的对话模型不等于图片生成模型。Admin 会在保存时拒绝已知图片型号作为新文本 alias 或文本后端；历史误绑仍可禁用、解绑、修正或删除。
 
 Ultra（主动协作）按模型目录解析基础推理强度，并鼓励使用客户端已有的委托工具。子代理由客户端执行；没有委托工具时直接完成任务。本服务不创建子代理，也不实现完整的 Codex 多代理运行时。详见[推理档位与 Ultra 主动协作](docs/USAGE.zh-CN.md#推理档位与-ultra-主动协作)。
 
@@ -262,7 +295,7 @@ const image = await client.images.generate({
 
 `/v1/models` 的 `source: "image_endpoint"` 描述项指向此独立路由；将任一内置图片型号或绑定它的 alias 发到文本接口会得到 400。Responses 仅在上游提供图片事件时支持预览/最终图转换，当前宿主的 Responses 图片工具尚未真实验证；含生成图的 Responses 响应不存历史，返回 ID 不可用于 `previous_response_id`。Chat/Claude 收到图片输出会明确报 501，不返回空成功。完整参数、存图示例和限制见[使用说明](docs/USAGE.zh-CN.md#独立-gpt-image-生成)。
 
-Admin 账号卡片分别显示文本模型与图片接口模型数量，例如 10 个文本模型、5 个图片接口模型；图片计数只统计本服务当前展示的接口模型项，不代表 OpenAI 全部图片型号。模型页在简洁和专业模式下都有独立图片模型面板。当前内置 `gpt-image-1.5`、`gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.5`，与 [CPA 的内置注册项](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/registry/model_definitions.go#L245)一致；裸 ID `gpt-image-2.5` 原值透传，不重命名成 Flare/Sunburst。2.5 系列的明确型号可使用 `xhigh`/`max` 质量，完整范围见使用说明。这些图片项来自独立的 `imageModels` 字段，不混入文本 `discoveredModels` 或 alias 候选，也不表示已验证该账号的图片生成权限。
+Admin 账号卡片分别显示文本模型与图片接口模型数量，例如 10 个文本模型、5 个图片接口模型；图片计数只统计本服务当前展示的接口模型项，不代表 OpenAI 全部图片型号。模型页在简洁和专业模式下都有独立、默认折叠的图片型号分组。当前内置 `gpt-image-1.5`、`gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.5`，与 [CPA 的内置注册项](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/registry/model_definitions.go#L245)一致；裸 ID `gpt-image-2.5` 原值透传，不重命名成 Flare/Sunburst。2.5 系列的明确型号可使用 `xhigh`/`max` 质量，完整范围见使用说明。这些图片项来自独立的 `imageModels` 字段，不混入文本 `discoveredModels` 或 alias 候选，也不表示已验证该账号的图片生成权限。
 
 ## curl 验证
 
@@ -311,7 +344,9 @@ DATA_DIR=./data
 
 ## 持久化与安全
 
-默认数据目录是 `apps/api/data`，可用 `DATA_DIR` 修改。runtime state 保存账号 session、Runtime API Key 和 alias overlay；operational state 保存净化后的管理统计、discovery/cache、quota cache 和诊断信息。
+上述源码启动命令默认使用 `apps/api/data/`；发布包默认使用解压目录下的 `data/`。可以用 `DATA_DIR` 修改，相对路径分别基于 API 子目录和发布包根目录解析。runtime state 保存账号 session、Runtime API Key 和 alias overlay；operational state 保存净化后的管理统计、discovery/cache、quota cache 和诊断信息。
+
+源码启动读取进程环境变量；发布包启动器还会读取包根目录的 `.env`，已有环境变量优先。迁移时保留原数据目录和 `STATE_ENCRYPTION_KEY`，具体步骤见[安装与升级](INSTALL.md)。
 
 如需加密 runtime state，设置 `STATE_ENCRYPTION_KEY`。它必须是严格标准 base64 的 32 字节随机密钥：
 
@@ -353,9 +388,13 @@ corepack pnpm typecheck
 corepack pnpm check
 ```
 
-更新依赖后，还可以运行 `corepack pnpm audit` 检查锁文件中的已知安全公告。测试工具链使用 Vitest 4 和 Vite 6；本轮验证环境为 Node.js 22.15.0。
+更新依赖后，还可以运行 `corepack pnpm audit` 检查锁文件中的已知安全公告。`test` 包含 Vitest 4 / Vite 6 用例与 Node.js 原生构建缓存测试。
 
-GitHub Actions 配置了 Windows/Linux × Node.js 22.15.0/24 的检查矩阵；Linux Node 24 还执行依赖审计和安装包验证。`v*` 标签会触发发布工作流，只有 Linux 构建验证及 Windows 内置运行时检查都通过后才公开软件包；手动运行只生成检查工件，不发布版本。
+GitHub Actions 已启用，可查看 [CI 状态](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/workflows/ci.yml)和[打包运行记录](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/workflows/release.yml)：
+
+- `main` 推送、Pull Request 和手动 CI 运行会检查 Windows/Linux × Node.js 22.15.0/24；Linux Node 24 还执行依赖审计、打包和解包运行检查。
+- 发布前同步更新六个 `package.json` 的版本及 `CHANGELOG.md`。匹配版本的 `v*` 标签触发自动发布，只有 Linux 构建验证和同批软件包的 Windows 内置运行时检查都通过后，才上传资产并公开版本；同名资产不会被覆盖。
+- 手动运行 **Release packages** 只构建并验证安装包，产物保留在 Actions 工件中，不创建或更新 Release。
 
 制作发布包时，先提交变更，再运行：
 

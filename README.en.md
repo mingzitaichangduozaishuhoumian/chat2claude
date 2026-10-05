@@ -2,7 +2,11 @@
 
 [中文](README.md) | **English**
 
-Current version: **0.2.1** · [Download](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/latest) · [Install and upgrade](INSTALL.md) · [Changelog](CHANGELOG.md)
+Latest release: **0.2.1** · [Download](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/latest) · [Install and upgrade](INSTALL.md) · [Changelog](CHANGELOG.md)
+
+[![CI](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/workflows/ci.yml)
+
+This README describes `main`. Collapsible model groups, image-alias validation, and source build caching are merged into `main` but are not included in the v0.2.1 archives; see [Unreleased changes](CHANGELOG.md#unreleased). Use the source setup below for these changes. Published archives already require no compilation.
 
 `chatgpt-to-claude` is a TypeScript + Hono local compatibility layer. It exposes Claude Messages, OpenAI Chat Completions, OpenAI Responses, Images, Models API, and related compatibility routes while connecting internally to either a mock backend or a real ChatGPT/Codex session backend.
 
@@ -51,16 +55,23 @@ These steps start a source checkout. For release archives, see [Download and ins
 
 Source development requires Node.js 22.x starting at 22.15.0, or Node.js 24 and newer, plus Corepack. The project pins pnpm 9.15.4; Node.js 25 and newer require a separate Corepack installation.
 
-Windows:
+For a first source checkout, clone the repository and enter its directory:
 
-```bat
-start.bat
+```bash
+git clone https://github.com/mingzitaichangduozaishuhoumian/chat2claude.git
+cd chat2claude
+```
+
+Windows (PowerShell):
+
+```powershell
+.\start.bat
 ```
 
 Git Bash, Linux, or macOS:
 
 ```bash
-./start.sh
+sh ./start.sh
 ```
 
 Manual setup, verification, and startup:
@@ -72,6 +83,8 @@ corepack pnpm start
 ```
 
 `start` builds only on first use, when source, compiler configuration or dependencies change, or when compiled output is missing or modified. Ordinary restarts skip TypeScript compilation and launch a single API service. This also applies to `start.bat` and `start.sh`. Use `corepack pnpm build` to force a rebuild, or `corepack pnpm build --if-needed` to check and prepare the build without starting the service. Use `corepack pnpm dev` for an initial build followed by API source watching.
+
+The first build's `Scope: 5 of 6 workspace projects` refers to compiling five internal packages, not starting five services. `check` runs the full build, tests, and type checks; it is not required before ordinary startup.
 
 Default address:
 
@@ -87,6 +100,17 @@ http://127.0.0.1:3000/admin
 
 `start.bat` / `start.sh` default to the `session` backend. Running `corepack pnpm start` directly without `CHATGPT_BACKEND` uses `mock`. For ChatGPT/Codex session use, complete account authorization, model discovery, and Runtime API Key creation in `/admin`.
 
+### Updating a source checkout
+
+Stop the old process with Ctrl+C in its terminal. Keep `apps/api/data/` (or your custom `DATA_DIR`), existing environment settings, and encryption key. In the project directory, run:
+
+```bash
+git pull --ff-only
+corepack pnpm install --frozen-lockfile
+```
+
+Then run `start.bat` or `sh ./start.sh` with your existing port settings. The launcher checks whether rebuilding is necessary. For release archives, follow [Install and upgrade](INSTALL.md).
+
 ### Custom port and host
 
 The default port is `3000`. If it is already in use, or if you want to run multiple instances, set `PORT`.
@@ -94,21 +118,21 @@ The default port is `3000`. If it is already in use, or if you want to run multi
 Git Bash, Linux, or macOS:
 
 ```bash
-PORT=3100 corepack pnpm start
+PORT=3100 sh ./start.sh
 ```
 
 PowerShell:
 
 ```powershell
 $env:PORT = "3100"
-corepack pnpm start
+.\start.bat
 ```
 
 CMD:
 
 ```bat
 set "PORT=3100"
-corepack pnpm start
+start.bat
 ```
 
 After changing the port to `3100`, update every client URL accordingly:
@@ -140,13 +164,22 @@ OAuth does not launch a separate Chrome profile. If the browser blocks the popup
 The Admin console has six main areas:
 
 1. **Overview**: account readiness, dynamic models, available aliases, Runtime Key count, quota-cache state, and recent account activity summary.
-2. **Accounts & Authorization**: Codex OAuth, flow recovery/cancel, account health/model checks, reauthorization, enable/disable, editing and deletion; Professional mode exposes manual session import.
-3. **Models**: bind discovered backend models to aliases, refresh discovery, enable/disable aliases, set defaults, and manage custom aliases in Professional mode.
+2. **Accounts & Authorization**: Codex OAuth, account health/model checks, reauthorization, enable/disable, editing and deletion. Text and image models have separate counts and collapsed groups; expanding a group shows compact model-ID labels.
+3. **Models**: text alias selection, enablement, and saving appear first. The image catalog, built-in alias help, and API guidance are collapsed by default. Professional mode adds reasoning, service tiers, and custom aliases.
 4. **API Access**: create, name, copy, list, and revoke Runtime API Keys; view Base URL, endpoint, and dynamic curl examples.
 5. **Quotas**: read cached provider allowance information and refresh one account or all accounts, distinguishing fresh, stale, error, and unknown states.
 6. **Admin Access**: prefer the local HttpOnly admin session; Professional mode exposes an Admin API Key fallback after you independently make the service reachable.
 
-The console opens in Simple mode. Professional mode adds internal IDs, upstream IDs, concurrency/cooldown details, safe error codes, discovery diagnostics, full dynamic model catalogs, reasoning/service-tier controls, custom aliases, manual session import, and Admin API Key fallback.
+The console opens in Simple mode. Both modes can expand text and image catalogs. Professional mode adds collapsible **Account diagnostics** and **Context window details**, reasoning/service-tier controls, custom aliases, manual session import, and Admin API Key fallback. Diagnostics and lengthy guidance expand on demand; the Images endpoint appears once per group.
+
+### Text and image models
+
+| Type | API and mapping | Parameters |
+| --- | --- | --- |
+| Text/code models | Call Messages, Chat Completions, or Responses with an alias or text model ID | Reasoning and service tiers depend on catalog capabilities. Displayed context metadata does not describe the client's current settings. |
+| Image generation models | Call `POST /v1/images/generations` directly with an image model ID; no text alias is needed | Use image parameters such as `prompt`, `size`, and `quality`. Text reasoning, service-tier, and context-setting fields are not accepted. |
+
+A chat model that accepts image input is not necessarily an image generation model. Admin rejects registered image IDs as new text aliases or text backend targets before saving. Legacy incorrect bindings can still be disabled, cleared, corrected, or deleted.
 
 Ultra (proactive collaboration) resolves a base reasoning effort from the model catalog and encourages the client's existing delegation tools. The client runs subagents; without delegation tools, the main model handles the task directly. This service does not create subagents or implement the complete Codex multi-agent runtime. See [Reasoning efforts and Ultra proactive collaboration](docs/USAGE.en.md#reasoning-efforts-and-ultra-proactive-collaboration).
 
@@ -262,7 +295,7 @@ The endpoint returns JSON/base64 PNG and accepts `n=1..10`. `stream:true` suppor
 
 The `/v1/models` descriptors with `source: "image_endpoint"` point to this separate route. Sending a registered image model or an alias bound to it to a text endpoint returns 400. Responses image-event conversion supports previews/final images when upstream provides them; real image-tool execution on the current Responses host remains unverified. Responses containing generated images are not stored, and their IDs cannot be continued with `previous_response_id`. Chat/Claude explicitly reject image output with 501 instead of empty success. See the [usage guide](docs/USAGE.en.md#independent-gpt-image-generation) for parameters, decoding and limitations.
 
-Admin account cards count text models and image endpoint models separately, for example 10 text models and 5 image endpoint models. The image count covers the entries currently exposed by this service, not every OpenAI image model. The Models page has a separate image model panel in both Simple and Professional modes. Built-ins are `gpt-image-1.5`, `gpt-image-2`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst` and `gpt-image-2.5`, matching [CPA registration](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/registry/model_definitions.go#L245). Bare `gpt-image-2.5` is forwarded unchanged, not renamed to Flare/Sunburst. The documented 2.5 IDs also accept `xhigh`/`max` quality; see the usage guide for the exact set. These entries come from `imageModels`, not text `discoveredModels` or alias choices, and do not claim verified image-generation permission for the account.
+Admin account cards count text models and image endpoint models separately, for example 10 text models and 5 image endpoint models. The image count covers the entries currently exposed by this service, not every OpenAI image model. The Models page has a separate, initially collapsed image-model group in both Simple and Professional modes. Built-ins are `gpt-image-1.5`, `gpt-image-2`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst` and `gpt-image-2.5`, matching [CPA registration](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/registry/model_definitions.go#L245). Bare `gpt-image-2.5` is forwarded unchanged, not renamed to Flare/Sunburst. The documented 2.5 IDs also accept `xhigh`/`max` quality; see the usage guide for the exact set. These entries come from `imageModels`, not text `discoveredModels` or alias choices, and do not claim verified image-generation permission for the account.
 
 ## curl smoke tests
 
@@ -311,7 +344,9 @@ The model catalog can depend on the requested client version. If discovery succe
 
 ## Persistence and secret handling
 
-The default data directory is `apps/api/data`; override it with `DATA_DIR`. Runtime state stores account sessions, Runtime API Keys, and alias overlays. Operational state stores sanitized admin statistics, discovery/cache data, quota cache, and diagnostics.
+The source launch commands above default to `apps/api/data/`; release archives default to `data/` inside the extracted package. Override this with `DATA_DIR`. Relative paths resolve from the API workspace for source startup and from the package root for release startup. Runtime state stores account sessions, Runtime API Keys, and alias overlays. Operational state stores sanitized admin statistics, discovery/cache data, quota cache, and diagnostics.
+
+Source startup reads process environment variables. Release launchers also load the package-root `.env`, with existing environment variables taking precedence. Keep the original data directory and `STATE_ENCRYPTION_KEY` when migrating; see [Install and upgrade](INSTALL.md).
 
 To encrypt runtime state, set `STATE_ENCRYPTION_KEY`. It must be strict standard base64 for exactly 32 random bytes:
 
@@ -353,9 +388,13 @@ Or run the full check:
 corepack pnpm check
 ```
 
-After dependency updates, run `corepack pnpm audit` to check the lockfile against known security advisories. The test toolchain uses Vitest 4 and Vite 6; this revision was validated on Node.js 22.15.0.
+After dependency updates, run `corepack pnpm audit` to check the lockfile against known security advisories. `test` runs the Vitest 4 / Vite 6 suite and native Node.js build-cache tests.
 
-GitHub Actions defines a Windows/Linux × Node.js 22.15.0/24 matrix, with dependency auditing and package verification on Linux Node 24. A `v*` tag triggers release automation: packages are published only after Linux build verification and the bundled Windows runtime checks pass. Manual runs produce verification artifacts without publishing a release.
+GitHub Actions is enabled. See [CI status](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/workflows/ci.yml) and [packaging runs](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/workflows/release.yml):
+
+- Pushes to `main`, pull requests, and manual CI runs check Windows/Linux × Node.js 22.15.0/24. Linux Node 24 also runs the dependency audit, package build, and extracted-package smoke tests.
+- Before releasing, update all six `package.json` versions and `CHANGELOG.md`. A matching `v*` version tag triggers publication after Linux build verification and Windows bundled-runtime checks on the same artifacts. Existing assets with the same names are never overwritten.
+- Manually running **Release packages** only builds and verifies archives. Outputs remain in Actions artifacts; no Release is created or updated.
 
 Commit changes before building release archives:
 
