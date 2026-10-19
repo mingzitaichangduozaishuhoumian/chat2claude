@@ -178,11 +178,11 @@ Admin 控制台包含六个主要区域：
 
 可使用下方本机安装命令，或参考 [aurorax-neo/chat2api](https://github.com/aurorax-neo/chat2api) 和 [stufently/gpt-web-gateway](https://github.com/stufently/gpt-web-gateway) 自行部署。完成普通 Chat 登录后，可在 `/admin` → **模型映射** → **上游选择** 填写地址、可选 API Key 和实际支持的模型 slug，简洁模式即可配置。生成请求只需 OpenAI Chat Completions，不依赖 `/v1/models`；但管理 API 的网页健康检查会请求该接口，缺失时检查失败。模型 ID 原样使用，默认 `auto` 只声明该模型。
 
-| 参考实现（已核对源码，未真实联调） | 对接建议 |
+| 参考实现与本地补丁 | 对接建议与验证范围 |
 | --- | --- |
 | [aurorax-neo/chat2api，dbf6bf3](https://github.com/aurorax-neo/chat2api/tree/dbf6bf39686348449c25de3b6131ca733f448deb) | 普通聊天走网页 conversation 接口。图片使用内联 base64，暂不使用远程 HTTPS 图片 URL；工具调用由文本协议适配。其图片生成还有 Codex 分支，不能将该项目的所有调用都视为普通 Chat。 |
 | [stufently/gpt-web-gateway，893f553](https://github.com/stufently/gpt-web-gateway/tree/893f553be358210a5c045aa9f62b56ba1edc5c78) | 真浏览器驱动普通 Chat，适合文本/SSE。聊天接口忽略图片和 model 参数，不提供原生工具及 `/v1/models`；请保持图片、工具开关关闭，使用 `auto`，不要用网页健康检查判断其聊天接口是否可用。 |
-| [本仓库固定版本与单图补丁](integrations/gpt-web-gateway/README.md) | 在同一固定上游 SHA 应用本地补丁，为聊天 JSON/SSE 增加最后一条 user 消息的单张 Base64 图片链路；仍无工具调用及 `/v1/models`，model 仍被忽略。离线测试已覆盖，真实识图待本人登录验证。 |
+| [本仓库固定版本与单图补丁](integrations/gpt-web-gateway/README.md) | 在同一固定上游 SHA 应用本地补丁，为聊天 JSON/SSE 增加最后一条 user 消息的单张 Base64 图片链路；仍无工具调用及 `/v1/models`，model 仍被忽略。2026-10-19 已在本人普通 Chat 账号上通过单 PNG 的直连 JSON 与主项目内存实例 Messages SSE 识图。 |
 
 两个项目对 `max_tokens`、采样参数和停止条件的执行都不能视为官方 API 的硬约束。
 
@@ -203,7 +203,7 @@ corepack pnpm web-gateway:connect -- --api-url http://127.0.0.1:3000
 
 `--api-url` 改成主服务实际的本机根地址。此命令保存随机网关 Key，开启**手动网页模式**并配置 `auto`、`sonnet=auto`、图片输入开启、工具关闭；会更新已有网页路由配置。要自动选择或停用网页，可继续在管理台修改。默认安装与登录数据位于已忽略的 `apps/api/data/web-gateway/`；自定义 `--directory PATH` 时须自行排除版本控制，所有后续命令使用相同目录。安装固定提交 `893f553be358210a5c045aa9f62b56ba1edc5c78` 及仓库补丁，不自动跟随上游更新。详见[安装、私密数据与限制](integrations/gpt-web-gateway/README.md)。
 
-本补丁只接受最后一条 user 消息的一张规范 Base64 PNG/JPEG/WebP/GIF 图片，解码图片最多 10 MiB，整个请求最多 16 MiB；远程 URL、多图、图片历史、非 user 图片、未知非文本块和非法编码返回 400。独立网关原生 `/v1/responses` 不接受图片。真实账号的上传、识图与限额仍需本人登录后联调；开启图片声明不代表完成真实验证。
+本补丁只接受最后一条 user 消息的一张规范 Base64 PNG/JPEG/WebP/GIF 图片，解码图片最多 10 MiB，整个请求最多 16 MiB；远程 URL、多图、图片历史、非 user 图片、未知非文本块和非法编码返回 400。独立网关原生 `/v1/responses` 不接受图片。单 PNG 的真实验证见下方；其他格式、账号和限额不能据此视为已验证。通用自动选择目前无法预判本补丁的单图限制，多图、图片历史或 HTTPS 图片可能选中网页后收到 400，发送后不转 Codex。
 
 先用 **使用 ChatGPT 网页** 开关决定网页是否参与，再选择 **自动模式 / 手动模式**。关闭网页（或预置 `CHATGPT_WEB_ENABLED=false`）时仅使用 Codex，保留网关、Key、映射和模式选择，重新开启即可恢复；此开关优先于自动路由和请求头覆盖，`web` 请求头在关闭时会被拒绝。清除配置仍需点击独立的 **清除网页配置**。
 
@@ -215,7 +215,7 @@ corepack pnpm web-gateway:connect -- --api-url http://127.0.0.1:3000
 
 **额度说明**：目标是优先使用普通 Chat，减少本服务直接发往 Codex 后端的请求。普通 Chat 的限额与 Codex 的关系以实际套餐、模型和账号页面为准；本项目不使用 ChatGPT Work 的规则推断普通 Chat 是否共享额度，也不保证增加总额度。实际调用来源可从响应 header 和管理台查看；还应确认网关内部确实使用普通 Chat，而非转发回 Codex。
 
-**验证范围**：已完成离线协议测试、路由测试和隔离浏览器管理台检查，尚未使用真实普通 Chat 网关账号联调。外部网关的模型选择、图片、工具和限额不能仅凭“OpenAI 兼容”名称视为已验证支持。
+**验证范围（2026-10-19）**：本人普通 Chat 账号的一张测试 PNG，已通过网关直连 JSON 和本项目测试实例的 Messages SSE，两条路径均 HTTP 200，正确识别数字、颜色、形状和左右位置。运行中的主服务仅确认手动网页配置已保存，尚未对其发送生成请求；单账号单 PNG 不证明其他格式、账号、工具或额度关系。完整结果与限制见[集成记录](integrations/gpt-web-gateway/README.md#验证记录与复现)。
 
 管理台填写的网关 API Key 仅保存在服务端现有 `runtime-state.json`，可用 `STATE_ENCRYPTION_KEY` 加密；不会由 GET 返回或保存到浏览器存储。Key 留空保留已保存值；**清除网页配置** 会移除配置和 Key，并切回 Codex。
 

@@ -188,6 +188,7 @@ export function gatewayEnvironment(settings, inherited = process.env) {
     HOST: '127.0.0.1', PORT: String(settings.port), API_KEY: settings.apiKey,
     HEADLESS: 'false', BROWSER_ENGINE: 'patchright', CHROMIUM_CHANNEL: 'chrome',
     BROWSER_MODE: 'default', ORDINARY_CHAT_ONLY: 'true', MAX_CONCURRENT_JOBS: '1', DEBUG_SNAPSHOTS: '0', STALL_SNAPSHOTS: '0',
+    SESSION_PROBE_TIMEOUT_SEC: '15', SESSION_LEASE_WAIT_MS: '60000',
   };
 }
 

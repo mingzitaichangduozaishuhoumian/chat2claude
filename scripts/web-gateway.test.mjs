@@ -186,6 +186,8 @@ test('runtime is loopback, isolated headed Chrome, and cannot inherit auto-login
   assert.equal(env.CHROMIUM_CHANNEL, 'chrome');
   assert.equal(env.HEADLESS, 'false');
   assert.equal(env.MAX_CONCURRENT_JOBS, '1');
+  assert.equal(env.SESSION_PROBE_TIMEOUT_SEC, '15');
+  assert.equal(env.SESSION_LEASE_WAIT_MS, '60000');
   assert.equal(env.CHATGPT_EMAIL, '');
   assert.equal(env.CHATGPT_PASSWORD, '');
   assert.equal(env.CHATGPT_TOTP_SECRET, '');

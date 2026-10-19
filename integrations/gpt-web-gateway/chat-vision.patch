@@ -12,10 +12,10 @@ index e32d637..5c27b4f 100644
    "dependencies": {
 diff --git a/scripts/test-chat-attachment.js b/scripts/test-chat-attachment.js
 new file mode 100644
-index 0000000..4ecade7
+index 0000000..7d57e3c
 --- /dev/null
 +++ b/scripts/test-chat-attachment.js
-@@ -0,0 +1,493 @@
+@@ -0,0 +1,622 @@
 +'use strict';
 +
 +const test = require('node:test');
@@ -24,24 +24,25 @@ index 0000000..4ecade7
 +  createChatAttachmentGuard, attachmentStateInPage, ready, safeChatImageError, chatSurfaceInPage,
 +} = require('../src/lib/chat-attachment.cjs');
 +const { fixture } = require('./test-stall-diagnostics');
++const { normalizeChatMessages } = require('../src/lib/chat-vision.cjs');
 +const { COMPOSER_SELECTORS, SEND_BUTTON_SEL, ATTACHMENT_REMOVE_SEL, TIER_TRIGGER_SEL } = require('../src/composer-dom');
 +
-+const image = { name: 'chat-vision-input.png', mimeType: 'image/png', buffer: Buffer.from('offline-image-fixture') };
++const image = { name: 'chat-vision-11111111-2222-4333-8444-555555555555.png', mimeType: 'image/png', buffer: Buffer.from('offline-image-fixture') };
 +const readyState = () => ({ known: true, count: 1, matching: 1, previewLoaded: true,
 +  busy: false, uploadError: false, sendReady: true });
 +
 +function domState({ chips = 1, wrongName = false, loaded = true, busy = false,
-+  uploadError = false, sendDisabled = false, unknown = false, hidden = false } = {}) {
++  uploadError = false, sendDisabled = false, unknown = false, hidden = false, removeLabel } = {}) {
 +  const node = (attrs = {}) => ({ parentElement: null, disabled: false,
 +    getClientRects: () => hidden ? [] : [{}],
 +    closest: selector => selector === 'form' ? form : null,
 +    getAttribute: key => attrs[key] ?? null,
 +    hasAttribute: key => Object.prototype.hasOwnProperty.call(attrs, key),
 +  });
-+  const preview = Object.assign(node(), { complete: loaded, naturalWidth: loaded ? 16 : 0 });
++  const preview = Object.assign(node({ alt: image.name }), { complete: loaded, naturalWidth: loaded ? 480 : 0 });
 +  const region = Object.assign(node(), { querySelectorAll: selector => selector === 'img' ? [preview] : [] });
 +  const buttons = Array.from({ length: chips }, () => Object.assign(node({
-+    'aria-label': 'Remove ' + (wrongName ? 'old-image.png' : image.name),
++    'aria-label': removeLabel ?? 'Remove ' + (wrongName ? 'old-image.png' : image.name),
 +  }), { parentElement: region }));
 +  const send = Object.assign(node(sendDisabled ? { disabled: '' } : {}), { disabled: sendDisabled });
 +  const form = Object.assign(node(), { querySelectorAll: selector => {
@@ -72,15 +73,24 @@ index 0000000..4ecade7
 +  }
 +});
 +
++test('observed Chinese remove label confirms only the exact file with a loaded preview', () => {
++  const removeLabel = `移除“${image.name}”`;
++  assert.equal(ready(domState({ removeLabel })), true);
++  assert.equal(ready(domState({ removeLabel: '移除“old-image.png”' })), false);
++  assert.equal(ready(domState({ removeLabel, loaded: false })), false);
++  assert.equal(ready(domState({ removeLabel: `移除${image.name}` })), false);
++});
++
 +function surfaceDomState({ switcher = true, chatActive = true, workActive = false,
 +  classicPicker = false, pickerText = 'ChatGPT', pillText = 'Instant',
-+  composerKnown = true, url = 'https://chatgpt.com/', codexActive = false } = {}) {
++  composerKnown = true, url = 'https://chatgpt.com/', codexActive = false,
++  chatLabel = 'Chat', workLabel = 'Work', activeAttribute = 'aria-selected', dataState } = {}) {
 +  const element = (text, attrs = {}) => ({ innerText: text, textContent: text,
 +    getClientRects: () => [{}], getAttribute: key => attrs[key] ?? null,
 +    closest: selector => selector === 'form' ? {} : null,
 +  });
-+  const buttons = switcher ? [element('Chat', { 'aria-selected': String(chatActive) }),
-+    element('Work', { 'aria-selected': String(workActive) })] : [];
++  const buttons = switcher ? [element(chatLabel, { [activeAttribute]: String(chatActive), ...(dataState ? { 'data-state': dataState } : {}) }),
++    element(workLabel, { [activeAttribute]: String(workActive), ...(dataState ? { 'data-state': dataState } : {}) })] : [];
 +  if (codexActive) buttons.push(element('Codex', { 'aria-selected': 'true' }));
 +  const oldDocument = global.document;
 +  const oldLocation = global.location;
@@ -110,6 +120,26 @@ index 0000000..4ecade7
 +    { composerKnown: false }, { url: 'https://chatgpt.com/work' },
 +    { url: 'https://chatgpt.com/codex' }, { url: 'https://example.invalid/' },
 +  ]) assert.notEqual(surfaceDomState(scenario).mode, 'chat', JSON.stringify(scenario));
++});
++
++test('observed Chinese Chat/Work labels retain the same strict active-state requirements', () => {
++  const labels = { chatLabel: '聊天', workLabel: '工作' };
++  const chat = surfaceDomState(labels);
++  assert.equal(chat.mode, 'chat');
++  assert.equal(chat.chatLabel, '聊天');
++  assert.equal(chat.chatRole, 'button');
++  assert.equal(surfaceDomState({ ...labels, chatActive: false, workActive: true }).mode, 'work');
++  assert.equal(surfaceDomState({ ...labels, chatActive: false, workActive: false }).mode, 'unknown');
++  assert.equal(surfaceDomState({ ...labels, chatActive: true, workActive: true }).mode, 'work');
++});
++
++test('observed Chinese aria-pressed selects Chat only with true/false and never by data-state closed', () => {
++  const observed = { chatLabel: '聊天', workLabel: '工作', activeAttribute: 'aria-pressed', dataState: 'closed' };
++  assert.equal(surfaceDomState({ ...observed, chatActive: true, workActive: false }).mode, 'chat');
++  assert.equal(surfaceDomState({ ...observed, chatActive: false, workActive: true }).mode, 'work');
++  assert.equal(surfaceDomState({ ...observed, chatActive: false, workActive: false }).mode, 'unknown');
++  assert.notEqual(surfaceDomState({ ...observed, chatActive: true, workActive: true }).mode, 'chat');
++  assert.equal(surfaceDomState({ ...observed, activeAttribute: 'data-unrecognized', chatActive: true, workActive: false }).mode, 'unknown');
 +});
 +
 +test('a preview is not upload completion: ready waits for two consistent complete states', async () => {
@@ -158,6 +188,16 @@ index 0000000..4ecade7
 +  assert.doesNotMatch(error.message, /private|prompt|cookie|base64/);
 +});
 +
++test('attachment constructor accepts only request-scoped UUIDv4 ASCII filenames', () => {
++  assert.doesNotThrow(() => createChatAttachmentGuard(image));
++  for (const name of [
++    'chat-vision-input.png', '../' + image.name, 'C:\\temp\\' + image.name,
++    image.name + '\n', image.name + '.extra', 'chat-vision-not-a-uuid.png',
++    image.name.replace('-4333-', '-1333-'), image.name.replace('-8444-', '-7444-'),
++  ]) assert.throws(() => createChatAttachmentGuard({ ...image, name }),
++    error => error.code === 'upload_failed', name);
++});
++
 +function visionPage(page, scenario = {}) {
 +  const p = page({ answer: scenario.answer !== false });
 +  const evaluate = p.evaluate.bind(p);
@@ -169,6 +209,7 @@ index 0000000..4ecade7
 +  p.guardReads = 0;
 +  p.surfaceChecks = 0;
 +  p.chatClicks = 0;
++  p.chatClickNames = [];
 +  p.surface = scenario.surface || { mode: 'chat', switcher: false };
 +  p.evaluate = async (fn, arg) => {
 +    const source = String(fn);
@@ -181,7 +222,9 @@ index 0000000..4ecade7
 +    if (fn.name === 'attachmentStateInPage') {
 +      p.guardReads++;
 +      await scenario.onGuard?.(p);
-+      return { ...readyState(), count: p.attachments, matching: p.attachments,
++      const uploaded = p.uploads.at(-1) || [];
++      const matching = uploaded.filter(file => file.name === arg?.name).length;
++      return { ...readyState(), count: p.attachments, matching: p.attachments > 0 ? matching : 0,
 +        ...(p.attachments > 0 ? scenario.state : {}), ...(p.guardState || {}) };
 +    }
 +    if (arg === ATTACHMENT_REMOVE_SEL) {
@@ -192,9 +235,10 @@ index 0000000..4ecade7
 +    if (source.includes('captionSrc') && arg?.matchers) await scenario.onTierRead?.(p);
 +    return result;
 +  };
-+  p.getByRole = () => {
++  p.getByRole = (role, options) => {
 +    const button = { first: () => button, click: async () => {
 +      p.chatClicks++;
++      p.chatClickNames.push({ role, name: options.name });
 +      if (scenario.switchFails) throw new Error('private click failure');
 +      if (scenario.switchToChat) p.surface = { mode: 'chat', switcher: true, chatRole: 'button' };
 +    } };
@@ -256,6 +300,23 @@ index 0000000..4ecade7
 +  });
 +});
 +
++test('real message parser image names cross the completeText browser boundary unchanged', async () => {
++  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aI1sAAAAASUVORK5CYII=', 'base64');
++  const input = normalizeChatMessages([{ role: 'user', content: [
++    { type: 'text', text: 'Describe this image.' },
++    { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
++  ] }]);
++  assert.match(input.image.name, /^chat-vision-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.png$/);
++  await fixture({}, async ({ chat, page, queue }) => {
++    const p = visionPage(page); queue.push(p);
++    const result = await chat.completeText(input.text, { thinkingMode: 'instant', image: input.image });
++    assert.equal(result.text, 'answer');
++    assert.equal(result.applied.image_inputs_attached, 1);
++    assert.equal(p.sends, 1);
++    assert.deepEqual(p.uploads[0], [{ name: input.image.name, mimeType: 'image/png', buffer: png }]);
++  });
++});
++
 +for (const [name, scenario] of [
 +  ['Work switch fails', { surface: { mode: 'work', switcher: true, chatRole: 'button' }, switchFails: true }],
 +  ['Work remains active after click', { surface: { mode: 'work', switcher: true, chatRole: 'button' } }],
@@ -283,6 +344,21 @@ index 0000000..4ecade7
 +    const result = await chat.completeText('Describe the image.', { thinkingMode: 'instant', image });
 +    assert.equal(result.text, 'answer');
 +    assert.equal(p.chatClicks, 1);
++    assert.equal(p.sends, 1);
++  });
++});
++
++test('strict surface switching uses the observed Chinese Chat button name', async () => {
++  await fixture({ ORDINARY_CHAT_ONLY: 'true' }, async ({ chat, page, queue }) => {
++    const p = visionPage(page, { surface: { mode: 'work', switcher: true, chatRole: 'button', chatLabel: '聊天' },
++      switchToChat: true }); queue.push(p);
++    const result = await chat.completeText('A text-only question.', { thinkingMode: 'instant' });
++    assert.equal(result.text, 'answer');
++    assert.equal(p.chatClicks, 1);
++    assert.equal(p.chatClickNames[0].role, 'button');
++    assert.equal(p.chatClickNames[0].name.test('聊天'), true);
++    assert.equal(p.chatClickNames[0].name.test('Chat'), false);
++    assert.equal(p.chatClickNames[0].name.test('工作'), false);
 +    assert.equal(p.sends, 1);
 +  });
 +});
@@ -509,6 +585,59 @@ index 0000000..4ecade7
 +    assert.equal(p.surfaceChecks, 0);
 +  });
 +});
++
++test('strict runner waits beyond fifteen hydration polls before confirming Chat and sending', async () => {
++  await fixture({ ORDINARY_CHAT_ONLY: 'true' }, async ({ chat, page }) => {
++    const p = visionPage(page);
++    chat._test.bindPage(chat.getSlot(0), p);
++    const lookup = p.$.bind(p);
++    let composerPolls = 0;
++    p.$ = async selector => {
++      if (/prompt-textarea|contenteditable|textarea/.test(selector)) {
++        composerPolls++;
++        return composerPolls > 20 ? {} : null;
++      }
++      return lookup(selector);
++    };
++    await chat._test.ensureNewChat(p);
++    assert.equal(composerPolls, 21);
++    assert.equal(p.surfaceChecks, 1, 'strict preflight runs only after the composer is visible');
++    const result = await chat.completeText('A text-only question.', { thinkingMode: 'instant', reuseChat: true });
++    assert.equal(result.text, 'answer');
++    assert.equal(p.sends, 1);
++  });
++});
++
++test('strict runner without a hydrated composer times out before preflight or send', async () => {
++  await fixture({ ORDINARY_CHAT_ONLY: 'true', CHATGPT_TEXT_RETRY_ATTEMPTS: '1' }, async ({ chat, page }) => {
++    const p = visionPage(page);
++    chat._test.bindPage(chat.getSlot(0), p);
++    const lookup = p.$.bind(p);
++    let composerPolls = 0;
++    p.$ = async selector => {
++      if (/prompt-textarea|contenteditable|textarea/.test(selector)) { composerPolls++; return null; }
++      return lookup(selector);
++    };
++    await assert.rejects(chat.completeText('A text-only question.', { thinkingMode: 'instant' }),
++      error => error.code === 'page_load_failed' && /60 seconds/.test(error.message));
++    assert.equal(composerPolls, 60);
++    assert.equal(p.surfaceChecks, 0, 'an incomplete page must not reach strict surface preflight');
++    assert.equal(p.sends, 0);
++    assert.equal(p.keys.includes('Enter'), false);
++  });
++});
++
++test('upstream new-chat hydration retains its fifteen polls when strict runner mode is disabled', async () => {
++  await fixture({ ORDINARY_CHAT_ONLY: 'false' }, async ({ chat, page }) => {
++    const p = visionPage(page);
++    let composerPolls = 0;
++    p.$ = async () => { composerPolls++; return null; };
++    await chat._test.ensureNewChat(p);
++    assert.equal(composerPolls, 15);
++    assert.equal(p.surfaceChecks, 0);
++    assert.equal(p.sends, 0);
++  });
++});
 diff --git a/scripts/test-chat-shutdown.js b/scripts/test-chat-shutdown.js
 new file mode 100644
 index 0000000..9102c09
@@ -662,10 +791,10 @@ index 0000000..9102c09
 +}
 diff --git a/scripts/test-chat-vision.js b/scripts/test-chat-vision.js
 new file mode 100644
-index 0000000..127f750
+index 0000000..62e0d3f
 --- /dev/null
 +++ b/scripts/test-chat-vision.js
-@@ -0,0 +1,314 @@
+@@ -0,0 +1,332 @@
 +'use strict';
 +
 +// Parser and actual HTTP routes; the ChatGPT browser boundary is stubbed so no
@@ -686,6 +815,7 @@ index 0000000..127f750
 +const tests = [];
 +const add = (name, fn) => tests.push([name, fn]);
 +const rejects = (fn) => assert.throws(fn, (err) => err.code === 'invalid_request' && !err.message.includes('base64,iVBO'));
++const imageNamePattern = (extension) => new RegExp(`^chat-vision-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.${extension}$`);
 +
 +add('one latest user image preserves text order and actual MIME metadata', () => {
 +  const result = normalizeChatMessages([
@@ -694,7 +824,11 @@ index 0000000..127f750
 +    user(['first', picture(), { type: 'text', text: 'second' }]),
 +  ]);
 +  assert.strictEqual(result.text, 'System instructions:\nFollow instructions\n\nPrevious assistant message:\nEarlier reply\n\nUser:\nfirst\nsecond');
-+  assert.deepStrictEqual(result.image, { name: 'chat-vision-input.png', mimeType: 'image/png', buffer: PNG });
++  assert.match(result.image.name, imageNamePattern('png'));
++  assert.deepStrictEqual({ mimeType: result.image.mimeType, buffer: result.image.buffer }, { mimeType: 'image/png', buffer: PNG });
++  const repeatedNames = Array.from({ length: 20 }, () => normalizeChatMessages([user([picture()])]).image.name);
++  assert.strictEqual(new Set([result.image.name, ...repeatedNames]).size, 21, 'every parse must use a new filename even for identical bytes');
++  for (const name of repeatedNames) assert.match(name, imageNamePattern('png'));
 +  assert.strictEqual(normalizeChatMessages([user([picture()])]).text, `User:\n${IMAGE_ONLY_PROMPT}`);
 +  const formats = [
 +    ['image/jpeg', 'jpg', Buffer.from([255, 216, 255, 224])],
@@ -703,7 +837,7 @@ index 0000000..127f750
 +  ];
 +  for (const [mime, ext, bytes] of formats) {
 +    const image = normalizeChatMessages([user([picture(dataUrl(bytes, mime))])]).image;
-+    assert.strictEqual(image.name, `chat-vision-input.${ext}`);
++    assert.match(image.name, imageNamePattern(ext));
 +    assert.strictEqual(image.mimeType, mime);
 +    assert.deepStrictEqual(image.buffer, bytes);
 +  }
@@ -819,18 +953,29 @@ index 0000000..127f750
 +
 +add('real JSON and SSE routes send image buffer, signal, and confirmed attachment count', async () => {
 +  let calls = 0;
++  const parser = require('../src/lib/chat-vision.cjs');
++  const originalNormalize = parser.normalizeChatMessages;
++  const pendingNames = [];
++  const generatedNames = [];
++  parser.normalizeChatMessages = (...args) => {
++    const result = originalNormalize(...args);
++    if (result.image) { pendingNames.push(result.image.name); generatedNames.push(result.image.name); }
++    return result;
++  };
 +  bridge.completeText = async (prompt, options) => {
 +    calls += 1;
 +    assert.strictEqual(prompt, 'User:\nWhat is this?');
 +    assert.deepStrictEqual(options.image.buffer, PNG);
 +    assert.strictEqual(options.image.mimeType, 'image/png');
++    assert.strictEqual(options.image.name, pendingNames.shift(), 'route must forward the exact filename generated by its parser');
++    assert.match(options.image.name, imageNamePattern('png'));
 +    assert(options.signal instanceof AbortSignal);
 +    assert.strictEqual(options.signal.aborted, false);
 +    await options.beforeSubmit();
 +    options.onDelta?.('A pixel.');
 +    return { text: 'A pixel.', applied: { thinking: false, image_inputs_attached: 1 } };
 +  };
-+  await withRouter(async (port) => {
++  try { await withRouter(async (port) => {
 +    const json = await call(port, validBody()).promise;
 +    assert.strictEqual(json.status, 200);
 +    assert.strictEqual(json.json.choices[0].message.content, 'A pixel.');
@@ -841,8 +986,10 @@ index 0000000..127f750
 +    assert(sse.raw.includes('A pixel.'));
 +    assert(sse.raw.includes('"image_inputs_attached":1'));
 +    assert(sse.raw.endsWith('data: [DONE]\n\n'));
-+  });
++  }); } finally { parser.normalizeChatMessages = originalNormalize; }
 +  assert.strictEqual(calls, 2);
++  assert.strictEqual(pendingNames.length, 0);
++  assert.strictEqual(new Set(generatedNames).size, 2, 'JSON and SSE requests must receive independent names');
 +});
 +
 +add('routes reject unsupported pictures before browser; no payload enters response or logs', async () => {
@@ -980,6 +1127,26 @@ index 0000000..127f750
 +  console.log(`${selected.length - failed}/${selected.length} chat vision tests passed`);
 +  if (failed) process.exitCode = 1;
 +})();
+diff --git a/scripts/test-composer-dom.js b/scripts/test-composer-dom.js
+index 7377d66..57528a5 100644
+--- a/scripts/test-composer-dom.js
++++ b/scripts/test-composer-dom.js
+@@ -31,6 +31,15 @@ async function test(name, fn) { await fn(); console.log(`PASS: ${name}`); passed
+     assert.ok(dom.ATTACHMENT_REMOVE_SEL.includes('[data-composer-attachments] button[aria-label^="Remove"]'));
+   });
+ 
++  await test('observed Chinese quoted removal labels stay scoped to composer attachments', async () => {
++    const chineseSelectors = dom.ATTACHMENT_REMOVE_SEL.split(', ').filter((selector) => selector.includes('移除'));
++    assert.deepStrictEqual(chineseSelectors, ['[data-composer-attachments] button[aria-label^="移除“"]']);
++    // The observed label is 移除“chat-vision-input.png”: no separating space,
++    // and matching generic remove buttons elsewhere would clear unrelated UI.
++    assert.ok('移除“chat-vision-input.png”'.startsWith('移除“'));
++    assert.ok(!'移除聊天记录'.startsWith('移除“'));
++  });
++
+   await test('stripTierCaption drops the trigger caption but keeps the level', async () => {
+     assert.strictEqual(dom.stripTierCaption('Thinking effort\n Medium'), 'Medium');
+     assert.strictEqual(dom.stripTierCaption('Medium'), 'Medium');
 diff --git a/scripts/test-express5-compat.js b/scripts/test-express5-compat.js
 index f63f922..5d7e5a3 100644
 --- a/scripts/test-express5-compat.js
@@ -1064,7 +1231,7 @@ index 9e7d701..4a2096f 100644
    browserFingerprint,
  };
 diff --git a/src/chatgpt.js b/src/chatgpt.js
-index 10fab6b..5a9207d 100644
+index 10fab6b..4a442c7 100644
 --- a/src/chatgpt.js
 +++ b/src/chatgpt.js
 @@ -15,6 +15,10 @@ const {
@@ -1078,7 +1245,7 @@ index 10fab6b..5a9207d 100644
  // Liveness heartbeat for /health/live — named `liveness` to avoid clashing with the
  // local `progress` indicator object inside waitAndExtractImage.
  const { progress: liveness } = require('./progress');
-@@ -1336,7 +1340,23 @@ async function composerPreflight(p) {
+@@ -1336,7 +1340,24 @@ async function composerPreflight(p) {
  // (e.g. "5.6 Sol Очень высокий"). The API must always drive the classic Chat surface —
  // force the Chat segment whenever Work is (or may be) active. Work is the DEFAULT tab on
  // the Pro account since 2026-07-10, so this runs on every preflight.
@@ -1091,7 +1258,8 @@ index 10fab6b..5a9207d 100644
 +    // An observed Chat/Work control can be switched before upload. Confirm the
 +    // result explicitly; an empty/unreadable pill cannot stand in for success.
 +    try {
-+      await p.getByRole(state.chatRole, { name: /^chat$/i }).first().click({ timeout: 1200 });
++      const chatName = state.chatLabel === '聊天' ? /^聊天$/ : /^chat$/i;
++      await p.getByRole(state.chatRole, { name: chatName }).first().click({ timeout: 1200 });
 +      await p.waitForTimeout(600);
 +    } catch {
 +      throwIfAborted(signal);
@@ -1103,7 +1271,32 @@ index 10fab6b..5a9207d 100644
    try {
      const seg = await p.evaluate(() => {
        const norm = (s) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
-@@ -1458,7 +1478,8 @@ async function countAttachmentChips(p) {
+@@ -1384,11 +1405,22 @@ async function ensureNewChat(p) {
+ 
+   await recoverContentFailed(p);
+ 
+-  for (let i = 0; i < 15; i++) {
++  // The signed-in Chat shell can render its header well before hydration adds
++  // the composer. The local strict runner waits for that known visible editor
++  // before checking the surface; absence must never count as ordinary Chat.
++  const ordinaryChatOnly = envFlag('ORDINARY_CHAT_ONLY');
++  const composerPolls = ordinaryChatOnly ? 60 : 15;
++  let composerReady = false;
++  for (let i = 0; i < composerPolls; i++) {
+     const textarea = await p.$(COMPOSER_VISIBLE_SEL);
+-    if (textarea) break;
++    if (textarea) { composerReady = true; break; }
+     await p.waitForTimeout(1000);
+   }
++  if (ordinaryChatOnly && !composerReady) {
++    const error = new Error('Ordinary Chat composer did not become visible within 60 seconds.');
++    error.code = 'page_load_failed';
++    throw error;
++  }
+ 
+   await composerPreflight(p);
+   await clearComposer(p);
+@@ -1458,7 +1490,8 @@ async function countAttachmentChips(p) {
  // final chip count to be >= files.length before considering the upload confirmed.
  // Returns the number of attachment chips visible after the last attempt. Caller
  // should compare to files.length to decide whether to fail the request.
@@ -1113,7 +1306,7 @@ index 10fab6b..5a9207d 100644
    const list = Array.isArray(imageInputs) ? imageInputs : [imageInputs];
    if (list.length === 0) return 0;
  
-@@ -1479,9 +1500,11 @@ async function uploadImage(p, imageInputs) {
+@@ -1479,9 +1512,11 @@ async function uploadImage(p, imageInputs) {
    // dispatch input/change events ourselves to wake the composer.
    const fileInput = p.locator(FILE_INPUT_SEL).first();
    await fileInput.waitFor({ state: 'attached', timeout: 10000 });
@@ -1125,7 +1318,7 @@ index 10fab6b..5a9207d 100644
      if (attempt > 1) {
        // Before wiping anything, double-check that the previous attempt didn't get
        // a late preview chip — if it did, accept success instead of clobbering it.
-@@ -1499,6 +1522,7 @@ async function uploadImage(p, imageInputs) {
+@@ -1499,6 +1534,7 @@ async function uploadImage(p, imageInputs) {
        // setInputFiles could otherwise arrive after we resubmit.
        await fileInput.setInputFiles([]).catch(() => {});
        for (let i = 0; i < 5; i++) {
@@ -1133,7 +1326,7 @@ index 10fab6b..5a9207d 100644
          const c = await countAttachmentChips(p);
          if (c === 0) break;
          await p.waitForTimeout(500);
-@@ -1506,7 +1530,9 @@ async function uploadImage(p, imageInputs) {
+@@ -1506,7 +1542,9 @@ async function uploadImage(p, imageInputs) {
      }
  
      console.log(`[upload] Attempt ${attempt}/${maxAttempts}: uploading ${files.length} file(s) via setInputFiles (${totalBytes} bytes total)...`);
@@ -1143,7 +1336,7 @@ index 10fab6b..5a9207d 100644
      await fileInput.evaluate((el) => {
        el.dispatchEvent(new Event('input', { bubbles: true }));
        el.dispatchEvent(new Event('change', { bubbles: true }));
-@@ -1514,6 +1540,7 @@ async function uploadImage(p, imageInputs) {
+@@ -1514,6 +1552,7 @@ async function uploadImage(p, imageInputs) {
  
      let confirmedThisAttempt = 0;
      for (let i = 0; i < waitIters; i++) {
@@ -1151,7 +1344,7 @@ index 10fab6b..5a9207d 100644
        const chipCount = await countAttachmentChips(p);
        if (chipCount > confirmedThisAttempt) confirmedThisAttempt = chipCount;
        if (chipCount >= files.length) break;
-@@ -1667,6 +1694,7 @@ function isReasoningPlaceholder(text) {
+@@ -1667,6 +1706,7 @@ function isReasoningPlaceholder(text) {
  }
  
  async function waitAndExtractText(p, beforeState = { assistantCount: 0, lastAssistantText: '', bodyTail: '' }, options = {}) {
@@ -1159,7 +1352,7 @@ index 10fab6b..5a9207d 100644
    console.log('Waiting for text response...');
    const start = Date.now();
    let bestText = '';
-@@ -1708,6 +1736,7 @@ async function waitAndExtractText(p, beforeState = { assistantCount: 0, lastAssi
+@@ -1708,6 +1748,7 @@ async function waitAndExtractText(p, beforeState = { assistantCount: 0, lastAssi
    };
  
    while (true) {
@@ -1167,7 +1360,7 @@ index 10fab6b..5a9207d 100644
      throwBackendPostFailure(capture);
      if (capture) {
        const snap = capture.snapshot();
-@@ -2563,7 +2592,9 @@ async function typeLines(text, typeSegment, pressNewline) {
+@@ -2563,7 +2604,9 @@ async function typeLines(text, typeSegment, pressNewline) {
  // sent so a failure in the settle window is not retried into a duplicate submission.
  // timing (optional): gets `inputMs` — time spent putting the prompt into the composer — even
  // when the call throws, so a caller retrying the turn can count every attempt's input.
@@ -1178,7 +1371,7 @@ index 10fab6b..5a9207d 100644
    console.log('Typing prompt...');
    await dismissModals(p);
    const textareaLocator = p.locator(COMPOSER_VISIBLE_SEL);
-@@ -2625,8 +2656,8 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+@@ -2625,8 +2668,8 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
        await p.waitForTimeout(300);
        typedPerKey = true;
        await typeLines(text,
@@ -1189,7 +1382,7 @@ index 10fab6b..5a9207d 100644
      } else {
        await textareaLocator.first().fill(text, { timeout: fillTimeoutMs(text) });
      }
-@@ -2650,8 +2681,8 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+@@ -2650,8 +2693,8 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
        const typeDeadline = Date.now() + typeTimeout;
        const remaining = () => Math.max(1, typeDeadline - Date.now());
        await typeLines(text,
@@ -1200,7 +1393,7 @@ index 10fab6b..5a9207d 100644
        await p.waitForTimeout(500);
      }
      // Only per-key typing can split a prompt; fill() puts the text in one transaction.
-@@ -2687,9 +2718,17 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+@@ -2687,9 +2730,17 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
    const sendLocator = p.locator(SEND_BUTTON_SEL);
    try {
      await sendLocator.first().waitFor({ state: 'visible', timeout: 5000 });
@@ -1219,7 +1412,7 @@ index 10fab6b..5a9207d 100644
      // Enter fallback: refocus the composer and confirm the prompt is still there first —
      // blind Enter into an overlay was how the 2026-07-10 send-button incident burned 360s
      // per request and jammed the queue.
-@@ -2702,6 +2741,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+@@ -2702,6 +2753,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
        err.code = 'page_load_failed';
        throw err;
      }
@@ -1227,7 +1420,7 @@ index 10fab6b..5a9207d 100644
      await p.keyboard.press('Enter');
    }
  
-@@ -2711,6 +2751,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+@@ -2711,6 +2763,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
    const submitDeadline = Date.now() + 12000;
    let submitted = false;
    while (Date.now() < submitDeadline) {
@@ -1235,7 +1428,7 @@ index 10fab6b..5a9207d 100644
      throwBackendPostFailure(capture, onSubmitted);
      if (capture?.postAccepted) { submitted = true; break; }
      const turnsNow = await countUserTurns();
-@@ -2745,6 +2786,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+@@ -2745,6 +2798,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
    if (onSubmitted) { try { onSubmitted(); } catch {} }
  
    await p.waitForTimeout(2000);
@@ -1243,7 +1436,7 @@ index 10fab6b..5a9207d 100644
  }
  
  async function dismissModals(p) {
-@@ -4234,6 +4276,9 @@ async function editImage(prompt, imageInput, options = {}) {
+@@ -4234,6 +4288,9 @@ async function editImage(prompt, imageInput, options = {}) {
  }
  
  async function completeText(prompt, options = {}) {
@@ -1253,7 +1446,7 @@ index 10fab6b..5a9207d 100644
    const slot = adoptJob(options);
    // Page-load failures on chatgpt.com tend to come in bursts (CF challenge,
    // empty SPA boot, transient 5xx from OpenAI). One in-process retry leaves a
-@@ -4259,18 +4304,53 @@ async function completeText(prompt, options = {}) {
+@@ -4259,18 +4316,53 @@ async function completeText(prompt, options = {}) {
      // AFTER submit must not retry — a fresh chat would re-send the same prompt (duplicate
      // generation / side effects). Before submit, retrying is safe.
      let submitted = false;
@@ -1307,7 +1500,7 @@ index 10fab6b..5a9207d 100644
  
        const beforeState = await captureTextState(p);
        // Prime BEFORE opening the capture, and the order is load-bearing twice over.
-@@ -4291,8 +4371,9 @@ async function completeText(prompt, options = {}) {
+@@ -4291,8 +4383,9 @@ async function completeText(prompt, options = {}) {
        // never retry into a duplicate send. The post-call assignment is a backstop.
        const timing = {};
        if (typeof options.beforeSubmit === 'function') await options.beforeSubmit();
@@ -1318,7 +1511,7 @@ index 10fab6b..5a9207d 100644
        } finally {
          inputSpentMs += timing.inputMs || 0;
        }
-@@ -4305,7 +4386,9 @@ async function completeText(prompt, options = {}) {
+@@ -4305,7 +4398,9 @@ async function completeText(prompt, options = {}) {
          onDelta,
          prompt,      // subtracted from the tier-limit scan: it is rendered on the page too
          inputMs: inputSpentMs, // every attempt's input, not just this one's
@@ -1328,7 +1521,7 @@ index 10fab6b..5a9207d 100644
  
        if (thinkingState.verified) markHealthyCompletion(slot);
        // conversation_id sources, best first: backend-api capture → chat URL after the
-@@ -4323,12 +4406,31 @@ async function completeText(prompt, options = {}) {
+@@ -4323,12 +4418,31 @@ async function completeText(prompt, options = {}) {
            thinking_verified: !!thinkingState.verified,
            requested_verified: !!thinkingState.requestedVerified,
            thinking_fallback: thinkingState.fallback || null,
@@ -1362,7 +1555,7 @@ index 10fab6b..5a9207d 100644
            && slot.pendingReset !== 'hard' && stallRetryState.used < TEXT_STALL_RETRIES) {
          stallRetryState.used += 1;
          if (typeof options.onAttemptFinished === 'function') options.onAttemptFinished();
-@@ -4372,6 +4474,10 @@ async function completeText(prompt, options = {}) {
+@@ -4372,6 +4486,10 @@ async function completeText(prompt, options = {}) {
          if (needsHardReset) {
            requestMaintenanceNoAwait('hard-reset', () => hardResetBrowser(), slot.epoch);
          }
@@ -1373,7 +1566,7 @@ index 10fab6b..5a9207d 100644
          throw err;
        }
  
-@@ -4379,7 +4485,7 @@ async function completeText(prompt, options = {}) {
+@@ -4379,7 +4497,7 @@ async function completeText(prompt, options = {}) {
        if (needsHardReset) {
          // Pre-submit: hand the slot back and let the pool run the reset between jobs.
          requestMaintenanceNoAwait('hard-reset', () => hardResetBrowser(), slot.epoch);
@@ -1382,7 +1575,7 @@ index 10fab6b..5a9207d 100644
          again.code = err.code || 'page_load_failed';
          again.retryAfterMaintenance = true;
          throw again;
-@@ -4389,6 +4495,7 @@ async function completeText(prompt, options = {}) {
+@@ -4389,6 +4507,7 @@ async function completeText(prompt, options = {}) {
        // Light backoff so we don't slam ChatGPT during a wider outage.
        await new Promise(r => setTimeout(r, 1500 + 1000 * attempt));
      } finally {
@@ -1390,12 +1583,32 @@ index 10fab6b..5a9207d 100644
        // Stop feeding this turn's accumulator — a late/leaked SSE body from an aborted
        // attempt must never bleed into the next turn's capture.
        endBackendCapture(slot);
+@@ -4488,6 +4607,7 @@ module.exports = {
+     CHAT_COMPLETION_TIMEOUT_MS,
+     waitAndExtractText,
+     typeAndSubmit,
++    ensureNewChat,
+     appendAspectRatioHint,
+     imageOutcomePredicate,
+     setThinkingMode,
+diff --git a/src/composer-dom.js b/src/composer-dom.js
+index 7becfb9..d48e3ab 100644
+--- a/src/composer-dom.js
++++ b/src/composer-dom.js
+@@ -51,6 +51,7 @@ const FILE_INPUT_SEL = [
+ const ATTACHMENT_REMOVE_SEL = [
+   '[data-composer-attachments] button[aria-label^="Remove"]',
+   '[data-composer-attachments] button[aria-label^="Удалить"]',
++  '[data-composer-attachments] button[aria-label^="移除“"]',
+   'button[aria-label^="Remove file"]',
+   'button[aria-label^="Remove attachment"]',
+   'button[aria-label^="Remove image"]',
 diff --git a/src/lib/chat-attachment.cjs b/src/lib/chat-attachment.cjs
 new file mode 100644
-index 0000000..318873a
+index 0000000..fe409d1
 --- /dev/null
 +++ b/src/lib/chat-attachment.cjs
-@@ -0,0 +1,237 @@
+@@ -0,0 +1,245 @@
 +'use strict';
 +
 +const {
@@ -1456,6 +1669,7 @@ index 0000000..318873a
 +  const norm = text => String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
 +  const active = element => element.getAttribute('aria-selected') === 'true'
 +    || element.getAttribute('aria-checked') === 'true'
++    || element.getAttribute('aria-pressed') === 'true'
 +    || element.getAttribute('aria-current') != null
 +    || ['active', 'checked', 'on'].includes(element.getAttribute('data-state') || '');
 +  const url = new URL(location.href);
@@ -1464,8 +1678,8 @@ index 0000000..318873a
 +    return { mode: 'unknown', switcher: false };
 +  }
 +  const buttons = Array.from(document.querySelectorAll('button, [role="button"], [role="tab"]')).filter(visible);
-+  const chats = buttons.filter(element => norm(element.innerText || element.textContent) === 'chat');
-+  const works = buttons.filter(element => norm(element.innerText || element.textContent) === 'work');
++  const chats = buttons.filter(element => ['chat', '聊天'].includes(norm(element.innerText || element.textContent)));
++  const works = buttons.filter(element => ['work', '工作'].includes(norm(element.innerText || element.textContent)));
 +  const workActive = works.some(active) || buttons.some(element =>
 +    norm(element.innerText || element.textContent) === 'codex' && active(element));
 +  const pills = Array.from(document.querySelectorAll(tierSelector)).filter(visible);
@@ -1479,10 +1693,12 @@ index 0000000..318873a
 +  const switcher = chats.length === 1 && works.length === 1;
 +  const chatActive = chats.length === 1 && active(chats[0]);
 +  const chatRole = chats.length === 1 && chats[0].getAttribute('role') === 'tab' ? 'tab' : 'button';
-+  if (workActive || workPill) return { mode: 'work', switcher, chatRole };
-+  if (!composerKnown) return { mode: 'unknown', switcher, chatRole };
++  // Only return a label from the observed fixed vocabulary, never page content.
++  const chatLabel = chats.length === 1 && norm(chats[0].innerText || chats[0].textContent) === '聊天' ? '聊天' : 'Chat';
++  if (workActive || workPill) return { mode: 'work', switcher, chatRole, chatLabel };
++  if (!composerKnown) return { mode: 'unknown', switcher, chatRole, chatLabel };
 +  if (chats.length || works.length) {
-+    return { mode: switcher && chatActive && !workActive ? 'chat' : 'unknown', switcher, chatRole };
++    return { mode: switcher && chatActive && !workActive ? 'chat' : 'unknown', switcher, chatRole, chatLabel };
 +  }
 +  // Known classic Chat has its own model picker. Generic effort controls and
 +  // the absence of Work UI are insufficient on an unknown/new page layout.
@@ -1529,8 +1745,9 @@ index 0000000..318873a
 +  const chips = Array.from(form.querySelectorAll(removeSelector)).filter(visible);
 +  const matching = chips.filter(button => {
 +    const label = String(button.getAttribute('aria-label') || '').trim();
-+    return /^(?:Remove|Удалить)\s+/i.test(label)
-+      && label.slice(label.indexOf(' ') + 1).trim() === name;
++    return label === `移除“${name}”`
++      || /^(?:Remove|Удалить)\s+/i.test(label)
++        && label.slice(label.indexOf(' ') + 1).trim() === name;
 +  });
 +  const regions = Array.from(form.querySelectorAll('[data-composer-attachments]')).filter(visible);
 +  // Fall back only to a chip's own wrapper on the older composer. Do not count
@@ -1570,7 +1787,11 @@ index 0000000..318873a
 +  timeoutMs = 30000, emptyTimeoutMs = 5000, pollMs = 250,
 +  readTimeoutMs = 3000, now = Date.now, readState,
 +} = {}) {
-+  if (!image || !/^chat-vision-input\.(?:png|jpe?g|webp|gif)$/.test(image.name || '')) {
++  // Match only the request-scoped UUIDv4 names emitted by chat-vision.cjs.
++  // No paths, arbitrary filenames, control characters or shared legacy names.
++  const name = image?.name;
++  if (typeof name !== 'string' || /[\x00-\x20\x7f]/.test(name)
++      || !/^chat-vision-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:png|jpe?g|webp|gif)$/.test(name)) {
 +    throw attachmentError();
 +  }
 +  let sendAttempted = false;
@@ -1635,11 +1856,13 @@ index 0000000..318873a
 +  attachmentStateInPage, ready, chatModeError, chatSurfaceInPage, readChatSurface, assertOrdinaryChat };
 diff --git a/src/lib/chat-vision.cjs b/src/lib/chat-vision.cjs
 new file mode 100644
-index 0000000..3e3bef9
+index 0000000..cfa0d92
 --- /dev/null
 +++ b/src/lib/chat-vision.cjs
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,112 @@
 +'use strict';
++
++const { randomUUID } = require('node:crypto');
 +
 +// Keep the first vision contract intentionally narrow: one attached image on the
 +// latest user message. Never turn an unsupported image into a text-only request.
@@ -1674,7 +1897,9 @@ index 0000000..3e3bef9
 +  if (buffer.toString('base64') !== encoded) throw invalid('Image data must use canonical base64 encoding');
 +  if (!buffer.length || buffer.length > MAX_CHAT_IMAGE_BYTES) throw invalid('Image is empty or exceeds the 10 MiB image limit');
 +  if (!matchesMime(buffer, mimeType)) throw invalid('Image bytes do not match the declared image MIME type');
-+  return { name: `chat-vision-input.${EXTENSIONS[mimeType]}`, mimeType, buffer };
++  // ChatGPT can rename a reused filename with a numeric suffix. A unique ASCII
++  // name avoids that collision while retaining exact-name attachment checks.
++  return { name: `chat-vision-${randomUUID()}.${EXTENSIONS[mimeType]}`, mimeType, buffer };
 +}
 +
 +function hasImage(value) {
