@@ -52,7 +52,7 @@ async function copyClientSetup(name) {
   document.getElementById('copy-' + name + '-config').addEventListener('click', () => copyClientSetup(name));
 });
 renderClientSetup();
-window.addEventListener('pagehide', () => clearOneTimeRuntimeApiKey());
+window.addEventListener('pagehide', () => { clearOneTimeRuntimeApiKey(); clearBackendGatewayKey(); });
 const overviewLoadState = { accounts: 'loading', models: 'loading', keys: 'loading' };
 let quotaRequestState = { status: 'idle', error: null };
 const pendingQuotaAccounts = new Set();
@@ -131,7 +131,7 @@ document.getElementById('save-admin-api-key').addEventListener('click', async ()
   saveAdminApiKey(adminKeyInput.value.trim(), rememberAdminKeyInput.checked);
   const key = adminKeyInput.value.trim();
   renderResult({ message: key ? (rememberAdminKeyInput.checked ? 'Admin API Key 已明确保存到此浏览器。' : 'Admin API Key 仅在当前页面启用；刷新或关闭后不会保留。') : 'Admin API Key 已清除。' });
-  if (key) await Promise.all([loadAccounts(), loadApiKeys(), loadModels(), loadQuotas()]);
+  if (key) await Promise.all([loadAccounts(), loadApiKeys(), loadModels(), loadQuotas(), loadBackendRouting()]);
 });
 
 const oauthFlowStorageKey = 'chat2claude.oauthFlow';
@@ -721,6 +721,138 @@ function redactApiKeys(value) {
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === 'apiKey' || key === 'key' ? '<one-time-key-hidden>' : redactApiKeys(item)]));
 }
+function backendRoutingElements() {
+  const ids = { form: 'backend-routing-form', mode: 'backend-routing-mode', url: 'backend-gateway-url',
+    key: 'backend-gateway-key', models: 'backend-gateway-models', tools: 'backend-gateway-tools',
+    configStatus: 'backend-gateway-config-status', status: 'backend-routing-status',
+    save: 'save-backend-routing', refresh: 'refresh-backend-routing', clear: 'clear-backend-gateway' };
+  const elements = Object.fromEntries(Object.entries(ids).map(([name, id]) => [name, document.getElementById(id)]));
+  elements.preference = document.getElementById('backend-routing-preference');
+  elements.images = document.getElementById('backend-gateway-images');
+  elements.mappings = document.getElementById('backend-gateway-model-mappings');
+  elements.webEnabled = document.getElementById('backend-web-enabled');
+  elements.manualTarget = document.getElementById('backend-routing-manual-target');
+  elements.manualField = document.getElementById('backend-routing-manual-field');
+  elements.preferenceField = document.getElementById('backend-routing-preference-field');
+  elements.webOption = document.getElementById('backend-routing-web-option');
+  elements.webSettings = document.getElementById('backend-web-settings');
+  elements.webStatus = document.getElementById('backend-web-status');
+  return Object.keys(ids).every((name) => Boolean(elements[name])) ? elements : null;
+}
+function parseBackendModelMappings(value) {
+  const entries = new Map();
+  for (const line of value.split(/\\r?\\n/)) {
+    if (!line.trim()) continue;
+    const parts = line.split('=');
+    const source = parts[0]?.trim();
+    const target = parts[1]?.trim();
+    if (parts.length !== 2 || !source || !target || /\\s/.test(source) || /\\s/.test(target)) throw new Error(translateAdminText('网页模型映射格式错误。请每行填写一个 客户端模型或 alias=网页模型 ID，两侧不可为空或包含空白。', adminLocale));
+    if (entries.has(source)) throw new Error(translateAdminText('网页模型映射包含重复的客户端模型或 alias。每个名称只能出现一次。', adminLocale));
+    entries.set(source, target);
+  }
+  return Object.fromEntries(entries);
+}
+function clearBackendGatewayKey() {
+  const key = document.getElementById('backend-gateway-key');
+  if (key) key.value = '';
+}
+let backendRoutingPending = false;
+function updateBackendRoutingControls(elements) {
+  const webEnabled = !elements.webEnabled || elements.webEnabled.checked;
+  const manual = elements.mode.value !== 'auto';
+  if (elements.manualField) elements.manualField.hidden = !manual;
+  if (elements.preferenceField) elements.preferenceField.hidden = manual;
+  if (elements.webSettings) elements.webSettings.hidden = !webEnabled;
+  if (elements.webOption) elements.webOption.disabled = !webEnabled;
+  if (elements.webStatus) elements.webStatus.textContent = translateAdminText(webEnabled
+    ? '网页已开启；自动模式按优先级选择，手动模式使用指定上游。'
+    : '网页已关闭，仅使用 Codex；配置和选择会保留，重新开启后恢复。', adminLocale);
+  [elements.mode, elements.webEnabled, elements.save, elements.refresh, elements.clear].filter(Boolean)
+    .forEach((element) => { element.disabled = backendRoutingPending; });
+  if (elements.manualTarget) elements.manualTarget.disabled = backendRoutingPending || !manual;
+  if (elements.preference) elements.preference.disabled = backendRoutingPending || manual || !webEnabled;
+  [elements.url, elements.key, elements.models, elements.mappings, elements.tools, elements.images].filter(Boolean)
+    .forEach((element) => { element.disabled = backendRoutingPending || !webEnabled; });
+}
+function applyBackendRouting(body, elements, preserveGatewayDraft = false) {
+  if (!body || !['auto', 'codex', 'web'].includes(body.mode) || typeof body.configured !== 'boolean') throw new Error('Invalid upstream settings response.');
+  elements.mode.value = elements.manualTarget ? body.mode === 'auto' ? 'auto' : 'manual' : body.mode;
+  if (elements.manualTarget && body.mode !== 'auto') elements.manualTarget.value = body.mode;
+  if (elements.webEnabled) elements.webEnabled.checked = typeof body.webEnabled === 'boolean' ? body.webEnabled : Boolean(body.gateway);
+  if (elements.preference) elements.preference.value = body.autoPreference === 'codex' ? 'codex' : 'web';
+  if (!preserveGatewayDraft) {
+    elements.url.value = body.gateway?.baseUrl || '';
+    elements.models.value = body.gateway?.models?.join(', ') || 'auto';
+    elements.tools.checked = body.gateway?.supportsTools === true;
+    if (elements.images) elements.images.checked = body.gateway?.supportsImages === true;
+    if (elements.mappings) elements.mappings.value = Object.entries(body.gateway?.modelMappings || {}).map(([source, target]) => source + '=' + target).join('\\n');
+  }
+  const message = body.gateway
+    ? body.gateway.apiKeyConfigured ? '网页网关已配置；API Key 已设置。' : '网页网关已配置；未设置 API Key。'
+    : '尚未配置网页网关。';
+  elements.configStatus.textContent = translateAdminText(message, adminLocale);
+  updateBackendRoutingControls(elements);
+}
+async function runBackendRoutingAction(pendingMessage, successMessage, failureMessage, action) {
+  const elements = backendRoutingElements();
+  if (!elements || backendRoutingPending) return;
+  backendRoutingPending = true;
+  updateBackendRoutingControls(elements);
+  elements.status.dataset.state = 'pending';
+  elements.status.textContent = translateAdminText(pendingMessage, adminLocale);
+  try {
+    await action(elements);
+    elements.status.dataset.state = 'success';
+    elements.status.textContent = translateAdminText(successMessage, adminLocale);
+  } catch (error) {
+    elements.status.dataset.state = 'error';
+    elements.status.textContent = translateAdminText(failureMessage, adminLocale) + ' ' + (error instanceof Error ? error.message : String(error));
+  } finally {
+    backendRoutingPending = false;
+    updateBackendRoutingControls(elements);
+  }
+}
+async function loadBackendRouting() {
+  await runBackendRoutingAction('正在读取上游设置。', '上游设置已刷新。', '上游设置读取失败。输入已保留。', async (elements) => {
+    applyBackendRouting(await getJson('/admin/api/backend-routing'), elements);
+  });
+}
+function bindBackendRouting() {
+  const elements = backendRoutingElements();
+  if (!elements) return;
+  elements.webEnabled?.addEventListener('change', () => updateBackendRoutingControls(elements));
+  elements.mode.addEventListener('change', () => updateBackendRoutingControls(elements));
+  updateBackendRoutingControls(elements);
+  elements.form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await runBackendRoutingAction('正在保存上游设置。', '上游设置已保存。', '上游设置保存失败。输入已保留。', async (fields) => {
+      const mode = fields.manualTarget && fields.mode.value === 'manual' ? fields.manualTarget.value === 'web' ? 'web' : 'codex' : fields.mode.value;
+      const webEnabled = !fields.webEnabled || fields.webEnabled.checked;
+      const baseUrl = fields.url.value.trim();
+      const apiKey = fields.key.value.trim();
+      if (webEnabled && !baseUrl && (mode === 'web' || apiKey)) throw new Error(translateAdminText('请先填写网页网关地址。', adminLocale));
+      const models = fields.models.value.split(',').map((model) => model.trim()).filter(Boolean);
+      const patch = { mode, ...(fields.webEnabled ? { webEnabled } : {}), ...(fields.preference ? { autoPreference: fields.preference.value === 'codex' ? 'codex' : 'web' } : {}) };
+      if (webEnabled && baseUrl) patch.gateway = { baseUrl, models: models.length ? models : ['auto'], supportsTools: fields.tools.checked,
+        ...(fields.images ? { supportsImages: fields.images.checked } : {}),
+        ...(fields.mappings ? { modelMappings: parseBackendModelMappings(fields.mappings.value) } : {}),
+        ...(apiKey ? { apiKey } : {}) };
+      const body = await patchJson('/admin/api/backend-routing', patch);
+      applyBackendRouting(body, fields, !webEnabled);
+      if (webEnabled) fields.key.value = '';
+      await Promise.all([loadModels(), loadAccounts()]);
+    });
+  });
+  elements.refresh.addEventListener('click', () => loadBackendRouting());
+  elements.clear.addEventListener('click', async () => {
+    await runBackendRoutingAction('正在清除网页配置。', '网页配置已清除，已切换到 Codex。', '网页配置清除失败。输入已保留。', async (fields) => {
+      applyBackendRouting(await patchJson('/admin/api/backend-routing', { mode: 'codex', gateway: null }), fields);
+      fields.key.value = '';
+      await Promise.all([loadModels(), loadAccounts()]);
+    });
+  });
+}
+bindBackendRouting();
 async function getJson(url) { return requestJson(url); }
 async function postJson(url, body) { return requestJson(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); }
 async function patchJson(url, body) { return requestJson(url, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); }
@@ -772,6 +904,6 @@ async function withPendingButton(button, label, action) { if (button.disabled) r
 
 void loadQuotas();
 renderOverviewPanel();
-verifyLocalAdminSession().then(async () => { await Promise.all([loadAccounts(), loadApiKeys(), loadModels(), loadRequestDiagnostics()]); await restoreOAuthFlow(); });
+verifyLocalAdminSession().then(async () => { await Promise.all([loadAccounts(), loadApiKeys(), loadModels(), loadRequestDiagnostics(), loadBackendRouting()]); await restoreOAuthFlow(); });
 `;
 }

@@ -2,8 +2,9 @@
 
 This document mirrors the machine-readable contract in
 `apps/api/src/protocol-compatibility.ts`. The service is a Claude-compatible
-surface backed by ChatGPT/Codex text and Images adapters; it is not a full semantic
-bridge. Images generation and Responses image tools are separate upstream paths.
+surface backed by ChatGPT/Codex text and Images adapters or a separately deployed
+ordinary ChatGPT web gateway; it is not a full semantic bridge. Images generation
+and Responses image tools are separate upstream paths.
 
 ## Status legend
 
@@ -113,6 +114,21 @@ See the [usage guide](USAGE.en.md#independent-gpt-image-generation) for SDK and 
 | `codex_images_service` | `backend_dependent` | The Codex 0.160 Images service uses /backend-api/codex/images/generations with a separate 300000 ms default timeout; all five registered IDs passed one low/n=1 final-SSE PNG check on one account on 2026-10-04. Requested 1024x1024 produced 1254x1254; exact dimensions, other accounts and higher quality are not verified. |
 | `tool_calls` | `backend_dependent` | Function tools, tool choice, argument deltas, and results are mapped; availability and execution depend on the model and caller. |
 | `real_usage` | `partial` | Upstream input/output token counts are parsed when present; missing usage uses a local estimate. |
+
+## ChatGPT Web backend
+
+| Manifest feature | Status | Notes |
+| --- | --- | --- |
+| `upstream_selection` | `supported` | Enable Web before choosing Auto or manual Codex/Web. Auto prefers Web by default and matches model, capabilities and availability; manual selection limits the provider. Disabling Web uses only Codex while retaining settings. No cross-backend retry occurs after dispatch; saved history retains its account and provider. |
+| `exact_models_and_explicit_mappings` | `supported` | Configured model IDs match exactly; auto is not a wildcard. Explicit client-model or alias mappings may substitute a configured web model without claiming equivalence to the original model. |
+| `text_and_streaming_bridge` | `backend_dependent` | A separately deployed and authenticated gateway exposes OpenAI Chat Completions; its text JSON and SSE responses are adapted to Claude Messages, Chat Completions and Responses. Gateway and model behavior determine availability. |
+| `user_image_inputs` | `backend_dependent` | Image input is disabled by default. When declared supported, user messages may contain HTTPS image URLs or PNG/JPEG/WebP/GIF base64 data URLs, forwarded as OpenAI image_url parts within the shared 16 MiB serialized request limit. Vision support depends on the gateway and model. |
+| `tool_calls_and_text_results` | `backend_dependent` | Tool support is disabled by default. When declared supported, function tools, tool choice, calls and text results map through Chat Completions; the client executes local file and command tools. Each request selects one backend without an automatic Web/Codex collaboration cycle. |
+| `tool_result_images_and_image_generation` | `unsupported` | Tool-result and assistant-message images are rejected. The web adapter does not generate images; manual Web mode rejects the Images API, while Auto can use an eligible Codex account for that separate route. |
+| `native_reasoning_tiers_and_structured_output` | `unsupported` | Native reasoning replay, non-default reasoning-effort controls, non-default service tiers and structured output are unsupported by the web adapter. Unsupported request semantics are rejected instead of silently discarded. |
+| `credentials_and_enable_boundary` | `supported` | Gateway credentials are configured separately from Codex OAuth and stored in server runtime state with optional existing encryption; GET responses do not expose the Key. The Web enable switch takes precedence over Auto and request overrides; a web override while disabled returns 403. |
+| `configured_catalog_and_health_checks` | `partial` | Generation and model listing use configured IDs without calling gateway /models. Admin health checks currently require GET /v1/models to return an OpenAI-shaped model list; a failed check marks the account with a health error. |
+| `ordinary_chat_validation` | `partial` | Web refers to ordinary Chat after signing in to chatgpt.com through the separately operated gateway. Real-account gateway interoperability remains unverified; switching backends does not establish separate quotas or subscription savings. |
 
 ## Design direction
 

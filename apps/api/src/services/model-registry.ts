@@ -235,15 +235,24 @@ export class ModelRegistry {
     return this.resolveAgainst(id, discoveredModels);
   }
 
-  resolveForAccount(id: string, identity: AccountModelIdentity): ModelResolution {
+  resolveForAccount(id: string, identity: AccountModelIdentity, backendModelOverride?: string): ModelResolution {
     const catalog = this.accountCatalogs.get(accountIdentityKey(normalizeAccountIdentity(identity)));
     if (!catalog || !catalog.active) throw new ModelRegistryError(`No active discovered catalog for account: ${identity.accountId}`, 'unknown', 404);
+    if (backendModelOverride !== undefined) {
+      const alias = this.aliases.find((item) => item.id === id);
+      if (alias && !alias.enabled) throw new ModelRegistryError(`Model is disabled: ${id}`, 'disabled', 400);
+      const target = catalog.models.find((item) => item.id === backendModelOverride);
+      if (!target) throw new ModelRegistryError(`Mapped backend model is unavailable: ${backendModelOverride}`, 'unknown', 404);
+      const model = alias ? this.toRuntimeAlias({ ...alias, backendModel: target.id }, catalog.models)
+        : { ...discoveredToRuntimeModel(target), id, display_name: id };
+      return { model, backendModel: target.id, target: cloneDiscoveredModel(target) };
+    }
     return this.resolveAgainst(id, catalog.models);
   }
 
-  supportsAccountRequest(id: string, identity: AccountModelIdentity, explicit: ExplicitModelControls = {}): boolean {
+  supportsAccountRequest(id: string, identity: AccountModelIdentity, explicit: ExplicitModelControls = {}, backendModelOverride?: string): boolean {
     try {
-      const resolution = this.resolveForAccount(id, identity);
+      const resolution = this.resolveForAccount(id, identity, backendModelOverride);
       this.resolveControls(resolution, explicit);
       return true;
     } catch {

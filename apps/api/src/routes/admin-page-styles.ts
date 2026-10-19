@@ -26,14 +26,14 @@ export const ADMIN_PAGE_STYLES = String.raw`
 }
 * { box-sizing: border-box; }
 button, label, p, h1, h2, h3, h4, li, span { overflow-wrap: anywhere; }
-input, select, button, .row > *, .panel-heading > * { min-width: 0; max-width: 100%; }
+input, select, textarea, button, .row > *, .panel-heading > * { min-width: 0; max-width: 100%; }
 input[type="checkbox"] { width: 22px; min-height: 22px; accent-color: var(--accent); }
 label:has(input[type="checkbox"]) { display: flex; gap: 10px; align-items: center; min-height: 44px; }
 html { scroll-behavior: smooth; }
 body { margin: 0; min-width: 0; min-height: 100vh; overflow-wrap: anywhere; color: var(--ink); background: var(--canvas); font-family: var(--font-body); line-height: 1.55; }
-button, input, select { font: inherit; }
-button, a, input, select, summary { -webkit-tap-highlight-color: transparent; }
-button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+button, input, select, textarea { font: inherit; }
+button, a, input, select, textarea, summary { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 button { min-height: 44px; border: 1px solid var(--ink); border-radius: 4px; padding: 9px 14px; color: var(--surface-raised); background: var(--ink); font-weight: 700; cursor: pointer; }
 button:hover { background: rgb(52 56 53); }
 button:disabled { opacity: 0.48; cursor: not-allowed; }
@@ -42,7 +42,8 @@ button.secondary:hover { background: var(--surface-muted); }
 button.danger-button { color: var(--negative); background: var(--surface-raised); border-color: var(--negative); }
 button.danger-button:hover { background: var(--negative-soft); }
 a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
-input, select { width: 100%; min-height: 44px; border: 1px solid var(--line-strong); border-radius: 4px; padding: 9px 11px; color: var(--ink); background: var(--surface-raised); }
+input, select, textarea { width: 100%; min-height: 44px; border: 1px solid var(--line-strong); border-radius: 4px; padding: 9px 11px; color: var(--ink); background: var(--surface-raised); }
+textarea { resize: vertical; }
 code, pre { font-family: var(--font-mono); }
 code { overflow-wrap: anywhere; }
 pre { margin: 0; max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 4px; padding: 14px; color: rgb(27 58 53); background: rgb(231 236 232); }

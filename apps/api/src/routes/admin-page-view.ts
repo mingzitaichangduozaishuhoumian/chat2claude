@@ -124,6 +124,7 @@ function modelContextSummary(metadata: ModelContextView | undefined): string[] {
 
 function renderAccountCard(account: AdminAccountView): string {
   const stats = account.requestStats;
+  const webGateway = account.provider === 'chatgpt-web';
   const identity = account.email || account.label;
   const health = accountHealth(account);
   const imageModels = Array.isArray(account.imageModels) ? account.imageModels : [];
@@ -131,7 +132,7 @@ function renderAccountCard(account: AdminAccountView): string {
     ? account.discoveredModels.map((model) => `<li><div><code>${esc(model.id)}</code>${model.displayName && model.displayName !== model.id ? ` <span data-i18n-ignore>${esc(model.displayName)}</span>` : ''}</div><div class="muted" title="窗口来自上游模型目录，不代表客户端或当前会话的实际配置。">${modelContextSummary(model.context).map((part) => `<div>${esc(part)}</div>`).join('')}</div></li>`).join('')
     : '<li class="muted">尚未发现动态模型</li>';
   return `<article class="account-card" data-account-id="${esc(account.id)}">
-    <header class="card-header"><div class="identity"><span class="eyebrow">${esc(account.provider === 'chatgpt-session' ? 'ChatGPT Account' : 'Mock Account')}</span><h3 data-i18n-ignore>${esc(account.label)}</h3><p class="wrap-anywhere" data-i18n-ignore>${esc(identity)}</p></div><span class="state-badge ${health.tone}">${esc(health.label)}</span></header>
+    <header class="card-header"><div class="identity"><span class="eyebrow">${esc(webGateway ? 'ChatGPT Web Gateway' : account.provider === 'chatgpt-session' ? 'ChatGPT Account' : 'Mock Account')}</span><h3 data-i18n-ignore>${esc(account.label)}</h3><p class="wrap-anywhere" data-i18n-ignore>${esc(identity)}</p></div><span class="state-badge ${health.tone}">${esc(health.label)}</span></header>
     <dl class="account-summary">
       <div><dt>套餐</dt><dd>${esc(planPresentationText(account.plan ?? presentPlan(undefined, account.planType)))}</dd></div>
       <div><dt>启用</dt><dd>${account.enabled ? '已启用' : '已停用'}</dd></div>
@@ -160,17 +161,17 @@ function renderAccountCard(account: AdminAccountView): string {
       ${account.discovery?.diagnostic ? `<p class="wrap-anywhere">安全发现诊断：<code>${esc(JSON.stringify(account.discovery.diagnostic))}</code></p>` : ''}
     </details>
     <div class="card-actions" aria-label="${esc(account.label)} 账号操作">
-      <button type="button" class="secondary" data-account-health="${esc(account.id)}">刷新健康与模型</button>
+      ${webGateway ? '' : `<button type="button" class="secondary" data-account-health="${esc(account.id)}">刷新健康与模型</button>`}
       ${account.provider === 'chatgpt-session' ? `<button type="button" class="secondary" data-account-reauthorize="${esc(account.id)}" data-reauthorize-account="${esc(account.id)}">重新授权</button>` : ''}
       <button type="button" class="secondary" data-account-toggle="${esc(account.id)}" data-enabled="${String(account.enabled)}">${account.enabled ? '停用' : '启用'}</button>
-      <button type="button" class="secondary" data-account-settings="${esc(account.id)}">设置</button>
-      <button type="button" class="danger-button" data-account-delete="${esc(account.id)}" ${account.currentConcurrency > 0 ? 'disabled title="账号有进行中的请求"' : ''}>删除</button>
+      ${webGateway ? '' : `<button type="button" class="secondary" data-account-settings="${esc(account.id)}">设置</button>
+      <button type="button" class="danger-button" data-account-delete="${esc(account.id)}" ${account.currentConcurrency > 0 ? 'disabled title="账号有进行中的请求"' : ''}>删除</button>`}
     </div>
-    <form class="account-settings" data-account-settings-form="${esc(account.id)}" hidden>
+    ${webGateway ? '<p class="muted">在上游选择面板管理网页网关。</p>' : `<form class="account-settings" data-account-settings-form="${esc(account.id)}" hidden>
       <label>账号标签<input name="label" value="${esc(account.label)}" maxlength="120" /></label>
       <label>最大并发<input name="maxConcurrency" type="number" min="1" max="100" value="${account.maxConcurrency}" /></label>
       <div class="form-actions"><button type="submit">保存设置</button><button type="button" class="secondary" data-account-settings-cancel="${esc(account.id)}">取消</button></div>
-    </form>
+    </form>`}
   </article>`;
 }
 

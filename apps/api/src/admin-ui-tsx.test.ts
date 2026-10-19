@@ -177,9 +177,11 @@ describe('Admin browser source under the tsx development loader', () => {
     expect(clipboard.writeText).not.toHaveBeenCalled();
 
     expect(controls.showOneTimeRuntimeApiKey('pagehide-runtime-secret')).toBe(true);
+    getElementById('backend-gateway-key').value = 'pagehide-web-gateway-secret';
     const queuedPagehideClientCopy = controls.copyClientSetup('cc-switch');
     const queuedPagehideRawKeyCopy = controls.copyOneTimeRuntimeApiKey();
     eventListeners.get('pagehide')!();
+    expect(getElementById('backend-gateway-key').value).toBe('');
     await expect(Promise.all([queuedPagehideClientCopy, queuedPagehideRawKeyCopy])).resolves.toEqual([undefined, false]);
     expect(clipboard.writeText).not.toHaveBeenCalled();
 

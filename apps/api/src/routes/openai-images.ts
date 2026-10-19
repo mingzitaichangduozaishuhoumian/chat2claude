@@ -14,6 +14,8 @@ import { imageAccountAcquireOptions } from './image-account-eligibility.js';
 import { mapChatGptBackendError, mapRequestCancellation, parseRequestJson, unexpectedApiError } from './backend-errors.js';
 import { boundedClose } from './prepare-stream.js';
 import { logHttpRequestFailure, releaseAccountWhenDone } from './stream-lifecycle.js';
+import type { BackendRouting } from '../services/backend-routing.js';
+import { requestBackendMode, markSelectedBackend } from '../services/request-backend-routing.js';
 
 const ROUTE = '/v1/images/generations';
 const MAX_PROMPT_LENGTH = 32_000;
@@ -24,6 +26,7 @@ export interface OpenAiImagesRouteDeps {
   requestLog: RequestLog;
   operationalState?: AdminOperationalState;
   backendProvider?: 'mock' | 'session';
+  backendRouting?: BackendRouting;
   accountAcquireTimeoutMs?: number;
   sseKeepaliveIntervalMs?: number;
   logger?: Logger;
@@ -35,10 +38,12 @@ export function createOpenAiImagesRoute(deps: OpenAiImagesRouteDeps): Hono {
   app.post(ROUTE, async (c) => {
     try {
       const request = parseImageRequest(await parseRequestJson(() => c.req.json()));
+      if (requestBackendMode(c, deps.backendRouting) === 'web') throw new ClaudeApiError('Image generation is not supported by the web gateway adapter.', 501, 'api_error');
       setAccessLogMetadata(c, { model: request.model, backendModel: request.model, stream: request.stream });
       if (!deps.backend.generateImages) throw new ClaudeApiError('Image generation is not supported by this backend.', 501, 'api_error');
       // Image models have their own endpoint and must not depend on the text catalog.
       const account = await acquireRequestAccount(c, deps.accountPool, imageAccountAcquireOptions(deps.backendProvider), deps.accountAcquireTimeoutMs);
+      markSelectedBackend(c, account);
       const tracker = createAccountRequestTracker(deps.operationalState, account);
       const cancellation = new AbortController();
       const signal = AbortSignal.any([c.req.raw.signal, cancellation.signal]);

@@ -3,6 +3,7 @@ import { normalizeCodexClientVersion } from '@chatgpt-to-claude/chatgpt-backend'
 import { fileURLToPath } from 'node:url';
 import { readCommaList, readNumber, type LogLevel } from '@chatgpt-to-claude/shared';
 import { normalizeReasoningEffort, normalizeSpeedPreference, type ReasoningEffort, type SpeedPreference } from '@chatgpt-to-claude/protocol-mapper';
+import { normalizeBackendRoutingConfig, type BackendRoutingConfig } from '../services/backend-routing.js';
 
 export type ChatGptBackendProvider = 'mock' | 'session';
 
@@ -20,6 +21,7 @@ export interface AppEnv {
   mockResponsePrefix: string;
   mockBackendModelsJson?: string;
   chatGptBackend: ChatGptBackendProvider;
+  backendRouting?: BackendRoutingConfig;
   chatGptBaseUrl: string;
   /** Private transport configuration; never serialize to logs or Admin responses. */
   outboundProxyUrl?: string;
@@ -61,6 +63,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     mockResponsePrefix: source.MOCK_RESPONSE_PREFIX ?? 'Echo:',
     mockBackendModelsJson: source.MOCK_BACKEND_MODELS_JSON,
     chatGptBackend: parseBackendProvider(source.CHATGPT_BACKEND),
+    ...routingEnvironment(source),
     chatGptBaseUrl: source.CHATGPT_BASE_URL?.trim() || 'https://chatgpt.com',
     outboundProxyUrl: parseOutboundProxyUrl(source.OUTBOUND_PROXY_URL),
     chatGptRequestTimeoutMs: readNumber(source.CHATGPT_REQUEST_TIMEOUT_MS, 60000),
@@ -139,6 +142,39 @@ function parseStreamTimeout(source: NodeJS.ProcessEnv, name: string, fallback: n
 function parseBoolean(value: string | undefined): boolean { return value?.trim().toLowerCase() === 'true'; }
 function parseLogLevel(value: string | undefined): LogLevel { return value === 'debug' || value === 'warn' || value === 'error' ? value : 'info'; }
 function parseBackendProvider(value: string | undefined): ChatGptBackendProvider { return value === 'session' ? 'session' : 'mock'; }
+
+function routingEnvironment(source: NodeJS.ProcessEnv): { backendRouting?: BackendRoutingConfig } {
+  const gatewayFields = ['CHATGPT_WEB_API_KEY', 'CHATGPT_WEB_MODELS', 'CHATGPT_WEB_SUPPORTS_TOOLS', 'CHATGPT_WEB_SUPPORTS_IMAGES', 'CHATGPT_WEB_MODEL_MAPPINGS'] as const;
+  const fields = ['CHATGPT_ROUTING_MODE', 'CHATGPT_AUTO_PREFERENCE', 'CHATGPT_WEB_ENABLED', 'CHATGPT_WEB_BASE_URL', ...gatewayFields] as const;
+  if (!fields.some((field) => source[field] !== undefined)) return {};
+  const baseUrl = source.CHATGPT_WEB_BASE_URL?.trim();
+  if (!baseUrl && gatewayFields.some((field) => source[field] !== undefined)) throw new Error('CHATGPT_WEB_BASE_URL is required for web gateway configuration.');
+  const enabledValue = source.CHATGPT_WEB_ENABLED?.trim().toLowerCase();
+  if (enabledValue !== undefined && enabledValue !== 'true' && enabledValue !== 'false') throw new Error('CHATGPT_WEB_ENABLED must be true or false.');
+  const toolsValue = source.CHATGPT_WEB_SUPPORTS_TOOLS?.trim().toLowerCase();
+  if (toolsValue !== undefined && toolsValue !== 'true' && toolsValue !== 'false') throw new Error('CHATGPT_WEB_SUPPORTS_TOOLS must be true or false.');
+  const imagesValue = source.CHATGPT_WEB_SUPPORTS_IMAGES?.trim().toLowerCase();
+  if (imagesValue !== undefined && imagesValue !== 'true' && imagesValue !== 'false') throw new Error('CHATGPT_WEB_SUPPORTS_IMAGES must be true or false.');
+  let modelMappings: unknown;
+  if (source.CHATGPT_WEB_MODEL_MAPPINGS !== undefined) {
+    try { modelMappings = JSON.parse(source.CHATGPT_WEB_MODEL_MAPPINGS); }
+    catch { throw new Error('CHATGPT_WEB_MODEL_MAPPINGS must be a JSON object mapping client model IDs to configured gateway models.'); }
+  }
+  const apiKey = source.CHATGPT_WEB_API_KEY?.trim();
+  return { backendRouting: normalizeBackendRoutingConfig({
+    mode: source.CHATGPT_ROUTING_MODE?.trim() ?? 'codex',
+    ...(enabledValue === undefined ? {} : { webEnabled: enabledValue === 'true' }),
+    ...(source.CHATGPT_AUTO_PREFERENCE === undefined ? {} : { autoPreference: source.CHATGPT_AUTO_PREFERENCE.trim() }),
+    ...(baseUrl ? { gateway: {
+      baseUrl,
+      ...(apiKey ? { apiKey } : {}),
+      models: source.CHATGPT_WEB_MODELS === undefined ? ['auto'] : readCommaList(source.CHATGPT_WEB_MODELS),
+      supportsTools: toolsValue === 'true',
+      ...(imagesValue === undefined ? {} : { supportsImages: imagesValue === 'true' }),
+      ...(source.CHATGPT_WEB_MODEL_MAPPINGS === undefined ? {} : { modelMappings }),
+    } } : {}),
+  }) };
+}
 
 function parseStateEncryptionKey(value: string | undefined): Uint8Array | undefined {
   if (value === undefined) return undefined;

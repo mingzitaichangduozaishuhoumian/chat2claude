@@ -1833,7 +1833,7 @@ describe('/admin', () => {
     expect(html).toContain("await navigator.clipboard.writeText(key);");
     expect(html).toContain("if (key && persistent) localStorage.setItem('adminApiKey', key);");
     expect(html).toContain("const key = localAdminSessionActive ? '' : getStoredAdminApiKey();");
-    expect(html).toContain("verifyLocalAdminSession().then(async () => { await Promise.all([loadAccounts(), loadApiKeys(), loadModels(), loadRequestDiagnostics()]); await restoreOAuthFlow(); });");
+    expect(html).toContain("verifyLocalAdminSession().then(async () => { await Promise.all([loadAccounts(), loadApiKeys(), loadModels(), loadRequestDiagnostics(), loadBackendRouting()]); await restoreOAuthFlow(); });");
     expect(html).toContain('Runtime API Keys');
     expect(html).toContain('id="api-keys-count"');
     expect(html).toContain('未绑定，请在下方模型映射中选择后端模型并保存');

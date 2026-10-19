@@ -2,12 +2,15 @@
 
 ## Unreleased
 
-以下应用改进已合入 `main`，尚未包含在 v0.2.1 安装包中。仓库自动化已启用。
+以下应用改进包含在当前源码分支，尚未包含在 v0.2.1 安装包中。仓库自动化已启用。
 
-The following application changes are on `main` and are not included in the v0.2.1 archives. Repository automation is already enabled.
+The following application changes are in the current source branch and are not included in the v0.2.1 archives. Repository automation is already enabled.
 
 ### 中文
 
+- 网页后端指登录 chatgpt.com 后的普通 Chat，通过独立网关接入；未接入 ChatGPT Work。补充开源网关的实际兼容差异、真实账号尚未联调的边界，并同步兼容清单。
+- 上游选择改为先开启/关闭 ChatGPT 网页，再选择自动或手动模式；关闭后仅用 Codex，保留网页配置、Key、映射和模式选择，重新开启即可恢复。网页开关优先于自动路由及请求头覆盖。
+- 接入独立部署并登录的 ChatGPT 网页网关；管理台可选自动、Codex 或网页，也可用 `x-chat2claude-backend` 按请求覆盖并查看实际后端。自动默认网页优先，可切换为 Codex 优先，按模型、能力和账号可用性匹配；发送后不跨后端重试，历史固定账号与 provider。支持显式网页模型映射及图片输入/工具能力声明，凭据持久化并支持现有加密。纯网页模式可禁止 Codex 回退；每次请求只选一个后端，调用来源不等于额度节省。
 - 账号模型按文本、图片分类计数并默认折叠，展开后使用紧凑型号标签；图片接口地址只显示一次。专业模式的账号诊断、上下文详情及模型页使用说明按需展开。
 - 明确区分文本 alias 与图片生成接口；保存时拒绝已知图片型号作为新文本 alias 或后端目标，历史误绑仍可禁用、解绑、修正或删除。
 - 源码启动改为按需编译：复用未变化的成功构建，源码、配置、依赖或产物变化时重建。保留强制构建命令，并提供 `build --if-needed` 预检。
@@ -16,6 +19,9 @@ The following application changes are on `main` and are not included in the v0.2
 
 ### English
 
+- Clarified that Web means ordinary Chat after signing in to chatgpt.com through a separate gateway, without a ChatGPT Work integration. Documented source-verified gateway compatibility differences and the unverified live-account boundary, and synchronized the compatibility manifest.
+- Added a separate ChatGPT Web enable switch before Auto/Manual mode selection. Disabling Web uses only Codex and preserves gateway settings, Key, mappings, and mode selection for re-enabling. The switch takes precedence over Auto routing and request headers.
+- Added separately deployed and authenticated ChatGPT web gateways. Choose Auto, Codex, or Web in Admin, or override per request with `x-chat2claude-backend`; the response reports the actual backend. Auto prefers Web by default, offers Prefer Codex, and matches models, capabilities, and availability. No cross-backend retry after dispatch; history retains its account and provider. Explicit web model mappings and image/tool capability declarations are supported alongside existing credential persistence/encryption. Web-only mode prevents Codex fallback; each request selects one backend, and backend usage is not reported as quota savings.
 - Grouped account models into collapsed text/image catalogs with compact model-ID labels and a single Images endpoint per group. Account diagnostics, context details, and model-page guidance expand on demand.
 - Distinguished text aliases from image generation. Admin now rejects registered image IDs as new text aliases or backend targets while keeping legacy bindings repairable and removable.
 - Added source build caching: reuse unchanged successful builds and rebuild when source, configuration, dependencies, or outputs change. Forced builds remain available; `build --if-needed` prepares the build without starting the service.

@@ -13,12 +13,15 @@ import { mapRequestCancellation, mapChatGptBackendError, mapErrorPayload, parseR
 import { createAccountRequestTracker, requestErrorOutcome, trackStreamStatistics, usageFromBackend } from '../services/request-statistics.js';
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
 import { getAccessLogRequestId, getAccessLogStreamLifecycle, getAccessLogTerminal, setAccessLogMetadata } from '../middleware/access-log.js';
-import { acquireRequestAccount, checkSessionAccountAvailability } from './account-acquisition.js';
+import { acquireRequestAccount } from './account-acquisition.js';
 import type { ReasoningReplayStore } from '../services/reasoning-replay-store.js';
 import { RequestReasoningReplay } from '../services/request-reasoning-replay.js';
 import { assertTextModelEndpoint } from './text-model-endpoint.js';
+import type { BackendRouting } from '../services/backend-routing.js';
+import { checkRequestBackendAvailability, requestAccountOptions, markSelectedBackend } from '../services/request-backend-routing.js';
+import { resolveRequestModel, resolveRoutedAccountModel, supportsRoutedAccount, declaredBackendModel } from '../services/request-model-routing.js';
 
-export interface MessagesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; accountAcquireTimeoutMs?: number; sseKeepaliveIntervalMs?: number; logger?: Logger; reasoningReplayStore?: ReasoningReplayStore; }
+export interface MessagesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; backendRouting?: BackendRouting; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; accountAcquireTimeoutMs?: number; sseKeepaliveIntervalMs?: number; logger?: Logger; reasoningReplayStore?: ReasoningReplayStore; }
 
 export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
   const app = new Hono();
@@ -36,24 +39,21 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
         serviceTier: request.service_tier ?? request.speed ?? request.response_speed,
       };
       const accountProvider = accountProviderForBackend(deps.backendProvider);
-      if (deps.backendProvider === 'session') checkSessionAccountAvailability(c, deps.accountPool);
-      const globalResolution = deps.modelRegistry.resolve(request.model);
+      checkRequestBackendAvailability(c, deps);
+      const globalResolution = resolveRequestModel(c, deps, request.model);
       const accountControls = deps.modelRegistry.accountControlRequirements(globalResolution, explicitControls);
       const visibleRequest = mapClaudeRequestToChatGpt(request, {}, { backendModel: globalResolution.backendModel, resolvedControls: {} });
       const owner = c.get('reasoningReplayOwner');
       const replay = new RequestReasoningReplay(deps.reasoningReplayStore, {
-        owner: typeof owner === 'string' ? owner : undefined, provider: accountProvider, model: globalResolution.backendModel,
+        owner: typeof owner === 'string' ? owner : undefined, provider: accountProvider, model: declaredBackendModel(deps.modelRegistry, request.model, globalResolution.backendModel),
       }, visibleRequest.inputItems);
-      const account = await acquireRequestAccount(c, deps.accountPool, {
-        provider: accountProvider,
-        capability: 'messages',
-        eligible: (candidate) => replay.eligible(candidate, globalResolution.backendModel)
-          && (deps.backendProvider !== 'session' || deps.modelRegistry.supportsAccountRequest(
-            request.model,
-            { accountId: candidate.id, createdAt: candidate.createdAt },
-            accountControls,
-          )),
-      }, deps.accountAcquireTimeoutMs);
+      const account = await acquireRequestAccount(c, deps.accountPool, requestAccountOptions(c, deps, visibleRequest,
+        (candidate) => supportsRoutedAccount(deps, request.model, candidate, globalResolution, explicitControls, accountControls,
+          (resolution) => replay.eligible(candidate, resolution.backendModel)),
+        request.model,
+        declaredBackendModel(deps.modelRegistry, request.model, globalResolution.backendModel),
+      ), deps.accountAcquireTimeoutMs);
+      markSelectedBackend(c, account);
 
       const tracker = createAccountRequestTracker(deps.operationalState, account);
       const streamCancellation = new AbortController();
@@ -64,10 +64,8 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
       let streamOwner: ReturnType<typeof releaseAccountWhenDone> | undefined;
       let responseBody: ReadableStream<Uint8Array> | undefined;
       try {
-        const resolution = deps.backendProvider === 'session'
-          ? deps.modelRegistry.resolveForAccount(request.model, { accountId: account.id, createdAt: account.createdAt })
-          : globalResolution;
-        const controls = deps.modelRegistry.resolveControls(resolution, accountControls);
+        const resolution = resolveRoutedAccountModel(deps, request.model, account, globalResolution);
+        const controls = deps.modelRegistry.resolveControls(resolution, account.provider === 'chatgpt-web' ? explicitControls : accountControls);
         setAccessLogMetadata(c, { backendModel: resolution.backendModel });
         const backendRequest = mapClaudeRequestToChatGpt(request, {}, {
           backendModel: resolution.backendModel,

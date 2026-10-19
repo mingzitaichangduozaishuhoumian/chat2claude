@@ -6,9 +6,9 @@
 
 [![CI](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/workflows/ci.yml)
 
-本文说明当前 `main` 分支。模型分类折叠、图片型号防误绑和源码按需编译等改进已合入 `main`，尚未包含在 v0.2.1 安装包中；详见[未发布变更](CHANGELOG.md#unreleased)。使用这些改进请按下方源码步骤运行，已发布安装包本身无需编译。
+本文说明当前源码分支。网页网关路由、模型分类折叠、图片型号防误绑和源码按需编译等改进尚未包含在 v0.2.1 安装包中；详见[未发布变更](CHANGELOG.md#unreleased)。使用这些改进请按下方源码步骤运行，已发布安装包本身无需编译。
 
-`chatgpt-to-claude` 是一个 TypeScript + Hono 实现的本地兼容层：对外提供 Claude Messages、OpenAI Chat Completions、OpenAI Responses、Images、Models API 等接口，对内连接 mock backend 或真实 ChatGPT/Codex session backend。
+`chatgpt-to-claude` 是一个 TypeScript + Hono 实现的本地兼容层：对外提供 Claude Messages、OpenAI Chat Completions、OpenAI Responses、Images、Models API 等接口，对内连接 mock、ChatGPT/Codex session 或独立部署的 ChatGPT 网页网关。
 
 本项目面向使用本人控制或已获明确授权的 ChatGPT/Codex 账号的个人本地/私有场景。它不是订阅聚合、流量转售、多租户共享网关或公共代理服务；不要把个人订阅流量公开转售，或面向不特定第三方大规模共享。
 
@@ -165,12 +165,39 @@ Admin 控制台包含六个主要区域：
 
 1. **概览**：查看账号 ready 状态、动态模型、可用 alias、Runtime Key 数量、配额缓存和最近账号活动摘要。
 2. **账号与授权**：运行 Codex OAuth、检查账号健康与模型、重新授权、启用/停用、编辑或删除账号。文本模型、图片模型分类计数并默认折叠，展开后显示紧凑的型号标签。
-3. **模型映射**：优先展示文本 alias 的选择、启用和保存；图片目录、内置 alias 帮助和调用说明默认折叠。专业模式可设置推理、服务层级并管理自定义 alias。
+3. **模型映射**：先开启或关闭 ChatGPT 网页，再选择自动或手动模式，配置网页网关；选择、启用并保存文本 alias。图片目录、内置 alias 帮助和调用说明默认折叠。专业模式可设置推理、服务层级并管理自定义 alias。
 4. **API 接入**：生成、命名、复制、列出和撤销 Runtime API Key；查看 Base URL、endpoint 和动态 curl 示例。
 5. **配额**：读取 provider allowance 缓存，刷新单个账号或全部账号，并区分 fresh、stale、error、unknown 状态。
 6. **管理访问**：默认使用本机 HttpOnly 管理会话；专业模式在操作者自行让服务可达后提供 Admin API Key fallback。
 
 控制台默认是简洁模式，两种模式都能展开文本和图片目录。专业模式增加可折叠的**账号诊断**与**上下文窗口详情**，以及 reasoning/service-tier 控制项、自定义 alias、手动 session 导入和 Admin API Key fallback。诊断和长说明按需展开，图片接口地址在每个分组中只显示一次。
+
+### 网页网关与上游选择
+
+这里的“网页”指登录 [chatgpt.com](https://chatgpt.com) 后的普通 **Chat 对话页**。本项目接入独立的网页转 API 网关，由网关负责网页登录和网页会话；本项目不直接登录网页，也未接入 ChatGPT Work。
+
+可参考 [aurorax-neo/chat2api](https://github.com/aurorax-neo/chat2api) 或 [stufently/gpt-web-gateway](https://github.com/stufently/gpt-web-gateway)，二者能力有差异，见下表。先自行部署网关并完成普通 Chat 登录，再在 `/admin` → **模型映射** → **上游选择** 填写地址、可选 API Key 和实际支持的模型 slug。简洁模式即可完成配置。生成请求只需 OpenAI Chat Completions，不依赖 `/v1/models`；但管理 API 的网页健康检查会请求该接口，缺失时检查失败。模型 ID 原样使用，默认 `auto` 只声明该模型。
+
+| 参考实现（已核对源码，未真实联调） | 对接建议 |
+| --- | --- |
+| [aurorax-neo/chat2api，dbf6bf3](https://github.com/aurorax-neo/chat2api/tree/dbf6bf39686348449c25de3b6131ca733f448deb) | 普通聊天走网页 conversation 接口。图片使用内联 base64，暂不使用远程 HTTPS 图片 URL；工具调用由文本协议适配。其图片生成还有 Codex 分支，不能将该项目的所有调用都视为普通 Chat。 |
+| [stufently/gpt-web-gateway，893f553](https://github.com/stufently/gpt-web-gateway/tree/893f553be358210a5c045aa9f62b56ba1edc5c78) | 真浏览器驱动普通 Chat，适合文本/SSE。聊天接口忽略图片和 model 参数，不提供原生工具及 `/v1/models`；请保持图片、工具开关关闭，使用 `auto`，不要用网页健康检查判断其聊天接口是否可用。 |
+
+两个项目对 `max_tokens`、采样参数和停止条件的执行都不能视为官方 API 的硬约束。
+
+先用 **使用 ChatGPT 网页** 开关决定网页是否参与，再选择 **自动模式 / 手动模式**。关闭网页（或预置 `CHATGPT_WEB_ENABLED=false`）时仅使用 Codex，保留网关、Key、映射和模式选择，重新开启即可恢复；此开关优先于自动路由和请求头覆盖，`web` 请求头在关闭时会被拒绝。清除配置仍需点击独立的 **清除网页配置**。
+
+**自动选择** 默认网页优先，可在管理台改为 Codex 优先；先匹配模型、图片/工具等能力和可用性，网页不满足时才考虑兼容的 Codex。手动 **Codex / ChatGPT 网页** 严格限定上游；如需完全禁止 Codex 回退，请选择 **ChatGPT 网页**。请求发送后不跨后端重试。单次请求用 `x-chat2claude-backend: auto|codex|web` 覆盖，成功响应的同名 header 标明实际使用的 `codex` 或 `web`。已保存的会话历史固定到原账号及 provider。
+
+**网页模型映射** 可选，每行填写 `客户端模型或 alias=网页模型 ID`，例如 `sonnet=auto`、`opus=auto`。这会明确将对应请求改用网页 `auto`，即使该 alias 原来绑定 Codex 型号；不声明两种型号等价。目标必须是网关配置的模型 ID；未映射时仍按真实型号匹配。留空保存可清除映射。
+
+网页能力以适配声明为准：仅确认网关支持后才勾选 **工具调用** 或 **图片输入**。当前仅透传用户消息中的 HTTPS 图片 URL 或 PNG/JPEG/WebP/GIF base64 图片，整个序列化请求最多 16 MiB；工具结果图片、网页图片生成和编辑尚未接入。是否能识图由网关与网页模型决定。网页可独立回答、分析或生成代码；网关支持工具调用时，Claude Code 等客户端可以用它执行本地任务，由客户端负责文件和命令工具。每次请求选择一个后端，不默认执行“网页规划 → Codex 执行 → 网页复核”，以免增加调用。当前网页适配不支持原生 reasoning replay、推理强度、服务档位或结构化输出；这些请求不会静默降级。
+
+**额度说明**：目标是优先使用普通 Chat，减少本服务直接发往 Codex 后端的请求。普通 Chat 的限额与 Codex 的关系以实际套餐、模型和账号页面为准；本项目不使用 ChatGPT Work 的规则推断普通 Chat 是否共享额度，也不保证增加总额度。实际调用来源可从响应 header 和管理台查看；还应确认网关内部确实使用普通 Chat，而非转发回 Codex。
+
+**验证范围**：已完成离线协议测试、路由测试和隔离浏览器管理台检查，尚未使用真实普通 Chat 网关账号联调。外部网关的模型选择、图片、工具和限额不能仅凭“OpenAI 兼容”名称视为已验证支持。
+
+管理台填写的网关 API Key 仅保存在服务端现有 `runtime-state.json`，可用 `STATE_ENCRYPTION_KEY` 加密；不会由 GET 返回或保存到浏览器存储。Key 留空保留已保存值；**清除网页配置** 会移除配置和 Key，并切回 Codex。
 
 ### 文本与图片模型
 
@@ -340,11 +367,26 @@ DATA_DIR=./data
 
 `CHATGPT_BASE_URL` 是上游 ChatGPT/Codex 地址，不是 Claude Code 的客户端 Base URL。
 
+网页路由也可通过以下环境变量预置；未配置时保持 Codex 模式。后续可在管理台修改并持久化：
+
+```bash
+CHATGPT_ROUTING_MODE=auto
+CHATGPT_AUTO_PREFERENCE=web
+# CHATGPT_WEB_ENABLED=false # 关闭网页但保留配置；优先于自动路由和请求头
+CHATGPT_WEB_BASE_URL=http://127.0.0.1:8000
+CHATGPT_WEB_MODELS=auto
+CHATGPT_WEB_SUPPORTS_TOOLS=false
+CHATGPT_WEB_SUPPORTS_IMAGES=false
+# 可选：将客户端模型或 alias 明确改用网页型号；目标须列在 CHATGPT_WEB_MODELS 中
+# CHATGPT_WEB_MODEL_MAPPINGS={"sonnet":"auto","opus":"auto"}
+# CHATGPT_WEB_API_KEY=<gateway-api-key>
+```
+
 模型目录可能受请求客户端版本控制。如果刷新成功却缺少新模型，请升级服务，并在专业模式检查 discovery 诊断中的 `clientVersion`。当前兼容基线为 `0.160.0`；可用 `CODEX_CLIENT_VERSION` 显式覆盖，旧环境变量也会覆盖更新后的默认值。修改版本后需重启服务并刷新账号模型。
 
 ## 持久化与安全
 
-上述源码启动命令默认使用 `apps/api/data/`；发布包默认使用解压目录下的 `data/`。可以用 `DATA_DIR` 修改，相对路径分别基于 API 子目录和发布包根目录解析。runtime state 保存账号 session、Runtime API Key 和 alias overlay；operational state 保存净化后的管理统计、discovery/cache、quota cache 和诊断信息。
+上述源码启动命令默认使用 `apps/api/data/`；发布包默认使用解压目录下的 `data/`。可以用 `DATA_DIR` 修改，相对路径分别基于 API 子目录和发布包根目录解析。runtime state 保存账号 session、Runtime API Key、alias overlay 和网页上游配置；operational state 保存净化后的管理统计、discovery/cache、quota cache 和诊断信息。
 
 源码启动读取进程环境变量；发布包启动器还会读取包根目录的 `.env`，已有环境变量优先。迁移时保留原数据目录和 `STATE_ENCRYPTION_KEY`，具体步骤见[安装与升级](INSTALL.md)。
 

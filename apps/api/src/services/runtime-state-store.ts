@@ -6,6 +6,7 @@ import { normalizeReasoningEffort, normalizeSpeedPreference } from '@chatgpt-to-
 import type { AccountProvider, AccountStatus, AccountPoolState, PersistedAccount } from './account-pool.js';
 import { legacyRuntimeApiKeyId, type RuntimeApiKeyRecord, type RuntimeApiKeysPersistedSnapshot, type RuntimeApiKeysSnapshot } from './runtime-api-keys.js';
 import type { AliasOverlay } from './model-registry.js';
+import { normalizeBackendRoutingConfig, type BackendRoutingConfig } from './backend-routing.js';
 
 const STATE_VERSION = 2;
 const ENCRYPTION_ALGORITHM = 'aes-256-gcm';
@@ -21,6 +22,7 @@ export interface RuntimeStateV2 {
   accounts: PersistedAccount[];
   runtimeApiKeys: RuntimeApiKeysPersistedSnapshot;
   modelAliases: AliasOverlay[];
+  backendRouting?: BackendRoutingConfig;
 }
 
 export type RuntimeState = RuntimeStateV2;
@@ -158,8 +160,8 @@ export class RuntimeStateStore {
   }
 }
 
-export function createRuntimeState(accounts: AccountPoolState, runtimeApiKeys: RuntimeApiKeysSnapshot, modelAliases: AliasOverlay[]): RuntimeState {
-  return validateState({ version: STATE_VERSION, accounts: accounts.accounts, runtimeApiKeys, modelAliases });
+export function createRuntimeState(accounts: AccountPoolState, runtimeApiKeys: RuntimeApiKeysSnapshot, modelAliases: AliasOverlay[], backendRouting?: BackendRoutingConfig): RuntimeState {
+  return validateState({ version: STATE_VERSION, accounts: accounts.accounts, runtimeApiKeys, modelAliases, ...(backendRouting === undefined ? {} : { backendRouting }) });
 }
 
 function validateState(value: unknown): RuntimeState {
@@ -168,7 +170,7 @@ function validateState(value: unknown): RuntimeState {
     const legacy = strictObject(preliminary, ['version', 'accounts', 'runtimeApiKeys'], 'runtime state');
     return validateState({ version: STATE_VERSION, accounts: legacy.accounts, runtimeApiKeys: legacy.runtimeApiKeys, modelAliases: [] });
   }
-  const root = strictObject(preliminary, ['version', 'accounts', 'runtimeApiKeys', 'modelAliases'], 'runtime state');
+  const root = strictObject(preliminary, ['version', 'accounts', 'runtimeApiKeys', 'modelAliases', 'backendRouting'], 'runtime state', ['backendRouting']);
   if (root.version !== STATE_VERSION) throw new RuntimeStateStoreError('Unsupported runtime state version. Expected version 1 or 2.');
   if (!Array.isArray(root.accounts)) throw invalid('accounts must be an array');
   if (!Array.isArray(root.modelAliases)) throw invalid('modelAliases must be an array');
@@ -177,7 +179,12 @@ function validateState(value: unknown): RuntimeState {
   const runtimeApiKeys = validateRuntimeApiKeys(root.runtimeApiKeys);
   const modelAliases = root.modelAliases.map((alias, index) => validateAlias(alias, index));
   if (new Set(modelAliases.map((alias) => alias.id)).size !== modelAliases.length) throw invalid('modelAliases contains duplicate ids');
-  return { version: STATE_VERSION, accounts, runtimeApiKeys, modelAliases };
+  let backendRouting: BackendRoutingConfig | undefined;
+  if (root.backendRouting !== undefined) {
+    try { backendRouting = normalizeBackendRoutingConfig(root.backendRouting); }
+    catch { throw invalid('backendRouting configuration is invalid'); }
+  }
+  return { version: STATE_VERSION, accounts, runtimeApiKeys, modelAliases, ...(backendRouting === undefined ? {} : { backendRouting }) };
 }
 
 function validateAlias(value: unknown, index: number): AliasOverlay {
@@ -216,7 +223,7 @@ function validateAlias(value: unknown, index: number): AliasOverlay {
 function validateAccount(value: unknown, index: number): PersistedAccount {
   const label = `accounts[${index}]`;
   const raw = strictObject(value, ['id', 'label', 'provider', 'status', 'enabled', 'maxConcurrency', 'lastUsedAt', 'lastError', 'lastErrorCode', 'cooldownUntil', 'capabilities', 'secret', 'createdAt'], label, ['secret']);
-  const provider = enumValue(raw.provider, ['mock', 'chatgpt-session'] as const, `${label}.provider`);
+  const provider = enumValue(raw.provider, ['mock', 'chatgpt-session', 'chatgpt-web'] as const, `${label}.provider`);
   return {
     id: nonEmptyString(raw.id, `${label}.id`),
     label: nonEmptyString(raw.label, `${label}.label`),
