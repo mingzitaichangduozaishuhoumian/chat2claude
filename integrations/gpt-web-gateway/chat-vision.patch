@@ -1,0 +1,2119 @@
+diff --git a/package.json b/package.json
+index e32d637..5c27b4f 100644
+--- a/package.json
++++ b/package.json
+@@ -8,6 +8,7 @@
+     "dev": "node --watch src/server.js",
+     "login": "node src/login.js",
+     "auto-login": "node src/auto-login.js",
++    "test:vision": "node scripts/test-chat-vision.js && node --test scripts/test-chat-attachment.js scripts/test-chat-shutdown.js",
+     "test": "node scripts/test-auth.js && node scripts/test-composer-dom.js && node scripts/test-classify.js && node scripts/test-params.js && node scripts/test-tiers.js && node scripts/test-progress.js && node scripts/test-pacer.js && node scripts/test-job-pool.js && node scripts/test-fill-timeout.js && node scripts/test-multiline-typing.js && node scripts/test-cooldown.js && node scripts/test-refusal-detect.js && node scripts/test-conversation-read.js && node scripts/test-conversation-trim.js && node scripts/test-sse-transform.js && node scripts/test-session-health.js && node scripts/test-login-diagnostics.js && node scripts/test-session-check.js && node scripts/test-browser-fingerprint.js && node scripts/test-cloudflare.js && node scripts/test-cf-navigate.js && node scripts/test-turnstile.js && node scripts/test-text-extraction.js && node scripts/test-totp-step.js && node scripts/test-parallel-slots.js && node scripts/test-parallel-routes.js && node scripts/test-express5-compat.js && node scripts/test-stall-diagnostics.js && node scripts/test-stall-routes.js && node scripts/test-stall-review.js && node scripts/test-stall-gate.js"
+   },
+   "dependencies": {
+diff --git a/scripts/test-chat-attachment.js b/scripts/test-chat-attachment.js
+new file mode 100644
+index 0000000..4ecade7
+--- /dev/null
++++ b/scripts/test-chat-attachment.js
+@@ -0,0 +1,493 @@
++'use strict';
++
++const test = require('node:test');
++const assert = require('node:assert/strict');
++const {
++  createChatAttachmentGuard, attachmentStateInPage, ready, safeChatImageError, chatSurfaceInPage,
++} = require('../src/lib/chat-attachment.cjs');
++const { fixture } = require('./test-stall-diagnostics');
++const { COMPOSER_SELECTORS, SEND_BUTTON_SEL, ATTACHMENT_REMOVE_SEL, TIER_TRIGGER_SEL } = require('../src/composer-dom');
++
++const image = { name: 'chat-vision-input.png', mimeType: 'image/png', buffer: Buffer.from('offline-image-fixture') };
++const readyState = () => ({ known: true, count: 1, matching: 1, previewLoaded: true,
++  busy: false, uploadError: false, sendReady: true });
++
++function domState({ chips = 1, wrongName = false, loaded = true, busy = false,
++  uploadError = false, sendDisabled = false, unknown = false, hidden = false } = {}) {
++  const node = (attrs = {}) => ({ parentElement: null, disabled: false,
++    getClientRects: () => hidden ? [] : [{}],
++    closest: selector => selector === 'form' ? form : null,
++    getAttribute: key => attrs[key] ?? null,
++    hasAttribute: key => Object.prototype.hasOwnProperty.call(attrs, key),
++  });
++  const preview = Object.assign(node(), { complete: loaded, naturalWidth: loaded ? 16 : 0 });
++  const region = Object.assign(node(), { querySelectorAll: selector => selector === 'img' ? [preview] : [] });
++  const buttons = Array.from({ length: chips }, () => Object.assign(node({
++    'aria-label': 'Remove ' + (wrongName ? 'old-image.png' : image.name),
++  }), { parentElement: region }));
++  const send = Object.assign(node(sendDisabled ? { disabled: '' } : {}), { disabled: sendDisabled });
++  const form = Object.assign(node(), { querySelectorAll: selector => {
++    if (selector === ATTACHMENT_REMOVE_SEL) return buttons;
++    if (selector === SEND_BUTTON_SEL) return [send];
++    if (selector === '[data-composer-attachments]') return [region];
++    if (selector.includes('[aria-busy=')) return busy ? [node()] : [];
++    if (selector.includes('[data-state="error"]')) return uploadError ? [node()] : [];
++    return [];
++  } });
++  const editor = node();
++  const oldDocument = global.document;
++  global.document = { querySelectorAll: selector => selector === COMPOSER_SELECTORS.join(', ')
++    ? unknown ? [] : [editor] : [] };
++  try {
++    return attachmentStateInPage({ name: image.name, composerSelector: COMPOSER_SELECTORS.join(', '),
++      sendSelector: SEND_BUTTON_SEL, removeSelector: ATTACHMENT_REMOVE_SEL });
++  } finally {
++    if (oldDocument === undefined) delete global.document; else global.document = oldDocument;
++  }
++}
++
++test('DOM guard requires one named, loaded attachment and an enabled send button', () => {
++  assert.equal(ready(domState()), true);
++  for (const scenario of [{ chips: 0 }, { chips: 2 }, { wrongName: true }, { loaded: false },
++    { busy: true }, { uploadError: true }, { sendDisabled: true }, { unknown: true }, { hidden: true }]) {
++    assert.equal(ready(domState(scenario)), false, JSON.stringify(scenario));
++  }
++});
++
++function surfaceDomState({ switcher = true, chatActive = true, workActive = false,
++  classicPicker = false, pickerText = 'ChatGPT', pillText = 'Instant',
++  composerKnown = true, url = 'https://chatgpt.com/', codexActive = false } = {}) {
++  const element = (text, attrs = {}) => ({ innerText: text, textContent: text,
++    getClientRects: () => [{}], getAttribute: key => attrs[key] ?? null,
++    closest: selector => selector === 'form' ? {} : null,
++  });
++  const buttons = switcher ? [element('Chat', { 'aria-selected': String(chatActive) }),
++    element('Work', { 'aria-selected': String(workActive) })] : [];
++  if (codexActive) buttons.push(element('Codex', { 'aria-selected': 'true' }));
++  const oldDocument = global.document;
++  const oldLocation = global.location;
++  global.location = { href: url };
++  global.document = { querySelectorAll: selector => {
++    if (selector === 'button, [role="button"], [role="tab"]') return buttons;
++    if (selector === COMPOSER_SELECTORS.join(', ')) return composerKnown ? [element('')] : [];
++    if (selector === TIER_TRIGGER_SEL) return pillText ? [element(pillText)] : [];
++    if (selector === 'button[data-testid="model-switcher-dropdown-button"]') return classicPicker ? [element(pickerText)] : [];
++    return [];
++  } };
++  try { return chatSurfaceInPage({ composerSelector: COMPOSER_SELECTORS.join(', '), tierSelector: TIER_TRIGGER_SEL }); }
++  finally {
++    if (oldDocument === undefined) delete global.document; else global.document = oldDocument;
++    if (oldLocation === undefined) delete global.location; else global.location = oldLocation;
++  }
++}
++
++test('surface predicate requires positive ordinary Chat evidence and rejects Work/Codex', () => {
++  assert.equal(surfaceDomState().mode, 'chat');
++  assert.equal(surfaceDomState({ switcher: false, classicPicker: true }).mode, 'chat');
++  for (const scenario of [
++    { chatActive: false, workActive: true }, { chatActive: true, workActive: true },
++    { chatActive: false, workActive: false }, { switcher: false, classicPicker: false },
++    { switcher: false, classicPicker: true, pickerText: 'ChatGPT Work' },
++    { pillText: '5.6 Sol Very high' }, { codexActive: true },
++    { composerKnown: false }, { url: 'https://chatgpt.com/work' },
++    { url: 'https://chatgpt.com/codex' }, { url: 'https://example.invalid/' },
++  ]) assert.notEqual(surfaceDomState(scenario).mode, 'chat', JSON.stringify(scenario));
++});
++
++test('a preview is not upload completion: ready waits for two consistent complete states', async () => {
++  let now = 0;
++  const states = [{ ...readyState(), busy: true }, { ...readyState(), sendReady: false }, readyState(), readyState()];
++  let reads = 0;
++  const guard = createChatAttachmentGuard(image, undefined, {
++    now: () => now, pollMs: 10, timeoutMs: 100,
++    readState: async () => { reads++; return states.shift(); },
++  });
++  await guard.waitReady({ waitForTimeout: async ms => { now += ms; } });
++  assert.equal(reads, 4);
++});
++
++test('unknown DOM and read failures fail closed without exposing the browser error', async () => {
++  let now = 0;
++  const guard = createChatAttachmentGuard(image, undefined, {
++    now: () => now, timeoutMs: 20, pollMs: 10,
++    readState: async () => { throw new Error('private prompt cookie base64'); },
++  });
++  await assert.rejects(guard.waitReady({ waitForTimeout: async ms => { now += ms; } }), error =>
++    error.code === 'upload_failed' && !/private|prompt|cookie|base64/.test(error.message));
++});
++
++test('attachment guard cancellation does not expose AbortSignal.reason', async () => {
++  const controller = new AbortController();
++  controller.abort('private prompt cookie base64');
++  const guard = createChatAttachmentGuard(image, controller.signal);
++  await assert.rejects(guard.beforeSend({ evaluate: async () => readyState() }), error =>
++    error.code === 'request_cancelled' && !/private|prompt|cookie|base64/.test(error.message));
++});
++
++test('a wedged read-only DOM observation cannot hold the sending guard forever', async () => {
++  const guard = createChatAttachmentGuard(image, undefined, {
++    readTimeoutMs: 5, readState: () => new Promise(() => {}),
++  });
++  await assert.rejects(guard.beforeSend({ evaluate: async () => ({ mode: 'chat' }) }), error => error.code === 'upload_failed');
++});
++
++test('vision error wrapper drops unsafe message and modelMessage fields', () => {
++  const error = safeChatImageError({ code: 'timeout', message: 'private prompt cookie base64',
++    modelMessage: 'private', cause: new Error('private') });
++  assert.equal(error.code, 'timeout');
++  assert.equal(error.modelMessage, undefined);
++  assert.equal(error.cause, undefined);
++  assert.doesNotMatch(error.message, /private|prompt|cookie|base64/);
++});
++
++function visionPage(page, scenario = {}) {
++  const p = page({ answer: scenario.answer !== false });
++  const evaluate = p.evaluate.bind(p);
++  const locator = p.locator.bind(p);
++  const send = p.send.bind(p);
++  p.attachments = 0;
++  p.uploads = [];
++  p.keys = [];
++  p.guardReads = 0;
++  p.surfaceChecks = 0;
++  p.chatClicks = 0;
++  p.surface = scenario.surface || { mode: 'chat', switcher: false };
++  p.evaluate = async (fn, arg) => {
++    const source = String(fn);
++    if (fn.name === 'chatSurfaceInPage') {
++      p.surfaceChecks++;
++      await scenario.onSurface?.(p);
++      if (scenario.surfaceReadFails) throw new Error('private surface DOM failure');
++      return p.surface;
++    }
++    if (fn.name === 'attachmentStateInPage') {
++      p.guardReads++;
++      await scenario.onGuard?.(p);
++      return { ...readyState(), count: p.attachments, matching: p.attachments,
++        ...(p.attachments > 0 ? scenario.state : {}), ...(p.guardState || {}) };
++    }
++    if (arg === ATTACHMENT_REMOVE_SEL) {
++      if (source.includes('btn.click()')) { p.attachments = scenario.staleAttachment ? 1 : 0; return; }
++      return p.attachments;
++    }
++    const result = await evaluate(fn, arg);
++    if (source.includes('captionSrc') && arg?.matchers) await scenario.onTierRead?.(p);
++    return result;
++  };
++  p.getByRole = () => {
++    const button = { first: () => button, click: async () => {
++      p.chatClicks++;
++      if (scenario.switchFails) throw new Error('private click failure');
++      if (scenario.switchToChat) p.surface = { mode: 'chat', switcher: true, chatRole: 'button' };
++    } };
++    return button;
++  };
++  p.locator = selector => {
++    if (/input\[type="file"\]|upload-photos/.test(selector)) {
++      const file = { first: () => file, waitFor: async () => {}, evaluate: async () => {},
++        setInputFiles: async files => {
++          p.uploads.push(files);
++          p.attachments = scenario.uploadCount ?? files.length;
++          await scenario.onUpload?.(p);
++        } };
++      return file;
++    }
++    const control = locator(selector);
++    if (selector === SEND_BUTTON_SEL && scenario.sendButtonMissing) {
++      control.waitFor = async () => {
++        await scenario.onMissingSend?.(p);
++        throw new Error('The send button is unavailable.');
++      };
++    }
++    if (/prompt-textarea|contenteditable|textarea/.test(selector)) {
++      const fill = control.fill;
++      control.fill = async text => { await fill(text); await scenario.onFill?.(p); };
++    }
++    return control;
++  };
++  p.keyboard = {
++    press: async key => {
++      p.keys.push(key);
++      if (key === 'Backspace') p.composer = '';
++      if (key === 'Shift+Enter') p.composer += '\n';
++      if (key === 'Enter') await p.send();
++    },
++    type: async text => { p.composer += text; await scenario.onType?.(p); },
++  };
++  p.send = async () => {
++    await scenario.beforeClick?.(p);
++    if (p.closed) throw new Error('Page was closed while waiting to click.');
++    await send();
++    if (scenario.clickFailure) throw new Error('Execution context was destroyed: private cookie base64');
++  };
++  return p;
++}
++
++test('completeText uploads the named buffer and sends one image with text', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const p = visionPage(page); queue.push(p);
++    const result = await chat.completeText('Describe the image.', { thinkingMode: 'instant', image });
++    assert.equal(result.text, 'answer');
++    assert.equal(result.applied.image_inputs_attached, 1);
++    assert.equal(p.sends, 1);
++    assert.equal(p.uploads.length, 1);
++    assert.deepEqual(p.uploads[0], [{ name: image.name, mimeType: image.mimeType, buffer: image.buffer }]);
++    assert.ok(p.guardReads >= 4, 'empty, two ready polls and pre-send verification');
++    assert.ok(p.surfaceChecks >= 3, 'before tier selection, after tier selection and before send');
++    assert.equal(p.keys.includes('Enter'), false);
++  });
++});
++
++for (const [name, scenario] of [
++  ['Work switch fails', { surface: { mode: 'work', switcher: true, chatRole: 'button' }, switchFails: true }],
++  ['Work remains active after click', { surface: { mode: 'work', switcher: true, chatRole: 'button' } }],
++  ['surface evidence is missing', { surface: { mode: 'unknown', switcher: false } }],
++  ['surface cannot be read', { surfaceReadFails: true }],
++]) {
++  test(`${name}: image request stops before upload or send`, async () => {
++    await fixture({}, async ({ chat, page, queue, pages }) => {
++      const p = visionPage(page, scenario); queue.push(p);
++      await assert.rejects(chat.completeText('Describe the image.', { thinkingMode: 'instant', image }),
++        error => error.code === 'chat_mode_unconfirmed' && error.noRetry === true
++          && !/private/.test(error.message));
++      assert.equal(p.uploads.length, 0);
++      assert.equal(p.sends, 0);
++      assert.equal(pages.length, 1);
++      assert.equal(p.closed, true);
++    });
++  });
++}
++
++test('a confirmed Work-to-Chat switch completes before uploading the image', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const p = visionPage(page, { surface: { mode: 'work', switcher: true, chatRole: 'button' },
++      switchToChat: true, onUpload: p => assert.equal(p.surface.mode, 'chat') }); queue.push(p);
++    const result = await chat.completeText('Describe the image.', { thinkingMode: 'instant', image });
++    assert.equal(result.text, 'answer');
++    assert.equal(p.chatClicks, 1);
++    assert.equal(p.sends, 1);
++  });
++});
++
++test('surface changes back to Work while typing: no late toggle or send with attachments', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const p = visionPage(page, { onType: p => { p.surface = { mode: 'work', switcher: true, chatRole: 'button' }; } }); queue.push(p);
++    await assert.rejects(chat.completeText('Describe the image.', { thinkingMode: 'instant', image }),
++      error => error.code === 'chat_mode_unconfirmed' && error.noRetry === true);
++    assert.equal(p.uploads.length, 1);
++    assert.equal(p.chatClicks, 0, 'surface validation must be read-only once attachments exist');
++    assert.equal(p.sends, 0);
++  });
++});
++
++for (const [name, scenario] of [
++  ['upload never appears', { uploadCount: 0 }],
++  ['upload leaves extra attachments', { uploadCount: 2 }],
++  ['preview is still uploading', { state: { busy: true } }],
++  ['preview has not loaded', { state: { previewLoaded: false } }],
++  ['send is disabled', { state: { sendReady: false } }],
++  ['upload reports an error', { state: { uploadError: true } }],
++  ['composer cannot be read', { state: { known: false } }],
++  ['old attachment cannot be removed', { staleAttachment: true }],
++  ['attachment disappears while typing', { onType: p => { p.attachments = 0; } }],
++]) {
++  test(`${name}: no image request is silently sent as plain text`, async () => {
++    await fixture({}, async ({ chat, page, queue }) => {
++      const p = visionPage(page, scenario); queue.push(p);
++      await assert.rejects(chat.completeText('Describe the image.', { thinkingMode: 'instant', image }),
++        error => error.code === 'upload_failed');
++      assert.equal(p.sends, 0);
++      assert.equal(p.keys.includes('Enter'), false);
++      assert.equal(p.closed, true, 'failed attachment must not contaminate a later job');
++    });
++  });
++}
++
++test('cancellation before page acquisition creates no browser page', async () => {
++  await fixture({}, async ({ chat, pages }) => {
++    const controller = new AbortController(); controller.abort('private data');
++    await assert.rejects(chat.completeText('Describe the image.', { image, signal: controller.signal }),
++      error => error.code === 'request_cancelled');
++    assert.equal(pages.length, 0);
++  });
++});
++
++test('cancellation during upload prevents typing or send and releases its own page', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const controller = new AbortController();
++    const p = visionPage(page, { onUpload: () => controller.abort('private data') }); queue.push(p);
++    const peer = page(); chat._test.bindPage(chat.getSlot(1), peer);
++    await assert.rejects(chat.completeText('Describe the image.', { thinkingMode: 'instant', image, signal: controller.signal }),
++      error => error.code === 'request_cancelled');
++    assert.equal(p.sends, 0);
++    assert.equal(p.closed, true);
++    assert.equal(peer.closed, false);
++  });
++});
++
++test('cancellation during send pacing prevents any image send', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const controller = new AbortController();
++    const p = visionPage(page); queue.push(p);
++    await assert.rejects(chat.completeText('Describe the image.', { thinkingMode: 'instant', image,
++      signal: controller.signal, beforeSubmit: () => {
++        controller.abort('private data');
++        assert.equal(p.closed, true, 'active page closes as soon as cancellation arrives');
++      } }),
++    error => error.code === 'request_cancelled');
++    assert.equal(p.sends, 0);
++  });
++});
++
++test('cancellation while a click is waiting closes the page before the action sends', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const controller = new AbortController();
++    const p = visionPage(page, { beforeClick: async () => {
++      await Promise.resolve();
++      controller.abort('private data');
++      assert.equal(p.closed, true);
++    } }); queue.push(p);
++    await assert.rejects(chat.completeText('Describe the image.', { thinkingMode: 'instant', image,
++      signal: controller.signal }), error => error.code === 'request_cancelled');
++    assert.equal(p.sends, 0);
++    assert.equal(p.keys.includes('Enter'), false);
++  });
++});
++
++test('a completed image request removes its cancellation listener before the next job', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const controller = new AbortController();
++    const p = visionPage(page); queue.push(p);
++    await chat.completeText('Describe the image.', { thinkingMode: 'instant', image, signal: controller.signal });
++    controller.abort('late cancellation');
++    assert.equal(p.closed, false, 'an old signal must not close a page owned by a later job');
++  });
++});
++
++test('click failure after send never triggers Enter or a new image turn', async () => {
++  await fixture({ CHATGPT_TEXT_RETRY_ATTEMPTS: '4' }, async ({ chat, page, queue, pages }) => {
++    const p = visionPage(page, { clickFailure: true }); queue.push(p, visionPage(page));
++    await assert.rejects(chat.completeText('Describe the image.', { thinkingMode: 'instant', image }), error =>
++      error.noRetry === true && !/private|cookie|base64/.test(error.message));
++    assert.equal(p.sends, 1);
++    assert.equal(p.keys.includes('Enter'), false);
++    assert.equal(pages.length, 1);
++  });
++});
++
++test('a stalled image turn cannot use the upstream text stall resend path', async () => {
++  await fixture({ CHATGPT_TEXT_RETRY_ATTEMPTS: '4', TEXT_STALL_RETRIES: '4' }, async ({ chat, page, queue, pages }) => {
++    const p = visionPage(page, { answer: false }); queue.push(p, visionPage(page));
++    const retryState = { used: 0 };
++    await assert.rejects(chat.completeText('Describe the image.', { thinkingMode: 'instant', image,
++      stallRetryState: retryState }), error => error.code === 'timeout' && error.noRetry === true);
++    assert.equal(p.sends, 1);
++    assert.equal(pages.length, 1);
++    assert.equal(retryState.used, 0);
++  });
++});
++
++test('a pre-send browser recovery uploads the image again before its first send', async () => {
++  await fixture({ CHATGPT_TEXT_RETRY_ATTEMPTS: '2' }, async ({ chat, page, queue }) => {
++    const first = visionPage(page); const second = visionPage(page); queue.push(first, second);
++    let preparations = 0;
++    const result = await chat.completeText('Describe the image.', { thinkingMode: 'instant', image,
++      beforeSubmit: () => {
++        if (++preparations === 1) throw Object.assign(new Error('pre-send browser failure'), { code: 'page_load_failed' });
++      } });
++    assert.equal(result.text, 'answer');
++    assert.equal(first.uploads.length, 1); assert.equal(second.uploads.length, 1);
++    assert.equal(first.sends, 0); assert.equal(second.sends, 1);
++  });
++});
++
++test('ORDINARY_CHAT_ONLY accepts confirmed ordinary Chat text without uploading an image', async () => {
++  await fixture({ ORDINARY_CHAT_ONLY: 'true' }, async ({ chat, page, queue }) => {
++    const p = visionPage(page); queue.push(p);
++    const result = await chat.completeText('A text-only question.', { thinkingMode: 'instant' });
++    assert.equal(result.text, 'answer');
++    assert.equal(result.applied.image_inputs_attached, undefined);
++    assert.equal(p.uploads.length, 0);
++    assert.equal(p.sends, 1);
++    assert.ok(p.surfaceChecks >= 4, 'preflight, pre-tier, post-tier and send must confirm Chat');
++  });
++});
++
++for (const [name, scenario] of [
++  ['Work switch fails', { surface: { mode: 'work', switcher: true, chatRole: 'button' }, switchFails: true }],
++  ['Work remains selected', { surface: { mode: 'work', switcher: true, chatRole: 'button' } }],
++  ['surface is unknown', { surface: { mode: 'unknown', switcher: false } }],
++  ['surface cannot be read', { surfaceReadFails: true }],
++]) {
++  test(`ORDINARY_CHAT_ONLY text ${name}: fails closed without send or retry`, async () => {
++    await fixture({ ORDINARY_CHAT_ONLY: 'true', CHATGPT_TEXT_RETRY_ATTEMPTS: '4' }, async ({ chat, page, queue, pages }) => {
++      const p = visionPage(page, scenario); queue.push(p, visionPage(page));
++      await assert.rejects(chat.completeText('A text-only question.', { thinkingMode: 'instant' }),
++        error => error.code === 'chat_mode_unconfirmed' && error.noRetry === true);
++      assert.equal(p.sends, 0);
++      assert.equal(p.uploads.length, 0);
++      assert.equal(p.keys.includes('Enter'), false);
++      assert.equal(pages.length, 1);
++      assert.equal(p.closed, true);
++    });
++  });
++}
++
++test('ORDINARY_CHAT_ONLY text rechecks after changing the thinking mode', async () => {
++  await fixture({ ORDINARY_CHAT_ONLY: 'true' }, async ({ chat, page, queue, pages }) => {
++    const p = visionPage(page, { onTierRead: p => { p.surface = { mode: 'work', switcher: true, chatRole: 'button' }; } }); queue.push(p);
++    await assert.rejects(chat.completeText('A text-only question.', { thinkingMode: 'instant' }),
++      error => error.code === 'chat_mode_unconfirmed' && error.noRetry === true);
++    assert.equal(p.sends, 0);
++    assert.equal(pages.length, 1);
++    assert.equal(p.chatClicks, 0, 'post-tier validation must not switch surfaces');
++  });
++});
++
++for (const mode of ['work', 'unknown']) {
++  test(`ORDINARY_CHAT_ONLY text rechecks before click when filling changed to ${mode}`, async () => {
++    await fixture({ ORDINARY_CHAT_ONLY: 'true' }, async ({ chat, page, queue, pages }) => {
++      const p = visionPage(page, { onFill: p => { p.surface = { mode, switcher: mode === 'work', chatRole: 'button' }; } }); queue.push(p);
++      await assert.rejects(chat.completeText('A text-only question.', { thinkingMode: 'instant' }),
++        error => error.code === 'chat_mode_unconfirmed' && error.noRetry === true);
++      assert.equal(p.sends, 0);
++      assert.equal(pages.length, 1);
++      assert.equal(p.keys.includes('Enter'), false, 'a failed surface guard must not enter the fallback');
++      assert.equal(p.chatClicks, 0, 'send-time validation must not switch surfaces');
++    });
++  });
++}
++
++test('ORDINARY_CHAT_ONLY validates ordinary Chat before using the Enter fallback', async () => {
++  await fixture({ ORDINARY_CHAT_ONLY: 'true' }, async ({ chat, page, queue }) => {
++    const p = visionPage(page, { sendButtonMissing: true }); queue.push(p);
++    const result = await chat.completeText('A text-only question.', { thinkingMode: 'instant' });
++    assert.equal(result.text, 'answer');
++    assert.equal(p.sends, 1);
++    assert.equal(p.keys.includes('Enter'), true);
++    assert.ok(p.surfaceChecks >= 4);
++  });
++});
++
++test('ORDINARY_CHAT_ONLY blocks the Enter fallback after the page changes to Work', async () => {
++  await fixture({ ORDINARY_CHAT_ONLY: 'true' }, async ({ chat, page, queue, pages }) => {
++    const p = visionPage(page, { sendButtonMissing: true,
++      onMissingSend: p => { p.surface = { mode: 'work', switcher: true, chatRole: 'button' }; } }); queue.push(p);
++    await assert.rejects(chat.completeText('A text-only question.', { thinkingMode: 'instant' }),
++      error => error.code === 'chat_mode_unconfirmed' && error.noRetry === true);
++    assert.equal(p.sends, 0);
++    assert.equal(p.keys.includes('Enter'), false);
++    assert.equal(pages.length, 1);
++    assert.equal(p.chatClicks, 0);
++  });
++});
++
++test('ordinary upstream text compatibility is unchanged when ORDINARY_CHAT_ONLY is disabled', async () => {
++  await fixture({ ORDINARY_CHAT_ONLY: 'false' }, async ({ chat, page, queue }) => {
++    const p = visionPage(page, { surface: { mode: 'unknown', switcher: false } }); queue.push(p);
++    const result = await chat.completeText('Legacy text request.', { thinkingMode: 'instant' });
++    assert.equal(result.text, 'answer');
++    assert.equal(p.sends, 1);
++    assert.equal(p.surfaceChecks, 0);
++  });
++});
+diff --git a/scripts/test-chat-shutdown.js b/scripts/test-chat-shutdown.js
+new file mode 100644
+index 0000000..9102c09
+--- /dev/null
++++ b/scripts/test-chat-shutdown.js
+@@ -0,0 +1,145 @@
++// Real Node/HTTP/IPC shutdown tests. The owned browser is another local Node
++// process; no browser installation, network account, or ChatGPT session is used.
++const assert = require('node:assert/strict');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const net = require('node:net');
++const { spawn } = require('node:child_process');
++const test = require('node:test');
++
++const root = path.resolve(__dirname, '..');
++const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
++
++async function freePort() {
++  const server = net.createServer();
++  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
++  const port = server.address().port;
++  await new Promise((resolve) => server.close(resolve));
++  return port;
++}
++
++function alive(pid) {
++  try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; }
++}
++
++async function waitFor(predicate, description) {
++  const deadline = Date.now() + 8000;
++  while (!await predicate()) {
++    assert(Date.now() < deadline, description);
++    await pause(20);
++  }
++}
++
++function bootstrapSource(eventsPath) {
++  return `
++    const fs = require('node:fs');
++    const path = require('node:path');
++    const Module = require('node:module');
++    const { spawn } = require('node:child_process');
++    const root = ${JSON.stringify(root)};
++    const eventsPath = ${JSON.stringify(eventsPath)};
++    const record = (event) => fs.appendFileSync(eventsPath, JSON.stringify(event) + '\\n');
++    let owned;
++    let ownedExit;
++    const context = {
++      newPage: async () => ({ evaluate: async () => 'Chrome/150.0.0.0', close: async () => {} }),
++      close: async () => {},
++    };
++    const chromium = { launch: async () => {
++      record({ phase: 'launch-pending' });
++      process.send?.({ phase: 'launch-pending' });
++      await new Promise((resolve) => setTimeout(resolve, 750));
++      owned = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
++      ownedExit = new Promise((resolve) => owned.once('exit', resolve));
++      record({ phase: 'browser-open', pid: owned.pid });
++      return {
++        newContext: async () => context,
++        version: () => '150.0.0.0',
++        close: async () => {
++          if (owned.exitCode === null) owned.kill();
++          await ownedExit;
++          record({ phase: 'browser-closed' });
++        },
++      };
++    }};
++    const browser = () => require(path.join(root, 'src/browser.js'));
++    const chat = {
++      ensureSessionReady: () => browser().getContext().then(async () => {
++        record({ phase: 'context-ready' });
++        try { await browser().getContext(); record({ phase: 'unexpected-restart' }); }
++        catch { record({ phase: 'restart-blocked' }); }
++      }),
++      startSessionWatchdog: () => record({ phase: 'watchdog-started' }),
++      stopSessionWatchdog: () => record({ phase: 'watchdog-stopped' }),
++    };
++    const originalLoad = Module._load;
++    Module._load = function(request, parent, isMain) {
++      if (request === 'patchright') return { chromium };
++      if (request === 'dotenv') return { config() {} };
++      const resolved = Module._resolveFilename(request, parent);
++      if (resolved === path.join(root, 'src/chatgpt.js')) return chat;
++      if ([path.join(root, 'src/routes/images.js'), path.join(root, 'src/routes/login.js')].includes(resolved)) return require(path.join(root, 'node_modules/express')).Router();
++      if (resolved === path.join(root, 'src/metrics.js')) return { metricsHandler: (_req, res) => res.end('') };
++      if (resolved === path.join(root, 'src/progress.js')) return { progress: { liveness: () => ({ alive: true }), snapshot: () => ({}) } };
++      return originalLoad.call(this, request, parent, isMain);
++    };
++    require(path.join(root, 'src/server.js'));
++  `;
++}
++
++for (const cancellation of ['message', 'disconnect']) {
++  test(`${cancellation}: startup cancellation closes HTTP and the browser that launches later`, { timeout: 15000 }, async (t) => {
++    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gpt-gateway-shutdown-test-'));
++    const eventsPath = path.join(directory, 'events.jsonl');
++    const bootstrapPath = path.join(directory, 'bootstrap.cjs');
++    fs.writeFileSync(bootstrapPath, bootstrapSource(eventsPath));
++    const port = await freePort();
++    const child = spawn(process.execPath, [bootstrapPath], {
++      cwd: root,
++      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
++      windowsHide: true,
++      env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), API_KEY: 'offline-test-key', HEADLESS: 'false', BROWSER_ENGINE: 'patchright', BROWSER_MODE: 'default', CHROMIUM_CHANNEL: 'chrome', PROXY_SERVER: '', BROWSER_USER_AGENT: '' },
++    });
++    child.stdout.resume();
++    child.stderr.resume();
++    const exited = new Promise((resolve, reject) => {
++      child.once('error', reject);
++      child.once('exit', (code, signal) => resolve({ code, signal }));
++    });
++    const events = () => fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
++    t.after(async () => {
++      if (child.exitCode === null && child.signalCode === null) {
++        if (child.connected) child.send({ type: 'chat2claude:shutdown' }, () => {});
++        await Promise.race([exited, pause(2000)]);
++        if (child.exitCode === null && child.signalCode === null) child.kill();
++      }
++      // Cleanup only the explicitly created fake browser process, even after a regression.
++      for (const event of events().filter((event) => event.phase === 'browser-open')) if (alive(event.pid)) process.kill(event.pid);
++      const real = fs.realpathSync(directory);
++      assert.equal(path.dirname(real).toLowerCase(), fs.realpathSync(os.tmpdir()).toLowerCase());
++      assert(path.basename(real).startsWith('gpt-gateway-shutdown-test-'));
++      fs.rmSync(real, { recursive: true, force: true });
++    });
++    await waitFor(() => events().some((event) => event.phase === 'launch-pending'), 'server should begin its fake browser launch');
++    const health = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) });
++    assert.equal(health.status, 200);
++    await health.body.cancel();
++    assert(!events().some((event) => event.phase === 'browser-open'), 'cancel while launch is pending');
++    if (cancellation === 'message') child.send({ type: 'chat2claude:shutdown' });
++    else child.disconnect();
++    await waitFor(async () => {
++      try { const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(200) }); await response.body.cancel(); return false; }
++      catch { return true; }
++    }, 'HTTP must stop accepting requests while browser startup is settling');
++    const outcome = await exited;
++    assert.deepEqual(outcome, { code: 0, signal: null });
++    const result = events();
++    assert(result.some((event) => event.phase === 'watchdog-stopped'));
++    assert(!result.some((event) => event.phase === 'watchdog-started'), 'startup finally must not restart watchdog');
++    assert(result.some((event) => event.phase === 'browser-open'), 'a browser completing launch after cancel must be accounted for');
++    assert(result.some((event) => event.phase === 'browser-closed'), 'the late browser must close before server exit');
++    assert(result.some((event) => event.phase === 'restart-blocked'), 'shutdown must prevent context recreation');
++    for (const event of result.filter((event) => event.phase === 'browser-open')) assert.equal(alive(event.pid), false, 'the fake browser process must not be orphaned');
++  });
++}
+diff --git a/scripts/test-chat-vision.js b/scripts/test-chat-vision.js
+new file mode 100644
+index 0000000..127f750
+--- /dev/null
++++ b/scripts/test-chat-vision.js
+@@ -0,0 +1,314 @@
++'use strict';
++
++// Parser and actual HTTP routes; the ChatGPT browser boundary is stubbed so no
++// model calls, login, or browser installation are needed.
++const assert = require('assert');
++const http = require('http');
++const Module = require('module');
++const {
++  MAX_CHAT_REQUEST_BYTES, MAX_CHAT_IMAGE_BYTES, IMAGE_ONLY_PROMPT,
++  normalizeChatMessages, normalizeResponsesInput, assertChatRequestSize,
++} = require('../src/lib/chat-vision.cjs');
++
++const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aI1sAAAAASUVORK5CYII=', 'base64');
++const dataUrl = (buffer = PNG, mimeType = 'image/png') => `data:${mimeType};base64,${buffer.toString('base64')}`;
++const picture = (url = dataUrl()) => ({ type: 'image_url', image_url: { url } });
++const user = (content) => ({ role: 'user', content });
++const validBody = (extra = {}) => ({ messages: [user([{ type: 'text', text: 'What is this?' }, picture()])], ...extra });
++const tests = [];
++const add = (name, fn) => tests.push([name, fn]);
++const rejects = (fn) => assert.throws(fn, (err) => err.code === 'invalid_request' && !err.message.includes('base64,iVBO'));
++
++add('one latest user image preserves text order and actual MIME metadata', () => {
++  const result = normalizeChatMessages([
++    { role: 'system', content: 'Follow instructions' },
++    { role: 'assistant', content: 'Earlier reply' },
++    user(['first', picture(), { type: 'text', text: 'second' }]),
++  ]);
++  assert.strictEqual(result.text, 'System instructions:\nFollow instructions\n\nPrevious assistant message:\nEarlier reply\n\nUser:\nfirst\nsecond');
++  assert.deepStrictEqual(result.image, { name: 'chat-vision-input.png', mimeType: 'image/png', buffer: PNG });
++  assert.strictEqual(normalizeChatMessages([user([picture()])]).text, `User:\n${IMAGE_ONLY_PROMPT}`);
++  const formats = [
++    ['image/jpeg', 'jpg', Buffer.from([255, 216, 255, 224])],
++    ['image/webp', 'webp', Buffer.from('RIFF0000WEBP')],
++    ['image/gif', 'gif', Buffer.from('GIF89a')],
++  ];
++  for (const [mime, ext, bytes] of formats) {
++    const image = normalizeChatMessages([user([picture(dataUrl(bytes, mime))])]).image;
++    assert.strictEqual(image.name, `chat-vision-input.${ext}`);
++    assert.strictEqual(image.mimeType, mime);
++    assert.deepStrictEqual(image.buffer, bytes);
++  }
++});
++
++add('legacy text, string parts, and input precedence remain compatible', () => {
++  assert.strictEqual(normalizeChatMessages([user(['a', { text: 'b' }, { type: 'text', content: 'c' }])]).text, 'User:\na\nb\nc');
++  assert.strictEqual(normalizeChatMessages([user('old')], 'direct input').text, 'direct input');
++  assert.strictEqual(normalizeChatMessages(null, [user('fallback')]).text, 'User:\nfallback');
++  assert.strictEqual(normalizeChatMessages([]).text, '');
++  assert.strictEqual(normalizeResponsesInput(null, 'direct').text, 'direct');
++  assert.strictEqual(normalizeResponsesInput(null, [user([{ type: 'input_text', text: 'hello' }])]).text, 'User:\nhello');
++});
++
++add('history, assistant, system, missing role, duplicate, or ambiguous images reject', () => {
++  for (const messages of [
++    [user([picture()]), user('later')],
++    [{ role: 'assistant', content: [picture()] }],
++    [{ role: 'system', content: [picture()] }],
++    [{ content: [picture()] }],
++    [user([picture(), picture()])],
++  ]) rejects(() => normalizeChatMessages(messages));
++  rejects(() => normalizeChatMessages([user([picture()])], 'overrides'));
++  rejects(() => normalizeChatMessages(null, [user([picture()])]));
++});
++
++add('remote, malformed, noncanonical, unsupported, mismatched and oversized images reject', () => {
++  for (const url of [
++    'https://example.invalid/image.png', 'file:///image.png',
++    'data:image/svg+xml;base64,PHN2Zz4=', 'data:image/png;base64,',
++    'data:image/png;base64,AA=A', 'data:image/png;base64,AAAA\n',
++    'data:image/png;base64,AAAAA', 'data:image/png;base64,AB==',
++    dataUrl(PNG, 'image/jpeg'), 'data:image/png;base64,SGVsbG8=',
++  ]) rejects(() => normalizeChatMessages([user([picture(url)])]));
++  rejects(() => normalizeChatMessages([user([{ type: 'image_url', image_url: {} }])]));
++  rejects(() => normalizeChatMessages([user([picture(dataUrl(Buffer.alloc(MAX_CHAT_IMAGE_BYTES + 1)))])]));
++});
++
++add('unknown content never silently disappears and Responses images always reject', () => {
++  for (const part of [{ type: 'input_audio', data: 'ignored' }, { type: 'input_image', image_url: dataUrl() }, { type: 'mystery', text: 'ignored' }, null, 42]) {
++    rejects(() => normalizeChatMessages([user([part])]));
++  }
++  for (const input of [[user([picture()])], [{ type: 'input_image', image_url: dataUrl() }]]) {
++    rejects(() => normalizeResponsesInput(null, input));
++    rejects(() => normalizeResponsesInput(input, 'otherwise overrides'));
++  }
++  rejects(() => assertChatRequestSize({ input: 'x' }, MAX_CHAT_REQUEST_BYTES + 1));
++  rejects(() => assertChatRequestSize({ input: 'x'.repeat(MAX_CHAT_REQUEST_BYTES) }));
++});
++
++const bridge = { completeText: null };
++const chatgptPath = require.resolve('../src/chatgpt');
++const cached = new Module(chatgptPath);
++cached.filename = chatgptPath;
++cached.loaded = true;
++cached.exports = {
++  READ_VIA_BACKEND_API: true,
++  setPoolHooks(hooks) { bridge.poolHooks = hooks; }, recordSlotJobFinished() {},
++  completeText: (prompt, options) => bridge.completeText(prompt, options),
++  generateImage: async () => { throw new Error('unexpected image-generation route'); },
++  editImage: async () => { throw new Error('unexpected image-edit route'); },
++  probeCapabilities: async () => ({}),
++};
++require.cache[chatgptPath] = cached;
++
++function call(port, body, path = '/v1/chat/completions') {
++  const payload = JSON.stringify(body);
++  let req;
++  const promise = new Promise((resolve, reject) => {
++    req = http.request({ hostname: '127.0.0.1', port, method: 'POST', path, headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } }, (res) => {
++      const chunks = [];
++      res.on('data', (chunk) => chunks.push(chunk));
++      res.on('end', () => {
++        const raw = Buffer.concat(chunks).toString();
++        resolve({ status: res.statusCode, headers: res.headers, raw, json: res.headers['content-type']?.includes('application/json') ? JSON.parse(raw) : null });
++      });
++    });
++    req.on('error', reject);
++    req.end(payload);
++  });
++  return { req, promise };
++}
++
++async function waitUntil(fn, label) {
++  const deadline = Date.now() + 3000;
++  while (Date.now() < deadline) {
++    if (fn()) return;
++    await new Promise((resolve) => setTimeout(resolve, 5));
++  }
++  throw new Error(`Timed out waiting for ${label}`);
++}
++
++async function withRouter(fn) {
++  const express = require('express');
++  const keys = ['MAX_CONCURRENT_JOBS', 'MAX_QUEUE_SIZE', 'MIN_TURN_STAGGER_SEC', 'MIN_JOB_GAP_SEC'];
++  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
++  Object.assign(process.env, { MAX_CONCURRENT_JOBS: '1', MAX_QUEUE_SIZE: '5', MIN_TURN_STAGGER_SEC: '0', MIN_JOB_GAP_SEC: '0' });
++  delete require.cache[require.resolve('../src/routes/images')];
++  const app = express();
++  app.use(express.json({ limit: '50mb' }));
++  app.use(require('../src/routes/images'));
++  const server = http.createServer(app);
++  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
++  try { await fn(server.address().port); }
++  finally {
++    await new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); });
++    for (const key of keys) {
++      if (previous[key] === undefined) delete process.env[key];
++      else process.env[key] = previous[key];
++    }
++  }
++}
++
++add('real JSON and SSE routes send image buffer, signal, and confirmed attachment count', async () => {
++  let calls = 0;
++  bridge.completeText = async (prompt, options) => {
++    calls += 1;
++    assert.strictEqual(prompt, 'User:\nWhat is this?');
++    assert.deepStrictEqual(options.image.buffer, PNG);
++    assert.strictEqual(options.image.mimeType, 'image/png');
++    assert(options.signal instanceof AbortSignal);
++    assert.strictEqual(options.signal.aborted, false);
++    await options.beforeSubmit();
++    options.onDelta?.('A pixel.');
++    return { text: 'A pixel.', applied: { thinking: false, image_inputs_attached: 1 } };
++  };
++  await withRouter(async (port) => {
++    const json = await call(port, validBody()).promise;
++    assert.strictEqual(json.status, 200);
++    assert.strictEqual(json.json.choices[0].message.content, 'A pixel.');
++    assert.strictEqual(json.json.applied.image_inputs_attached, 1);
++    const sse = await call(port, validBody({ stream: true })).promise;
++    assert.strictEqual(sse.status, 200);
++    assert(sse.headers['content-type'].startsWith('text/event-stream'));
++    assert(sse.raw.includes('A pixel.'));
++    assert(sse.raw.includes('"image_inputs_attached":1'));
++    assert(sse.raw.endsWith('data: [DONE]\n\n'));
++  });
++  assert.strictEqual(calls, 2);
++});
++
++add('routes reject unsupported pictures before browser; no payload enters response or logs', async () => {
++  let calls = 0;
++  bridge.completeText = async () => { calls += 1; throw new Error('must never be called'); };
++  const logs = [];
++  const originalLog = console.log;
++  console.log = (...parts) => logs.push(parts.join(' '));
++  try {
++    await withRouter(async (port) => {
++      for (const [body, path] of [
++        [{ messages: [user([picture(), picture()])] }],
++        [{ messages: [user([picture()]), user('later')] }],
++        [validBody(), '/v1/responses'],
++        [{ input: [{ type: 'input_image', image_url: dataUrl() }] }, '/v1/responses'],
++        [{ messages: [user([picture('https://example.invalid/image.png')])] }],
++        [{ messages: [user([{ type: 'unknown', text: 'secret payload' }])] }],
++        [{ input: 'x'.repeat(MAX_CHAT_REQUEST_BYTES) }],
++      ]) {
++        const result = await call(port, body, path).promise;
++        assert.strictEqual(result.status, 400);
++        assert.strictEqual(result.json.error.type, 'invalid_request_error');
++        assert(!result.raw.includes(dataUrl()));
++        assert(!result.raw.includes('secret payload'));
++      }
++    });
++  } finally { console.log = originalLog; }
++  assert.strictEqual(calls, 0);
++  assert(!logs.join('\n').includes(dataUrl()));
++});
++
++add('unconfirmed attachments are never reported as applied and text routes remain compatible', async () => {
++  bridge.completeText = async (prompt, options) => {
++    await options.beforeSubmit();
++    return { text: prompt, applied: { thinking: false } };
++  };
++  await withRouter(async (port) => {
++    const image = await call(port, validBody()).promise;
++    assert.strictEqual(image.json.applied.image_inputs_attached, undefined);
++    const json = await call(port, { input: 'legacy' }, '/v1/responses').promise;
++    assert.strictEqual(json.status, 200);
++    assert.strictEqual(json.json.output_text, 'legacy');
++  });
++});
++
++add('disconnect while queued does not call the browser or leak the pool slot', async () => {
++  let calls = 0;
++  let release;
++  const hold = new Promise((resolve) => { release = resolve; });
++  bridge.completeText = async (prompt, options) => {
++    calls += 1;
++    await hold;
++    await options.beforeSubmit();
++    return { text: 'done', applied: { thinking: false } };
++  };
++  await withRouter(async (port) => {
++    const first = call(port, { input: 'hold' });
++    await waitUntil(() => calls === 1, 'first browser call');
++    const queued = call(port, validBody());
++    const cancelled = queued.promise.catch(() => null);
++    await waitUntil(() => bridge.poolHooks.status().waiting === 1, 'queued image request');
++    queued.req.destroy();
++    await cancelled;
++    await new Promise((resolve) => setTimeout(resolve, 30));
++    release();
++    assert.strictEqual((await first.promise).status, 200);
++    await waitUntil(() => bridge.poolHooks.status().running === 0 && bridge.poolHooks.status().waiting === 0, 'cancelled job released');
++    assert.strictEqual(calls, 1, 'cancelled queued request must not reach completeText');
++    assert.strictEqual(require('../src/progress').progress.snapshot().consecutive_infra_failures, 0);
++    assert.strictEqual((await call(port, { input: 'slot still available' }).promise).status, 200);
++    assert.strictEqual(calls, 2);
++  });
++});
++
++add('disconnect before submission aborts the signal and submit hook', async () => {
++  let entered = false;
++  let options;
++  let release;
++  let submitted = false;
++  let aborted;
++  const observed = new Promise((resolve) => { aborted = resolve; });
++  const hold = new Promise((resolve) => { release = resolve; });
++  bridge.completeText = async (prompt, opts) => {
++    entered = true;
++    options = opts;
++    await hold;
++    try { await opts.beforeSubmit(); submitted = true; }
++    catch (err) { aborted(err); throw err; }
++    return { text: 'bad', applied: {} };
++  };
++  await withRouter(async (port) => {
++    const pending = call(port, validBody({ stream: true }));
++    const cancelled = pending.promise.catch(() => null);
++    await waitUntil(() => entered, 'browser invocation');
++    pending.req.destroy();
++    await cancelled;
++    await waitUntil(() => options.signal.aborted, 'AbortSignal');
++    release();
++    const error = await observed;
++    assert.strictEqual(error.name, 'AbortError');
++    assert.strictEqual(submitted, false);
++    await waitUntil(() => bridge.poolHooks.status().running === 0, 'cancelled submission released');
++    assert.strictEqual(require('../src/progress').progress.snapshot().consecutive_infra_failures, 0);
++  });
++});
++
++add('a submitted vision turn failure is never advertised as safe to retry', async () => {
++  for (const stream of [false, true]) {
++    bridge.completeText = async (prompt, options) => {
++      await options.beforeSubmit();
++      if (stream) options.onDelta('partial');
++      throw Object.assign(new Error('Chat image request failed after submission.'), { code: 'timeout', noRetry: true });
++    };
++    await withRouter(async (port) => {
++      const result = await call(port, validBody({ stream })).promise;
++      if (stream) {
++        assert.strictEqual(result.status, 200);
++        assert(result.raw.includes('"error_kind":"timeout"'));
++        assert(result.raw.includes('"should_retry":false'));
++      } else {
++        assert.strictEqual(result.status, 504);
++        assert.strictEqual(result.json.should_retry, false);
++      }
++    });
++  }
++});
++
++(async () => {
++  let failed = 0;
++  const selected = process.argv.includes('--parser-only') ? tests.slice(0, 5) : tests;
++  for (const [name, fn] of selected) {
++    try { await fn(); console.log(`ok - ${name}`); }
++    catch (err) { failed += 1; console.error(`FAIL - ${name}\n${err.stack}`); }
++  }
++  console.log(`${selected.length - failed}/${selected.length} chat vision tests passed`);
++  if (failed) process.exitCode = 1;
++})();
+diff --git a/scripts/test-express5-compat.js b/scripts/test-express5-compat.js
+index f63f922..5d7e5a3 100644
+--- a/scripts/test-express5-compat.js
++++ b/scripts/test-express5-compat.js
+@@ -94,14 +94,13 @@ const BODIES = [
+     server.close();
+   }
+ 
+-  // Control: without defaultBody, Express 5 really does leave req.body undefined
+-  // and the route crashes — proves the cases above exercise the middleware.
++  // Chat parsing also validates an absent body when mounted without middleware.
+   total += 1;
+   const bare = await listen(false);
+   try {
+     const res = await post(bare.address().port, '/v1/chat/completions', {}, undefined);
+-    assert.strictEqual(res.status, 500, `control without defaultBody -> ${res.status}`);
+-    console.log('PASS: control without defaultBody -> 500');
++    assert.strictEqual(res.status, 400, `control without defaultBody -> ${res.status}`);
++    console.log('PASS: control without defaultBody -> 400');
+     passed += 1;
+   } finally {
+     bare.close();
+@@ -112,7 +111,7 @@ const BODIES = [
+   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'server.js'), 'utf8');
+   assert.match(
+     src,
+-    /app\.use\(express\.json\(\{ limit: '50mb' \}\)\);\napp\.use\(defaultBody\);/,
++    /app\.use\(express\.json\(\{ limit: '50mb' \}\)\);\r?\napp\.use\(defaultBody\);/,
+     'server.js: app.use(defaultBody) must follow express.json',
+   );
+   console.log('PASS: server.js wires defaultBody after express.json');
+@@ -122,7 +121,7 @@ const BODIES = [
+   total += 1;
+   assert.match(
+     src,
+-    /app\.listen\(PORT, \(err\) => \{[\s\S]*?\n  if \(err\) throw err;/,
++    /app\.listen\(PORT, HOST, \(err\) => \{[\s\S]*?\r?\n  if \(err\) throw err;/,
+     'server.js: app.listen callback must rethrow its error',
+   );
+   console.log('PASS: server.js rethrows app.listen errors');
+diff --git a/src/browser.js b/src/browser.js
+index 9e7d701..4a2096f 100644
+--- a/src/browser.js
++++ b/src/browser.js
+@@ -106,6 +106,7 @@ const SESSION_PATH = path.join(__dirname, '..', 'auth', 'session.json');
+ let browser = null;
+ let context = null;
+ let tmpUserDataDir = null;
++let shuttingDown = false;
+ 
+ // What the browser layer is actually advertising right now. Read by /metrics — see
+ // `gpt_web_gateway_browser_ua_evasion_ok`.
+@@ -300,6 +301,7 @@ async function verifyContextFingerprint(ctx, { requestedUserAgent, source, evasi
+ // cookies mid-request. Memoize the in-flight promise so concurrent callers share one launch.
+ let contextPromise = null;
+ async function getContext() {
++  if (shuttingDown) throw new Error('Gateway is shutting down');
+   if (context) return context;
+   if (contextPromise) return contextPromise;
+   contextPromise = _createContext();
+@@ -509,6 +511,14 @@ async function closeBrowser() {
+   }
+ }
+ 
++// Wait for an in-flight launch before closing, so cancellation cannot orphan a
++// browser that only finishes launching after the shutdown request.
++async function shutdownBrowser() {
++  shuttingDown = true;
++  if (contextPromise) await contextPromise.catch(() => {});
++  await closeBrowser();
++}
++
+ module.exports = {
+   getContext,
+   saveSession,
+@@ -516,6 +526,7 @@ module.exports = {
+   maybeHideWebdriverOnPage,
+   browserEngine,
+   closeBrowser,
++  shutdownBrowser,
+   SESSION_PATH,
+   browserFingerprint,
+ };
+diff --git a/src/chatgpt.js b/src/chatgpt.js
+index 10fab6b..5a9207d 100644
+--- a/src/chatgpt.js
++++ b/src/chatgpt.js
+@@ -15,6 +15,10 @@ const {
+ } = require('./composer-dom');
+ const { SseAccumulator, parseSseBody, extractAssistantFromMapping, isValidConversationId } = require('./lib/conversation-read');
+ const { trimConversationData } = require('./lib/conversation-trim');
++const {
++  createChatAttachmentGuard, throwIfAborted, safeChatImageError,
++  readChatSurface, assertOrdinaryChat, chatModeError,
++} = require('./lib/chat-attachment.cjs');
+ // Liveness heartbeat for /health/live — named `liveness` to avoid clashing with the
+ // local `progress` indicator object inside waitAndExtractImage.
+ const { progress: liveness } = require('./progress');
+@@ -1336,7 +1340,23 @@ async function composerPreflight(p) {
+ // (e.g. "5.6 Sol Очень высокий"). The API must always drive the classic Chat surface —
+ // force the Chat segment whenever Work is (or may be) active. Work is the DEFAULT tab on
+ // the Pro account since 2026-07-10, so this runs on every preflight.
+-async function ensureChatMode(p) {
++async function ensureChatMode(p, { strict = envFlag('ORDINARY_CHAT_ONLY'), signal } = {}) {
++  if (strict) {
++    const state = await readChatSurface(p, signal);
++    if (state.mode === 'chat') return;
++    if (!state.switcher) throw chatModeError();
++    // An observed Chat/Work control can be switched before upload. Confirm the
++    // result explicitly; an empty/unreadable pill cannot stand in for success.
++    try {
++      await p.getByRole(state.chatRole, { name: /^chat$/i }).first().click({ timeout: 1200 });
++      await p.waitForTimeout(600);
++    } catch {
++      throwIfAborted(signal);
++      throw chatModeError();
++    }
++    await assertOrdinaryChat(p, signal);
++    return;
++  }
+   try {
+     const seg = await p.evaluate(() => {
+       const norm = (s) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+@@ -1458,7 +1478,8 @@ async function countAttachmentChips(p) {
+ // final chip count to be >= files.length before considering the upload confirmed.
+ // Returns the number of attachment chips visible after the last attempt. Caller
+ // should compare to files.length to decide whether to fail the request.
+-async function uploadImage(p, imageInputs) {
++async function uploadImage(p, imageInputs, signal) {
++  throwIfAborted(signal);
+   const list = Array.isArray(imageInputs) ? imageInputs : [imageInputs];
+   if (list.length === 0) return 0;
+ 
+@@ -1479,9 +1500,11 @@ async function uploadImage(p, imageInputs) {
+   // dispatch input/change events ourselves to wake the composer.
+   const fileInput = p.locator(FILE_INPUT_SEL).first();
+   await fileInput.waitFor({ state: 'attached', timeout: 10000 });
++  throwIfAborted(signal);
+ 
+   let lastChipCount = 0;
+   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
++    throwIfAborted(signal);
+     if (attempt > 1) {
+       // Before wiping anything, double-check that the previous attempt didn't get
+       // a late preview chip — if it did, accept success instead of clobbering it.
+@@ -1499,6 +1522,7 @@ async function uploadImage(p, imageInputs) {
+       // setInputFiles could otherwise arrive after we resubmit.
+       await fileInput.setInputFiles([]).catch(() => {});
+       for (let i = 0; i < 5; i++) {
++        throwIfAborted(signal);
+         const c = await countAttachmentChips(p);
+         if (c === 0) break;
+         await p.waitForTimeout(500);
+@@ -1506,7 +1530,9 @@ async function uploadImage(p, imageInputs) {
+     }
+ 
+     console.log(`[upload] Attempt ${attempt}/${maxAttempts}: uploading ${files.length} file(s) via setInputFiles (${totalBytes} bytes total)...`);
++    throwIfAborted(signal);
+     await fileInput.setInputFiles(files);
++    throwIfAborted(signal);
+     await fileInput.evaluate((el) => {
+       el.dispatchEvent(new Event('input', { bubbles: true }));
+       el.dispatchEvent(new Event('change', { bubbles: true }));
+@@ -1514,6 +1540,7 @@ async function uploadImage(p, imageInputs) {
+ 
+     let confirmedThisAttempt = 0;
+     for (let i = 0; i < waitIters; i++) {
++      throwIfAborted(signal);
+       const chipCount = await countAttachmentChips(p);
+       if (chipCount > confirmedThisAttempt) confirmedThisAttempt = chipCount;
+       if (chipCount >= files.length) break;
+@@ -1667,6 +1694,7 @@ function isReasoningPlaceholder(text) {
+ }
+ 
+ async function waitAndExtractText(p, beforeState = { assistantCount: 0, lastAssistantText: '', bodyTail: '' }, options = {}) {
++  throwIfAborted(options.signal);
+   console.log('Waiting for text response...');
+   const start = Date.now();
+   let bestText = '';
+@@ -1708,6 +1736,7 @@ async function waitAndExtractText(p, beforeState = { assistantCount: 0, lastAssi
+   };
+ 
+   while (true) {
++    throwIfAborted(options.signal);
+     throwBackendPostFailure(capture);
+     if (capture) {
+       const snap = capture.snapshot();
+@@ -2563,7 +2592,9 @@ async function typeLines(text, typeSegment, pressNewline) {
+ // sent so a failure in the settle window is not retried into a duplicate submission.
+ // timing (optional): gets `inputMs` — time spent putting the prompt into the composer — even
+ // when the call throws, so a caller retrying the turn can count every attempt's input.
+-async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted = null, timing = null, capture = null) {
++async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted = null, timing = null, capture = null, attachmentGuard = null) {
++  const strictChat = !!attachmentGuard || envFlag('ORDINARY_CHAT_ONLY');
++  attachmentGuard?.assertNotAborted();
+   console.log('Typing prompt...');
+   await dismissModals(p);
+   const textareaLocator = p.locator(COMPOSER_VISIBLE_SEL);
+@@ -2625,8 +2656,8 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+       await p.waitForTimeout(300);
+       typedPerKey = true;
+       await typeLines(text,
+-        (line) => p.keyboard.type(line, { delay: TYPE_DELAY_MS }),
+-        () => p.keyboard.press('Shift+Enter'));
++        (line) => { attachmentGuard?.assertNotAborted(); return p.keyboard.type(line, { delay: TYPE_DELAY_MS }); },
++        () => { attachmentGuard?.assertNotAborted(); return p.keyboard.press('Shift+Enter'); });
+     } else {
+       await textareaLocator.first().fill(text, { timeout: fillTimeoutMs(text) });
+     }
+@@ -2650,8 +2681,8 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+       const typeDeadline = Date.now() + typeTimeout;
+       const remaining = () => Math.max(1, typeDeadline - Date.now());
+       await typeLines(text,
+-        (line) => textareaLocator.first().pressSequentially(line, { delay: TYPE_DELAY_MS, timeout: remaining() }),
+-        () => textareaLocator.first().press('Shift+Enter', { timeout: remaining() }));
++        (line) => { attachmentGuard?.assertNotAborted(); return textareaLocator.first().pressSequentially(line, { delay: TYPE_DELAY_MS, timeout: remaining() }); },
++        () => { attachmentGuard?.assertNotAborted(); return textareaLocator.first().press('Shift+Enter', { timeout: remaining() }); });
+       await p.waitForTimeout(500);
+     }
+     // Only per-key typing can split a prompt; fill() puts the text in one transaction.
+@@ -2687,9 +2718,17 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+   const sendLocator = p.locator(SEND_BUTTON_SEL);
+   try {
+     await sendLocator.first().waitFor({ state: 'visible', timeout: 5000 });
++    // Uploads can disappear while typing or waiting for the pacer. For vision,
++    // verify immediately before the ONLY send attempt and never fall back to
++    // Enter after a click whose outcome may already have reached ChatGPT.
++    if (attachmentGuard) {
++      await attachmentGuard.beforeSend(p);
++      attachmentGuard.markSendAttempted();
++    } else if (strictChat) await assertOrdinaryChat(p);
+     console.log('Send button found. Clicking...');
+     await sendLocator.first().click();
+-  } catch {
++  } catch (error) {
++    if (attachmentGuard || strictChat && error?.code === 'chat_mode_unconfirmed') throw error;
+     // Enter fallback: refocus the composer and confirm the prompt is still there first —
+     // blind Enter into an overlay was how the 2026-07-10 send-button incident burned 360s
+     // per request and jammed the queue.
+@@ -2702,6 +2741,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+       err.code = 'page_load_failed';
+       throw err;
+     }
++    if (strictChat) await assertOrdinaryChat(p);
+     await p.keyboard.press('Enter');
+   }
+ 
+@@ -2711,6 +2751,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+   const submitDeadline = Date.now() + 12000;
+   let submitted = false;
+   while (Date.now() < submitDeadline) {
++    attachmentGuard?.assertNotAborted();
+     throwBackendPostFailure(capture, onSubmitted);
+     if (capture?.postAccepted) { submitted = true; break; }
+     const turnsNow = await countUserTurns();
+@@ -2745,6 +2786,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+   if (onSubmitted) { try { onSubmitted(); } catch {} }
+ 
+   await p.waitForTimeout(2000);
++  attachmentGuard?.assertNotAborted();
+ }
+ 
+ async function dismissModals(p) {
+@@ -4234,6 +4276,9 @@ async function editImage(prompt, imageInput, options = {}) {
+ }
+ 
+ async function completeText(prompt, options = {}) {
++  throwIfAborted(options.signal);
++  const attachmentGuard = options.image ? createChatAttachmentGuard(options.image, options.signal) : null;
++  const strictChat = !!attachmentGuard || envFlag('ORDINARY_CHAT_ONLY');
+   const slot = adoptJob(options);
+   // Page-load failures on chatgpt.com tend to come in bursts (CF challenge,
+   // empty SPA boot, transient 5xx from OpenAI). One in-process retry leaves a
+@@ -4259,18 +4304,53 @@ async function completeText(prompt, options = {}) {
+     // AFTER submit must not retry — a fresh chat would re-send the same prompt (duplicate
+     // generation / side effects). Before submit, retrying is safe.
+     let submitted = false;
++    let abortPage = null;
+     try {
++      throwIfAborted(options.signal);
+       // Prep is INSIDE the try — ensureNewChat/setThinkingMode can also die on a broken
+       // page, and those failures must ride the same retry/hard-reset machinery.
+       await maybeRecoverSession(slot);
+       const p = await ensureLoggedIn(slot);
++      if (attachmentGuard && options.signal) {
++        // A click may be waiting for Playwright actionability when the client
++        // disconnects. Closing this request's page cancels that pending action;
++        // checking the signal only before awaiting click would be too late.
++        abortPage = () => { if (slot.page === p) resetPage(slot); };
++        options.signal.addEventListener('abort', abortPage, { once: true });
++      }
++      throwIfAborted(options.signal);
+ 
+       if (options.conversationId) await openConversation(p, options.conversationId);
+       else if (!options.reuseChat || attempt > 0 || stallRetryState.used > 0) await ensureNewChat(p);
+       else await composerPreflight(p);
+ 
++      if (strictChat) await ensureChatMode(p, { strict: true, signal: options.signal });
++
+       const thinkingMode = normalizeThinkingMode(options.thinkingMode ?? options.thinking);
+       const thinkingState = await setThinkingMode(p, thinkingMode);
++      throwIfAborted(options.signal);
++
++      if (strictChat) {
++        // Tier menu interactions must not have moved the page back to Work.
++        // From this point onward, surface validation is strictly read-only.
++        await assertOrdinaryChat(p, options.signal);
++      }
++      if (attachmentGuard) {
++        // Switching the thinking mode can rebuild the composer, so attachments
++        // belong strictly AFTER it. Never accept a stale preview from another job.
++        await removePendingAttachments(p);
++        await attachmentGuard.waitEmpty(p);
++        const attached = await uploadImage(p, {
++          buffer: options.image.buffer, mimeType: options.image.mimeType,
++          filename: options.image.name,
++        }, options.signal);
++        if (attached !== 1) {
++          const error = new Error('Chat image upload did not produce one attachment.');
++          error.code = 'upload_failed';
++          throw error;
++        }
++        await attachmentGuard.waitReady(p);
++      }
+ 
+       const beforeState = await captureTextState(p);
+       // Prime BEFORE opening the capture, and the order is load-bearing twice over.
+@@ -4291,8 +4371,9 @@ async function completeText(prompt, options = {}) {
+       // never retry into a duplicate send. The post-call assignment is a backstop.
+       const timing = {};
+       if (typeof options.beforeSubmit === 'function') await options.beforeSubmit();
++      throwIfAborted(options.signal);
+       try {
+-        await typeAndSubmit(p, prompt, false, () => { submitted = true; }, timing, capture);
++        await typeAndSubmit(p, prompt, !!attachmentGuard, () => { submitted = true; }, timing, capture, attachmentGuard);
+       } finally {
+         inputSpentMs += timing.inputMs || 0;
+       }
+@@ -4305,7 +4386,9 @@ async function completeText(prompt, options = {}) {
+         onDelta,
+         prompt,      // subtracted from the tier-limit scan: it is rendered on the page too
+         inputMs: inputSpentMs, // every attempt's input, not just this one's
++        signal: options.signal,
+       });
++      throwIfAborted(options.signal);
+ 
+       if (thinkingState.verified) markHealthyCompletion(slot);
+       // conversation_id sources, best first: backend-api capture → chat URL after the
+@@ -4323,12 +4406,31 @@ async function completeText(prompt, options = {}) {
+           thinking_verified: !!thinkingState.verified,
+           requested_verified: !!thinkingState.requestedVerified,
+           thinking_fallback: thinkingState.fallback || null,
++          ...(attachmentGuard ? { image_inputs_attached: 1 } : {}),
+         },
+       };
+     } catch (err) {
+-      if (err && err.retryAfterMaintenance) throw err;
++      if (strictChat && err?.code === 'chat_mode_unconfirmed') {
++        resetPage(slot);
++        throw chatModeError();
++      }
++      if (attachmentGuard && options.signal?.aborted) {
++        resetPage(slot);
++        throwIfAborted(options.signal);
++      }
++      // A click can reach the server before Playwright confirms it. Never retry
++      // a vision request after even an uncertain send attempt, including the
++      // upstream "stall with no answer" path below.
++      if (attachmentGuard?.sendAttempted) {
++        resetPage(slot);
++        const failure = safeChatImageError(err);
++        delete failure.retryAfterMaintenance;
++        failure.noRetry = true;
++        throw failure;
++      }
++      if (err && err.retryAfterMaintenance) throw attachmentGuard ? safeChatImageError(err) : err;
+       lastError = err;
+-      if (err.stallNoAnswer && !anyDeltaEmitted && !options.conversationId
++      if (!attachmentGuard && err.stallNoAnswer && !anyDeltaEmitted && !options.conversationId
+           && slot.pendingReset !== 'hard' && stallRetryState.used < TEXT_STALL_RETRIES) {
+         stallRetryState.used += 1;
+         if (typeof options.onAttemptFinished === 'function') options.onAttemptFinished();
+@@ -4372,6 +4474,10 @@ async function completeText(prompt, options = {}) {
+         if (needsHardReset) {
+           requestMaintenanceNoAwait('hard-reset', () => hardResetBrowser(), slot.epoch);
+         }
++        if (attachmentGuard) {
++          resetPage(slot);
++          throw safeChatImageError(err);
++        }
+         throw err;
+       }
+ 
+@@ -4379,7 +4485,7 @@ async function completeText(prompt, options = {}) {
+       if (needsHardReset) {
+         // Pre-submit: hand the slot back and let the pool run the reset between jobs.
+         requestMaintenanceNoAwait('hard-reset', () => hardResetBrowser(), slot.epoch);
+-        const again = new Error(err.message);
++        const again = new Error(attachmentGuard ? 'Chat image request preparation failed.' : err.message);
+         again.code = err.code || 'page_load_failed';
+         again.retryAfterMaintenance = true;
+         throw again;
+@@ -4389,6 +4495,7 @@ async function completeText(prompt, options = {}) {
+       // Light backoff so we don't slam ChatGPT during a wider outage.
+       await new Promise(r => setTimeout(r, 1500 + 1000 * attempt));
+     } finally {
++      if (abortPage) options.signal.removeEventListener('abort', abortPage);
+       // Stop feeding this turn's accumulator — a late/leaked SSE body from an aborted
+       // attempt must never bleed into the next turn's capture.
+       endBackendCapture(slot);
+diff --git a/src/lib/chat-attachment.cjs b/src/lib/chat-attachment.cjs
+new file mode 100644
+index 0000000..318873a
+--- /dev/null
++++ b/src/lib/chat-attachment.cjs
+@@ -0,0 +1,237 @@
++'use strict';
++
++const {
++  COMPOSER_SELECTORS, SEND_BUTTON_SEL, ATTACHMENT_REMOVE_SEL, TIER_TRIGGER_SEL,
++} = require('../composer-dom');
++
++function attachmentError() {
++  const error = new Error('Chat image attachment could not be confirmed ready; no message was sent.');
++  error.code = 'upload_failed';
++  return error;
++}
++
++function chatModeError() {
++  const error = new Error('Ordinary Chat could not be confirmed; the request was not sent.');
++  error.code = 'chat_mode_unconfirmed';
++  error.noRetry = true;
++  return error;
++}
++
++function throwIfAborted(signal) {
++  if (!signal?.aborted) return;
++  // AbortSignal.reason can contain caller data. Never put it in API errors/logs.
++  const error = new Error('Chat image request was cancelled.');
++  error.name = 'AbortError';
++  error.code = 'request_cancelled';
++  throw error;
++}
++
++function safeChatImageError(error) {
++  const messages = {
++    request_cancelled: 'Chat image request was cancelled.',
++    upload_failed: 'Chat image attachment could not be confirmed ready.',
++    rate_limit: 'Chat image request was rate limited.',
++    logged_out: 'Chat image request requires a logged-in browser session.',
++    page_load_failed: 'Chat image request could not complete on the browser page.',
++    conversation_not_found: 'Chat image request conversation is not accessible.',
++    timeout: 'Chat image request timed out.',
++    prompt_too_long: 'Chat image request text is too long for attachment-preserving input.',
++    chat_mode_unconfirmed: 'Ordinary Chat could not be confirmed; the request was not sent.',
++  };
++  const code = Object.prototype.hasOwnProperty.call(messages, error?.code)
++    ? error.code : 'page_load_failed';
++  const safe = new Error(messages[code]);
++  safe.code = code;
++  if (code === 'request_cancelled') safe.name = 'AbortError';
++  // Do not forward arbitrary browser errors, modelMessage, signal.reason or cause.
++  if (error?.retryAfterMaintenance === true) safe.retryAfterMaintenance = true;
++  if (error?.noRetry === true) safe.noRetry = true;
++  return safe;
++}
++
++// Positive surface evidence is required. A missing switcher/pill is not proof
++// that this is Chat, and the title "ChatGPT" alone also appears on Work pages.
++// Return flags only, so failures never expose page text or URLs.
++function chatSurfaceInPage({ composerSelector, tierSelector }) {
++  const visible = element => !!element && !element.closest('[aria-hidden="true"]')
++    && element.getClientRects().length > 0;
++  const norm = text => String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
++  const active = element => element.getAttribute('aria-selected') === 'true'
++    || element.getAttribute('aria-checked') === 'true'
++    || element.getAttribute('aria-current') != null
++    || ['active', 'checked', 'on'].includes(element.getAttribute('data-state') || '');
++  const url = new URL(location.href);
++  if (url.protocol !== 'https:' || url.hostname !== 'chatgpt.com'
++      || !/^\/(?:c\/[0-9a-f-]+\/?)?$/i.test(url.pathname)) {
++    return { mode: 'unknown', switcher: false };
++  }
++  const buttons = Array.from(document.querySelectorAll('button, [role="button"], [role="tab"]')).filter(visible);
++  const chats = buttons.filter(element => norm(element.innerText || element.textContent) === 'chat');
++  const works = buttons.filter(element => norm(element.innerText || element.textContent) === 'work');
++  const workActive = works.some(active) || buttons.some(element =>
++    norm(element.innerText || element.textContent) === 'codex' && active(element));
++  const pills = Array.from(document.querySelectorAll(tierSelector)).filter(visible);
++  const workPill = pills.some(element => {
++    const text = norm(element.innerText || element.textContent)
++      .replace(/^(thinking effort|intelligence|интеллект|уровень рассуждений)\s*/i, '');
++    return /^(?:gpt-)?\d[\d.]*(?:\s+[a-z]+)?\s+/i.test(text) || /\b(?:work|codex)\b/i.test(text);
++  });
++  const editors = Array.from(document.querySelectorAll(composerSelector)).filter(visible);
++  const composerKnown = editors.length === 1 && !!editors[0].closest('form');
++  const switcher = chats.length === 1 && works.length === 1;
++  const chatActive = chats.length === 1 && active(chats[0]);
++  const chatRole = chats.length === 1 && chats[0].getAttribute('role') === 'tab' ? 'tab' : 'button';
++  if (workActive || workPill) return { mode: 'work', switcher, chatRole };
++  if (!composerKnown) return { mode: 'unknown', switcher, chatRole };
++  if (chats.length || works.length) {
++    return { mode: switcher && chatActive && !workActive ? 'chat' : 'unknown', switcher, chatRole };
++  }
++  // Known classic Chat has its own model picker. Generic effort controls and
++  // the absence of Work UI are insufficient on an unknown/new page layout.
++  const classicPickers = Array.from(document.querySelectorAll('button[data-testid="model-switcher-dropdown-button"]')).filter(visible);
++  const classic = classicPickers.length === 1
++    && /^chatgpt(?:\s|$)/i.test(norm(classicPickers[0].innerText || classicPickers[0].textContent))
++    && !/\b(?:work|codex)\b/i.test(norm(classicPickers[0].innerText || classicPickers[0].textContent));
++  return { mode: classic ? 'chat' : 'unknown', switcher: false };
++}
++
++async function readChatSurface(page, signal) {
++  throwIfAborted(signal);
++  let timer;
++  let state;
++  try {
++    state = await Promise.race([
++      page.evaluate(chatSurfaceInPage, {
++        composerSelector: COMPOSER_SELECTORS.join(', '), tierSelector: TIER_TRIGGER_SEL,
++      }),
++      new Promise(resolve => { timer = setTimeout(() => resolve({ mode: 'unknown' }), 3000); }),
++    ]);
++  } catch {
++    state = { mode: 'unknown' };
++  } finally {
++    clearTimeout(timer);
++  }
++  throwIfAborted(signal);
++  return state || { mode: 'unknown' };
++}
++
++async function assertOrdinaryChat(page, signal) {
++  if ((await readChatSurface(page, signal)).mode !== 'chat') throw chatModeError();
++}
++
++// Runs in the browser. Return only state flags, never DOM text, URLs or image data.
++// Unknown composer markup is deliberately not a successful upload confirmation.
++function attachmentStateInPage({ name, composerSelector, sendSelector, removeSelector }) {
++  const visible = element => !!element && !element.closest('[aria-hidden="true"]')
++    && element.getClientRects().length > 0;
++  const editors = Array.from(document.querySelectorAll(composerSelector)).filter(visible);
++  if (editors.length !== 1) return { known: false };
++  const form = editors[0].closest('form');
++  if (!form || !visible(form)) return { known: false };
++  const chips = Array.from(form.querySelectorAll(removeSelector)).filter(visible);
++  const matching = chips.filter(button => {
++    const label = String(button.getAttribute('aria-label') || '').trim();
++    return /^(?:Remove|Удалить)\s+/i.test(label)
++      && label.slice(label.indexOf(' ') + 1).trim() === name;
++  });
++  const regions = Array.from(form.querySelectorAll('[data-composer-attachments]')).filter(visible);
++  // Fall back only to a chip's own wrapper on the older composer. Do not count
++  // avatars or unrelated images elsewhere on the page as the uploaded image.
++  const previewRegion = regions.length === 1 ? regions[0]
++    : matching.length === 1 ? matching[0].parentElement : null;
++  const previews = previewRegion
++    ? Array.from(previewRegion.querySelectorAll('img')).filter(visible) : [];
++  const previewLoaded = previews.length === 1
++    && previews[0].complete === true && previews[0].naturalWidth > 0;
++  const busySelector = '[aria-busy="true"], [role="progressbar"], '
++    + '[data-state="uploading"], [data-upload-state="uploading"], '
++    + '[data-testid*="upload-progress"], [data-testid*="uploading"], '
++    + '.animate-spin, [class*="spinner"]';
++  const busy = Array.from(form.querySelectorAll(busySelector)).some(visible);
++  const errorSelector = '[data-state="error"], [data-upload-state="error"], '
++    + '[data-testid*="upload-error"], [role="alert"]';
++  const uploadError = Array.from(form.querySelectorAll(errorSelector)).some(visible)
++    || Array.from(document.querySelectorAll('[role="alert"], [data-testid*="toast"], [class*="toast"]'))
++      .filter(visible).some(element => /failed to upload|unable to upload|error uploading|upload failed|couldn.t upload|can.t upload|не удалось загрузить|ошибка загрузки/i
++        .test(element.innerText || element.textContent || ''));
++  const sends = Array.from(form.querySelectorAll(sendSelector)).filter(visible);
++  const sendReady = sends.length === 1 && sends[0].disabled !== true
++    && !sends[0].hasAttribute('disabled')
++    && sends[0].getAttribute('aria-disabled') !== 'true';
++  return { known: true, count: chips.length, matching: matching.length,
++    previewLoaded, busy, uploadError, sendReady };
++}
++
++function ready(state) {
++  return state?.known === true && state.count === 1 && state.matching === 1
++    && state.previewLoaded === true && state.busy === false
++    && state.uploadError === false && state.sendReady === true;
++}
++
++function createChatAttachmentGuard(image, signal, {
++  timeoutMs = 30000, emptyTimeoutMs = 5000, pollMs = 250,
++  readTimeoutMs = 3000, now = Date.now, readState,
++} = {}) {
++  if (!image || !/^chat-vision-input\.(?:png|jpe?g|webp|gif)$/.test(image.name || '')) {
++    throw attachmentError();
++  }
++  let sendAttempted = false;
++  const read = async page => {
++    throwIfAborted(signal);
++    let state;
++    let timer;
++    try {
++      const evaluation = readState ? readState(page) : page.evaluate(attachmentStateInPage, {
++        name: image.name, composerSelector: COMPOSER_SELECTORS.join(', '),
++        sendSelector: SEND_BUTTON_SEL, removeSelector: ATTACHMENT_REMOVE_SEL,
++      });
++      // This race contains a read-only DOM observation, never an action. A stuck
++      // renderer must not retain a pool slot indefinitely; a late read cannot send.
++      state = await Promise.race([evaluation, new Promise(resolve => {
++        timer = setTimeout(() => resolve({ known: false }), readTimeoutMs);
++      })]);
++    } catch {
++      throwIfAborted(signal);
++      return { known: false };
++    } finally {
++      clearTimeout(timer);
++    }
++    throwIfAborted(signal);
++    return state;
++  };
++  const wait = async (page, predicate, budget, stableRequired) => {
++    const deadline = now() + budget;
++    let consecutive = 0;
++    do {
++      const state = await read(page);
++      if (state?.uploadError === true) throw attachmentError();
++      consecutive = predicate(state) ? consecutive + 1 : 0;
++      if (consecutive >= stableRequired) return;
++      await page.waitForTimeout(Math.min(pollMs, Math.max(1, deadline - now())));
++      throwIfAborted(signal);
++    } while (now() < deadline);
++    throw attachmentError();
++  };
++  return {
++    get sendAttempted() { return sendAttempted; },
++    assertNotAborted: () => throwIfAborted(signal),
++    waitEmpty: page => wait(page, state => state?.known === true
++      && state.count === 0 && state.busy === false && state.uploadError === false,
++    emptyTimeoutMs, 1),
++    // A chip is only a preview. A loaded thumbnail, no upload activity/error and
++    // an enabled send button must agree across consecutive browser observations.
++    waitReady: page => wait(page, ready, timeoutMs, 2),
++    async beforeSend(page) {
++      // Read-only: never toggle a surface after an image has been uploaded.
++      await assertOrdinaryChat(page, signal);
++      if (!ready(await read(page))) throw attachmentError();
++    },
++    markSendAttempted() {
++      throwIfAborted(signal);
++      sendAttempted = true;
++    },
++  };
++}
++
++module.exports = { createChatAttachmentGuard, throwIfAborted, safeChatImageError,
++  attachmentStateInPage, ready, chatModeError, chatSurfaceInPage, readChatSurface, assertOrdinaryChat };
+diff --git a/src/lib/chat-vision.cjs b/src/lib/chat-vision.cjs
+new file mode 100644
+index 0000000..3e3bef9
+--- /dev/null
++++ b/src/lib/chat-vision.cjs
+@@ -0,0 +1,108 @@
++'use strict';
++
++// Keep the first vision contract intentionally narrow: one attached image on the
++// latest user message. Never turn an unsupported image into a text-only request.
++const MAX_CHAT_REQUEST_BYTES = 16 * 1024 * 1024;
++const MAX_CHAT_IMAGE_BYTES = 10 * 1024 * 1024;
++const IMAGE_ONLY_PROMPT = 'Describe the attached image.';
++const EXTENSIONS = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
++
++function invalid(message) {
++  const err = new Error(message);
++  err.code = 'invalid_request';
++  return err;
++}
++
++function matchesMime(buffer, mimeType) {
++  if (mimeType === 'image/png') return buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
++  if (mimeType === 'image/jpeg') return buffer.length >= 3 && buffer[0] === 255 && buffer[1] === 216 && buffer[2] === 255;
++  if (mimeType === 'image/webp') return buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP';
++  if (mimeType === 'image/gif') return buffer.length >= 6 && ['GIF87a', 'GIF89a'].includes(buffer.toString('ascii', 0, 6));
++  return false;
++}
++
++function parseImageUrl(value) {
++  const url = typeof value === 'string' ? value : value && value.url;
++  if (typeof url !== 'string') throw invalid('image_url must contain a base64 image data URL');
++  const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/]*={0,2})$/.exec(url);
++  if (!match) throw invalid('Only base64 PNG, JPEG, WebP, or GIF image data URLs are supported');
++  const [, mimeType, encoded] = match;
++  if (!encoded || encoded.length > Math.ceil(MAX_CHAT_IMAGE_BYTES / 3) * 4) throw invalid('Image is empty or exceeds the 10 MiB image limit');
++  if (encoded.length % 4 !== 0) throw invalid('Image data must use canonical base64 encoding');
++  const buffer = Buffer.from(encoded, 'base64');
++  if (buffer.toString('base64') !== encoded) throw invalid('Image data must use canonical base64 encoding');
++  if (!buffer.length || buffer.length > MAX_CHAT_IMAGE_BYTES) throw invalid('Image is empty or exceeds the 10 MiB image limit');
++  if (!matchesMime(buffer, mimeType)) throw invalid('Image bytes do not match the declared image MIME type');
++  return { name: `chat-vision-input.${EXTENSIONS[mimeType]}`, mimeType, buffer };
++}
++
++function hasImage(value) {
++  if (!value || typeof value !== 'object') return false;
++  if (Array.isArray(value)) return value.some(hasImage);
++  if (value.type === 'image_url' || value.type === 'input_image' || value.type === 'image' || Object.prototype.hasOwnProperty.call(value, 'image_url')) return true;
++  return Object.values(value).some(hasImage);
++}
++
++function normalizeContent(content, onImage) {
++  if (typeof content === 'string') return content;
++  if (content == null) return '';
++  if (!Array.isArray(content)) throw invalid('Message content must be text or an array of supported content parts');
++  return content.map((part) => {
++    if (typeof part === 'string') return part;
++    if (!part || typeof part !== 'object' || Array.isArray(part)) throw invalid('Unsupported message content part');
++    if (part.type === 'image_url') {
++      onImage(part.image_url);
++      return '';
++    }
++    if (hasImage(part)) throw invalid('Unsupported image content part; use image_url on the latest user message');
++    if ((part.type === undefined || ['text', 'input_text', 'output_text'].includes(part.type)) && typeof part.text === 'string') return part.text;
++    if (part.type === 'text' && typeof part.content === 'string') return part.content;
++    throw invalid('Unsupported message content part');
++  }).filter(Boolean).join('\n');
++}
++
++function normalizeMessages(messages, allowImages) {
++  if (!Array.isArray(messages) || messages.length === 0) return { text: '' };
++  let image;
++  const text = messages.map((msg, index) => {
++    const role = msg && msg.role ? String(msg.role) : 'user';
++    let content = normalizeContent(msg && msg.content, (url) => {
++      if (!allowImages) throw invalid('Images are not supported on /v1/responses; use /v1/chat/completions');
++      if (!msg || msg.role !== 'user' || index !== messages.length - 1) throw invalid('Images are supported only on the latest user message');
++      if (image) throw invalid('Only one image per request is supported');
++      image = parseImageUrl(url);
++    }).trim();
++    if (image && index === messages.length - 1 && !content) content = IMAGE_ONLY_PROMPT;
++    if (!content) return '';
++    if (role === 'system') return `System instructions:\n${content}`;
++    if (role === 'assistant') return `Previous assistant message:\n${content}`;
++    return `User:\n${content}`;
++  }).filter(Boolean).join('\n\n');
++  return { text, ...(image ? { image } : {}) };
++}
++
++function normalizeChatMessages(messages, fallbackInput) {
++  // Validate images even in an input that the legacy fallback precedence would
++  // otherwise ignore. An image may never disappear because `input` was also set.
++  const normalized = normalizeMessages(messages, true);
++  if (fallbackInput !== undefined && fallbackInput !== null) {
++    if (normalized.image || hasImage(fallbackInput)) throw invalid('Images require the messages field without input');
++    if (typeof fallbackInput === 'string') return { text: fallbackInput };
++    if (Array.isArray(fallbackInput)) return normalizeMessages(fallbackInput, false);
++  }
++  return normalized;
++}
++
++function normalizeResponsesInput(messages, fallbackInput) {
++  if (hasImage(messages) || hasImage(fallbackInput)) throw invalid('Images are not supported on /v1/responses; use /v1/chat/completions');
++  if (typeof fallbackInput === 'string') return { text: fallbackInput };
++  return normalizeMessages(Array.isArray(fallbackInput) ? fallbackInput : messages, false);
++}
++
++function assertChatRequestSize(body, contentLength) {
++  if (Number(contentLength) > MAX_CHAT_REQUEST_BYTES || Buffer.byteLength(JSON.stringify(body), 'utf8') > MAX_CHAT_REQUEST_BYTES) {
++    throw invalid('Chat request exceeds the 16 MiB request limit');
++  }
++}
++
++module.exports = { MAX_CHAT_REQUEST_BYTES, MAX_CHAT_IMAGE_BYTES, IMAGE_ONLY_PROMPT, normalizeChatMessages, normalizeResponsesInput, assertChatRequestSize };
+diff --git a/src/routes/images.js b/src/routes/images.js
+index da98c4a..f623def 100644
+--- a/src/routes/images.js
++++ b/src/routes/images.js
+@@ -12,6 +12,7 @@ const {
+ const { parseBool, normalizeThinkingMode, parseThinkingMode, parseWebSearchRequested } = require('../params');
+ const { isValidConversationId } = require('../lib/conversation-read');
+ const { createStreamEmitter } = require('../lib/sse-transform');
++const { normalizeChatMessages, normalizeResponsesInput, assertChatRequestSize } = require('../lib/chat-vision.cjs');
+ const { progress } = require('../progress');
+ const { createTurnGate, heartbeatMsFor } = require('../pacer');
+ const { createJobPool, parseConcurrency } = require('../job-pool');
+@@ -23,13 +24,13 @@ const {
+ 
+ // Build a structured failure body that augments — but does not break — the legacy
+ // `{ error: { message, type, retry_after? } }` contract that skill scripts parse.
+-function buildErrorBody({ kind, message, modelMessage, retryAfter, loginBlocker, loginStep }) {
++function buildErrorBody({ kind, message, modelMessage, retryAfter, loginBlocker, loginStep, noRetry = false }) {
+   const errObj = { message, type: kind === 'rate_limit' ? 'rate_limit_error' : 'server_error' };
+   if (Number.isFinite(retryAfter)) errObj.retry_after = retryAfter;
+   const body = {
+     ok: false,
+     error_kind: kind,
+-    should_retry: shouldRetryKind(kind),
++    should_retry: !noRetry && shouldRetryKind(kind),
+     model_message: modelMessage || null,
+     error: errObj,
+   };
+@@ -237,7 +238,10 @@ function submitJob(fn, { key } = {}) {
+         progress.jobRequeued(ctx.jobId);
+         throw err;
+       }
+-      progress.jobFinished(classifyError(err && err.message, err && err.code), ctx.jobId);
++      // A caller cancellation says nothing about browser health and must not
++      // accumulate the infrastructure failure streak used by /health/live.
++      const cancelled = err && (err.code === 'request_aborted' || err.code === 'request_cancelled' || err.name === 'AbortError');
++      progress.jobFinished(cancelled ? 'request_aborted' : classifyError(err && err.message, err && err.code), ctx.jobId);
+       throw err;
+     } finally {
+       if (!requeued) recordSlotJobFinished?.(ctx.slotId);
+@@ -262,7 +266,8 @@ function conversationKey(id) {
+ // Pace at send time. finished() runs once per hook that actually returned, so
+ // a rate-limit throw inside the hook does not stamp a gap for a send that
+ // never happened. A batch calls the same hook once per image.
+-async function runTurn(ctx, invoke) {
++async function runTurn(ctx, invoke, signal) {
++  assertRequestActive(signal);
+   let paced = 0;
+   try {
+     return await invoke({
+@@ -275,7 +280,9 @@ async function runTurn(ctx, invoke) {
+         }
+       },
+       beforeSubmit: async () => {
++        assertRequestActive(signal);
+         await turnGate.gate(ctx.slotId);
++        assertRequestActive(signal);
+         assertNotRateLimited();
+         paced += 1;
+       },
+@@ -360,6 +367,7 @@ function respondWithError(res, startedAt, err) {
+       message: err.message,
+       modelMessage: err.modelMessage,
+       retryAfter: retryAfterSec,
++      noRetry: err.noRetry === true,
+     }));
+   }
+ 
+@@ -389,6 +397,7 @@ function respondWithError(res, startedAt, err) {
+     modelMessage: err.modelMessage,
+     loginBlocker: err.loginBlocker,
+     loginStep: err.loginStep,
++    noRetry: err.noRetry === true,
+   }));
+ }
+ 
+@@ -871,42 +880,36 @@ router.post('/v1/images/edits', maybeMultipart, async (req, res) => {
+   }
+ });
+ 
+-function normalizeMessageContent(content) {
+-  if (typeof content === 'string') return content;
+-  if (Array.isArray(content)) {
+-    return content
+-      .map((part) => {
+-        if (typeof part === 'string') return part;
+-        if (!part || typeof part !== 'object') return '';
+-        if (typeof part.text === 'string') return part.text;
+-        if (part.type === 'text' && typeof part.content === 'string') return part.content;
+-        return '';
+-      })
+-      .filter(Boolean)
+-      .join('\n');
++function assertRequestActive(signal) {
++  if (signal && signal.aborted) {
++    const err = new Error('Client disconnected before the request completed');
++    err.name = 'AbortError';
++    err.code = 'request_aborted';
++    throw err;
+   }
+-  return '';
+ }
+ 
+-function promptFromMessages(messages, fallbackInput) {
+-  if (typeof fallbackInput === 'string') return fallbackInput;
+-  if (Array.isArray(fallbackInput)) return promptFromMessages(fallbackInput);
+-  if (!Array.isArray(messages) || messages.length === 0) return '';
+-
+-  return messages
+-    .map((msg) => {
+-      const role = msg && msg.role ? String(msg.role) : 'user';
+-      const text = normalizeMessageContent(msg && msg.content).trim();
+-      if (!text) return '';
+-      if (role === 'system') return `System instructions:\n${text}`;
+-      if (role === 'assistant') return `Previous assistant message:\n${text}`;
+-      return `User:\n${text}`;
+-    })
+-    .filter(Boolean)
+-    .join('\n\n');
++function watchRequest(req, res) {
++  const controller = new AbortController();
++  const abort = () => controller.abort();
++  const close = () => { if (!res.writableEnded) abort(); };
++  req.once('aborted', abort);
++  res.once('close', close);
++  if (req.aborted || res.destroyed) abort();
++  return {
++    signal: controller.signal,
++    dispose() { req.removeListener('aborted', abort); res.removeListener('close', close); },
++  };
++}
++
++function invalidChatRequest(res, err) {
++  return res.status(400).json({
++    ok: false, error_kind: 'invalid_request', should_retry: false, model_message: null,
++    error: { message: err.message, type: 'invalid_request_error' },
++  });
+ }
+ 
+-async function handleTextCompletion(req, res, prompt) {
++async function handleTextCompletion(req, res, prompt, image) {
+   const webSearch = parseDeprecatedWebSearch(req, 'chat');
+   const thinkingMode = parseThinkingMode(req.body);
+   const startedAt = Date.now();
+@@ -961,17 +964,18 @@ async function handleTextCompletion(req, res, prompt) {
+   }
+ 
+   logRequestDetails(req, 'text', {
+-    prompt, promptLen: prompt.length, hasImage: false, thinkingMode, webSearch,
++    promptLen: prompt.length, hasImage: !!image, thinkingMode, webSearch,
+   });
+ 
+   if (checkRateLimit(res, startedAt)) return;
+   if (checkQueueFull(res, startedAt)) return;
+ 
+-  if (stream) {
+-    return streamTextCompletion(res, prompt, { thinkingMode, webSearch, conversationId, startedAt });
+-  }
+-
++  const request = watchRequest(req, res);
+   try {
++    assertRequestActive(request.signal);
++    if (stream) {
++      return await streamTextCompletion(res, prompt, { thinkingMode, webSearch, conversationId, startedAt, image, signal: request.signal });
++    }
+     const result = await submitTextJob((ctx) => runTurn(ctx, ({ job, beforeSubmit, onAttemptFinished, stallRetryState }) => completeText(prompt, {
+       thinkingMode,
+       conversationId,
+@@ -979,8 +983,11 @@ async function handleTextCompletion(req, res, prompt) {
+       beforeSubmit,
+       onAttemptFinished,
+       stallRetryState,
+-    })), conversationKey(conversationId));
++      image,
++      signal: request.signal,
++    }), request.signal), conversationKey(conversationId));
+ 
++    assertRequestActive(request.signal);
+     const applied = result.applied || { thinking: false, thinking_mode: 'instant' };
+     progress.clearPartialInfra(); // any full success proves the session alive
+     observeDuration('success', elapsedSec(startedAt));
+@@ -1001,8 +1008,11 @@ async function handleTextCompletion(req, res, prompt) {
+       ...textEcho(applied, thinkingMode, webSearch),
+     });
+   } catch (err) {
++    if (request.signal.aborted) return;
+     console.error('Text completion error:', err.message);
+     respondWithError(res, startedAt, err);
++  } finally {
++    request.dispose();
+   }
+ }
+ 
+@@ -1039,6 +1049,7 @@ function textEcho(applied, thinkingMode, webSearch) {
+       // Extra High). `requested.thinking_mode` still shows what the caller asked for.
+       thinking_fallback: applied.thinking_fallback ?? null,
+       web_search: false, // deprecated — forced search removed, model auto-searches
++      ...(applied.image_inputs_attached === 1 ? { image_inputs_attached: 1 } : {}),
+     },
+     requested: {
+       thinking: thinkingRequested(thinkingMode),
+@@ -1051,13 +1062,13 @@ function textEcho(applied, thinkingMode, webSearch) {
+ // SSE streaming leg of a text completion. Headers are sent lazily on the first delta
+ // (or at completion), so queue-full / rate-limit / pre-flight errors above still go
+ // out as plain JSON. Once the stream started, errors become an SSE error event.
+-async function streamTextCompletion(res, prompt, { thinkingMode, webSearch, conversationId, startedAt }) {
++async function streamTextCompletion(res, prompt, { thinkingMode, webSearch, conversationId, startedAt, image, signal }) {
+   const meta = { id: `chatcmpl-${randomUUID()}`, created: Math.floor(Date.now() / 1000), model: 'chatgpt-web' };
+   const emitter = createStreamEmitter(meta);
+   let streamingStarted = false;
+ 
+   const ensureStreamStarted = () => {
+-    if (streamingStarted || res.writableEnded) return;
++    if (streamingStarted || res.writableEnded || signal.aborted) return;
+     streamingStarted = true;
+     res.status(200);
+     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+@@ -1077,15 +1088,19 @@ async function streamTextCompletion(res, prompt, { thinkingMode, webSearch, conv
+       beforeSubmit,
+       onAttemptFinished,
+       stallRetryState,
++      image,
++      signal,
+       // Called with the latest FULL text; the emitter turns it into append-only deltas.
+       onDelta: (fullText) => {
++        if (signal.aborted) return;
+         try {
+           ensureStreamStarted();
+           for (const chunk of emitter.push(fullText)) res.write(chunk);
+         } catch {}
+       },
+-    })), conversationKey(conversationId));
++    }), signal), conversationKey(conversationId));
+ 
++    assertRequestActive(signal);
+     ensureStreamStarted();
+     for (const chunk of emitter.finish(result.text, {
+       conversation_id: result.conversation_id || null,
+@@ -1097,6 +1112,7 @@ async function streamTextCompletion(res, prompt, { thinkingMode, webSearch, conv
+     progress.clearPartialInfra();
+     observeDuration('success', elapsedSec(startedAt));
+   } catch (err) {
++    if (signal.aborted) return;
+     console.error('Streaming completion error:', err.message);
+     if (!streamingStarted) return respondWithError(res, startedAt, err);
+     // Headers are gone — emit an OpenAI-style terminal error event instead.
+@@ -1107,22 +1123,31 @@ async function streamTextCompletion(res, prompt, { thinkingMode, webSearch, conv
+     res.write(`data: ${JSON.stringify({
+       error: { message: err.message, type: errorType },
+       error_kind: errorType,
+-      should_retry: shouldRetryKind(errorType),
++      should_retry: err.noRetry !== true && shouldRetryKind(errorType),
+     })}\n\n`);
+     res.write('data: [DONE]\n\n');
+     res.end();
+   }
+ }
+ 
+-// POST /v1/chat/completions — text chat through ChatGPT Web.
++// POST /v1/chat/completions — text or one inline image through ChatGPT Web.
+ // `model` is accepted but ignored: callers choose only thinking_mode.
+ router.post('/v1/chat/completions', async (req, res) => {
+-  const prompt = promptFromMessages(req.body.messages, req.body.input);
+-  await handleTextCompletion(req, res, prompt);
++  let input;
++  try {
++    assertChatRequestSize(req.body, req.headers['content-length']);
++    input = normalizeChatMessages(req.body.messages, req.body.input);
++  } catch (err) { return invalidChatRequest(res, err); }
++  await handleTextCompletion(req, res, input.text, input.image);
+ });
+ 
+ // POST /v1/responses — minimal Responses-style text endpoint without model versions.
+ router.post('/v1/responses', async (req, res) => {
++  let input;
++  try {
++    assertChatRequestSize(req.body, req.headers['content-length']);
++    input = normalizeResponsesInput(req.body.messages, req.body.input);
++  } catch (err) { return invalidChatRequest(res, err); }
+   if (parseBool(req.body.stream)) {
+     return res.status(400).json({
+       ok: false,
+@@ -1135,7 +1160,6 @@ router.post('/v1/responses', async (req, res) => {
+       },
+     });
+   }
+-  const prompt = promptFromMessages(req.body.messages, req.body.input);
+   const originalJson = res.json.bind(res);
+   res.json = (payload) => {
+     if (payload && payload.choices && payload.choices[0]) {
+@@ -1161,7 +1185,7 @@ router.post('/v1/responses', async (req, res) => {
+     }
+     return originalJson(payload);
+   };
+-  await handleTextCompletion(req, res, prompt);
++  await handleTextCompletion(req, res, input.text);
+ });
+ 
+ // GET /v1/images/status
+diff --git a/src/server.js b/src/server.js
+index 1c772ff..9481867 100644
+--- a/src/server.js
++++ b/src/server.js
+@@ -11,6 +11,7 @@ const { defaultBody } = require('./body-default');
+ 
+ const app = express();
+ const PORT = process.env.PORT || 3000;
++const HOST = process.env.HOST || '127.0.0.1';
+ 
+ app.set('trust proxy', true);
+ 
+@@ -49,6 +50,8 @@ if (API_KEY) {
+   app.use('/login', requireAuth);
+ }
+ 
++// Reject oversized chat bodies before allocating an image payload for routing.
++app.use(['/v1/chat/completions', '/v1/responses'], express.json({ limit: '16mb' }));
+ app.use(express.json({ limit: '50mb' }));
+ app.use(defaultBody);
+ 
+@@ -74,13 +77,17 @@ app.get('/metrics', metricsHandler);
+ 
+ // Error handler — no stack traces
+ app.use((err, req, res, next) => {
++  if (err.type === 'entity.too.large') {
++    return res.status(400).json({ error: { message: 'Request body exceeds the configured size limit', type: 'invalid_request_error' } });
++  }
+   if (err.type === 'entity.parse.failed') {
+     return res.status(400).json({ error: { message: 'Invalid JSON', type: 'invalid_request_error' } });
+   }
+   res.status(500).json({ error: { message: err.message, type: 'server_error' } });
+ });
+ 
+-app.listen(PORT, (err) => {
++let shuttingDown = false;
++const server = app.listen(PORT, HOST, (err) => {
+   // Express 5 hands listen errors (EADDRINUSE, ...) to this callback instead of
+   // emitting 'error' unhandled; rethrow so the process dies as it did on Express 4
+   // rather than warming up a browser behind a server that never bound.
+@@ -96,5 +103,29 @@ app.listen(PORT, (err) => {
+     // Traffic-independent session watchdog — keeps gpt_web_gateway_session_valid fresh even
+     // when nobody calls the API, so a dead session is visible in minutes instead of after
+     // the next failed request (or, as in the 2026-07-25 incident, 34 hours later).
+-    .finally(() => startSessionWatchdog());
++    .finally(() => { if (!shuttingDown) startSessionWatchdog(); });
++});
++
++// Windows does not deliver Node SIGINT handlers through child.kill(). The local
++// runner requests graceful cleanup over IPC instead, including on parent exit.
++async function shutdown() {
++  if (shuttingDown) return;
++  shuttingDown = true;
++  server.close();
++  server.closeAllConnections();
++  const { stopSessionWatchdog } = require('./chatgpt');
++  stopSessionWatchdog();
++  try {
++    await require('./browser').shutdownBrowser();
++    process.exit(0);
++  } catch {
++    console.error('[shutdown] Browser cleanup did not complete.');
++    process.exit(1);
++  }
++}
++process.on('SIGINT', () => { void shutdown(); });
++process.on('SIGTERM', () => { void shutdown(); });
++process.on('message', (message) => {
++  if (message?.type === 'chat2claude:shutdown') void shutdown();
+ });
++if (process.connected) process.on('disconnect', () => { void shutdown(); });

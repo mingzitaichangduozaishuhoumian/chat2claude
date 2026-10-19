@@ -130,6 +130,21 @@ See the [usage guide](USAGE.en.md#independent-gpt-image-generation) for SDK and 
 | `configured_catalog_and_health_checks` | `partial` | Generation and model listing use configured IDs without calling gateway /models. Admin health checks currently require GET /v1/models to return an OpenAI-shaped model list; a failed check marks the account with a health error. |
 | `ordinary_chat_validation` | `partial` | Web refers to ordinary Chat after signing in to chatgpt.com through the separately operated gateway. Real-account gateway interoperability remains unverified; switching backends does not establish separate quotas or subscription savings. |
 
+### Pinned local gateway integration
+
+The source checkout includes [setup and login helpers](../integrations/gpt-web-gateway/README.md) for a separate local `stufently/gpt-web-gateway`. They pin upstream commit `893f553be358210a5c045aa9f62b56ba1edc5c78` and apply the repository's chat-image patch. This narrower gateway contract is separate from the generic Web adapter capabilities in the manifest above. It uses ordinary Chat at chatgpt.com with manual login in a separate Chrome window; it does not use ChatGPT Work or the main app's Codex OAuth session.
+
+| Patched gateway behavior | Contract |
+| --- | --- |
+| Chat image input | One `image_url` part on the last `role: "user"` message; canonical Base64 data URLs only, using PNG/JPEG/WebP/GIF with matching MIME signatures. Text order is retained; an image-only message receives a fixed description prompt. |
+| Request limits and rejection | 16 MiB whole JSON request and 10 MiB decoded image. Remote URLs, multiple images, image history, non-user images, unsupported content parts and malformed encoding return HTTP 400 before browser dispatch. |
+| Attachment and reply | The browser confirms the attachment before sending it with text. JSON and SSE return text; `applied.image_inputs_attached: 1` reports confirmed attachment handling, not recognition accuracy. |
+| Cancellation and retry | Disconnected clients are cancelled before queued execution or submission. A failed image turn after sending is not automatically resent and reports `should_retry: false`; callers should preserve that decision. |
+| Native gateway Responses | The gateway's own `/v1/responses` route explicitly rejects image input. The main app's compatibility routes call gateway Chat Completions, so their forwarded input remains subject to the limits above. |
+| Tools, models and health | No tool calls or `/v1/models`; `model` is accepted but ignored, so configure `auto`. Main-app health checks that require `/v1/models` do not establish chat availability for this gateway. |
+| Installation and private state | `web-gateway:setup/login/start/status/connect` manage a separate installation, defaulting to the Git-ignored `apps/api/data/web-gateway/`. The directory contains the random gateway Key and browser session. Connect enables manual Web, image declaration and `sonnet=auto`, with tools disabled; capability configuration is not live verification. |
+| Validation | Offline parser, HTTP JSON/SSE, browser-state, cancellation and duplicate-send prevention tests cover implementation behavior. Real-account upload and vision require the user's manual login and remain unverified. No quota increase is established. |
+
 ## Design direction
 
 Reasoning effort is validated against the selected account's discovered model controls. Ordinary efforts, including `max`, `xhigh`, and future provider IDs, retain their original values. Known spelling aliases are resolved only after checking for an exact native match, and unknown IDs retain case and underscores. Unsupported explicit efforts are rejected before dispatch.

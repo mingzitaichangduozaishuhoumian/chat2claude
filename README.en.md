@@ -174,16 +174,36 @@ The console opens in Simple mode. Both modes can expand text and image catalogs.
 
 ### Web gateways and upstream selection
 
-Here, “Web” means the ordinary **Chat conversation page** after signing in to [chatgpt.com](https://chatgpt.com). A separate web-to-API gateway owns browser login and the web session. This project does not log into the website directly or integrate ChatGPT Work.
+Here, “Web” means the ordinary **Chat conversation page** after signing in to [chatgpt.com](https://chatgpt.com). A separate web-to-API gateway owns the browser, login, and web session; the main API calls its compatibility endpoint. ChatGPT Work is not integrated. The helper commands below can prepare a local gateway and open a separate Chrome window for you to sign in manually.
 
-Reference projects include [aurorax-neo/chat2api](https://github.com/aurorax-neo/chat2api) and [stufently/gpt-web-gateway](https://github.com/stufently/gpt-web-gateway), with different capabilities listed below. Deploy a gateway and sign in to ordinary Chat there, then enter its URL, optional API Key, and actual supported model slugs in `/admin` → **Models** → **Upstream selection**. Simple mode supports all configuration. Generation only requires OpenAI Chat Completions, not `/v1/models`; the Admin API web health check does request that endpoint and fails if it is absent. IDs pass through unchanged; the default `auto` declares only that model.
+Use the local setup commands below, or deploy a gateway such as [aurorax-neo/chat2api](https://github.com/aurorax-neo/chat2api) or [stufently/gpt-web-gateway](https://github.com/stufently/gpt-web-gateway). After signing in to ordinary Chat, enter its URL, optional API Key, and actual supported model slugs in `/admin` → **Models** → **Upstream selection**. Simple mode supports all configuration. Generation only requires OpenAI Chat Completions, not `/v1/models`; the Admin API web health check does request that endpoint and fails if it is absent. IDs pass through unchanged; the default `auto` declares only that model.
 
 | Reference implementation (source inspected, not live-tested) | Integration notes |
 | --- | --- |
 | [aurorax-neo/chat2api, dbf6bf3](https://github.com/aurorax-neo/chat2api/tree/dbf6bf39686348449c25de3b6131ca733f448deb) | Ordinary chat uses the web conversation endpoint. Use inline base64 images, not remote HTTPS image URLs. Tool calls use a text protocol. Image generation also has a Codex path, so not every call in this project is ordinary Chat. |
 | [stufently/gpt-web-gateway, 893f553](https://github.com/stufently/gpt-web-gateway/tree/893f553be358210a5c045aa9f62b56ba1edc5c78) | A real browser drives ordinary Chat for text/SSE. Chat ignores images and the model parameter, with no native tools or `/v1/models`. Keep image/tool support disabled, use `auto`, and do not use the web health check to judge its chat endpoint. |
+| [This repository's pinned version and single-image patch](integrations/gpt-web-gateway/README.md) | Applies a local patch to the same upstream SHA, adding one Base64 image on the last user message for chat JSON/SSE. Tools and `/v1/models` remain unavailable, and model is still ignored. Offline tests cover the implementation; live vision awaits manual-login validation. |
 
 Neither project should be assumed to enforce `max_tokens`, sampling parameters, or stop conditions as hard official-API constraints.
+
+The source checkout can prepare a separate local gateway. Git, npm, and an installed Google Chrome are required:
+
+```bash
+corepack pnpm web-gateway:setup
+corepack pnpm web-gateway:login
+corepack pnpm web-gateway:status
+corepack pnpm web-gateway:start
+```
+
+Login opens a separate Chrome window for you to sign in to ordinary Chat. Start keeps the gateway running in that terminal, listening only on `127.0.0.1:3101` by default. The local runner requires ordinary Chat mode before sending every chat request; Work or an unrecognized page is rejected. Start the main project in another terminal, then run:
+
+```bash
+corepack pnpm web-gateway:connect -- --api-url http://127.0.0.1:3000
+```
+
+Use the main service's actual loopback origin for `--api-url`. Connect saves the random gateway Key, selects **manual Web mode**, configures `auto` and `sonnet=auto`, enables image input, and disables tools. It updates existing Web routing settings; use Admin to select Auto or disable Web. Installation and login data default to the ignored `apps/api/data/web-gateway/` directory. A custom `--directory PATH` must be excluded from version control separately and passed to subsequent commands. Setup pins commit `893f553be358210a5c045aa9f62b56ba1edc5c78` plus the repository patch; it does not follow upstream updates. See [installation, private data, and limits](integrations/gpt-web-gateway/README.md).
+
+The patch accepts one canonical Base64 PNG/JPEG/WebP/GIF image on the last user message, with a 10 MiB decoded-image and 16 MiB whole-request limit. Remote URLs, multiple images, image history, non-user images, unknown non-text parts, and malformed encoding return 400. The gateway's native `/v1/responses` endpoint rejects images. Real-account upload, recognition, and usage limits still require manual-login validation; enabling the image declaration does not establish a live test.
 
 First toggle **Use ChatGPT Web**, then choose **Auto mode / Manual mode**. Turning Web off (or presetting `CHATGPT_WEB_ENABLED=false`) uses only Codex while preserving the gateway, Key, mappings, and mode selection for re-enabling. This switch takes precedence over Auto routing and request headers; a `web` header is rejected while Web is off. Removing saved settings still requires the separate **Clear web configuration** action.
 
@@ -191,7 +211,7 @@ First toggle **Use ChatGPT Web**, then choose **Auto mode / Manual mode**. Turni
 
 Optional **Web model mappings** accept one `client model or alias=web model ID` per line, such as `sonnet=auto` or `opus=auto`. This explicitly substitutes web `auto` for that request even if the alias normally points to a Codex model; it does not claim the models are equivalent. Targets must be listed among the configured web model IDs. Without a mapping, exact model matching still applies. Save an empty field to clear mappings.
 
-Capabilities follow the adapter declaration. Enable **tool calls** or **image inputs** only after confirming support in the gateway. Image forwarding currently accepts only user-message HTTPS image URLs or PNG/JPEG/WebP/GIF base64 images, with a 16 MiB serialized request limit. Tool-result images and web image generation/editing are not connected. Recognition depends on the gateway and web model. Web can independently answer, analyze, and generate code. When the gateway supports tool calls, clients such as Claude Code can use it for local tasks and execute file/command tools themselves. Each request selects one backend; there is no default Web planning → Codex execution → Web review cycle that adds calls. The current web adapter does not support native reasoning replay, reasoning-effort controls, service tiers, or structured outputs. Unsupported requests are rejected explicitly.
+Capabilities follow the adapter declaration. Enable **tool calls** or **image inputs** only after confirming support in the gateway. The generic adapter can forward user-message HTTPS image URLs or PNG/JPEG/WebP/GIF base64 images within a 16 MiB serialized request limit; a gateway can impose stricter limits, and this repository's patch accepts only the single-image Base64 subset above. Tool-result images and web image generation/editing are not connected. Recognition depends on the gateway and web model. Web can independently answer, analyze, and generate code. Other gateways that support tool calls can let clients such as Claude Code execute file/command tools locally; this pinned gateway does not support tools. Each request selects one backend; there is no default Web planning → Codex execution → Web review cycle that adds calls. The current web adapter does not support native reasoning replay, reasoning-effort controls, service tiers, or structured outputs. Unsupported requests are rejected explicitly.
 
 **Quota:** the goal is to prefer ordinary Chat and reduce requests this service sends directly to the Codex backend. The relationship between ordinary Chat and Codex limits depends on the actual plan, model, and account usage page. This project does not apply ChatGPT Work rules to ordinary Chat or promise additional total allowance. Response headers and Admin show the actual backend; confirm that the gateway itself uses ordinary Chat rather than forwarding back to Codex.
 

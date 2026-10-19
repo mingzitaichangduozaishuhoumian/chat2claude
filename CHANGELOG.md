@@ -8,6 +8,7 @@ The following application changes are in the current source branch and are not i
 
 ### 中文
 
+- 增加本机普通 Chat 网关的 `web-gateway:setup/login/start/status/connect` 命令，固定 `stufently/gpt-web-gateway` 提交 `893f553be358210a5c045aa9f62b56ba1edc5c78` 并应用聊天单图补丁。独立 Chrome 由本人手动登录，默认私密安装目录由 Git 忽略；connect 保存随机 Key 并选择手动网页模式。补丁接受最后 user 消息的一张 Base64 PNG/JPEG/WebP/GIF，限制图片 10 MiB、请求 16 MiB，显式拒绝远程 URL、多图和历史图片，支持 JSON/SSE、取消及发送后禁止自动重试。没有工具调用，独立网关原生 Responses 拒绝图片；真实普通 Chat 识图仍待本人登录联调。
 - 网页后端指登录 chatgpt.com 后的普通 Chat，通过独立网关接入；未接入 ChatGPT Work。补充开源网关的实际兼容差异、真实账号尚未联调的边界，并同步兼容清单。
 - 上游选择改为先开启/关闭 ChatGPT 网页，再选择自动或手动模式；关闭后仅用 Codex，保留网页配置、Key、映射和模式选择，重新开启即可恢复。网页开关优先于自动路由及请求头覆盖。
 - 接入独立部署并登录的 ChatGPT 网页网关；管理台可选自动、Codex 或网页，也可用 `x-chat2claude-backend` 按请求覆盖并查看实际后端。自动默认网页优先，可切换为 Codex 优先，按模型、能力和账号可用性匹配；发送后不跨后端重试，历史固定账号与 provider。支持显式网页模型映射及图片输入/工具能力声明，凭据持久化并支持现有加密。纯网页模式可禁止 Codex 回退；每次请求只选一个后端，调用来源不等于额度节省。
@@ -19,6 +20,7 @@ The following application changes are in the current source branch and are not i
 
 ### English
 
+- Added local ordinary-Chat gateway setup/login/start/status/connect commands. Setup pins `stufently/gpt-web-gateway` commit `893f553be358210a5c045aa9f62b56ba1edc5c78` and applies a single-image chat patch. Sign in manually in a separate Chrome window; the private default installation is ignored by Git. Connect saves a random Key and selects manual Web mode. The patch accepts one Base64 PNG/JPEG/WebP/GIF on the last user message, capped at 10 MiB decoded and 16 MiB per request; remote URLs, multiple images and image history are rejected. JSON/SSE, cancellation and unsafe-retry prevention are covered. Tools remain unavailable and the gateway's native Responses rejects images; live ordinary-Chat vision still awaits manual-login validation.
 - Clarified that Web means ordinary Chat after signing in to chatgpt.com through a separate gateway, without a ChatGPT Work integration. Documented source-verified gateway compatibility differences and the unverified live-account boundary, and synchronized the compatibility manifest.
 - Added a separate ChatGPT Web enable switch before Auto/Manual mode selection. Disabling Web uses only Codex and preserves gateway settings, Key, mappings, and mode selection for re-enabling. The switch takes precedence over Auto routing and request headers.
 - Added separately deployed and authenticated ChatGPT web gateways. Choose Auto, Codex, or Web in Admin, or override per request with `x-chat2claude-backend`; the response reports the actual backend. Auto prefers Web by default, offers Prefer Codex, and matches models, capabilities, and availability. No cross-backend retry after dispatch; history retains its account and provider. Explicit web model mappings and image/tool capability declarations are supported alongside existing credential persistence/encryption. Web-only mode prevents Codex fallback; each request selects one backend, and backend usage is not reported as quota savings.
