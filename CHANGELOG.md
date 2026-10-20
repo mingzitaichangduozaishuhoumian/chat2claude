@@ -2,9 +2,13 @@
 
 ## Unreleased
 
-以下应用改进包含在当前源码分支，尚未包含在 v0.2.1 安装包中。仓库自动化已启用。
+暂无未发布变更。 / No unreleased changes.
 
-The following application changes are in the current source branch and are not included in the v0.2.1 archives. Repository automation is already enabled.
+## 0.3.0 — 2026-10-20
+
+本版本将普通 Chat 网页适配、上游选择、可见上下文接续和 2K／4K 图片尺寸别名纳入正式安装包。提供 Windows x64 免安装 ZIP、通用 Node ZIP／TAR.GZ、SHA-256 校验文件与版本来源清单。浏览器网关需独立部署并登录；源码版的网关辅助命令、补丁和 Chrome 不随便携包分发。
+
+This release packages ordinary-Chat gateway integration, upstream selection, visible-context handoff and local 2K/4K image size aliases. Downloads include a Windows x64 portable ZIP, universal Node ZIP/TAR.GZ, SHA-256 checksums and a source manifest. Deploy and sign in to the browser gateway separately; source helper commands, patches and Chrome are not bundled.
 
 ### 中文
 
@@ -44,7 +48,9 @@ The following application changes are in the current source branch and are not i
 - Enabled GitHub Actions CI and tag-based releases. Manual packaging runs produce verification artifacts without publishing or overwriting releases.
 - Updated both READMEs with source updates, grouped model controls, startup behavior, and source/package data-directory differences.
 
-**验证 / Verification（2026-10-05，`cf88c77`）：** [Windows/Linux × Node 22/24 CI](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/runs/37273614978) 全部通过 / passed；[自动打包试运行 / packaging dry run](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/runs/37273646542) 完成 Linux 构建与同批 Windows 运行时验证 / passed Linux build and Windows runtime checks. 未执行发布步骤 / publication was skipped.
+**功能验证 / Feature validation（2026-10-20，`6428eef`）：** [Windows/Linux × Node 22/24 CI](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/runs/39414623639) 全部通过 / passed。正式发布流程在标签对应的干净提交上重新构建、测试、校验 SHA-256，并验证同批 Windows 内置运行时后上传 / The tag release workflow rebuilds and tests a clean checkout, verifies SHA-256 checksums and the same Windows runtime artifacts before uploading.
+
+**历史验证 / Historical validation（2026-10-05，`cf88c77`）：** [Windows/Linux × Node 22/24 CI](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/runs/37273614978) 全部通过 / passed；[自动打包试运行 / packaging dry run](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/runs/37273646542) 完成 Linux 构建与同批 Windows 运行时验证 / passed Linux build and Windows runtime checks. 未执行发布步骤 / publication was skipped.
 
 ## 0.2.1 — 2026-10-04
 
@@ -75,7 +81,7 @@ The following application changes are in the current source branch and are not i
 
 独立 Images SSE 只有最终图片，没有渐进预览；流式仅允许 `n=1`，`partial_images` 只能为 0 或省略。图片编辑、variations 和生成图隐式历史续聊仍不支持。Responses 的图片事件转换有合成测试覆盖，当前宿主的 Responses 图片工具不因此视为已真实验证。Chat/Claude 收到图片输出时明确报错。
 
-v0.2.0 发布时，本地验证记录为 **2330 项测试通过，并通过 build / typecheck**；当时尚无该标签的 GitHub Actions 执行结果。后续 `main` 分支的云端验证记录见上方 Unreleased，不追溯视为本标签的 CI 验证。
+v0.2.0 发布时，本地验证记录为 **2330 项测试通过，并通过 build / typecheck**；当时尚无该标签的 GitHub Actions 执行结果。后续 `main` 分支的云端验证记录见上方 0.3.0，不追溯视为本标签的 CI 验证。
 
 ### English
 
@@ -88,6 +94,6 @@ v0.2.0 发布时，本地验证记录为 **2330 项测试通过，并通过 buil
 
 Standalone Images SSE delivers only the final image, with no progressive previews; streaming requires `n=1`, and `partial_images` must be 0 or omitted. Edits, variations and implicit generated-image history remain unsupported. Synthetic coverage of Responses image events does not establish real image-tool access on the current host. Chat/Claude explicitly reject generated image output.
 
-At the time of the v0.2.0 release, local validation passed **2330 tests, plus build and typecheck**; there was no GitHub Actions result for that tag. Later validation on `main` is recorded under Unreleased above and does not retroactively validate this release tag.
+At the time of the v0.2.0 release, local validation passed **2330 tests, plus build and typecheck**; there was no GitHub Actions result for that tag. Later validation on `main` is recorded under 0.3.0 above and does not retroactively validate this release tag.
 
 See [usage / 使用说明](docs/USAGE.en.md), [中文使用说明](docs/USAGE.zh-CN.md), and the [protocol compatibility matrix](docs/protocol-compatibility.md) for the full contract.

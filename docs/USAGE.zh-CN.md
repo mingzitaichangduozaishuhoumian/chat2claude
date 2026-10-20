@@ -251,7 +251,7 @@ model_auto_compact_token_limit = 800000
 
 Responses 历史默认在内存保留 30 分钟，隐式 reasoning replay 默认 10 分钟，均按 API 用户隔离、有容量上限且重启失效。客户端必须继续保存完整历史，并提供需要的文件内容、修改结果及测试证据。接续功能不共享 ChatGPT Projects、不挂载目录，也不替客户端执行工具。使用同一客户端工程和执行器，才能让两个后端看到相同的已回传项目状态。
 
-本仓库[固定网页网关补丁](../integrations/gpt-web-gateway/README.md)可通过文本协议返回标准工具请求，由客户端执行；`web-gateway:connect` 主动开启工具、图片和可见上下文接续，仍使用手动网页模式。补丁拒绝 `strict:true`、远程图片和非 user 图片；累计图片上限为 10 张、10 MiB 解码数据及 16 MiB JSON 请求。网关自己的原生 Responses 拒绝图片和工具，主服务 Responses 使用 Chat Completions 适配。
+本仓库[固定网页网关补丁](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/blob/v0.3.0/integrations/gpt-web-gateway/README.md)可通过文本协议返回标准工具请求，由客户端执行；`web-gateway:connect` 主动开启工具、图片和可见上下文接续，仍使用手动网页模式。补丁拒绝 `strict:true`、远程图片和非 user 图片；累计图片上限为 10 张、10 MiB 解码数据及 16 MiB JSON 请求。网关自己的原生 Responses 拒绝图片和工具，主服务 Responses 使用 Chat Completions 适配。
 
 2026-10-20 已在一个普通 Chat 账号验证双 PNG 历史、标准工具参数及模拟客户端结果的完整 Messages SSE；源 Codex 步骤为替身，未执行实际文件命令。生成测试使用内存应用实例，详细范围见集成记录。
 

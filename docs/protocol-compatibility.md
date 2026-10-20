@@ -147,7 +147,7 @@ See the [usage guide](USAGE.en.md#independent-gpt-image-generation) for SDK and 
 
 ### Pinned local gateway integration
 
-The source checkout includes [setup and login helpers](../integrations/gpt-web-gateway/README.md) for a separate local `stufently/gpt-web-gateway`. They pin upstream commit `893f553be358210a5c045aa9f62b56ba1edc5c78` and apply the repository's chat-image patch. This narrower gateway contract is separate from the generic Web adapter capabilities in the manifest above. It uses ordinary Chat at chatgpt.com with manual login in a separate Chrome window; it does not use ChatGPT Work or the main app's Codex OAuth session.
+The source checkout includes [setup and login helpers](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/blob/v0.3.0/integrations/gpt-web-gateway/README.md) for a separate local `stufently/gpt-web-gateway`. They pin upstream commit `893f553be358210a5c045aa9f62b56ba1edc5c78` and apply the repository's chat-image patch. This narrower gateway contract is separate from the generic Web adapter capabilities in the manifest above. It uses ordinary Chat at chatgpt.com with manual login in a separate Chrome window; it does not use ChatGPT Work or the main app's Codex OAuth session.
 
 | Patched gateway behavior | Contract |
 | --- | --- |
