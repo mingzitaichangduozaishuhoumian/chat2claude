@@ -4,6 +4,8 @@
 
 本机启动器强制设置 `ORDINARY_CHAT_ONLY=true`，对所有聊天请求（纯文本和图片）严格检查普通 Chat 模式，在准备、切换思考模式后和真正发送前再次确认；检测到 Work 或无法辨识当前页面时拒绝发送，包括按 Enter 的发送备用路径。未通过本机启动器且未开启该选项的上游纯文本路径，仍保留默认的尽力切换模式行为。
 
+本机启动器同时强制 `CHAT2CLAUDE_MAX_THINKING=true`。每次聊天请求都在普通 Chat 中，从当前账号已识别的菜单或滑杆选择最高思考档位并读回确认，发送前再次验证；最高档禁用、选档失败或无法确认时拒发，不静默使用 Instant 或较低档，也不能因选档切入 Work。这是本机 runner 对独立网关的策略，不是通用 Web 适配层对任意 `reasoning_effort` 的支持；该网关仍忽略 `model`，主项目继续配置 `auto`。2026-10-20，同一账号已通过 Pro 档单 PNG 识图及工具请求的 JSON 验证；Pro SSE、多图和完整工具结果往返尚未实测，此前 Instant 的双图及工具结果链路单独保留。
+
 固定上游提交为 [`893f553be358210a5c045aa9f62b56ba1edc5c78`](https://github.com/stufently/gpt-web-gateway/tree/893f553be358210a5c045aa9f62b56ba1edc5c78)，来源记录在 [upstream.json](upstream.json)。`setup` 检出该提交并应用 [chat-vision.patch](chat-vision.patch)，不跟随上游分支自动更新。上游 MIT 许可保留在 [LICENSE.upstream](LICENSE.upstream)。
 
 ## 安装、登录与接入
@@ -48,9 +50,11 @@ corepack pnpm web-gateway:connect -- --api-url http://127.0.0.1:3000
 
 工具采用受校验的文本协议，让网页模型输出标准 JSON/SSE `tool_calls`；实际文件读写、命令和其他工具始终由客户端执行，网关不运行模型生成的工具。可声明最多 128 个唯一 function，名称为 1–64 个 ASCII 字母、数字、下划线或连字符。每次新输出最多 8 个调用，`parallel_tool_calls=false` 时最多 1 个；一条 assistant 历史中的 `tool_calls` 最多 128 个，必须各自有唯一且完整的后续 tool 结果，才能继续下一条非 tool 消息。单项参数最多 1 MiB，原始参数字符串及数值字面量保留。`strict:true` 被明确拒绝，不承诺原生严格 JSON Schema 执行；不合约的工具输出不会转成成功的工具调用。
 
+工具提示词把真实附件及当前 user 任务放在顶层，并明确约束 `tool_choice`；此编排不改变角色权限、完整 JSON、参数及请求 nonce 的校验。
+
 工具回复须完整通过协议校验后，才返回客户端或分块输出 SSE 参数；不会把未经确认的部分 JSON 转成工具调用。完整 JSON 可使用受支持的单层包装，包装外不能带其他说明，不能嵌套包装；解包后仍严格校验 JSON、请求 nonce、声明的工具名、调用数量及参数。
 
-网页兼容补丁支持中文“聊天 / 工作”按钮的 `aria-pressed` 活跃状态，并按中文附件移除标签精确核对文件名。每次请求生成独立的 ASCII UUID 文件名，避免网页将同名上传改成带 `(1)` 的名称；不会放宽校验接受其他附件。严格模式的新会话最多等待 60 秒让输入框出现，超时或页面状态无法确认时拒绝发送。
+网页兼容补丁支持中文“聊天 / 工作”按钮的 `aria-pressed` 活跃状态，并按中文附件移除标签精确核对文件名。`aria-current` 仅接受已知正值，`false`、空值和未知值不能证明当前模式已激活。每次请求生成独立的 ASCII UUID 文件名，避免网页将同名上传改成带 `(1)` 的名称；不会放宽校验接受其他附件。严格模式的新会话最多等待 60 秒让输入框出现，超时或页面状态无法确认时拒绝发送。
 
 图片请求先填入完整文字，再批量上传并确认附件；上传后只读核对文字及附件，不重新填入输入框，避免覆盖已上传图片。确认普通 Chat 模式、完整文字和全部预期附件后才发送。
 
@@ -68,20 +72,26 @@ corepack pnpm web-gateway:connect -- --api-url http://127.0.0.1:3000
 
 ## 验证记录与复现
 
-2026-10-20 当前自动化验证：默认 `corepack pnpm check` 的构建通过，但默认高并发 Vitest 出现 3 项既有测试的 5 秒超时，无断言失败，因此不记为整条 `pnpm check` 通过。这 3 项涉及的文件以单 worker 复跑，91/91 通过；完整 Vitest 使用 `--maxWorkers=2` 后，113 个文件、2707/2707 项通过。所有包的类型检查、build-cache 8/8 和网关 runner 19/19 也通过。
+2026-10-20，本轮最高档策略更新后的完整 `corepack pnpm check` 以退出码 0 通过：全工作区构建、113 个文件的 2707 项 Vitest、build-cache 8/8、网关 runner 19/19，以及所有包的类型检查均通过。
+
+同日较早的上下文接续实现阶段，默认 `corepack pnpm check` 的构建通过，但默认高并发 Vitest 出现 3 项既有测试的 5 秒超时，无断言失败，因此当时不记为整条 `pnpm check` 通过。这 3 项涉及的文件以单 worker 复跑，91/91 通过；完整 Vitest 使用 `--maxWorkers=2` 后，113 个文件、2707/2707 项通过。所有包的类型检查、build-cache 8/8 和网关 runner 19/19 也通过。这是此前阶段的历史记录，不是本轮完整检查的结果。
 
 旧提交的 Ubuntu Node 24 CI 在依赖审计中被 `source-map-js@1.2.1` 的高危公告阻挡；已仅将该传递依赖锁定至 `1.2.2`。修复后 `pnpm audit --audit-level high` 报告无已知漏洞，锁定安装、全工作区构建和类型检查通过；新提交的 CI 结果仍需单独确认。
 
-最终 `test:vision` 通过 11 组 vision 解析/HTTP 测试、18/18 项工具协议测试，以及 73 项附件/文本模式和关闭流程测试（附件/文本模式 71 项、关闭流程 2 项）。这些自动化验证使用本地 fixture 或浏览器替身；真实网页结果单独记录如下。
+本轮已安装补丁的 `test:vision` 通过 11 组 vision 解析/HTTP 测试、18/18 项工具协议测试，以及 100 项 Node 测试（最高档策略 26 项、附件/文本模式 72 项、关闭流程 2 项）。这些自动化验证使用本地 fixture 或浏览器替身；真实网页结果单独记录如下。
 
-2026-10-20，最终已安装补丁在同一次内存应用运行中连续通过两轮真实网页请求（合成 Codex 源 1 次、真实 Web 2 次）；两轮图片请求均新建本槽页面，使用同一个本人普通 Chat 账号和两张合成 PNG。第一段以 `createApp` 内存实例的一次合成 Codex 回复建立 Responses 历史，再通过 `previous_response_id` 接续真实网页；第二段将网页实际返回的调用 ID 配对模拟客户端工具结果，继续完整双图历史：
+2026-10-20，本轮使用同一个本人手动登录的普通 Chat 账号，直连已安装网关的 Chat Completions JSON，使用一张固定数字 73 的 PNG，真实通过两种请求：普通识图返回 73；指定单次 `record_digits` 工具请求返回标准 `tool_calls`，`digits` 参数为字符串 `"73"`。两者均在选档后和发送前确认 Pro，HTTP 200，`applied.thinking_mode=pro`、`thinking_verified=true`、`requested_verified=true`、`thinking_fallback=null`、`image_inputs_attached=1`。工具请求的只读观测记录一次 conversation POST、一个图片附件及一个多模态图片部分。
+
+本轮没有实际执行客户端工具、调用 Codex 或向 3000 主服务发送生成请求；主服务只配置接入。此结果仅覆盖一个账号的 Pro 单 PNG 识图及工具请求 JSON，不代表 Pro SSE、多图或完整工具结果循环已验证。固定补丁在原始上游 SHA 可干净应用；原始提示词、回答、会话、日志和截图不纳入仓库。
+
+同日较早，启用最高档策略前的已安装补丁以 **Instant 档**在同一次内存应用运行中连续通过两轮真实网页请求（合成 Codex 源 1 次、真实 Web 2 次）；两轮图片请求均新建本槽页面，使用同一个本人普通 Chat 账号和两张合成 PNG。第一段以 `createApp` 内存实例的一次合成 Codex 回复建立 Responses 历史，再通过 `previous_response_id` 接续真实网页；第二段将网页实际返回的调用 ID 配对模拟客户端工具结果，继续完整双图历史：
 
 | 路径 | 实测结果 |
 | --- | --- |
 | Responses 可见历史接续到真实网页 | HTTP 200；标准 `function_call` 参数正确包含此前项目代号、旧图数字 73 和当前图数字 29。发送前核对私有 reasoning 和原生消息 ID 未传入网页。 |
 | 真实调用 ID + 模拟客户端结果，经 Messages SSE 接续真实网页 | HTTP 200，`x-chat2claude-backend: web`，完整 `message_stop`；回复中的项目代号、两图数字和模拟结果回执正确。完整历史仍包含两张 PNG。 |
 
-源 Codex 步骤只调用一次测试替身，未调用真实 Codex 账号；客户端工具结果是合成回执，没有实际执行文件读写或命令。这两段生成请求只发往当前构建的内存应用实例。运行中的 3000 主服务已保存并核对手动网页、`contextHandoff=true`、工具和图片开启、`supportsStrictTools=false`，但没有对其发送本次生成测试。结果证明上述单账号双 PNG 两段链路，不证明其他账号、格式、长期可靠性或额度关系。原始提示词、回答、会话、日志和截图不纳入仓库。
+源 Codex 步骤只调用一次测试替身，未调用真实 Codex 账号；客户端工具结果是合成回执，没有实际执行文件读写或命令。这两段生成请求只发往当时构建的内存应用实例。运行中的 3000 主服务已保存并核对手动网页、`contextHandoff=true`、工具和图片开启、`supportsStrictTools=false`，但没有对其发送本次生成测试。结果证明上述单账号双 PNG 两段链路，不证明最高思考档、其他账号、格式、长期可靠性或额度关系。这些 Instant 历史结果不作为 Pro 档验证；本轮 Pro 的实测范围见前一段。原始提示词、回答、会话、日志和截图不纳入仓库。
 
 以下是 **2026-10-19 单图版本的历史记录**，保留当时的源码、配置和验证事实。
 
@@ -138,6 +148,8 @@ The patched Chat Completions route accepts canonical Base64 PNG/JPEG/WebP/GIF im
 
 The tool text protocol returns standard JSON/SSE tool calls for the client to execute. The gateway never executes tools. It accepts up to 128 unique function definitions, with names of 1–64 ASCII letters, digits, underscores or hyphens; a new response has at most 8 calls, or 1 when `parallel_tool_calls=false`. Each assistant history group may contain at most 128 calls, with one unique result per call before the next non-tool message. Arguments are capped at 1 MiB each and their original strings and numeric tokens are retained. `strict:true` is rejected; this does not promise native strict JSON Schema execution. No additional quota is promised.
 
+The tool prompt puts actual attachments and the current user task at the top level and explicitly constrains `tool_choice`. This layout preserves role authority and full JSON, argument and request-nonce validation.
+
 The complete tool reply must pass protocol validation before a client response or chunked SSE arguments are emitted. Partial, unverified JSON cannot become a tool call. Complete JSON may use a supported single wrapper, without surrounding prose or nested wrappers; JSON, request nonce, declared function names, call limits and arguments remain strictly validated after unwrapping.
 
 For image requests, the gateway fills the complete text before uploading and confirming the image batch. After upload it only reads back the text and attachment state, without refilling the composer and overwriting attachments. Submission requires confirmed ordinary Chat mode, complete text and every expected attachment.
@@ -148,17 +160,25 @@ Main-service `contextHandoff` defaults to false; enable it in Admin or through `
 
 The local runner forces `ORDINARY_CHAT_ONLY=true` for strict ordinary-Chat checks on every chat request, including text and images. It checks during preparation, after thinking-mode selection, and immediately before submission, including the Enter-key fallback. Work or an unrecognized page is rejected before sending. Upstream text paths retain their default best-effort mode selection when run without this option outside the local runner. `applied.image_inputs_attached` and `should_retry` are native gateway extensions; the main compatibility API does not currently forward them. Auto routing cannot predict every gateway limit; HTTPS images or excess input can receive 400 after selecting Web, with no Codex retry after dispatch. Connect also sets supportsStrictTools:false, excluding strict:true requests before Web dispatch: manual Web rejects them and Auto may select compatible Codex.
 
-Current automated validation on 2026-10-20: the build phase of default `corepack pnpm check` passed, but default high-concurrency Vitest hit three existing tests' 5-second timeouts, with no assertion failures. The entire `pnpm check` is therefore not recorded as passing. A single-worker rerun of the three affected files passed 91/91 tests; the full Vitest run with `--maxWorkers=2` passed 2707/2707 tests in 113 files. All packages passed typechecking, build-cache passed 8/8, and the gateway runner passed 19/19.
+The local runner also forces `CHAT2CLAUDE_MAX_THINKING=true`. Every ordinary-Chat request selects the current account's highest recognized menu or slider thinking level, requires read-back confirmation, and verifies it again before submission. A disabled, failed or unconfirmed top level rejects the request; it cannot silently use Instant or a lower level, or switch to Work. This is a local-runner policy for the separate gateway, not arbitrary `reasoning_effort` support in the generic Web adapter. The gateway still ignores `model`, so configure `auto`. Only known positive `aria-current` tokens count as active; false, empty and unknown values do not confirm a surface. On 2026-10-20, the same account passed Pro-level JSON checks for one PNG and a tool request. Pro SSE, multiple images and a complete tool-result round trip remain untested; the earlier Instant history checks are recorded separately.
+
+On 2026-10-20, the complete `corepack pnpm check` after this highest-level policy update passed with exit code 0: the workspace build, 2707 Vitest tests in 113 files, build-cache 8/8, gateway runner 19/19, and typechecks for all packages passed.
+
+Earlier that day, during the context-handoff implementation, the build phase of default `corepack pnpm check` passed, but default high-concurrency Vitest hit three existing tests' 5-second timeouts, with no assertion failures. That earlier full command was therefore not recorded as passing. A single-worker rerun of the three affected files passed 91/91 tests; the full Vitest run with `--maxWorkers=2` passed 2707/2707 tests in 113 files. All packages passed typechecking, build-cache passed 8/8, and the gateway runner passed 19/19. This is a historical record of the prior stage, separate from the current complete check.
 
 The prior commit's Ubuntu Node 24 CI was blocked by the high-severity advisory for `source-map-js@1.2.1`. Only that transitive dependency's lock entry was updated to `1.2.2`. After the fix, `pnpm audit --audit-level high` reported no known vulnerabilities, and frozen-lockfile installation, workspace build and typechecking passed. The new commit's CI result still requires separate confirmation.
 
-The final test:vision run passed 11 vision parser/HTTP groups, 18/18 tool-protocol tests, and 73 attachment/text-mode/shutdown tests (71 attachment/text-mode plus 2 shutdown). These automated checks use local fixtures or browser substitutes; real Web results are recorded separately below. Reproduction commands above include the bounded-worker run.
+The updated installed patch passed test:vision with 11 vision parser/HTTP groups, 18/18 tool-protocol tests, and 100 Node tests (26 maximum-thinking, 72 attachment/text-mode, and 2 shutdown). These automated checks use local fixtures or browser substitutes; real Web results are recorded separately below. Reproduction commands above include the bounded-worker run used in the prior stage.
 
-On 2026-10-20, the final installed patch passed two consecutive real Web requests in one in-memory app run (1 synthetic Codex call, 2 real Web requests). Each image request used a fresh page in its own slot, with the same ordinary Chat account and two synthetic PNGs. An in-memory createApp instance first stored one synthetic Codex response, then continued its Responses history on real Web through previous_response_id. Standard function_call arguments correctly included the earlier project code, digits 73 in the historical PNG and 29 in the current PNG. Before dispatch, a check confirmed private reasoning and native message IDs were absent from the Web request.
+On 2026-10-20, the same manually signed-in ordinary Chat account called the installed gateway directly through Chat Completions JSON with one fixed PNG showing 73. Plain recognition returned 73. A named single `record_digits` request returned standard `tool_calls` with `digits` as the string `"73"`. Both confirmed Pro after selection and before submission and returned HTTP 200 with `applied.thinking_mode=pro`, `thinking_verified=true`, `requested_verified=true`, `thinking_fallback=null`, and `image_inputs_attached=1`. Read-only observation of the tool request recorded one conversation POST, one image attachment and one multimodal image part.
+
+No client tool ran, no Codex request occurred, and no generation went to the port-3000 main service, which was configured only. This establishes Pro-level single-PNG recognition and tool-request JSON for one account; it does not establish Pro SSE, multiple images or a complete tool-result round trip. The patch applies cleanly to the original pinned SHA. Raw prompts, replies, sessions, logs and screenshots are not included in the repository.
+
+Earlier that day, before the highest-level policy was enabled, the installed patch passed two consecutive real Web requests at the **Instant level** in one in-memory app run (1 synthetic Codex call, 2 real Web requests). Each image request used a fresh page in its own slot, with the same ordinary Chat account and two synthetic PNGs. An in-memory createApp instance first stored one synthetic Codex response, then continued its Responses history on real Web through previous_response_id. Standard function_call arguments correctly included the earlier project code, digits 73 in the historical PNG and 29 in the current PNG. Before dispatch, a check confirmed private reasoning and native message IDs were absent from the Web request.
 
 The real call ID was then paired with a simulated client tool result and the complete two-PNG history was continued through Messages SSE on real Web. It returned HTTP 200, x-chat2claude-backend: web, complete message_stop and correct project code, both image digits and the simulated result receipt. The source Codex step made one mock call, without using a real Codex account. No file read/write or command tool was executed; the tool result was synthetic.
 
-Generation checks used the current build's in-memory app, not the running port-3000 service. That service was configured and checked for manual Web, contextHandoff=true, tools and images enabled, and supportsStrictTools=false. These results establish the two stated stages for one account and two PNGs, without proving other accounts, formats, long-term reliability or quotas. Raw prompts, replies, sessions, logs and screenshots are not included in the repository.
+Generation checks used that build's in-memory app, not the running port-3000 service. That service was configured and checked for manual Web, contextHandoff=true, tools and images enabled, and supportsStrictTools=false. These results establish the two stated stages for one account and two PNGs, without proving the highest thinking level, other accounts, formats, long-term reliability or quotas. These Instant results do not validate Pro; the separate current Pro checks are scoped above. Raw prompts, replies, sessions, logs and screenshots are not included in the repository.
 
 The following 2026-10-19 results are historical checks of the single-image version, retaining the source, configuration and validation facts from that date.
 

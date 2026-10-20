@@ -182,7 +182,7 @@ Admin 控制台包含六个主要区域：
 | --- | --- |
 | [aurorax-neo/chat2api，dbf6bf3](https://github.com/aurorax-neo/chat2api/tree/dbf6bf39686348449c25de3b6131ca733f448deb) | 普通聊天走网页 conversation 接口。图片使用内联 base64，暂不使用远程 HTTPS 图片 URL；工具调用由文本协议适配。其图片生成还有 Codex 分支，不能将该项目的所有调用都视为普通 Chat。 |
 | [stufently/gpt-web-gateway，893f553](https://github.com/stufently/gpt-web-gateway/tree/893f553be358210a5c045aa9f62b56ba1edc5c78) | 真浏览器驱动普通 Chat，适合文本/SSE。聊天接口忽略图片和 model 参数，不提供原生工具及 `/v1/models`；请保持图片、工具开关关闭，使用 `auto`，不要用网页健康检查判断其聊天接口是否可用。 |
-| [本仓库固定版本与本地补丁](integrations/gpt-web-gateway/README.md) | 在同一固定上游 SHA 应用图片及工具文本协议补丁：聊天 JSON/SSE 可保留多轮 user 图片，返回标准工具调用供客户端执行；没有 `/v1/models`，model 仍被忽略。2026-10-20，同一普通 Chat 账号已通过两张 PNG 的历史接续、标准工具调用和模拟客户端工具结果 SSE 验证；Codex 源为合成替身。 |
+| [本仓库固定版本与本地补丁](integrations/gpt-web-gateway/README.md) | 在同一固定上游 SHA 应用图片及工具文本协议补丁：聊天 JSON/SSE 可保留多轮 user 图片，返回标准工具调用供客户端执行；没有 `/v1/models`，model 仍被忽略。2026-10-20，同一普通 Chat 账号在 Instant 档已通过两张 PNG 的历史接续、标准工具调用和模拟客户端工具结果 SSE 验证；Codex 源为合成替身。 |
 
 两个项目对 `max_tokens`、采样参数和停止条件的执行都不能视为官方 API 的硬约束。
 
@@ -195,7 +195,11 @@ corepack pnpm web-gateway:status
 corepack pnpm web-gateway:start
 ```
 
-`login` 打开独立 Chrome 供本人完成普通 Chat 登录；`start` 在当前终端持续运行，默认仅监听 `127.0.0.1:3101`。本机启动器强制所有聊天请求在发送前确认普通 Chat 模式，检测到 Work 或无法辨识页面时拒绝发送。另开终端启动主项目后执行：
+`login` 打开独立 Chrome 供本人完成普通 Chat 登录；`start` 在当前终端持续运行，默认仅监听 `127.0.0.1:3101`。本机启动器强制所有聊天请求在发送前确认普通 Chat 模式，检测到 Work 或无法辨识页面时拒绝发送。
+
+本机启动器还强制 `CHAT2CLAUDE_MAX_THINKING=true`：每次在普通 Chat 中选择当前账号已识别菜单或滑杆提供的最高思考档位，读回确认，并在发送前再次验证。最高档禁用或无法确认时拒发，不静默退回 Instant 或较低档位；选档也不能切入 Work。这是独立网关的本机运行策略，不代表通用网页适配层支持任意 `reasoning_effort`，`model` 仍由该网关忽略，配置继续使用 `auto`。2026-10-20，当前账号已通过 Pro 档单 PNG 识图及工具请求的 JSON 验证；此结果不覆盖 Pro SSE、多图或工具结果往返。
+
+另开终端启动主项目后执行：
 
 ```bash
 corepack pnpm web-gateway:connect -- --api-url http://127.0.0.1:3000
@@ -219,7 +223,9 @@ corepack pnpm web-gateway:connect -- --api-url http://127.0.0.1:3000
 
 **额度说明**：目标是优先使用普通 Chat，减少本服务直接发往 Codex 后端的请求。普通 Chat 的限额与 Codex 的关系以实际套餐、模型和账号页面为准；本项目不使用 ChatGPT Work 的规则推断普通 Chat 是否共享额度，也不保证增加总额度。实际调用来源可从响应 header 和管理台查看；还应确认网关内部确实使用普通 Chat，而非转发回 Codex。
 
-**真实验证范围（2026-10-20）**：同一普通 Chat 账号通过测试实例的 Responses 历史接续，正确识别旧图 73、当前图 29，并返回保留项目代号的标准工具参数；合成 Codex 源仅调用一次替身，未调用真实 Codex，私有 reasoning 和原生消息 ID 未传入网页。将真实调用 ID 配对模拟客户端工具结果后，完整双图历史的 Messages SSE 返回 HTTP 200、backend=web、完整 `message_stop`，代号、数字与回执正确。没有实际执行文件或命令工具；运行中的 3000 主服务仅配置接入，生成验证使用内存测试实例。此结果限一个账号和两张 PNG，不证明其他格式、长期可靠性或额度关系。2026-10-19 的单 PNG JSON/SSE 结果继续保留；完整记录见[集成记录](integrations/gpt-web-gateway/README.md#验证记录与复现)。
+**本轮真实验证（2026-10-20，Pro 档）**：同一个手动登录的普通 Chat 账号直连已安装网关的 Chat Completions JSON，使用固定数字 73 的单 PNG。选档后和发送前均确认 Pro；HTTP 200，`applied.thinking_mode=pro`，`thinking_verified`、`requested_verified` 均为 `true`，`thinking_fallback=null`，已确认附件数为 1。普通识图正确返回 73；指定单次 `record_digits` 工具请求返回标准 `tool_calls`，参数 `digits` 为字符串 `"73"`。该工具请求的只读观测确认一次 conversation POST、一个图片附件及一个多模态图片部分。没有实际执行客户端工具、调用 Codex 或向 3000 主服务发送生成请求。此结果不覆盖 Pro SSE、多图或完整工具结果往返。
+
+**此前真实验证（2026-10-20，Instant 档）**：同一普通 Chat 账号通过测试实例的 Responses 历史接续，正确识别旧图 73、当前图 29，并返回保留项目代号的标准工具参数；合成 Codex 源仅调用一次替身，未调用真实 Codex，私有 reasoning 和原生消息 ID 未传入网页。将真实调用 ID 配对模拟客户端工具结果后，完整双图历史的 Messages SSE 返回 HTTP 200、backend=web、完整 `message_stop`，代号、数字与回执正确。没有实际执行文件或命令工具；运行中的 3000 主服务仅配置接入，生成验证使用内存测试实例。此结果限一个账号和两张 PNG，不证明最高思考档、其他格式、长期可靠性或额度关系。2026-10-19 的单 PNG JSON/SSE 结果继续保留；完整记录见[集成记录](integrations/gpt-web-gateway/README.md#验证记录与复现)。
 
 管理台填写的网关 API Key 仅保存在服务端现有 `runtime-state.json`，可用 `STATE_ENCRYPTION_KEY` 加密；不会由 GET 返回或保存到浏览器存储。Key 留空保留已保存值；**清除网页配置** 会移除配置和 Key，并切回 Codex。
 

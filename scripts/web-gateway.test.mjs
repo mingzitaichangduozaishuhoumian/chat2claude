@@ -175,13 +175,14 @@ test('a failed npm install is retried even when partial top-level dependencies e
 test('runtime is loopback, isolated headed Chrome, and cannot inherit auto-login credentials', () => {
   const settings = createSettings();
   const env = gatewayEnvironment(settings, {
-    PATH: 'keep-path', HOST: '0.0.0.0', BROWSER_MODE: 'cdp', ORDINARY_CHAT_ONLY: 'false', HEADLESS: 'true',
+    PATH: 'keep-path', HOST: '0.0.0.0', BROWSER_MODE: 'cdp', ORDINARY_CHAT_ONLY: 'false', CHAT2CLAUDE_MAX_THINKING: 'false', HEADLESS: 'true',
     CHATGPT_EMAIL: 'private@example.invalid', CHATGPT_PASSWORD: 'private-password', CHATGPT_TOTP_SECRET: 'private-totp',
   });
   assert.equal(env.PATH, 'keep-path');
   assert.equal(env.HOST, '127.0.0.1');
   assert.equal(env.BROWSER_MODE, 'default');
   assert.equal(env.ORDINARY_CHAT_ONLY, 'true');
+  assert.equal(env.CHAT2CLAUDE_MAX_THINKING, 'true');
   assert.equal(env.BROWSER_ENGINE, 'patchright');
   assert.equal(env.CHROMIUM_CHANNEL, 'chrome');
   assert.equal(env.HEADLESS, 'false');
