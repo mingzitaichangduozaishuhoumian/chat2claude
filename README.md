@@ -176,6 +176,13 @@ Admin 控制台包含六个主要区域：
 
 这里的“网页”指登录 [chatgpt.com](https://chatgpt.com) 后的普通 **Chat 对话页**。独立的网页转 API 网关负责浏览器、网页登录和网页会话，本项目主 API 调用它的兼容接口；未接入 ChatGPT Work。下方辅助命令可准备本机网关，并打开独立 Chrome 供本人手动登录。
 
+| 使用目的 | 模式与执行位置 |
+| --- | --- |
+| 让网页作为现有客户端的模型 API | 选择 **聊天**；工程文件、命令与工具由本地客户端执行，这是本集成的方式。 |
+| 让网页自己使用文件、插件和工具交付任务 | 选择 **工作**；这是 [ChatGPT Work 的执行方式](https://learn.chatgpt.com/docs/get-started-with-work)，当前网关未接入该执行器。 |
+
+若要严格限制本服务直接调用 Codex，使用**手动网页模式**；不兼容或不可用时返回错误。只有接受请求可能被选到 Codex 时，才使用 **Auto**。这里是请求路线选择，不是额外额度的保证。
+
 可使用下方本机安装命令，或参考 [aurorax-neo/chat2api](https://github.com/aurorax-neo/chat2api) 和 [stufently/gpt-web-gateway](https://github.com/stufently/gpt-web-gateway) 自行部署。完成普通 Chat 登录后，可在 `/admin` → **模型映射** → **上游选择** 填写地址、可选 API Key 和实际支持的模型 slug，简洁模式即可配置。生成请求只需 OpenAI Chat Completions，不依赖 `/v1/models`；但管理 API 的网页健康检查会请求该接口，缺失时检查失败。模型 ID 原样使用，默认 `auto` 只声明该模型。
 
 | 参考实现与本地补丁 | 对接建议与验证范围 |
@@ -198,6 +205,8 @@ corepack pnpm web-gateway:start
 `login` 打开独立 Chrome 供本人完成普通 Chat 登录；`start` 在当前终端持续运行，默认仅监听 `127.0.0.1:3101`。本机启动器强制所有聊天请求在发送前确认普通 Chat 模式，检测到 Work 或无法辨识页面时拒绝发送。
 
 本机启动器还强制 `CHAT2CLAUDE_MAX_THINKING=true`：每次在普通 Chat 中选择当前账号已识别菜单或滑杆提供的最高思考档位，读回确认，并在发送前再次验证。最高档禁用或无法确认时拒发，不静默退回 Instant 或较低档位；选档也不能切入 Work。这是独立网关的本机运行策略，不代表通用网页适配层支持任意 `reasoning_effort`，`model` 仍由该网关忽略，配置继续使用 `auto`。2026-10-20，当前账号已通过 Pro 档单 PNG 识图及工具请求的 JSON 验证；此结果不覆盖 Pro SSE、多图或工具结果往返。
+
+这里的 **Pro 是普通 Chat 界面的档位名称**，不表示选择了某个 Codex 模型，也不能等同 Codex 的 `max`、`xhigh` 或 `ultra`。本集成确认的是网页可读回的最高档位。
 
 另开终端启动主项目后执行：
 
@@ -222,6 +231,8 @@ corepack pnpm web-gateway:connect -- --api-url http://127.0.0.1:3000
 请继续使用同一个客户端工程及本地工具执行器，并在请求中携带必要的完整历史。Responses 历史默认在内存保留 30 分钟，隐式 reasoning replay 默认 10 分钟，均按 API 用户隔离并受容量限制，服务重启后失效。此功能不会同步 ChatGPT Projects，也不会挂载项目目录或自动读取文件；文件内容、修改结果和测试证据仍由客户端工具回传。共享目录本身不能代替这些上下文。
 
 **额度说明**：目标是优先使用普通 Chat，减少本服务直接发往 Codex 后端的请求。普通 Chat 的限额与 Codex 的关系以实际套餐、模型和账号页面为准；本项目不使用 ChatGPT Work 的规则推断普通 Chat 是否共享额度，也不保证增加总额度。实际调用来源可从响应 header 和管理台查看；还应确认网关内部确实使用普通 Chat，而非转发回 Codex。
+
+2026-10-20 核对的[官方定价说明](https://learn.chatgpt.com/docs/pricing)明确规定 **Work 与 Codex 共享用量、额度和价格规则**。这不能反推出普通 Chat 一定有独立额度。判断是否更耐用，需要同一账号及工作区、同一计量窗口的细粒度用量对照；一次请求后整数百分比没变化，不构成“不扣 Codex 额度”的证据。
 
 **本轮真实验证（2026-10-20，Pro 档）**：同一个手动登录的普通 Chat 账号直连已安装网关的 Chat Completions JSON，使用固定数字 73 的单 PNG。选档后和发送前均确认 Pro；HTTP 200，`applied.thinking_mode=pro`，`thinking_verified`、`requested_verified` 均为 `true`，`thinking_fallback=null`，已确认附件数为 1。普通识图正确返回 73；指定单次 `record_digits` 工具请求返回标准 `tool_calls`，参数 `digits` 为字符串 `"73"`。该工具请求的只读观测确认一次 conversation POST、一个图片附件及一个多模态图片部分。没有实际执行客户端工具、调用 Codex 或向 3000 主服务发送生成请求。此结果不覆盖 Pro SSE、多图或完整工具结果往返。
 

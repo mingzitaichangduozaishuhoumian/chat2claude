@@ -2,6 +2,10 @@
 
 此集成安装独立的 [stufently/gpt-web-gateway](https://github.com/stufently/gpt-web-gateway)，通过本人手动登录的 **chatgpt.com 普通 Chat 对话页**处理请求。它不是 ChatGPT Work，也不使用本项目的 Codex OAuth 会话。主服务负责兼容 API 与上游选择，独立网关负责浏览器和网页会话。
 
+本项目采用**普通 Chat 提供模型、本地客户端执行工程工具**的方式。若要让网页自己使用文件、插件和工具完成任务，应使用 [ChatGPT Work](https://learn.chatgpt.com/docs/get-started-with-work)，该执行器未接入本通道。[官方定价说明](https://learn.chatgpt.com/docs/pricing)明确 Work 与 Codex 共享用量；不能靠切到 Work 获得额外 Codex 额度，也不能反推出普通 Chat 一定独立计量。希望严格限制直接 Codex 调用时保留手动网页模式；Auto 在发送前可能选择 Codex。
+
+最高档实测中的 Pro 是 **Chat UI 档位名**，不等同某个 Codex 模型或 `max/xhigh/ultra`。额度收益仍需同账号、同工作区和计量窗口的细粒度对照，不能凭一次整数百分比未变判断。
+
 本机启动器强制设置 `ORDINARY_CHAT_ONLY=true`，对所有聊天请求（纯文本和图片）严格检查普通 Chat 模式，在准备、切换思考模式后和真正发送前再次确认；检测到 Work 或无法辨识当前页面时拒绝发送，包括按 Enter 的发送备用路径。未通过本机启动器且未开启该选项的上游纯文本路径，仍保留默认的尽力切换模式行为。
 
 本机启动器同时强制 `CHAT2CLAUDE_MAX_THINKING=true`。每次聊天请求都在普通 Chat 中，从当前账号已识别的菜单或滑杆选择最高思考档位并读回确认，发送前再次验证；最高档禁用、选档失败或无法确认时拒发，不静默使用 Instant 或较低档，也不能因选档切入 Work。这是本机 runner 对独立网关的策略，不是通用 Web 适配层对任意 `reasoning_effort` 的支持；该网关仍忽略 `model`，主项目继续配置 `auto`。2026-10-20，同一账号已通过 Pro 档单 PNG 识图及工具请求的 JSON 验证；Pro SSE、多图和完整工具结果往返尚未实测，此前 Instant 的双图及工具结果链路单独保留。
@@ -141,6 +145,10 @@ node --test gpt-web-gateway-baseline/scripts/test-stall-gate.js
 ## English
 
 This integration installs a separate gateway for ordinary signed-in **Chat at chatgpt.com**, independent of ChatGPT Work and this project's Codex OAuth session. It pins upstream commit `893f553be358210a5c045aa9f62b56ba1edc5c78` and applies the local vision patch. Run the setup/login/status/start commands above, keep the gateway terminal open, start the main app, then run `web-gateway:connect -- --api-url http://127.0.0.1:3000` using the main app's actual loopback origin. Login opens a separate Chrome window for you to sign in manually. Chrome, Git, Node.js and npm must already be installed.
+
+Here ordinary Chat supplies the model and the local client executes project tools. Choose [ChatGPT Work](https://learn.chatgpt.com/docs/get-started-with-work) to have the website carry out tasks with files, plugins and tools; that executor is not integrated. [Official pricing](https://learn.chatgpt.com/docs/pricing) states that Work and Codex share usage, so switching to Work does not supply an extra Codex allowance. This does not prove that ordinary Chat has separate accounting. Keep manual Web to restrict direct Codex calls; Auto may select Codex before dispatch.
+
+Pro in the live check is a **Chat UI level**, not a specific Codex model or an equivalent `max/xhigh/ultra` setting. Quota savings still need fine-grained comparisons within the same account, workspace and usage window; one unchanged integer percentage is not evidence of independent accounting.
 
 Connect enables manual Web mode, configures `auto` with `sonnet=auto`, and enables image input, tools and visible-context handoff. It overwrites saved Web routing settings; use Admin to choose Auto or disable Web. The default private directory is `apps/api/data/web-gateway/`, ignored by Git; it contains the API Key and browser session. All commands accept the same `--directory PATH` override. Preserve an existing installation if its version or patch changes, and install into a new directory. Status checks installation files, not live authentication.
 
