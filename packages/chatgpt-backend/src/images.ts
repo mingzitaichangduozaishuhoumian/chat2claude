@@ -3,8 +3,17 @@ import { ChatGptBackendError } from './errors.js';
 import { imageMetadata, invalidImageOutput, isImageBase64, ResponsesImageBudget, RESPONSES_IMAGE_LIMITS } from './image-output.js';
 
 export const DEFAULT_CODEX_IMAGE_MODEL = 'gpt-image-2';
-/** Codex Images endpoint IDs registered by CLIProxyAPI; availability is account-dependent. */
-export const CODEX_IMAGE_MODEL_IDS = Object.freeze(['gpt-image-1.5', 'gpt-image-2', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'gpt-image-2.5'] as const);
+/** Native Codex Images endpoint IDs; availability is account-dependent. */
+export const CODEX_IMAGE_BASE_MODEL_IDS = Object.freeze(['gpt-image-1.5', 'gpt-image-2', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'gpt-image-2.5'] as const);
+/** Explicit local aliases, following codex2api's resolution presets. These are
+ * not native upstream model IDs and never enter the text alias registry. */
+export const CODEX_IMAGE_RESOLUTION_ALIASES: Readonly<Record<string, Readonly<{ model: string; size: string }>>> = Object.freeze({
+  'gpt-image-2.5-flare-2k': Object.freeze({ model: 'gpt-image-2.5-flare', size: '2048x2048' }),
+  'gpt-image-2.5-flare-4k': Object.freeze({ model: 'gpt-image-2.5-flare', size: '3840x2160' }),
+  'gpt-image-2.5-sunburst-2k': Object.freeze({ model: 'gpt-image-2.5-sunburst', size: '2048x2048' }),
+  'gpt-image-2.5-sunburst-4k': Object.freeze({ model: 'gpt-image-2.5-sunburst', size: '3840x2160' }),
+});
+export const CODEX_IMAGE_MODEL_IDS = Object.freeze([...CODEX_IMAGE_BASE_MODEL_IDS, ...Object.keys(CODEX_IMAGE_RESOLUTION_ALIASES)]);
 export const DEFAULT_IMAGE_REQUEST_TIMEOUT_MS = 300_000;
 
 const extendedQualityModels = new Set([
@@ -13,7 +22,18 @@ const extendedQualityModels = new Set([
 ]);
 export function isSupportedImageQuality(model: string, quality: unknown): quality is NonNullable<ChatGptImageGenerationRequest['quality']> {
   return typeof quality === 'string' && (['low', 'medium', 'high', 'auto'].includes(quality)
-    || extendedQualityModels.has(model) && (quality === 'xhigh' || quality === 'max'));
+    || extendedQualityModels.has(imageResolutionAlias(model)?.model ?? model) && (quality === 'xhigh' || quality === 'max'));
+}
+
+export function imageResolutionAlias(model: string): Readonly<{ model: string; size: string }> | undefined {
+  return Object.hasOwn(CODEX_IMAGE_RESOLUTION_ALIASES, model) ? CODEX_IMAGE_RESOLUTION_ALIASES[model] : undefined;
+}
+
+export function isSupportedImageSize(model: string, size: unknown): size is string {
+  if (typeof size !== 'string' || !/^(?:auto|[1-9][0-9]{0,4}x[1-9][0-9]{0,4})$/.test(size)) return false;
+  if (size === 'auto' || !imageResolutionAlias(model)) return true;
+  const [width, height] = size.split('x').map(Number);
+  return width <= 3840 && height <= 3840 && width * height <= 8_294_400;
 }
 
 export function imageGenerationBody(request: ChatGptImageGenerationRequest): Record<string, unknown> {
@@ -24,12 +44,14 @@ export function imageGenerationBody(request: ChatGptImageGenerationRequest): Rec
   if (request.n !== undefined && (!Number.isSafeInteger(request.n) || request.n < 1 || request.n > RESPONSES_IMAGE_LIMITS.items)) fail();
   if (request.background !== undefined && !['transparent', 'opaque', 'auto'].includes(request.background)) fail();
   if (request.quality !== undefined && !isSupportedImageQuality(model, request.quality)) fail();
-  if (request.size !== undefined && (typeof request.size !== 'string' || !/^(?:auto|[1-9][0-9]{0,4}x[1-9][0-9]{0,4})$/.test(request.size))) fail();
-  return { prompt: request.prompt, model,
+  if (request.size !== undefined && !isSupportedImageSize(model, request.size)) fail();
+  const alias = imageResolutionAlias(model);
+  const size = request.size ?? alias?.size;
+  return { prompt: request.prompt, model: alias?.model ?? model,
     ...(request.background === undefined ? {} : { background: request.background }),
     ...(request.n === undefined ? {} : { n: request.n }),
     ...(request.quality === undefined ? {} : { quality: request.quality }),
-    ...(request.size === undefined ? {} : { size: request.size }) };
+    ...(size === undefined ? {} : { size }) };
 }
 
 export function parseImageGenerationResponse(value: unknown): ChatGptImageGenerationResponse {

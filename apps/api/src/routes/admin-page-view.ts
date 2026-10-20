@@ -42,7 +42,8 @@ export function renderImageModels(models: PublicImageModel[] | undefined, locale
   const images = Array.isArray(models) ? models : [];
   if (!images.length) return localizeAdminMarkup('<p class="empty image-model-empty">当前没有可用的图片模型。请检查账号状态和授权，以及后端是否支持图片接口。</p>', locale);
   const endpoints = [...new Set(images.map((model) => model.endpoint))];
-  return localizeAdminMarkup(`<ul class="image-model-list model-chip-list">${images.map((model) => `<li><code title="${esc(model.display_name || model.id)}">${esc(model.id)}</code></li>`).join('')}</ul><div class="image-model-endpoint"><span>Images 接口</span>${endpoints.map((endpoint) => `<code>POST ${esc(endpoint)}</code>`).join('')}</div><p class="muted image-model-note">图片型号来自内置目录，独立于上游发现的文本模型；是否可调用取决于账号权限、额度和上游支持。</p>`, locale);
+  const hasSizeAliases = images.some((model) => model.post_processing === 'resize');
+  return localizeAdminMarkup(`<ul class="image-model-list model-chip-list">${images.map((model) => `<li><code title="${esc(model.display_name || model.id)}">${esc(model.id)}</code>${model.alias_of ? `<div class="muted image-model-alias"><span>尺寸别名</span> · <span>上游图片模型</span> <code>${esc(model.alias_of)}</code>${model.default_size ? ` · <span>默认尺寸</span> <code>${esc(model.default_size)}</code>` : ''}</div>` : ''}</li>`).join('')}</ul><div class="image-model-endpoint"><span>Images 接口</span>${endpoints.map((endpoint) => `<code>POST ${esc(endpoint)}</code>`).join('')}</div><p class="muted image-model-note">图片型号来自内置目录，独立于上游发现的文本模型；是否可调用取决于账号权限、额度和上游支持。</p>${hasSizeAliases ? '<p class="muted image-model-resize-note">2K/4K 是网关尺寸别名：请求使用基础图片模型；返回图片会按目标尺寸缩放或按背景设置补边，不能据此认定为原生 2K/4K。显式 size 优先。</p>' : ''}`, locale);
 }
 
 export function renderQuotaCards(quotas: AccountQuotaResult[], accounts: AdminAccountView[] = [], locale: AdminLocale = 'zh-CN'): string {

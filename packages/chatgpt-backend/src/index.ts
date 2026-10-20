@@ -5,7 +5,7 @@ export * from './web-gateway.js';
 export * from './events.js';
 export * from './errors.js';
 export * from './codex-protocol.js';
-export { DEFAULT_CODEX_IMAGE_MODEL, CODEX_IMAGE_MODEL_IDS, DEFAULT_IMAGE_REQUEST_TIMEOUT_MS, isSupportedImageQuality } from './images.js';
+export { DEFAULT_CODEX_IMAGE_MODEL, CODEX_IMAGE_BASE_MODEL_IDS, CODEX_IMAGE_MODEL_IDS, CODEX_IMAGE_RESOLUTION_ALIASES, DEFAULT_IMAGE_REQUEST_TIMEOUT_MS, isSupportedImageQuality, isSupportedImageSize } from './images.js';
 export { RESPONSES_IMAGE_LIMITS, RESPONSES_IMAGE_PREVIEW_LIMITS, ResponsesImageBudget, ResponsesImagePartials } from './image-output.js';
 export { normalizeModelContext, MODEL_CONTEXT_FIELDS } from './model-context.js';
 export { normalizeMultiAgentMetadata, type ChatGptMultiAgentMetadata } from './multi-agent-metadata.js';

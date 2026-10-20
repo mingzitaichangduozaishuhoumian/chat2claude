@@ -314,9 +314,9 @@ Claude Code, Anthropic SDK, Cline, and Roo should be configured as Claude/Anthro
 
 ### Independent GPT Image generation
 
-Use `POST /v1/images/generations` with a Runtime API Key. The adapter reuses the current ChatGPT account and calls the Codex 0.160 Images service at `/backend-api/codex/images/generations`; it does not route the image model through the text Responses endpoint. The default remains `gpt-image-2`. On 2026-10-04, each of the five built-ins completed one real generation on one account, all with HTTP 200, a final `image_generation.completed` SSE event and a decodable PNG. The requested model IDs were forwarded unchanged.
+Use `POST /v1/images/generations` with a Runtime API Key. The adapter reuses the current ChatGPT account and calls the Codex 0.160 Images service at `/backend-api/codex/images/generations`; it does not route the image model through the text Responses endpoint. The default remains `gpt-image-2`. On 2026-10-04, each of the five base IDs completed one real generation on one account, all with HTTP 200, a final `image_generation.completed` SSE event and a decodable PNG. The requested model IDs were forwarded unchanged.
 
-The checks used `quality:low`, `n:1`, `background:opaque` and `stream:true`, taking approximately 13.4–15.5 seconds per image. Although `size:1024x1024` was requested, every decoded PNG measured `1254×1254`; image bytes were delivered unchanged, without service-side resizing. Requested size is therefore not a guarantee of exact output dimensions: inspect the decoded image. This record does not verify all accounts, higher quality, multi-image batches or edits.
+The checks used `quality:low`, `n:1`, `background:opaque` and `stream:true`, taking approximately 13.4–15.5 seconds per image. Although `size:1024x1024` was requested, every decoded PNG measured `1254×1254`; base-model image bytes were delivered unchanged. This historical record does not include the new size aliases below or verify all accounts, higher quality, multi-image batches or edits.
 
 The OpenAI SDK uses the same versioned Base URL as the text resources:
 
@@ -349,24 +349,45 @@ JSON output contains `created`, `data[].b64_json` and `output_format: "png"`, pl
 
 | Parameter | Current adapter behavior |
 | --- | --- |
-| `model` | Defaults to `gpt-image-2`; five image endpoint models are built in, and other valid IDs are forwarded unchanged without an availability guarantee. |
+| `model` | Defaults to `gpt-image-2`; five base image models and four local size aliases are built in. Other valid IDs are forwarded unchanged without an availability guarantee. |
 | `prompt` | Required, nonempty, at most 32000 characters; request JSON is limited to 128 KiB. |
 | `n` | Integer 1..10; when `stream:true`, omit it or set it to 1. |
 | `quality` | Standard values are `low`, `medium`, `high` and `auto`; the exact 2.5 IDs listed below also accept `xhigh` and `max`. |
-| `size` | `auto` or `WIDTHxHEIGHT`; actual supported dimensions depend on the upstream model. |
+| `size` | `auto` or `WIDTHxHEIGHT`. Base-model output depends on the upstream; local size aliases process the final PNG as described below. |
 | `background` | `transparent`, `opaque`, or `auto`, forwarded to the image service. |
 | `response_format` / `output_format` | Omit them, or use `b64_json` / `png`. URL output, JPEG/WebP selection and compression are not implemented. |
 | `stream` / `partial_images` | `stream:true` emits only the final `image_generation.completed` event. `partial_images` must be omitted or 0. |
 
-The five built-ins are `gpt-image-1.5`, `gpt-image-2`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst` and `gpt-image-2.5`. This endpoint catalog matches [CPA's WithCodexBuiltins](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/registry/model_definitions.go#L245); it is not the account's upstream text discovery or a verified permission list. Following [CPA's direct Images routing](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/runtime/executor/codex_openai_images.go#L659), these IDs are forwarded unchanged. Bare `gpt-image-2.5` is not renamed to Flare, Sunburst or another alias.
+The five base IDs are `gpt-image-1.5`, `gpt-image-2`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst` and `gpt-image-2.5`. This endpoint catalog matches [CPA's WithCodexBuiltins](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/registry/model_definitions.go#L245); it is not the account's upstream text discovery or a verified permission list. Following [CPA's direct Images routing](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/runtime/executor/codex_openai_images.go#L659), these base IDs are forwarded unchanged, including bare `gpt-image-2.5`.
 
-`xhigh` / `max` are accepted for exactly the three built-in 2.5 IDs plus `gpt-image-2.5-flare-2026-09-08` and `gpt-image-2.5-sunburst-2026-09-08`. These two snapshot IDs do not add entries to the five-model Admin count. Requests for 1.5, 2 and other unknown IDs remain limited to `low` / `medium` / `high` / `auto`; unsupported combinations return 400 locally. Valid upstream quality metadata is retained unchanged. The [official Images API reference](https://developers.openai.com/api/reference/resources/images/methods/generate) lists multiple public image models and advanced Flare/Sunburst qualities. CPA's bare 2.5 compatibility ID is not proof of a same-named public API model or private-account access.
+Four exact local size aliases use names and default sizes documented by [codex2api](https://github.com/james-6-23/codex2api/blob/5ee6c29273773a2398531d061d23f199ca8c25f7/docs/API.md#L297):
+
+| Local alias | Upstream base model | Default size |
+| --- | --- | --- |
+| `gpt-image-2.5-flare-2k` | `gpt-image-2.5-flare` | 2048×2048 |
+| `gpt-image-2.5-flare-4k` | `gpt-image-2.5-flare` | 3840×2160 |
+| `gpt-image-2.5-sunburst-2k` | `gpt-image-2.5-sunburst` | 2048×2048 |
+| `gpt-image-2.5-sunburst-4k` | `gpt-image-2.5-sunburst` | 3840×2160 |
+
+Each alias maps to its base model plus `size`. Explicit `size`, including `auto`, takes precedence. Set orientation explicitly, for example `2160x3840` for portrait 4K; this service does not infer it from the prompt. The final PNG is fitted proportionally to the target canvas with Catmull-Rom interpolation and centered padding when needed. Transparency is retained; `opaque` uses white padding. Already matching PNGs keep their original encoding. `auto` leaves dimensions unrestricted by a target canvas. Response `size` records decoded physical dimensions. Processing failures or budget overflows return errors rather than a smaller image labeled as successful 4K output. This local interpolation does not establish additional native detail; base models and unknown suffixes retain their original output.
+
+Alias dimensions are limited to 3840 per edge and 8,294,400 total pixels; `4096x4096` is outside this range. Upstream acceptance still depends on the account and model. The [official 2.5 guide](https://developers.openai.com/api/docs/guides/image-generation) additionally requires multiples of 16 and aspect ratios up to 3:1, and describes larger sizes as experimental. Alias descriptors add `alias_of`, `default_size` and `post_processing:"resize"`; Admin also identifies local processing.
+
+Example request for a transparent portrait 4K image:
+
+```json
+{"model":"gpt-image-2.5-sunburst-4k","prompt":"A blue flower on a transparent background","size":"2160x3840","background":"transparent","quality":"high","n":1}
+```
+
+Synthetic PNG and HTTP tests cover the aliases and physical resizing. No new live upstream 2K/4K generation was run for this update. A drawing studio, grouping, pagination, bulk editing and progressive previews are outside this model/API update.
+
+`xhigh` / `max` are accepted for exactly the three base 2.5 IDs, the four size aliases above, plus `gpt-image-2.5-flare-2026-09-08` and `gpt-image-2.5-sunburst-2026-09-08`. These two snapshots do not add entries to the nine-entry Admin count. Requests for 1.5, 2 and other unknown IDs remain limited to `low` / `medium` / `high` / `auto`; unsupported combinations return 400 locally. Valid upstream quality metadata is retained unchanged. The [official Images API reference](https://developers.openai.com/api/reference/resources/images/methods/generate) lists multiple public image models and advanced Flare/Sunburst qualities. CPA's bare 2.5 compatibility ID is not proof of a same-named public API model or private-account access.
 
 The upstream Images service returns complete JSON, so `stream:true` waits for that result before sending SSE headers and one final image event. It does not provide progress images or reduce the wait for generation. Image edits and variations are not implemented. The independent timeout is `CHATGPT_IMAGE_REQUEST_TIMEOUT_MS=300000` (positive milliseconds). Serialized image base64 and metadata are bounded by 16 MiB per item, 64 MiB per bundle and 10 images. Text output limits and hidden reasoning/tool replay budgets are unchanged.
 
 When image generation is available in the adapter and an enabled account is available, `/v1/models` adds a descriptor with `source: "image_endpoint"`, `endpoint: "/v1/images/generations"`, `capabilities.image_generation: true` and `availability: "backend_dependent"`. This is not a discovered text-model entry or a guarantee for every account. Sending a built-in image model, or an alias targeting it, to Messages, Chat Completions or Responses returns 400 and names the Images route.
 
-Admin account cards count text and image endpoint models separately, for example 10 text models and 5 image endpoint models. The image count is the number of endpoint model entries currently exposed by this service, not the complete OpenAI image model catalog. The existing `modelCount` / `discoveredModels` still describe only that account's text catalog; account responses and the administrative model view expose image entries through a separate `imageModels` field. The Models page shows them in an independent panel in both Simple and Professional modes, without adding them to text discovery or alias choices. Public `/v1/models` also includes aliases and the visible catalog, so its total need not equal one account's text-model count. Image entries reflect backend capability and current account eligibility, without generating an image to probe access or claiming verified upstream permission. Busy accounts retain the endpoint descriptor; disabled, unhealthy, cooling-down or credential-ineligible accounts do not.
+Admin account cards count text and image endpoint entries separately, for example 10 text models and 9 image entries (five base IDs and four local size aliases). The image count describes entries currently exposed by this service, not the complete OpenAI catalog. The existing `modelCount` / `discoveredModels` still describe only that account's text catalog; account responses and the administrative model view expose image entries through a separate `imageModels` field. The Models page shows them in an independent panel in both Simple and Professional modes, without adding them to text discovery or alias choices. Public `/v1/models` also includes aliases and the visible catalog, so its total need not equal one account's text-model count. Image entries reflect backend capability and current account eligibility, without generating an image to probe access or claiming verified upstream permission. Busy accounts retain the endpoint descriptor; disabled, unhealthy, cooling-down or credential-ineligible accounts do not.
 
 The separate `/v1/responses` adapter can forward upstream image previews and final images, including standard metadata. Preview events follow `response.output_item.added`; uncertain preceding output order can delay them until the final snapshot. A matching successful terminal image is required. This path has synthetic Session/HTTP coverage, but image-tool execution on the current host's Responses endpoint has not been verified with a real generation. Use the independent Images API for the verified path. Responses containing generated-image output are not stored, even with `store:true`: their returned response ID cannot be continued with `previous_response_id`; such a lookup returns 404 without another upstream call. Use `store:false` for these requests. Generated-image history editing/replay is not implemented.
 

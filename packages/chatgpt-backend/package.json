@@ -15,6 +15,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "license": "MIT",
+  "dependencies": {
+    "pngjs": "7.0.0"
+  },
+  "devDependencies": {
+    "@types/pngjs": "6.0.5"
+  },
   "files": [
     "dist/**",
     "!dist/**/*.test.*",

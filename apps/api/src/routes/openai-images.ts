@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { ChatGptBackendError, DEFAULT_CODEX_IMAGE_MODEL, isSupportedImageQuality, type ChatGptBackendClient, type ChatGptImageGenerationRequest, type ChatGptImageGenerationResponse } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, CODEX_IMAGE_RESOLUTION_ALIASES, DEFAULT_CODEX_IMAGE_MODEL, isSupportedImageQuality, isSupportedImageSize, type ChatGptBackendClient, type ChatGptImageGenerationRequest, type ChatGptImageGenerationResponse } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import { readableStreamFromAsyncIterable } from '@chatgpt-to-claude/protocol-mapper';
 import type { Logger } from '@chatgpt-to-claude/shared';
@@ -117,7 +117,7 @@ function parseImageRequest(value: unknown): ImageRequest {
   if (raw.output_format !== undefined && raw.output_format !== 'png') throw new ClaudeApiError('Only output_format=png is supported.');
   if (raw.background !== undefined && !['transparent', 'opaque', 'auto'].includes(raw.background as string)) throw new ClaudeApiError('background must be transparent, opaque, or auto.');
   if (raw.quality !== undefined && !isSupportedImageQuality(model, raw.quality)) throw new ClaudeApiError('Unsupported image quality for the requested model.');
-  if (raw.size !== undefined && (typeof raw.size !== 'string' || (raw.size !== 'auto' && !/^[1-9]\d{0,4}x[1-9]\d{0,4}$/.test(raw.size)))) throw new ClaudeApiError('size must be auto or a widthxheight value.');
+  if (raw.size !== undefined && !isSupportedImageSize(model, raw.size)) throw new ClaudeApiError('Unsupported image size for the requested model.');
   return { model, prompt: raw.prompt, stream: raw.stream === true,
     ...(raw.n === undefined ? {} : { n: raw.n as number }),
     ...(raw.background === undefined ? {} : { background: raw.background as ChatGptImageGenerationRequest['background'] }),
@@ -137,7 +137,8 @@ function imageResponse(result: ChatGptImageGenerationResponse, request: ImageReq
   }
   const background = result.background ?? request.background;
   const quality = result.quality ?? request.quality;
-  const size = result.size ?? request.size;
+  // Resolution aliases report delivered dimensions; an auto batch can have no shared size.
+  const size = Object.hasOwn(CODEX_IMAGE_RESOLUTION_ALIASES, request.model) ? result.size : result.size ?? request.size;
   return { created: result.created,
     data: result.data.map((item) => ({ b64_json: item.b64_json, ...(item.generation_id === undefined ? {} : { generation_id: item.generation_id }) })),
     output_format: 'png' as const,

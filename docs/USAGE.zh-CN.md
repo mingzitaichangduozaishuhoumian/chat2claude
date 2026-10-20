@@ -308,9 +308,9 @@ Claude Code、Anthropic SDK、Cline 和 Roo 按 Claude/Anthropic 兼容客户端
 
 ### 独立 GPT Image 生成
 
-使用 Runtime API Key 调用 `POST /v1/images/generations`。适配器沿用当前 ChatGPT 账号，接入 Codex 0.160 的 `/backend-api/codex/images/generations` 服务，不把图片模型发往文本 Responses 接口。默认模型仍是 `gpt-image-2`。2026-10-04，五个内置型号已在一个账号上分别完成一次真实生成，全部获得 HTTP 200、最终 `image_generation.completed` SSE 事件和可解码的 PNG；模型 ID 原样发送。
+使用 Runtime API Key 调用 `POST /v1/images/generations`。适配器沿用当前 ChatGPT 账号，接入 Codex 0.160 的 `/backend-api/codex/images/generations` 服务，不把图片模型发往文本 Responses 接口。默认模型仍是 `gpt-image-2`。2026-10-04，五个基础型号已在一个账号上分别完成一次真实生成，全部获得 HTTP 200、最终 `image_generation.completed` SSE 事件和可解码的 PNG；模型 ID 原样发送。
 
-实测条件为 `quality:low`、`n:1`、`background:opaque`、`stream:true`，每张耗时约 13.4–15.5 秒。请求 `size:1024x1024`，实际 PNG 均为 `1254×1254`，图片原样交付，服务没有重新缩放。因此请求尺寸不能作为精确输出尺寸保证，应检查解码后的图片；该记录也不证明所有账号、更高质量、多图批次或编辑操作已验证。
+实测条件为 `quality:low`、`n:1`、`background:opaque`、`stream:true`，每张耗时约 13.4–15.5 秒。请求 `size:1024x1024`，实际 PNG 均为 `1254×1254`，基础型号图片原样交付。这个历史记录不包含下述新增尺寸别名，也不证明所有账号、更高质量、多图批次或编辑操作已验证。
 
 OpenAI SDK 继续使用带 `/v1` 的 Base URL：
 
@@ -343,24 +343,45 @@ JSON 响应包含 `created`、`data[].b64_json`、`output_format: "png"` 以及�
 
 | 参数 | 当前适配器行为 |
 | --- | --- |
-| `model` | 默认 `gpt-image-2`；内置五个图片接口型号，其他合法 ID 也会原样传给上游，但不保证可用。 |
+| `model` | 默认 `gpt-image-2`；内置五个基础图片型号、四个本地尺寸别名。其他合法 ID 原样传给上游，不保证可用。 |
 | `prompt` | 必填、非空、最多 32000 字符；请求 JSON 最多 128 KiB。 |
 | `n` | 整数 1..10；`stream:true` 时只能省略或设为 1。 |
 | `quality` | 通用值为 `low`、`medium`、`high`、`auto`；下述明确的 2.5 型号还接受 `xhigh`、`max`。 |
-| `size` | `auto` 或 `宽x高`；实际可用尺寸由上游模型决定。 |
+| `size` | `auto` 或 `宽x高`。基础型号由上游决定输出；尺寸别名按下述边界处理最终 PNG。 |
 | `background` | `transparent`、`opaque` 或 `auto`，转发给图片服务。 |
 | `response_format` / `output_format` | 可省略，或分别设为 `b64_json` / `png`。尚未实现 URL 输出、JPEG/WebP 选择和压缩参数。 |
 | `stream` / `partial_images` | `stream:true` 仅发送最终的 `image_generation.completed` 事件；`partial_images` 只能省略或设为 0。 |
 
-当前内置五项：`gpt-image-1.5`、`gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.5`。这是与 [CPA 的 WithCodexBuiltins](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/registry/model_definitions.go#L245) 一致的图片接口目录，不来自当前账号的文本 discovery，也不是该账号已验证的权限列表。按照 [CPA 的独立 Images 路由](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/runtime/executor/codex_openai_images.go#L659)，这些 ID 原样发往 Images 接口；裸 `gpt-image-2.5` 不会被改名为 Flare、Sunburst 或其他 alias。
+五个基础型号为 `gpt-image-1.5`、`gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.5`，与 [CPA 的 WithCodexBuiltins](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/registry/model_definitions.go#L245) 一致，不来自当前账号的文本 discovery，也不是该账号已验证的权限列表。按照 [CPA 的独立 Images 路由](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/runtime/executor/codex_openai_images.go#L659)，这些基础 ID 原样发往 Images 接口；裸 `gpt-image-2.5` 不会改名。
 
-`xhigh` / `max` 精确适用于三个内置 2.5 ID，以及 `gpt-image-2.5-flare-2026-09-08`、`gpt-image-2.5-sunburst-2026-09-08` 两个快照 ID；后两者不增加管理面板的五项内置计数。1.5、2 和其他未知 ID 的请求质量仍限于 `low` / `medium` / `high` / `auto`，不支持的组合在本地返回 400。上游合法返回的质量元数据原样保留。[官方 Images API reference](https://developers.openai.com/api/reference/resources/images/methods/generate) 列出了多个公共图片型号及 Flare/Sunburst 的高级质量选项；CPA 的裸 2.5 兼容项不应被当作公共 API 的同名模型或私有账号可用性证明。
+另有四个精确匹配的本地尺寸别名，名称及默认尺寸参考 [codex2api 的尺寸与超分别名](https://github.com/james-6-23/codex2api/blob/5ee6c29273773a2398531d061d23f199ca8c25f7/docs/API.md#L297)：
+
+| 本地别名 | 上游基础型号 | 默认尺寸 |
+| --- | --- | --- |
+| `gpt-image-2.5-flare-2k` | `gpt-image-2.5-flare` | 2048×2048 |
+| `gpt-image-2.5-flare-4k` | `gpt-image-2.5-flare` | 3840×2160 |
+| `gpt-image-2.5-sunburst-2k` | `gpt-image-2.5-sunburst` | 2048×2048 |
+| `gpt-image-2.5-sunburst-4k` | `gpt-image-2.5-sunburst` | 3840×2160 |
+
+别名转换为基础型号加 `size`，显式 `size`（包括 `auto`）优先；方向请明确指定，例如竖向 4K 使用 `2160x3840`，服务不从 prompt 猜方向。最终 PNG 保持比例放入目标画布，必要时使用 Catmull-Rom 插值缩放及居中补边；透明背景保留 alpha，`opaque` 使用白色补边。源图已经等尺寸时保留原始编码。`auto` 不强制画布尺寸。响应 `size` 记录解码后的实际像素，转换失败或超出预算返回错误，不以较小原图假报成功。这是网关本地处理，不表示增加了原生生成细节；基础型号及未知后缀继续原样交付。
+
+尺寸别名限制每条边最多 3840、总像素最多 8,294,400；`4096x4096` 不在范围内。上游接受的尺寸还受账号和模型限制。[官方指南](https://developers.openai.com/api/docs/guides/image-generation) 对 2.5 要求边长为 16 的倍数、宽高比不超过 3:1，并将较大尺寸标为实验性。别名元数据额外包含 `alias_of`、`default_size`、`post_processing:"resize"`，管理台也显示本地处理说明。
+
+例如请求透明背景的 4K 竖图：
+
+```json
+{"model":"gpt-image-2.5-sunburst-4k","prompt":"透明背景上的蓝色花朵","size":"2160x3840","background":"transparent","quality":"high","n":1}
+```
+
+这些别名及其真实像素转换有合成 PNG / HTTP 测试；本次没有新增真实上游 2K／4K 生成实测。绘图工作台、分组、分页、批量编辑和渐进预览不属于本次模型/API 更新。
+
+`xhigh` / `max` 精确适用于三个基础 2.5 ID、上述四个尺寸别名，以及 `gpt-image-2.5-flare-2026-09-08`、`gpt-image-2.5-sunburst-2026-09-08` 两个快照 ID；快照不增加管理面板的九项计数。1.5、2 和其他未知 ID 的请求质量仍限于 `low` / `medium` / `high` / `auto`，不支持的组合在本地返回 400。上游合法返回的质量元数据原样保留。[官方 Images API reference](https://developers.openai.com/api/reference/resources/images/methods/generate) 列出了多个公共图片型号及 Flare/Sunburst 的高级质量选项；CPA 的裸 2.5 兼容项不应被当作公共 API 的同名模型或私有账号可用性证明。
 
 上游 Images 服务返回完整 JSON，因此 `stream:true` 也会等生成结束后才发送 SSE headers 和一个最终图片事件，不提供中途预览，也不会缩短生成等待。图片编辑和 variations 尚未实现。独立超时为 `CHATGPT_IMAGE_REQUEST_TIMEOUT_MS=300000`，必须是正毫秒整数。序列化后的图片 base64 与元数据限制为每项 16 MiB、每组 64 MiB、最多 10 张；文本输出及隐藏 reasoning/tool replay 的限额不扩大。
 
 当适配器有图片能力且存在启用、可用的账号时，`/v1/models` 会添加 `source: "image_endpoint"`、`endpoint: "/v1/images/generations"`、`capabilities.image_generation: true`、`availability: "backend_dependent"` 的描述项。它不是文本模型发现结果，也不是所有账号均可用的保证。将内置图片型号或指向它们的 alias 发往 Messages、Chat Completions 或 Responses，会得到明确的 400 并提示 Images 路径。
 
-Admin 账号卡片将文本与图片接口模型分开计数，例如 10 个文本模型、5 个图片接口模型；图片数量仅表示本服务当前列出的接口模型项，不是 OpenAI 全部图片型号的数量。原有 `modelCount` / `discoveredModels` 仍只表示该账号的文本目录。账号响应和管理模型视图通过独立 `imageModels` 字段提供图片项，模型页在简洁、专业两种模式下均有独立面板，不把图片项加入文本发现结果或 alias 选择。公共 `/v1/models` 还包含 alias 和可见目录，因此其总数不必等于单账号的文本模型数。图片项展示只依据后端能力和账号当前可用于该接口的状态，不发起生成探测，也不证明该账号的图片权限已获上游确认；仅并发占满时仍显示入口描述，停用、不健康、冷却或缺少有效凭据时不显示。
+Admin 账号卡片将文本与图片接口项分开计数，例如 10 个文本模型、9 个图片接口项（五个基础型号及四个本地尺寸别名）；图片数量仅表示本服务当前列出的接口项，不是 OpenAI 全部图片型号的数量。原有 `modelCount` / `discoveredModels` 仍只表示该账号的文本目录。账号响应和管理模型视图通过独立 `imageModels` 字段提供图片项，模型页在简洁、专业两种模式下均有独立面板，不把图片项加入文本发现结果或 alias 选择。公共 `/v1/models` 还包含 alias 和可见目录，因此其总数不必等于单账号的文本模型数。图片项展示只依据后端能力和账号当前可用于该接口的状态，不发起生成探测，也不证明该账号的图片权限已获上游确认；仅并发占满时仍显示入口描述，停用、不健康、冷却或缺少有效凭据时不显示。
 
 独立的 `/v1/responses` 适配器可在上游确实提供图片事件时转发预览、最终图及标准元数据。预览在 `response.output_item.added` 之后发送；前置输出顺序暂时未知时，会延迟到终态再发布。只有匹配的成功终态图片才能确认完成。这条转换路径有合成 Session/HTTP 测试覆盖，但尚未真实验证当前宿主的 Responses 图片工具能生成图片；已验证的生成路径是独立 Images API。含生成图输出的 Responses 响应不进入历史存储，即使设置 `store:true` 也一样：返回的 response ID 不能用于 `previous_response_id` 续聊，该查询返回 404，且不会再次调用上游。此类请求建议使用 `store:false`，当前不实现生成图历史的编辑或回放。
 
