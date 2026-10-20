@@ -251,6 +251,16 @@ These request a client window; they do not increase upstream capacity. Codex cla
 
 Native Responses input history allows up to 4096 items and 8 MiB of serialized data. Input history has a separate budget from bounded upstream output/replay caches. History referenced by `previous_response_id` remains subject to cache size, expiry, and process lifetime. Byte limits and model token capacity are separate constraints; `count_tokens` remains a heuristic estimate.
 
+### Switching Codex and Web within one client project
+
+Admin's `contextHandoff` option defaults to false; preset it with `CHATGPT_CONTEXT_HANDOFF=true`. When enabled, Responses may use the same API owner's stored visible history through `previous_response_id` across providers or an explicit model change. Messages/Chat may transfer completed public tool cycles, retaining call IDs, original argument strings and results. Private reasoning and native message IDs are removed; incomplete tools and unknown native items cannot transfer. The same provider and model keep original account affinity, without sending private replay to another account.
+
+Responses history defaults to 30 minutes in memory and implicit reasoning replay to 10 minutes. Both are owner-isolated, bounded and lost on restart. Clients must retain complete history and send necessary file contents, edit results and test evidence. Handoff does not synchronize ChatGPT Projects, mount directories or execute client tools. Keep the same client workspace and executor so both backends receive the same reported project state.
+
+The [pinned gateway patch](../integrations/gpt-web-gateway/README.md) returns standard tool requests through a text protocol for the client to execute. Connect explicitly enables tools, images and visible-context handoff while keeping manual Web mode. The patch rejects strict:true, remote images and non-user images; limits total 10 images, 10 MiB decoded and 16 MiB JSON per request. The gateway's native Responses rejects images and tools; main-service Responses bridges through Chat Completions.
+
+On 2026-10-20, one ordinary Chat account passed two-PNG history, standard tool arguments and complete Messages SSE with a simulated client result. The source Codex step was mocked and no file/command tool ran. Generation used an in-memory app; see the integration record for exact scope.
+
 ### Compatibility cookbook
 
 The base URL must match the client family. A root URL is correct for clients that append `/v1/...` themselves, including Claude Code and the Anthropic TypeScript SDK. An OpenAI-compatible client normally expects the versioned base URL ending in `/v1`. Do not use the root URL with a client that does not append `/v1`, and do not add `/v1` twice.

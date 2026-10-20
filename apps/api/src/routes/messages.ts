@@ -46,8 +46,8 @@ export function createMessagesRoute(deps: MessagesRouteDeps): Hono {
       const owner = c.get('reasoningReplayOwner');
       const replay = new RequestReasoningReplay(deps.reasoningReplayStore, {
         owner: typeof owner === 'string' ? owner : undefined, provider: accountProvider, model: declaredBackendModel(deps.modelRegistry, request.model, globalResolution.backendModel),
-      }, visibleRequest.inputItems);
-      const account = await acquireRequestAccount(c, deps.accountPool, requestAccountOptions(c, deps, visibleRequest,
+      }, visibleRequest.inputItems, deps.backendRouting?.snapshot().contextHandoff === true);
+      const account = await acquireRequestAccount(c, deps.accountPool, requestAccountOptions(c, deps, replay.routingRequest(visibleRequest),
         (candidate) => supportsRoutedAccount(deps, request.model, candidate, globalResolution, explicitControls, accountControls,
           (resolution) => replay.eligible(candidate, resolution.backendModel)),
         request.model,

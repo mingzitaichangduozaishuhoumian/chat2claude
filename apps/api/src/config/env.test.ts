@@ -21,6 +21,14 @@ describe('loadEnv', () => {
     expect(loadEnv({ CHATGPT_ROUTING_MODE: 'auto' }).backendRouting).not.toHaveProperty('autoPreference');
   });
 
+  it('loads visible context handoff independently of gateway configuration', () => {
+    expect(loadEnv({}).backendRouting).toBeUndefined();
+    expect(loadEnv({ CHATGPT_CONTEXT_HANDOFF: 'false' }).backendRouting).toEqual({ mode: 'codex', contextHandoff: false });
+    expect(loadEnv({ CHATGPT_CONTEXT_HANDOFF: ' TRUE ', CHATGPT_ROUTING_MODE: 'auto' }).backendRouting).toEqual({ mode: 'auto', contextHandoff: true });
+    expect(loadEnv({ CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_CONTEXT_HANDOFF: 'true' }).backendRouting)
+      .toMatchObject({ contextHandoff: true, gateway: { baseUrl: 'https://gateway.test' } });
+  });
+
   it('loads the independent web switch without requiring a gateway', () => {
     expect(loadEnv({ CHATGPT_WEB_ENABLED: 'false' }).backendRouting).toEqual({ mode: 'codex', webEnabled: false });
     expect(loadEnv({ CHATGPT_WEB_ENABLED: ' TRUE ', CHATGPT_ROUTING_MODE: 'auto' }).backendRouting).toEqual({ mode: 'auto', webEnabled: true });
@@ -44,8 +52,19 @@ describe('loadEnv', () => {
       .toMatchObject({ gateway: { supportsImages: false, modelMappings: {} } });
   });
 
+  it('keeps strict-tool capability absent by default and accepts an explicit boolean when a gateway is configured', () => {
+    expect(loadEnv({ CHATGPT_WEB_BASE_URL: 'https://gateway.test' }).backendRouting?.gateway).not.toHaveProperty('supportsStrictTools');
+    expect(loadEnv({ CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_STRICT_TOOLS: 'false' }).backendRouting?.gateway)
+      .toMatchObject({ supportsStrictTools: false });
+    expect(loadEnv({ CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_STRICT_TOOLS: ' TRUE ' }).backendRouting?.gateway)
+      .toMatchObject({ supportsStrictTools: true });
+  });
+
   it.each([
     { CHATGPT_ROUTING_MODE: 'PRIVATE_VALUE' },
+    { CHATGPT_CONTEXT_HANDOFF: 'PRIVATE_VALUE' },
+    { CHATGPT_CONTEXT_HANDOFF: '' },
+    { CHATGPT_CONTEXT_HANDOFF: '1' },
     { CHATGPT_WEB_ENABLED: 'PRIVATE_VALUE' },
     { CHATGPT_WEB_ENABLED: '' },
     { CHATGPT_WEB_ENABLED: '1' },
@@ -56,6 +75,10 @@ describe('loadEnv', () => {
     { CHATGPT_AUTO_PREFERENCE: 'PRIVATE_VALUE' },
     { CHATGPT_AUTO_PREFERENCE: '' },
     { CHATGPT_WEB_SUPPORTS_IMAGES: 'true' },
+    { CHATGPT_WEB_SUPPORTS_STRICT_TOOLS: 'false' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_STRICT_TOOLS: 'PRIVATE_VALUE' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_STRICT_TOOLS: '' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_STRICT_TOOLS: '0' },
     { CHATGPT_WEB_MODEL_MAPPINGS: '{}' },
     { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_IMAGES: 'PRIVATE_VALUE' },
     { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_IMAGES: '' },

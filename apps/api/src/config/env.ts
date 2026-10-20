@@ -144,15 +144,19 @@ function parseLogLevel(value: string | undefined): LogLevel { return value === '
 function parseBackendProvider(value: string | undefined): ChatGptBackendProvider { return value === 'session' ? 'session' : 'mock'; }
 
 function routingEnvironment(source: NodeJS.ProcessEnv): { backendRouting?: BackendRoutingConfig } {
-  const gatewayFields = ['CHATGPT_WEB_API_KEY', 'CHATGPT_WEB_MODELS', 'CHATGPT_WEB_SUPPORTS_TOOLS', 'CHATGPT_WEB_SUPPORTS_IMAGES', 'CHATGPT_WEB_MODEL_MAPPINGS'] as const;
-  const fields = ['CHATGPT_ROUTING_MODE', 'CHATGPT_AUTO_PREFERENCE', 'CHATGPT_WEB_ENABLED', 'CHATGPT_WEB_BASE_URL', ...gatewayFields] as const;
+  const gatewayFields = ['CHATGPT_WEB_API_KEY', 'CHATGPT_WEB_MODELS', 'CHATGPT_WEB_SUPPORTS_TOOLS', 'CHATGPT_WEB_SUPPORTS_STRICT_TOOLS', 'CHATGPT_WEB_SUPPORTS_IMAGES', 'CHATGPT_WEB_MODEL_MAPPINGS'] as const;
+  const fields = ['CHATGPT_ROUTING_MODE', 'CHATGPT_AUTO_PREFERENCE', 'CHATGPT_CONTEXT_HANDOFF', 'CHATGPT_WEB_ENABLED', 'CHATGPT_WEB_BASE_URL', ...gatewayFields] as const;
   if (!fields.some((field) => source[field] !== undefined)) return {};
   const baseUrl = source.CHATGPT_WEB_BASE_URL?.trim();
   if (!baseUrl && gatewayFields.some((field) => source[field] !== undefined)) throw new Error('CHATGPT_WEB_BASE_URL is required for web gateway configuration.');
   const enabledValue = source.CHATGPT_WEB_ENABLED?.trim().toLowerCase();
   if (enabledValue !== undefined && enabledValue !== 'true' && enabledValue !== 'false') throw new Error('CHATGPT_WEB_ENABLED must be true or false.');
+  const contextHandoff = source.CHATGPT_CONTEXT_HANDOFF?.trim().toLowerCase();
+  if (contextHandoff !== undefined && contextHandoff !== 'true' && contextHandoff !== 'false') throw new Error('CHATGPT_CONTEXT_HANDOFF must be true or false.');
   const toolsValue = source.CHATGPT_WEB_SUPPORTS_TOOLS?.trim().toLowerCase();
   if (toolsValue !== undefined && toolsValue !== 'true' && toolsValue !== 'false') throw new Error('CHATGPT_WEB_SUPPORTS_TOOLS must be true or false.');
+  const strictToolsValue = source.CHATGPT_WEB_SUPPORTS_STRICT_TOOLS?.trim().toLowerCase();
+  if (strictToolsValue !== undefined && strictToolsValue !== 'true' && strictToolsValue !== 'false') throw new Error('CHATGPT_WEB_SUPPORTS_STRICT_TOOLS must be true or false.');
   const imagesValue = source.CHATGPT_WEB_SUPPORTS_IMAGES?.trim().toLowerCase();
   if (imagesValue !== undefined && imagesValue !== 'true' && imagesValue !== 'false') throw new Error('CHATGPT_WEB_SUPPORTS_IMAGES must be true or false.');
   let modelMappings: unknown;
@@ -164,12 +168,14 @@ function routingEnvironment(source: NodeJS.ProcessEnv): { backendRouting?: Backe
   return { backendRouting: normalizeBackendRoutingConfig({
     mode: source.CHATGPT_ROUTING_MODE?.trim() ?? 'codex',
     ...(enabledValue === undefined ? {} : { webEnabled: enabledValue === 'true' }),
+    ...(contextHandoff === undefined ? {} : { contextHandoff: contextHandoff === 'true' }),
     ...(source.CHATGPT_AUTO_PREFERENCE === undefined ? {} : { autoPreference: source.CHATGPT_AUTO_PREFERENCE.trim() }),
     ...(baseUrl ? { gateway: {
       baseUrl,
       ...(apiKey ? { apiKey } : {}),
       models: source.CHATGPT_WEB_MODELS === undefined ? ['auto'] : readCommaList(source.CHATGPT_WEB_MODELS),
       supportsTools: toolsValue === 'true',
+      ...(strictToolsValue === undefined ? {} : { supportsStrictTools: strictToolsValue === 'true' }),
       ...(imagesValue === undefined ? {} : { supportsImages: imagesValue === 'true' }),
       ...(source.CHATGPT_WEB_MODEL_MAPPINGS === undefined ? {} : { modelMappings }),
     } } : {}),

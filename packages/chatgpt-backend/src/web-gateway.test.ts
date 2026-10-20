@@ -35,6 +35,17 @@ async function collect(iterable: AsyncIterable<ChatGptStreamEvent>): Promise<Cha
 }
 
 describe('WebGatewayChatGptBackend', () => {
+  it('excludes explicitly unsupported strict tool schemas before dispatch while preserving non-strict tools', async () => {
+    const toolRequest = { ...request, tools: [{ name: 'lookup', inputSchema: { type: 'object' }, strict: true }] };
+    const config = { ...configuration, supportsTools: true, supportsStrictTools: false };
+    expect(supportsWebGatewayRequest(toolRequest, config)).toBe(false);
+    const { backend, fetchMock } = makeBackend(jsonCompletion(), config);
+    await expect(backend.complete(toolRequest)).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(supportsWebGatewayRequest({ ...toolRequest, tools: [{ ...toolRequest.tools[0], strict: false }] }, config)).toBe(true);
+    expect(supportsWebGatewayRequest(toolRequest, { ...config, supportsStrictTools: true })).toBe(true);
+    expect(supportsWebGatewayRequest(toolRequest, { ...configuration, supportsTools: true })).toBe(true);
+  });
   it('uses exact configured model IDs and independent fresh capability metadata', async () => {
     const fetchMock = vi.fn();
     let config: WebGatewayConfiguration | undefined = { ...configuration, models: ['chatgpt-auto', 'exact-provider-id'] };

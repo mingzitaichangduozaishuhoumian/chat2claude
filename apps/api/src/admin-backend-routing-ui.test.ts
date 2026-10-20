@@ -59,6 +59,9 @@ describe('Admin upstream selection', () => {
     expect(panel).toContain('<option value="auto">');
     expect(panel).toContain('<option value="codex" selected>');
     expect(panel).toContain('id="backend-web-enabled" type="checkbox"');
+    expect(panel).toContain('id="backend-context-handoff" type="checkbox"');
+    expect(panel).toContain('跨后端接续上下文');
+    expect(panel).toContain('不共享后端私有会话或思考过程');
     expect(panel).toContain('<option value="manual" selected>');
     expect(panel).toContain('id="backend-routing-manual-target"');
     expect(panel).toContain('id="backend-routing-web-option" value="web" disabled>');
@@ -87,6 +90,7 @@ describe('Admin upstream selection', () => {
     expect(ui.field('backend-gateway-models').value).toBe('auto, web-model');
     expect(ui.field('backend-gateway-tools').checked).toBe(false);
     expect(ui.field('backend-routing-preference').value).toBe('web');
+    expect(ui.field('backend-context-handoff').checked).toBe(false);
     expect(ui.field('backend-gateway-images').checked).toBe(false);
     expect(ui.field('backend-gateway-model-mappings').value).toBe('');
     expect(ui.field('backend-gateway-key').value).toBe('unsaved-key');
@@ -133,7 +137,7 @@ describe('Admin upstream selection', () => {
     expect(ui.field('backend-web-status').textContent).toContain('Only Codex is used');
     ui.patchJson.mockResolvedValueOnce({ ...configured, mode: 'web', webEnabled: false });
     await ui.submit();
-    expect(ui.patchJson).toHaveBeenLastCalledWith('/admin/api/backend-routing', { mode: 'web', webEnabled: false, autoPreference: 'web' });
+    expect(ui.patchJson).toHaveBeenLastCalledWith('/admin/api/backend-routing', { mode: 'web', webEnabled: false, autoPreference: 'web', contextHandoff: false });
     expect(ui.field('backend-gateway-url').value).toBe(configured.gateway.baseUrl);
     expect(ui.field('backend-gateway-key').value).toBe('draft-key');
     expect(ui.field('backend-gateway-model-mappings').value).toBe('sonnet=auto');
@@ -161,7 +165,7 @@ describe('Admin upstream selection', () => {
     ui.field('backend-gateway-model-mappings').value = 'invalid draft';
     ui.patchJson.mockRejectedValueOnce(new Error('Persistence unavailable'));
     await ui.submit();
-    expect(ui.patchJson).toHaveBeenLastCalledWith('/admin/api/backend-routing', { mode: 'web', webEnabled: false, autoPreference: 'web' });
+    expect(ui.patchJson).toHaveBeenLastCalledWith('/admin/api/backend-routing', { mode: 'web', webEnabled: false, autoPreference: 'web', contextHandoff: false });
     expect(ui.field('backend-routing-status').dataset.state).toBe('error');
     expect(ui.field('backend-routing-manual-target').value).toBe('web');
     expect(ui.field('backend-gateway-key').value).toBe('draft-key');
@@ -178,12 +182,12 @@ describe('Admin upstream selection', () => {
     ui.field('backend-gateway-tools').checked = true;
     await ui.submit();
     expect(ui.patchJson).toHaveBeenLastCalledWith('/admin/api/backend-routing', {
-      mode: 'auto', webEnabled: true, autoPreference: 'web', gateway: { baseUrl: configured.gateway.baseUrl, models: ['auto', 'my-model', 'gpt-5.4'], supportsTools: true, supportsImages: false, modelMappings: {} },
+      mode: 'auto', webEnabled: true, autoPreference: 'web', contextHandoff: false, gateway: { baseUrl: configured.gateway.baseUrl, models: ['auto', 'my-model', 'gpt-5.4'], supportsTools: true, supportsImages: false, modelMappings: {} },
     });
     ui.field('backend-gateway-key').value = 'new-gateway-key';
     await ui.submit();
     expect(ui.patchJson).toHaveBeenLastCalledWith('/admin/api/backend-routing', {
-      mode: 'auto', webEnabled: true, autoPreference: 'web', gateway: { baseUrl: configured.gateway.baseUrl, models: configured.gateway.models, supportsTools: false, supportsImages: false, modelMappings: {}, apiKey: 'new-gateway-key' },
+      mode: 'auto', webEnabled: true, autoPreference: 'web', contextHandoff: false, gateway: { baseUrl: configured.gateway.baseUrl, models: configured.gateway.models, supportsTools: false, supportsImages: false, modelMappings: {}, apiKey: 'new-gateway-key' },
     });
     expect(ui.field('backend-gateway-key').value).toBe('');
     expect(ui.loadModels).toHaveBeenCalledTimes(2);
@@ -202,7 +206,7 @@ describe('Admin upstream selection', () => {
     ui.field('backend-gateway-model-mappings').value = ' sonnet = auto \r\n\n opus=web-model ';
     await ui.submit();
     expect(ui.patchJson).toHaveBeenLastCalledWith('/admin/api/backend-routing', {
-      mode: 'auto', webEnabled: true, autoPreference: 'codex', gateway: { baseUrl: configured.gateway.baseUrl, models: configured.gateway.models,
+      mode: 'auto', webEnabled: true, autoPreference: 'codex', contextHandoff: false, gateway: { baseUrl: configured.gateway.baseUrl, models: configured.gateway.models,
         supportsTools: false, supportsImages: true, modelMappings: { sonnet: 'auto', opus: 'web-model' } },
     });
     ui.field('backend-gateway-model-mappings').value = '';
@@ -227,6 +231,32 @@ describe('Admin upstream selection', () => {
     expect(ui.field('backend-gateway-key').value).toBe('draft-key');
   });
 
+  it('reads and saves context handoff independently of the disabled web gateway', async () => {
+    const ui = routingUi('en');
+    ui.getJson.mockResolvedValueOnce({ ...configured, webEnabled: false, contextHandoff: true });
+    await ui.loadBackendRouting();
+    expect(ui.field('backend-context-handoff').checked).toBe(true);
+    expect(ui.field('backend-context-handoff').disabled).toBe(false);
+    expect(ui.field('backend-web-settings').hidden).toBe(true);
+    ui.field('backend-context-handoff').checked = false;
+    ui.patchJson.mockResolvedValueOnce({ ...configured, webEnabled: false, contextHandoff: false });
+    await ui.submit();
+    expect(ui.patchJson).toHaveBeenLastCalledWith('/admin/api/backend-routing', {
+      mode: 'auto', webEnabled: false, autoPreference: 'web', contextHandoff: false,
+    });
+    expect(ui.field('backend-context-handoff').checked).toBe(false);
+    expect(ui.field('backend-context-handoff').disabled).toBe(false);
+    ui.field('backend-context-handoff').checked = true;
+    ui.patchJson.mockResolvedValueOnce({ ...configured, webEnabled: false, contextHandoff: true });
+    await ui.submit();
+    expect(ui.patchJson).toHaveBeenLastCalledWith('/admin/api/backend-routing', {
+      mode: 'auto', webEnabled: false, autoPreference: 'web', contextHandoff: true,
+    });
+    ui.patchJson.mockResolvedValueOnce({ mode: 'codex', configured: false, contextHandoff: true });
+    await ui.click('clear-backend-gateway');
+    expect(ui.field('backend-context-handoff').checked).toBe(true);
+  });
+
   it('preserves every draft field on save failure and prevents concurrent refresh or submit', async () => {
     const ui = routingUi('en');
     await ui.loadBackendRouting();
@@ -236,6 +266,7 @@ describe('Admin upstream selection', () => {
     ui.field('backend-gateway-key').value = 'retry-key';
     ui.field('backend-gateway-models').value = 'custom-model';
     ui.field('backend-gateway-tools').checked = true;
+    ui.field('backend-context-handoff').checked = true;
     ui.field('backend-routing-preference').value = 'codex';
     ui.field('backend-gateway-images').checked = true;
     ui.field('backend-gateway-model-mappings').value = 'sonnet=custom-model';
@@ -247,6 +278,7 @@ describe('Admin upstream selection', () => {
     expect(ui.field('refresh-backend-routing').disabled).toBe(true);
     expect(ui.field('backend-routing-preference').disabled).toBe(true);
     expect(ui.field('backend-gateway-images').disabled).toBe(true);
+    expect(ui.field('backend-context-handoff').disabled).toBe(true);
     expect(ui.field('backend-gateway-model-mappings').disabled).toBe(true);
     await ui.submit();
     await ui.click('refresh-backend-routing');
@@ -260,6 +292,7 @@ describe('Admin upstream selection', () => {
     expect(ui.field('backend-gateway-key').value).toBe('retry-key');
     expect(ui.field('backend-gateway-models').value).toBe('custom-model');
     expect(ui.field('backend-gateway-tools').checked).toBe(true);
+    expect(ui.field('backend-context-handoff').checked).toBe(true);
     expect(ui.field('backend-routing-preference').value).toBe('codex');
     expect(ui.field('backend-gateway-images').checked).toBe(true);
     expect(ui.field('backend-gateway-model-mappings').value).toBe('sonnet=custom-model');
@@ -267,6 +300,7 @@ describe('Admin upstream selection', () => {
     expect(ui.field('backend-routing-status').textContent).toContain('Persistence unavailable');
     expect(ui.field('save-backend-routing').disabled).toBe(false);
     expect(ui.field('refresh-backend-routing').disabled).toBe(false);
+    expect(ui.field('backend-context-handoff').disabled).toBe(false);
     expect(ui.loadModels).not.toHaveBeenCalled();
   });
 
@@ -282,7 +316,7 @@ describe('Admin upstream selection', () => {
     ui.field('backend-routing-mode').value = 'auto';
     ui.patchJson.mockResolvedValueOnce({ mode: 'auto', configured: false });
     await ui.submit();
-    expect(ui.patchJson).toHaveBeenLastCalledWith('/admin/api/backend-routing', { mode: 'auto', webEnabled: false, autoPreference: 'web' });
+    expect(ui.patchJson).toHaveBeenLastCalledWith('/admin/api/backend-routing', { mode: 'auto', webEnabled: false, autoPreference: 'web', contextHandoff: false });
     expect(ui.field('backend-gateway-models').value).toBe('auto');
     expect(ui.field('backend-gateway-tools').checked).toBe(false);
   });
@@ -316,7 +350,7 @@ describe('Admin upstream selection', () => {
   it('keeps existing controls functional when only the new optional elements are absent', async () => {
     const optional = new Set(['backend-routing-preference', 'backend-gateway-images', 'backend-gateway-model-mappings',
       'backend-web-enabled', 'backend-routing-manual-target', 'backend-routing-manual-field', 'backend-routing-preference-field',
-      'backend-routing-web-option', 'backend-web-settings', 'backend-web-status']);
+      'backend-routing-web-option', 'backend-web-settings', 'backend-web-status', 'backend-context-handoff']);
     const ui = routingUi();
     const document = { getElementById: (id: string) => optional.has(id) ? null : ui.field(id) };
     const load = new Function('document', 'window', 'getJson', 'patchJson', 'loadModels', 'loadAccounts', 'translateAdminText', 'adminLocale',

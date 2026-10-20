@@ -3,6 +3,7 @@ import { canonicalToolArguments } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import type { OpenAiResponsesInputItem, OpenAiResponsesRequest, OpenAiResponsesResponse } from '@chatgpt-to-claude/protocol-mapper';
 import type { Account } from './account-pool.js';
+import { visibleResponsesHistory } from './visible-history.js';
 
 type Identity = Pick<Account, 'id' | 'incarnation' | 'provider'>;
 export interface ResponsesStoreContext { account: Identity; model: string; output: OpenAiResponsesInputItem[]; }
@@ -88,8 +89,20 @@ export class StoredOpenAiResponseRecord {
     const stored = this.#record;
     return stored.model === model && stored.account?.id === account.id && stored.account.incarnation === account.incarnation && stored.account.provider === account.provider;
   }
+  /** A visible handoff never relaxes same-provider, same-model account affinity. */
+  canHandoff(account: Identity, model: string): boolean {
+    return this.#active() && (this.#record.account.provider !== account.provider || this.#record.model !== model);
+  }
   expand(current: OpenAiResponsesRequest['input'], account: Identity, model: string): OpenAiResponsesInputItem[] {
     if (!this.#active() || !this.accepts(account, model)) throw previousResponseNotFound();
+    return this.expandInput(current, false);
+  }
+  /** Caller obtains this opaque record only through an owner-scoped get(). */
+  expandVisible(current: OpenAiResponsesRequest['input']): OpenAiResponsesInputItem[] {
+    if (!this.#active()) throw previousResponseNotFound();
+    return visibleResponsesHistory(this.expandInput(current, true));
+  }
+  private expandInput(current: OpenAiResponsesRequest['input'], visible: boolean): OpenAiResponsesInputItem[] {
     const history = [...this.#record.input, ...this.#record.output];
     const incoming = toInput(current);
     // Exact stable identities may be repeated by stateless clients together with
@@ -100,7 +113,11 @@ export class StoredOpenAiResponseRecord {
     const suffix: OpenAiResponsesInputItem[] = [];
     for (const item of incoming) {
       const matches = history.map((previous, index) => ({ previous, index })).filter(({ previous }) => sameIdentity(previous, item));
-      if (!matches.length) { appended = true; suffix.push(item); continue; }
+      if (!matches.length) {
+        // Newly submitted opaque items have no stored provenance for a handoff.
+        if (visible && item.type === 'reasoning') throw new ClaudeApiError('Native reasoning input cannot be transferred to another backend.', 400, 'invalid_request_error');
+        appended = true; suffix.push(item); continue;
+      }
       if (appended || matches.length !== 1 || matches[0].index <= last || !equivalent(matches[0].previous, item)) throw new ClaudeApiError('Conflicting previous response input.', 400, 'invalid_request_error');
       last = matches[0].index;
     }

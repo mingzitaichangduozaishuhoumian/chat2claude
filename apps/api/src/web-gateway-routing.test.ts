@@ -243,7 +243,7 @@ describe('web gateway routing through the application', () => {
     const f = fixture();
     const configured = await f.configure('web');
     expect(configured.status).toBe(200);
-    expect(await configured.json()).toEqual({ mode: 'web', autoPreference: 'codex', webEnabled: true, configured: true, gateway: {
+    expect(await configured.json()).toEqual({ mode: 'web', autoPreference: 'codex', contextHandoff: false, webEnabled: true, configured: true, gateway: {
       baseUrl: 'http://gateway.test:8090', models: [MODEL], supportsTools: false, supportsImages: false, apiKeyConfigured: true,
     } });
     const retained = await f.patch({ gateway: { apiKey: '' } });
@@ -264,6 +264,21 @@ describe('web gateway routing through the application', () => {
     expect(response.status).toBe(400);
     expect(await response.text()).toContain('separate service');
     expect(f.pool.get(WEB_GATEWAY_ACCOUNT_ID)).toBeUndefined();
+  });
+
+  it('retains a strict-tool opt-out when Admin saves the visible gateway form fields', async () => {
+    const f = fixture();
+    expect((await f.configure('auto', true)).status).toBe(200);
+    expect((await f.patch({ gateway: { supportsStrictTools: false } })).status).toBe(200);
+    const saved = await f.patch({ gateway: { baseUrl: 'http://gateway.test:8090', models: [MODEL], supportsTools: true,
+      supportsImages: false, modelMappings: {} } });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({ gateway: { supportsStrictTools: false, apiKeyConfigured: true } });
+    const response = await f.app.request('/admin/api/backend-routing', { headers: { 'x-api-key': KEY } });
+    const view = await response.text();
+    expect(JSON.parse(view)).toMatchObject({ gateway: { supportsStrictTools: false } });
+    expect(view).not.toContain('PRIVATE_GATEWAY_KEY');
+    expect((await f.patch({ gateway: { supportsStrictTools: 'PRIVATE_VALUE' } })).status).toBe(400);
   });
 
   it('pins Responses history to the original web account and rejects cross-channel continuation', async () => {

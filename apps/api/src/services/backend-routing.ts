@@ -6,6 +6,8 @@ export interface BackendRoutingGateway {
   apiKey?: string;
   models: string[];
   supportsTools: boolean;
+  /** Only explicit false disables strict tools; omission retains legacy passthrough. */
+  supportsStrictTools?: boolean;
   supportsImages?: boolean;
   /** Explicit client model or alias to configured gateway model mapping. */
   modelMappings?: Record<string, string>;
@@ -16,6 +18,8 @@ export interface BackendRoutingConfig {
   webEnabled?: boolean;
   mode: BackendRoutingMode;
   autoPreference?: BackendAutoPreference;
+  /** Omitted legacy configurations keep conversations bound to their original backend. */
+  contextHandoff?: boolean;
   gateway?: BackendRoutingGateway;
 }
 
@@ -23,6 +27,7 @@ export interface BackendRoutingView {
   webEnabled: boolean;
   mode: BackendRoutingMode;
   autoPreference: BackendAutoPreference;
+  contextHandoff: boolean;
   configured: boolean;
   gateway?: Omit<BackendRoutingGateway, 'apiKey' | 'supportsImages'> & { supportsImages: boolean; apiKeyConfigured: boolean };
 }
@@ -49,14 +54,15 @@ export class BackendRouting {
   restore(config: unknown): void { this.config = normalizeBackendRoutingConfig(config); }
 
   update(patch: unknown): BackendRoutingConfig {
-    const raw = object(patch, ['webEnabled', 'mode', 'autoPreference', 'gateway'], 'backend routing');
+    const raw = object(patch, ['webEnabled', 'mode', 'autoPreference', 'contextHandoff', 'gateway'], 'backend routing');
     const next = this.snapshot();
     if (raw.webEnabled !== undefined) next.webEnabled = enabled(raw.webEnabled);
     if (raw.mode !== undefined) next.mode = mode(raw.mode);
     if (raw.autoPreference !== undefined) next.autoPreference = autoPreference(raw.autoPreference);
+    if (raw.contextHandoff !== undefined) next.contextHandoff = enabled(raw.contextHandoff, 'contextHandoff');
     if (raw.gateway === null) delete next.gateway;
     else if (raw.gateway !== undefined) {
-      const gateway = object(raw.gateway, ['baseUrl', 'apiKey', 'models', 'supportsTools', 'supportsImages', 'modelMappings'], 'web gateway');
+      const gateway = object(raw.gateway, ['baseUrl', 'apiKey', 'models', 'supportsTools', 'supportsStrictTools', 'supportsImages', 'modelMappings'], 'web gateway');
       const previous = next.gateway;
       const apiKey = gateway.apiKey === null ? undefined
         : gateway.apiKey === undefined || gateway.apiKey === '' ? previous?.apiKey
@@ -66,6 +72,9 @@ export class BackendRouting {
         ...(apiKey ? { apiKey } : {}),
         models: gateway.models === undefined ? previous?.models ?? ['auto'] : modelIds(gateway.models),
         supportsTools: gateway.supportsTools === undefined ? previous?.supportsTools ?? false : boolean(gateway.supportsTools),
+        ...(gateway.supportsStrictTools === undefined
+          ? previous?.supportsStrictTools === undefined ? {} : { supportsStrictTools: previous.supportsStrictTools }
+          : { supportsStrictTools: boolean(gateway.supportsStrictTools, 'supportsStrictTools') }),
         ...(gateway.supportsImages === undefined
           ? previous?.supportsImages === undefined ? {} : { supportsImages: previous.supportsImages }
           : { supportsImages: boolean(gateway.supportsImages, 'supportsImages') }),
@@ -84,11 +93,13 @@ export class BackendRouting {
       webEnabled: this.isWebEnabled(),
       mode,
       autoPreference: autoPreference ?? 'web',
+      contextHandoff: this.config.contextHandoff ?? false,
       configured: Boolean(gateway),
       ...(gateway ? { gateway: {
         baseUrl: gateway.baseUrl,
         models: [...gateway.models],
         supportsTools: gateway.supportsTools,
+        ...(gateway.supportsStrictTools === undefined ? {} : { supportsStrictTools: gateway.supportsStrictTools }),
         supportsImages: gateway.supportsImages ?? false,
         ...(gateway.modelMappings === undefined ? {} : { modelMappings: Object.fromEntries(Object.entries(gateway.modelMappings)) }),
         apiKeyConfigured: Boolean(gateway.apiKey),
@@ -98,18 +109,20 @@ export class BackendRouting {
 }
 
 export function normalizeBackendRoutingConfig(value: unknown): BackendRoutingConfig {
-  const raw = object(value, ['webEnabled', 'mode', 'autoPreference', 'gateway'], 'backend routing');
+  const raw = object(value, ['webEnabled', 'mode', 'autoPreference', 'contextHandoff', 'gateway'], 'backend routing');
   const normalizedMode = mode(raw.mode);
   const webEnabled = raw.webEnabled === undefined ? {} : { webEnabled: enabled(raw.webEnabled) };
   const preference = raw.autoPreference === undefined ? {} : { autoPreference: autoPreference(raw.autoPreference) };
-  if (raw.gateway === undefined) return { mode: normalizedMode, ...webEnabled, ...preference };
-  const gateway = object(raw.gateway, ['baseUrl', 'apiKey', 'models', 'supportsTools', 'supportsImages', 'modelMappings'], 'web gateway');
+  const contextHandoff = raw.contextHandoff === undefined ? {} : { contextHandoff: enabled(raw.contextHandoff, 'contextHandoff') };
+  if (raw.gateway === undefined) return { mode: normalizedMode, ...webEnabled, ...preference, ...contextHandoff };
+  const gateway = object(raw.gateway, ['baseUrl', 'apiKey', 'models', 'supportsTools', 'supportsStrictTools', 'supportsImages', 'modelMappings'], 'web gateway');
   const models = modelIds(gateway.models);
-  return { mode: normalizedMode, ...webEnabled, ...preference, gateway: {
+  return { mode: normalizedMode, ...webEnabled, ...preference, ...contextHandoff, gateway: {
     baseUrl: normalizeGatewayBaseUrl(gateway.baseUrl),
     ...(gateway.apiKey === undefined ? {} : { apiKey: secret(gateway.apiKey) }),
     models,
     supportsTools: boolean(gateway.supportsTools),
+    ...(gateway.supportsStrictTools === undefined ? {} : { supportsStrictTools: boolean(gateway.supportsStrictTools, 'supportsStrictTools') }),
     ...(gateway.supportsImages === undefined ? {} : { supportsImages: boolean(gateway.supportsImages, 'supportsImages') }),
     ...(gateway.modelMappings === undefined ? {} : { modelMappings: modelMappings(gateway.modelMappings, models) }),
   } };
@@ -146,8 +159,8 @@ function autoPreference(value: unknown): BackendAutoPreference {
   throw new BackendRoutingError('Backend autoPreference must be web or codex.');
 }
 
-function enabled(value: unknown): boolean {
-  if (typeof value !== 'boolean') throw new BackendRoutingError('Backend routing webEnabled must be a boolean.');
+function enabled(value: unknown, field = 'webEnabled'): boolean {
+  if (typeof value !== 'boolean') throw new BackendRoutingError(`Backend routing ${field} must be a boolean.`);
   return value;
 }
 

@@ -4,6 +4,8 @@ export type AdminLocale = 'zh-CN' | 'en';
 // Protocol identifiers and provider payloads are not translation keys.
 export const ADMIN_MESSAGES: Record<string, string> = {
   '上游选择': 'Upstream selection',
+  '跨后端接续上下文': 'Continue context across backends',
+  '开启后，切换后端时携带可见对话历史和工具结果；不共享后端私有会话或思考过程。默认关闭。': 'When enabled, carry visible conversation history and tool results when switching backends. Private backend sessions and reasoning are not shared. Off by default.',
   '先决定是否使用网页，再选择自动或手动模式。': 'Choose whether to use Web, then select Auto or Manual mode.',
   '使用 ChatGPT 网页': 'Use ChatGPT Web',
   '自动模式': 'Auto mode', '手动模式': 'Manual mode', '手动选择上游': 'Manual upstream',

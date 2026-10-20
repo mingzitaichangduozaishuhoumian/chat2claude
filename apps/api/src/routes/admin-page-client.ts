@@ -728,6 +728,7 @@ function backendRoutingElements() {
     save: 'save-backend-routing', refresh: 'refresh-backend-routing', clear: 'clear-backend-gateway' };
   const elements = Object.fromEntries(Object.entries(ids).map(([name, id]) => [name, document.getElementById(id)]));
   elements.preference = document.getElementById('backend-routing-preference');
+  elements.contextHandoff = document.getElementById('backend-context-handoff');
   elements.images = document.getElementById('backend-gateway-images');
   elements.mappings = document.getElementById('backend-gateway-model-mappings');
   elements.webEnabled = document.getElementById('backend-web-enabled');
@@ -767,7 +768,7 @@ function updateBackendRoutingControls(elements) {
   if (elements.webStatus) elements.webStatus.textContent = translateAdminText(webEnabled
     ? '网页已开启；自动模式按优先级选择，手动模式使用指定上游。'
     : '网页已关闭，仅使用 Codex；配置和选择会保留，重新开启后恢复。', adminLocale);
-  [elements.mode, elements.webEnabled, elements.save, elements.refresh, elements.clear].filter(Boolean)
+  [elements.mode, elements.webEnabled, elements.contextHandoff, elements.save, elements.refresh, elements.clear].filter(Boolean)
     .forEach((element) => { element.disabled = backendRoutingPending; });
   if (elements.manualTarget) elements.manualTarget.disabled = backendRoutingPending || !manual;
   if (elements.preference) elements.preference.disabled = backendRoutingPending || manual || !webEnabled;
@@ -780,6 +781,7 @@ function applyBackendRouting(body, elements, preserveGatewayDraft = false) {
   if (elements.manualTarget && body.mode !== 'auto') elements.manualTarget.value = body.mode;
   if (elements.webEnabled) elements.webEnabled.checked = typeof body.webEnabled === 'boolean' ? body.webEnabled : Boolean(body.gateway);
   if (elements.preference) elements.preference.value = body.autoPreference === 'codex' ? 'codex' : 'web';
+  if (elements.contextHandoff) elements.contextHandoff.checked = body.contextHandoff === true;
   if (!preserveGatewayDraft) {
     elements.url.value = body.gateway?.baseUrl || '';
     elements.models.value = body.gateway?.models?.join(', ') || 'auto';
@@ -832,7 +834,8 @@ function bindBackendRouting() {
       const apiKey = fields.key.value.trim();
       if (webEnabled && !baseUrl && (mode === 'web' || apiKey)) throw new Error(translateAdminText('请先填写网页网关地址。', adminLocale));
       const models = fields.models.value.split(',').map((model) => model.trim()).filter(Boolean);
-      const patch = { mode, ...(fields.webEnabled ? { webEnabled } : {}), ...(fields.preference ? { autoPreference: fields.preference.value === 'codex' ? 'codex' : 'web' } : {}) };
+      const patch = { mode, ...(fields.webEnabled ? { webEnabled } : {}), ...(fields.preference ? { autoPreference: fields.preference.value === 'codex' ? 'codex' : 'web' } : {}),
+        ...(fields.contextHandoff ? { contextHandoff: fields.contextHandoff.checked } : {}) };
       if (webEnabled && baseUrl) patch.gateway = { baseUrl, models: models.length ? models : ['auto'], supportsTools: fields.tools.checked,
         ...(fields.images ? { supportsImages: fields.images.checked } : {}),
         ...(fields.mappings ? { modelMappings: parseBackendModelMappings(fields.mappings.value) } : {}),

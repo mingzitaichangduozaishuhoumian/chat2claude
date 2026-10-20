@@ -5,7 +5,7 @@ describe('BackendRouting', () => {
   it('preserves the Codex default and returns detached views', () => {
     const routing = new BackendRouting();
     expect(routing.snapshot()).toEqual({ mode: 'codex' });
-    expect(routing.safeView()).toEqual({ webEnabled: false, mode: 'codex', autoPreference: 'web', configured: false });
+    expect(routing.safeView()).toEqual({ webEnabled: false, mode: 'codex', autoPreference: 'web', contextHandoff: false, configured: false });
     routing.update({ mode: 'auto', gateway: { baseUrl: 'http://localhost:8080/v1/' } });
     const state = routing.snapshot();
     expect(state).toEqual({ mode: 'auto', gateway: { baseUrl: 'http://localhost:8080', models: ['auto'], supportsTools: false } });
@@ -19,7 +19,7 @@ describe('BackendRouting', () => {
     routing.update({ gateway: { apiKey: '', supportsTools: true } });
     routing.update({ mode: 'web' });
     expect(routing.snapshot().gateway?.apiKey).toBe('PRIVATE_KEY');
-    expect(routing.safeView()).toEqual({ webEnabled: true, mode: 'web', autoPreference: 'web', configured: true, gateway: {
+    expect(routing.safeView()).toEqual({ webEnabled: true, mode: 'web', autoPreference: 'web', contextHandoff: false, configured: true, gateway: {
       baseUrl: 'https://gateway.test/prefix', models: ['web-model'], supportsTools: true, supportsImages: false, apiKeyConfigured: true,
     } });
     expect(JSON.stringify(routing.safeView())).not.toContain('PRIVATE_KEY');
@@ -41,6 +41,30 @@ describe('BackendRouting', () => {
     expect(routing.snapshot()).toEqual({ mode: 'codex' });
     expect(routing.isWebEnabled()).toBe(false);
     expect(routing.safeView().autoPreference).toBe('web');
+    expect(routing.safeView().contextHandoff).toBe(false);
+  });
+
+  it('changes visible context handoff independently and preserves it across partial routing updates', () => {
+    const routing = new BackendRouting();
+    expect(routing.snapshot()).not.toHaveProperty('contextHandoff');
+    routing.update({ contextHandoff: true });
+    expect(routing.snapshot()).toEqual({ mode: 'codex', contextHandoff: true });
+    expect(routing.safeView().contextHandoff).toBe(true);
+    routing.update({ mode: 'auto', webEnabled: false });
+    expect(routing.safeView()).toMatchObject({ contextHandoff: true, mode: 'auto', webEnabled: false });
+    routing.update({ contextHandoff: false });
+    expect(routing.snapshot()).toEqual({ mode: 'auto', webEnabled: false, contextHandoff: false });
+    routing.restore({ mode: 'web', contextHandoff: true });
+    expect(routing.safeView().contextHandoff).toBe(true);
+  });
+
+  it.each([null, 'true', 'PRIVATE_VALUE', 1, [], {}])('rejects non-boolean context handoff atomically (case %#)', (contextHandoff) => {
+    const routing = new BackendRouting({ mode: 'auto', contextHandoff: true });
+    expect(() => routing.update({ contextHandoff, mode: 'web' })).toThrow('contextHandoff');
+    expect(() => normalizeBackendRoutingConfig({ mode: 'auto', contextHandoff })).toThrow('contextHandoff');
+    expect(() => routing.restore({ mode: 'web', contextHandoff })).toThrow('contextHandoff');
+    expect(routing.snapshot()).toEqual({ mode: 'auto', contextHandoff: true });
+    try { routing.update({ contextHandoff }); } catch (error) { expect(String(error)).not.toContain('PRIVATE_VALUE'); }
   });
 
   it('lets the web switch change independently while preserving routing and gateway credentials', () => {
@@ -111,6 +135,31 @@ describe('BackendRouting', () => {
     expect(routing.snapshot()).toEqual(before);
     routing.update({ gateway: { models: ['replacement'], modelMappings: { sonnet: 'replacement' } } });
     expect(routing.snapshot().gateway?.modelMappings).toEqual({ sonnet: 'replacement' });
+  });
+
+  it('keeps strict-tool capability optional and preserves an explicit opt-out across UI gateway updates', () => {
+    const routing = new BackendRouting();
+    const gateway = { baseUrl: 'https://gateway.test', models: ['web-model'], supportsTools: true };
+    routing.update({ gateway });
+    expect(routing.snapshot().gateway).not.toHaveProperty('supportsStrictTools');
+    expect(routing.safeView().gateway).not.toHaveProperty('supportsStrictTools');
+    routing.update({ gateway: { supportsStrictTools: false } });
+    expect(routing.safeView().gateway?.supportsStrictTools).toBe(false);
+    routing.update({ mode: 'auto', gateway: { ...gateway, supportsImages: false, modelMappings: {} } });
+    expect(routing.snapshot().gateway?.supportsStrictTools).toBe(false);
+    expect(routing.safeView().gateway?.supportsStrictTools).toBe(false);
+    routing.update({ gateway: { supportsStrictTools: true } });
+    expect(routing.safeView().gateway?.supportsStrictTools).toBe(true);
+  });
+
+  it.each([null, 'false', 'PRIVATE_VALUE', 0, [], {}])('rejects invalid strict-tool capability atomically (case %#)', (supportsStrictTools) => {
+    const routing = new BackendRouting({ mode: 'auto', gateway: {
+      baseUrl: 'https://gateway.test', models: ['web-model'], supportsTools: true, supportsStrictTools: false,
+    } });
+    expect(() => routing.update({ mode: 'web', gateway: { supportsStrictTools } })).toThrow('supportsStrictTools');
+    expect(() => normalizeBackendRoutingConfig({ mode: 'auto', gateway: { ...routing.snapshot().gateway, supportsStrictTools } })).toThrow('supportsStrictTools');
+    expect(routing.snapshot()).toMatchObject({ mode: 'auto', gateway: { supportsStrictTools: false } });
+    try { routing.update({ gateway: { supportsStrictTools } }); } catch (error) { expect(String(error)).not.toContain('PRIVATE_VALUE'); }
   });
 
   it('safely accepts arbitrary ordinary model keys without prototype lookup semantics', () => {

@@ -14,6 +14,8 @@ export interface WebGatewayConfiguration {
   /** Exact IDs accepted by the separately operated gateway. */
   models: string[];
   supportsTools?: boolean;
+  /** Explicit false excludes tools requiring strict JSON Schema enforcement. */
+  supportsStrictTools?: boolean;
   /** Opt in only when every configured gateway model accepts user image input. */
   supportsImages?: boolean;
 }
@@ -123,12 +125,13 @@ export class WebGatewayChatGptBackend implements ChatGptBackendClient {
       || new Set(value.models).size !== value.models.length
       || value.apiKey !== undefined && (typeof value.apiKey !== 'string' || /[\r\n]/.test(value.apiKey))
       || value.supportsTools !== undefined && typeof value.supportsTools !== 'boolean'
+      || value.supportsStrictTools !== undefined && typeof value.supportsStrictTools !== 'boolean'
       || value.supportsImages !== undefined && typeof value.supportsImages !== 'boolean') {
       throw invalidRequest('Web gateway is not configured correctly.');
     }
     // Validate before any request. URL credentials and query parameters never reach fetch.
     endpoint(value, '/models');
-    return { baseUrl: value.baseUrl, apiKey: value.apiKey, models: [...value.models], supportsTools: value.supportsTools, supportsImages: value.supportsImages };
+    return { baseUrl: value.baseUrl, apiKey: value.apiKey, models: [...value.models], supportsTools: value.supportsTools, supportsStrictTools: value.supportsStrictTools, supportsImages: value.supportsImages };
   }
 
   private async fetchResponse(url: string, init: RequestInit, lifetime: Lifetime): Promise<Response> {
@@ -200,6 +203,9 @@ function requestBody(request: ChatGptCompletionRequest, configuration: WebGatewa
     || forwarded.parallelToolCalls === true || request.inputItems?.some((item) => item.type === 'function_call' || item.type === 'function_call_output'
       || item.type === 'replay' && item.item.type === 'function_call');
   if (usesTools && !configuration.supportsTools) throw invalidRequest('Web gateway tool support is disabled.');
+  if (configuration.supportsStrictTools === false && request.tools?.some(tool => tool.strict === true)) {
+    throw invalidRequest('Web gateway does not support strict tool schemas.');
+  }
   if ((request.tools?.length ?? 0) > MAX_TOOLS) throw invalidRequest('Too many web gateway tools.');
   const messages: WireMessage[] = [];
   if (request.inputItems !== undefined) {

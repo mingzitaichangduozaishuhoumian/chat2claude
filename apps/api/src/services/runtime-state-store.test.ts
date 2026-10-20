@@ -22,9 +22,9 @@ describe('RuntimeStateStore', () => {
     const accounts = new AccountPool();
     const keys = new RuntimeApiKeys();
     expect(createRuntimeState(accounts.exportState(), keys.exportState(), [])).not.toHaveProperty('backendRouting');
-    const routing = new BackendRouting({ mode: 'auto', autoPreference: 'codex', gateway: {
+    const routing = new BackendRouting({ mode: 'auto', autoPreference: 'codex', contextHandoff: true, gateway: {
       baseUrl: 'https://gateway.test', apiKey: 'PRIVATE_GATEWAY_KEY', models: ['web-model'], supportsTools: true,
-      supportsImages: true, modelMappings: { sonnet: 'web-model' },
+      supportsImages: true, supportsStrictTools: false, modelMappings: { sonnet: 'web-model' },
     } });
     const store = new RuntimeStateStore({ path, encryptionKey: Buffer.alloc(32, 4) });
     const source = new DurableRuntimeState({ accountPool: accounts, runtimeApiKeys: keys, backendRouting: routing, store });
@@ -33,7 +33,7 @@ describe('RuntimeStateStore', () => {
     const restoredRouting = new BackendRouting();
     new DurableRuntimeState({ accountPool: new AccountPool(), runtimeApiKeys: new RuntimeApiKeys(), backendRouting: restoredRouting, store }).hydrate();
     expect(restoredRouting.snapshot()).toEqual(routing.snapshot());
-    expect(restoredRouting.safeView()).toMatchObject({ autoPreference: 'codex', gateway: { supportsImages: true, modelMappings: { sonnet: 'web-model' } } });
+    expect(restoredRouting.safeView()).toMatchObject({ autoPreference: 'codex', contextHandoff: true, gateway: { supportsImages: true, supportsStrictTools: false, modelMappings: { sonnet: 'web-model' } } });
   });
 
   it('persists an encrypted web opt-out while keeping the saved mode, mapping and credentials for re-enabling', () => {
@@ -68,7 +68,7 @@ describe('RuntimeStateStore', () => {
     const store = new RuntimeStateStore({ path });
     new DurableRuntimeState({ accountPool: new AccountPool(), runtimeApiKeys: new RuntimeApiKeys(), backendRouting: routing, store }).hydrate();
     expect(routing.snapshot()).toEqual(legacyRouting);
-    expect(routing.safeView()).toMatchObject({ webEnabled: true, autoPreference: 'web', gateway: { supportsImages: false } });
+    expect(routing.safeView()).toMatchObject({ webEnabled: true, autoPreference: 'web', contextHandoff: false, gateway: { supportsImages: false } });
     expect(routing.isWebEnabled()).toBe(true);
   });
 
@@ -84,8 +84,12 @@ describe('RuntimeStateStore', () => {
   it.each([
     { webEnabled: 'PRIVATE_VALUE' },
     { webEnabled: null },
+    { contextHandoff: 'PRIVATE_VALUE' },
+    { contextHandoff: null },
     { autoPreference: 'PRIVATE_VALUE' },
     { gateway: { baseUrl: 'https://gateway.test', models: ['auto'], supportsTools: false, supportsImages: 'PRIVATE_VALUE' } },
+    { gateway: { baseUrl: 'https://gateway.test', models: ['auto'], supportsTools: true, supportsStrictTools: 'PRIVATE_VALUE' } },
+    { gateway: { baseUrl: 'https://gateway.test', models: ['auto'], supportsTools: true, supportsStrictTools: null } },
     { gateway: { baseUrl: 'https://gateway.test', models: ['auto'], supportsTools: false, modelMappings: { alias: 'PRIVATE_VALUE' } } },
     { gateway: { baseUrl: 'https://gateway.test', models: ['auto'], supportsTools: false, modelMappings: JSON.parse('{"__proto__":"auto"}') } },
   ])('rejects malformed stored automatic/image/mapping configuration safely (case %#)', (patch) => {

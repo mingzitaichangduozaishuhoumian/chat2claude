@@ -96,6 +96,8 @@ curl __ORIGIN__/v1/images/generations \\
               <label id="backend-routing-preference-field" hidden>自动模式优先级<select id="backend-routing-preference" disabled><option value="web" selected>网页优先</option><option value="codex">Codex 优先</option></select></label>
               <p class="muted">网页优先会优先调用兼容的网页模型，不默认重复调用两个后端。选择 ChatGPT 网页可禁止回退到 Codex；更换调用入口不保证增加额度。</p>
               <p id="backend-routing-note" class="muted">网页网关需另行部署并完成网页登录。开启网页后，单次请求可用 x-chat2claude-backend: auto、codex 或 web 覆盖模式；关闭网页时不能用请求头重新开启。</p>
+              <label><input id="backend-context-handoff" type="checkbox" aria-describedby="backend-context-handoff-note" /> 跨后端接续上下文</label>
+              <p id="backend-context-handoff-note" class="muted">开启后，切换后端时携带可见对话历史和工具结果；不共享后端私有会话或思考过程。默认关闭。</p>
               <div id="backend-web-settings" class="stack" hidden>
               <label>网页网关地址<input id="backend-gateway-url" type="url" placeholder="http://127.0.0.1:8000/v1" autocomplete="off" /></label>
               <label>网页网关 API Key<input id="backend-gateway-key" type="password" placeholder="留空保留已保存的 Key" autocomplete="off" /></label>

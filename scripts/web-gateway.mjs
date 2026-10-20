@@ -232,8 +232,8 @@ export async function connectGateway({ settings, apiUrl, fetchImpl = fetch }) {
       method: 'PATCH', redirect: 'error', signal: AbortSignal.timeout(15_000),
       headers: { 'content-type': 'application/json', origin, cookie: cookies.join('; ') },
       body: JSON.stringify({
-        webEnabled: true, mode: 'web', autoPreference: 'web',
-        gateway: { baseUrl: `http://127.0.0.1:${settings.port}`, apiKey: settings.apiKey, models: ['auto'], supportsTools: false, supportsImages: true, modelMappings: { sonnet: 'auto' } },
+        webEnabled: true, mode: 'web', autoPreference: 'web', contextHandoff: true,
+        gateway: { baseUrl: `http://127.0.0.1:${settings.port}`, apiKey: settings.apiKey, models: ['auto'], supportsTools: true, supportsStrictTools: false, supportsImages: true, modelMappings: { sonnet: 'auto' } },
       }),
     });
     if (!response.ok) throw new Error('Configuration failed.');

@@ -230,7 +230,7 @@ test('connect uses an in-memory local admin cookie and applies the explicit web 
   assert.equal(calls[1].options.headers.cookie, 'admin_session=private-cookie');
   assert.equal(calls[1].options.headers.origin, 'http://127.0.0.1:3000');
   assert.equal(calls[1].options.method, 'PATCH');
-  assert.deepEqual(JSON.parse(calls[1].options.body), { webEnabled: true, mode: 'web', autoPreference: 'web', gateway: { baseUrl: 'http://127.0.0.1:3101', apiKey: settings.apiKey, models: ['auto'], supportsTools: false, supportsImages: true, modelMappings: { sonnet: 'auto' } } });
+  assert.deepEqual(JSON.parse(calls[1].options.body), { webEnabled: true, mode: 'web', autoPreference: 'web', contextHandoff: true, gateway: { baseUrl: 'http://127.0.0.1:3101', apiKey: settings.apiKey, models: ['auto'], supportsTools: true, supportsStrictTools: false, supportsImages: true, modelMappings: { sonnet: 'auto' } } });
 });
 
 test('connect never follows redirects or exposes private server failures', async () => {

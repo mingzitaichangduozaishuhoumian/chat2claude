@@ -1,21 +1,21 @@
 diff --git a/package.json b/package.json
-index e32d637..5c27b4f 100644
+index e32d637..b5e7d35 100644
 --- a/package.json
 +++ b/package.json
 @@ -8,6 +8,7 @@
      "dev": "node --watch src/server.js",
      "login": "node src/login.js",
      "auto-login": "node src/auto-login.js",
-+    "test:vision": "node scripts/test-chat-vision.js && node --test scripts/test-chat-attachment.js scripts/test-chat-shutdown.js",
++    "test:vision": "node scripts/test-chat-vision.js && node scripts/test-chat-tools.js && node --test scripts/test-chat-attachment.js scripts/test-chat-shutdown.js",
      "test": "node scripts/test-auth.js && node scripts/test-composer-dom.js && node scripts/test-classify.js && node scripts/test-params.js && node scripts/test-tiers.js && node scripts/test-progress.js && node scripts/test-pacer.js && node scripts/test-job-pool.js && node scripts/test-fill-timeout.js && node scripts/test-multiline-typing.js && node scripts/test-cooldown.js && node scripts/test-refusal-detect.js && node scripts/test-conversation-read.js && node scripts/test-conversation-trim.js && node scripts/test-sse-transform.js && node scripts/test-session-health.js && node scripts/test-login-diagnostics.js && node scripts/test-session-check.js && node scripts/test-browser-fingerprint.js && node scripts/test-cloudflare.js && node scripts/test-cf-navigate.js && node scripts/test-turnstile.js && node scripts/test-text-extraction.js && node scripts/test-totp-step.js && node scripts/test-parallel-slots.js && node scripts/test-parallel-routes.js && node scripts/test-express5-compat.js && node scripts/test-stall-diagnostics.js && node scripts/test-stall-routes.js && node scripts/test-stall-review.js && node scripts/test-stall-gate.js"
    },
    "dependencies": {
 diff --git a/scripts/test-chat-attachment.js b/scripts/test-chat-attachment.js
 new file mode 100644
-index 0000000..7d57e3c
+index 0000000..5a19ab6
 --- /dev/null
 +++ b/scripts/test-chat-attachment.js
-@@ -0,0 +1,622 @@
+@@ -0,0 +1,913 @@
 +'use strict';
 +
 +const test = require('node:test');
@@ -25,13 +25,13 @@ index 0000000..7d57e3c
 +} = require('../src/lib/chat-attachment.cjs');
 +const { fixture } = require('./test-stall-diagnostics');
 +const { normalizeChatMessages } = require('../src/lib/chat-vision.cjs');
-+const { COMPOSER_SELECTORS, SEND_BUTTON_SEL, ATTACHMENT_REMOVE_SEL, TIER_TRIGGER_SEL } = require('../src/composer-dom');
++const { COMPOSER_SELECTORS, SEND_BUTTON_SEL, ATTACHMENT_REMOVE_SEL, TIER_TRIGGER_SEL, SYSTEM_HINT_SEL } = require('../src/composer-dom');
 +
 +const image = { name: 'chat-vision-11111111-2222-4333-8444-555555555555.png', mimeType: 'image/png', buffer: Buffer.from('offline-image-fixture') };
 +const readyState = () => ({ known: true, count: 1, matching: 1, previewLoaded: true,
 +  busy: false, uploadError: false, sendReady: true });
 +
-+function domState({ chips = 1, wrongName = false, loaded = true, busy = false,
++function domState({ chips, names = [image.name], actualNames, previewOwners, unloaded = [], wrongName = false, loaded = true, busy = false,
 +  uploadError = false, sendDisabled = false, unknown = false, hidden = false, removeLabel } = {}) {
 +  const node = (attrs = {}) => ({ parentElement: null, disabled: false,
 +    getClientRects: () => hidden ? [] : [{}],
@@ -39,11 +39,16 @@ index 0000000..7d57e3c
 +    getAttribute: key => attrs[key] ?? null,
 +    hasAttribute: key => Object.prototype.hasOwnProperty.call(attrs, key),
 +  });
-+  const preview = Object.assign(node({ alt: image.name }), { complete: loaded, naturalWidth: loaded ? 480 : 0 });
-+  const region = Object.assign(node(), { querySelectorAll: selector => selector === 'img' ? [preview] : [] });
-+  const buttons = Array.from({ length: chips }, () => Object.assign(node({
-+    'aria-label': removeLabel ?? 'Remove ' + (wrongName ? 'old-image.png' : image.name),
-+  }), { parentElement: region }));
++  const filenames = actualNames ?? Array.from({ length: chips ?? names.length }, (_, index) =>
++    wrongName ? 'old-image.png' : names[index % names.length]);
++  const previews = filenames.map((name, index) => Object.assign(node({ alt: name }), {
++    complete: loaded && !unloaded.includes(index), naturalWidth: loaded && !unloaded.includes(index) ? 480 : 0,
++  }));
++  const region = Object.assign(node(), { querySelectorAll: selector => selector === 'img' ? previews : [] });
++  const buttons = filenames.map((filename, index) => Object.assign(node({
++    'aria-label': removeLabel ?? 'Remove ' + filename,
++  }), { parentElement: Object.assign(node(), { querySelectorAll: selector => selector === 'img'
++    ? (previewOwners?.[index] ?? [index]).map(owner => previews[owner]).filter(Boolean) : [] }) }));
 +  const send = Object.assign(node(sendDisabled ? { disabled: '' } : {}), { disabled: sendDisabled });
 +  const form = Object.assign(node(), { querySelectorAll: selector => {
 +    if (selector === ATTACHMENT_REMOVE_SEL) return buttons;
@@ -58,7 +63,7 @@ index 0000000..7d57e3c
 +  global.document = { querySelectorAll: selector => selector === COMPOSER_SELECTORS.join(', ')
 +    ? unknown ? [] : [editor] : [] };
 +  try {
-+    return attachmentStateInPage({ name: image.name, composerSelector: COMPOSER_SELECTORS.join(', '),
++    return attachmentStateInPage({ name: names[0], names, composerSelector: COMPOSER_SELECTORS.join(', '),
 +      sendSelector: SEND_BUTTON_SEL, removeSelector: ATTACHMENT_REMOVE_SEL });
 +  } finally {
 +    if (oldDocument === undefined) delete global.document; else global.document = oldDocument;
@@ -79,6 +84,18 @@ index 0000000..7d57e3c
 +  assert.equal(ready(domState({ removeLabel: '移除“old-image.png”' })), false);
 +  assert.equal(ready(domState({ removeLabel, loaded: false })), false);
 +  assert.equal(ready(domState({ removeLabel: `移除${image.name}` })), false);
++});
++
++test('multiple images require every distinct expected filename and every loaded preview', () => {
++  const names = [image.name, image.name.replace('11111111', 'aaaaaaaa')];
++  assert.equal(ready(domState({ names }), 2), true);
++  for (const scenario of [
++    { actualNames: [names[0]] }, { actualNames: [names[0], names[0]] },
++    { actualNames: [names[0], 'old-image.png'] }, { actualNames: [...names, 'extra.png'] },
++    { previewOwners: [[0, 1], []] }, { previewOwners: [[0], [0]] },
++    { unloaded: [1] }, { sendDisabled: true }, { busy: true },
++  ]) assert.equal(ready(domState({ names, ...scenario }), 2), false, JSON.stringify(scenario));
++  assert.equal(ready(domState({ names }), 1), false);
 +});
 +
 +function surfaceDomState({ switcher = true, chatActive = true, workActive = false,
@@ -205,6 +222,10 @@ index 0000000..7d57e3c
 +  const send = p.send.bind(p);
 +  p.attachments = 0;
 +  p.uploads = [];
++  p.fills = [];
++  p.typedSegments = [];
++  p.sentPrompts = [];
++  p.fileSelectors = [];
 +  p.keys = [];
 +  p.guardReads = 0;
 +  p.surfaceChecks = 0;
@@ -223,8 +244,10 @@ index 0000000..7d57e3c
 +      p.guardReads++;
 +      await scenario.onGuard?.(p);
 +      const uploaded = p.uploads.at(-1) || [];
-+      const matching = uploaded.filter(file => file.name === arg?.name).length;
-+      return { ...readyState(), count: p.attachments, matching: p.attachments > 0 ? matching : 0,
++      const expectedNames = arg?.names ?? [arg?.name];
++      const matching = uploaded.filter(file => expectedNames.includes(file.name)).length;
++      const namesVerified = expectedNames.every(name => uploaded.filter(file => file.name === name).length === 1);
++      return { ...readyState(), count: p.attachments, matching: p.attachments > 0 ? matching : 0, namesVerified,
 +        ...(p.attachments > 0 ? scenario.state : {}), ...(p.guardState || {}) };
 +    }
 +    if (arg === ATTACHMENT_REMOVE_SEL) {
@@ -232,6 +255,11 @@ index 0000000..7d57e3c
 +      return p.attachments;
 +    }
 +    const result = await evaluate(fn, arg);
++    if (source.includes('assistantCount: assistantMessages.length') && result?.assistantCount > 0) {
++      // A reused conversation gains another assistant turn even when its text
++      // happens to equal the previous reply.
++      result.assistantCount = p.sends;
++    }
 +    if (source.includes('captionSrc') && arg?.matchers) await scenario.onTierRead?.(p);
 +    return result;
 +  };
@@ -246,6 +274,7 @@ index 0000000..7d57e3c
 +  };
 +  p.locator = selector => {
 +    if (/input\[type="file"\]|upload-photos/.test(selector)) {
++      p.fileSelectors.push(selector);
 +      const file = { first: () => file, waitFor: async () => {}, evaluate: async () => {},
 +        setInputFiles: async files => {
 +          p.uploads.push(files);
@@ -255,6 +284,7 @@ index 0000000..7d57e3c
 +      return file;
 +    }
 +    const control = locator(selector);
++    if (selector === SYSTEM_HINT_SEL && scenario.systemHint) control.count = async () => 1;
 +    if (selector === SEND_BUTTON_SEL && scenario.sendButtonMissing) {
 +      control.waitFor = async () => {
 +        await scenario.onMissingSend?.(p);
@@ -263,7 +293,11 @@ index 0000000..7d57e3c
 +    }
 +    if (/prompt-textarea|contenteditable|textarea/.test(selector)) {
 +      const fill = control.fill;
-+      control.fill = async text => { await fill(text); await scenario.onFill?.(p); };
++      control.fill = async text => {
++        p.fills.push({ text, attachments: p.attachments });
++        await fill(text);
++        await scenario.onFill?.(p);
++      };
 +    }
 +    return control;
 +  };
@@ -274,11 +308,12 @@ index 0000000..7d57e3c
 +      if (key === 'Shift+Enter') p.composer += '\n';
 +      if (key === 'Enter') await p.send();
 +    },
-+    type: async text => { p.composer += text; await scenario.onType?.(p); },
++    type: async text => { p.typedSegments.push(text); p.composer += text; await scenario.onType?.(p); },
 +  };
 +  p.send = async () => {
 +    await scenario.beforeClick?.(p);
 +    if (p.closed) throw new Error('Page was closed while waiting to click.');
++    p.sentPrompts.push(p.composer);
 +    await send();
 +    if (scenario.clickFailure) throw new Error('Execution context was destroyed: private cookie base64');
 +  };
@@ -297,6 +332,98 @@ index 0000000..7d57e3c
 +    assert.ok(p.guardReads >= 4, 'empty, two ready polls and pre-send verification');
 +    assert.ok(p.surfaceChecks >= 3, 'before tier selection, after tier selection and before send');
 +    assert.equal(p.keys.includes('Enter'), false);
++  });
++});
++
++test('completeText attaches a historical and a current image together exactly once', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const images = [image, { ...image, name: image.name.replace('11111111', 'aaaaaaaa'), buffer: Buffer.from('second fixture') }];
++    const p = visionPage(page); queue.push(p);
++    const result = await chat.completeText('Compare the earlier and current image.', { thinkingMode: 'instant', images });
++    assert.equal(result.applied.image_inputs_attached, 2);
++    assert.equal(p.sends, 1);
++    assert.equal(p.uploads.length, 1);
++    assert.deepEqual(p.uploads[0], images.map(value => ({ name: value.name, mimeType: value.mimeType, buffer: value.buffer })));
++    assert.match(p.fileSelectors[0], /\[multiple\]/);
++    assert.equal(p.keys.includes('Enter'), false);
++  });
++});
++
++test('real multi-turn parser images cross the completeText boundary without losing ownership or bytes', async () => {
++  const url = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aI1sAAAAASUVORK5CYII=';
++  const input = normalizeChatMessages([
++    { role: 'user', content: [{ type: 'text', text: 'Original image.' }, { type: 'image_url', image_url: { url } }] },
++    { role: 'assistant', content: 'I inspected the original image.' },
++    { role: 'user', content: [{ type: 'text', text: 'Compare this revision.' }, { type: 'image_url', image_url: { url } }] },
++  ]);
++  assert.equal(input.images.length, 2);
++  assert.ok(input.text.indexOf(input.images[0].name) < input.text.indexOf(input.images[1].name));
++  await fixture({}, async ({ chat, page, queue }) => {
++    const p = visionPage(page); queue.push(p);
++    const result = await chat.completeText(input.text, { images: input.images });
++    assert.equal(result.applied.image_inputs_attached, 2);
++    assert.equal(p.sends, 1);
++    assert.deepEqual(p.uploads[0], input.images.map(value => ({ name: value.name, mimeType: value.mimeType, buffer: value.buffer })));
++  });
++});
++
++test('a missing second image prevents the whole multi-image request from sending', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const images = [image, { ...image, name: image.name.replace('11111111', 'aaaaaaaa') }];
++    const p = visionPage(page, { uploadCount: 1 }); queue.push(p);
++    await assert.rejects(chat.completeText('Compare.', { images }), error => error.code === 'upload_failed');
++    assert.equal(p.sends, 0);
++    assert.equal(p.closed, true);
++  });
++});
++
++test('multiple image guards reject duplicate names and oversized file sets', () => {
++  assert.throws(() => createChatAttachmentGuard([image, image]), error => error.code === 'upload_failed');
++  assert.throws(() => createChatAttachmentGuard(Array.from({ length: 11 }, () => image)), error => error.code === 'upload_failed');
++  assert.throws(() => createChatAttachmentGuard([]), error => error.code === 'upload_failed');
++});
++
++test('guarded tool-protocol text sends once and does not claim image attachments', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const p = visionPage(page); queue.push(p);
++    const result = await chat.completeText('Return a tool protocol envelope.', { noResend: true });
++    assert.equal(p.sends, 1);
++    assert.equal(p.uploads.length, 0);
++    assert.equal(result.applied.image_inputs_attached, undefined);
++  });
++});
++
++test('uncertain tool-protocol clicks cannot fall back to Enter or resend', async () => {
++  await fixture({}, async ({ chat, page, queue, pages }) => {
++    const p = visionPage(page, { clickFailure: true }); queue.push(p);
++    await assert.rejects(chat.completeText('Return a tool protocol envelope.', { noResend: true }),
++      error => error.noRetry === true && !/private/.test(error.message));
++    assert.equal(p.sends, 1);
++    assert.equal(p.keys.includes('Enter'), false);
++    assert.equal(pages.length, 1);
++    assert.equal(p.closed, true);
++  });
++});
++
++test('cancelled tool-protocol text never reaches the send action', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const p = visionPage(page); queue.push(p);
++    const controller = new AbortController();
++    await assert.rejects(chat.completeText('Return a tool protocol envelope.', {
++      noResend: true, signal: controller.signal, beforeSubmit: () => controller.abort('private reason'),
++    }), error => error.code === 'request_cancelled');
++    assert.equal(p.sends, 0);
++    assert.equal(p.closed, true);
++  });
++});
++
++test('tool-protocol text refuses stale attachments even when best-effort removal fails', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const p = visionPage(page, { staleAttachment: true, systemHint: true }); queue.push(p);
++    await assert.rejects(chat.completeText('Return a tool protocol envelope.', { noResend: true }),
++      error => error.code === 'upload_failed');
++    assert.equal(p.sends, 0);
++    assert.equal(p.closed, true);
 +  });
 +});
 +
@@ -363,13 +490,13 @@ index 0000000..7d57e3c
 +  });
 +});
 +
-+test('surface changes back to Work while typing: no late toggle or send with attachments', async () => {
++test('surface changes to Work while preparing text: no upload, late toggle or send', async () => {
 +  await fixture({}, async ({ chat, page, queue }) => {
-+    const p = visionPage(page, { onType: p => { p.surface = { mode: 'work', switcher: true, chatRole: 'button' }; } }); queue.push(p);
++    const p = visionPage(page, { onFill: p => { p.surface = { mode: 'work', switcher: true, chatRole: 'button' }; } }); queue.push(p);
 +    await assert.rejects(chat.completeText('Describe the image.', { thinkingMode: 'instant', image }),
 +      error => error.code === 'chat_mode_unconfirmed' && error.noRetry === true);
-+    assert.equal(p.uploads.length, 1);
-+    assert.equal(p.chatClicks, 0, 'surface validation must be read-only once attachments exist');
++    assert.equal(p.uploads.length, 0);
++    assert.equal(p.chatClicks, 0, 'post-preparation surface validation must be read-only');
 +    assert.equal(p.sends, 0);
 +  });
 +});
@@ -383,7 +510,6 @@ index 0000000..7d57e3c
 +  ['upload reports an error', { state: { uploadError: true } }],
 +  ['composer cannot be read', { state: { known: false } }],
 +  ['old attachment cannot be removed', { staleAttachment: true }],
-+  ['attachment disappears while typing', { onType: p => { p.attachments = 0; } }],
 +]) {
 +  test(`${name}: no image request is silently sent as plain text`, async () => {
 +    await fixture({}, async ({ chat, page, queue }) => {
@@ -396,6 +522,18 @@ index 0000000..7d57e3c
 +    });
 +  });
 +}
++
++test('an attachment lost after upload readiness is rejected at the final send guard', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const p = visionPage(page); queue.push(p);
++    await assert.rejects(chat.completeText('Describe the image.', { thinkingMode: 'instant', image,
++      beforeSubmit: () => { p.attachments = 0; } }), error => error.code === 'upload_failed');
++    assert.equal(p.uploads.length, 1);
++    assert.equal(p.fills.length, 1);
++    assert.equal(p.sends, 0);
++    assert.equal(p.closed, true);
++  });
++});
 +
 +test('cancellation before page acquisition creates no browser page', async () => {
 +  await fixture({}, async ({ chat, pages }) => {
@@ -638,6 +776,159 @@ index 0000000..7d57e3c
 +    assert.equal(p.sends, 0);
 +  });
 +});
++
++test('prepareOnly fills and verifies text without clicking, Enter or a submitted callback', async () => {
++  await fixture({}, async ({ chat, page }) => {
++    const p = visionPage(page);
++    let submitted = 0;
++    const timing = {};
++    const text = 'Prepared first line.\nPrepared last line.';
++    await chat._test.typeAndSubmit(p, text, false, () => { submitted++; }, timing, null, null, { prepareOnly: true });
++    assert.equal(p.composer, text);
++    assert.equal(p.fills.length, 1);
++    assert.equal(p.sends, 0);
++    assert.equal(p.keys.includes('Enter'), false);
++    assert.equal(submitted, 0);
++    assert.ok(timing.inputMs >= 500);
++  });
++});
++
++test('large text with multiple images is filled once before uploading and never retyped', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const images = [image, { ...image, name: image.name.replace('11111111', 'aaaaaaaa') }];
++    const prompt = 'Shared context start.\n' + 'A long project and tools context. '.repeat(450) + '\nShared context tail.';
++    assert.ok(prompt.length > 9000);
++    const order = [];
++    const p = visionPage(page, {
++      onFill: p => { order.push('fill'); assert.equal(p.attachments, 0); },
++      onUpload: p => { order.push('upload'); assert.equal(p.composer, prompt); },
++    }); queue.push(p);
++    const result = await chat.completeText(prompt, { thinkingMode: 'instant', images,
++      beforeSubmit: () => { order.push('send-ready'); assert.equal(p.composer, prompt); } });
++    assert.equal(result.text, 'answer');
++    assert.equal(result.applied.image_inputs_attached, 2);
++    assert.deepEqual(order, ['fill', 'upload', 'send-ready']);
++    assert.equal(p.fills.length, 1);
++    assert.equal(p.fills[0].attachments, 0);
++    assert.equal(p.typedSegments.length, 0, 'text must not be typed around uploaded images');
++    assert.equal(p.uploads.length, 1);
++    assert.equal(p.uploads[0].length, 2);
++    assert.deepEqual(p.sentPrompts, [prompt]);
++  });
++});
++
++for (const [name, prompt, truncated] of [
++  ['missing final line', 'Prepared first line.\nKeep this second line.\nRequired final line.', 'Prepared first line.\nKeep this second line.'],
++  ['missing single-line tail', 'A single-line prompt whose first thirty characters remain but its entire tail must also survive.',
++    'A single-line prompt whose first thirty characters remain'],
++]) {
++  test(`upload rebuilt the composer with ${name}: never repair or send truncated text`, async () => {
++    await fixture({ CHATGPT_TEXT_RETRY_ATTEMPTS: '1' }, async ({ chat, page, queue }) => {
++      const p = visionPage(page, { onUpload: p => { p.composer = truncated; } }); queue.push(p);
++      await assert.rejects(chat.completeText(prompt, { thinkingMode: 'instant', image }),
++        error => error.code === 'page_load_failed');
++      assert.equal(p.fills.length, 1);
++      assert.equal(p.typedSegments.length, 0);
++      assert.equal(p.uploads.length, 1);
++      assert.equal(p.sends, 0);
++      assert.equal(p.keys.includes('Enter'), false);
++      assert.equal(p.closed, true);
++    });
++  });
++}
++
++test('prepared text is revalidated after the final attachment guard before clicking', async () => {
++  await fixture({ CHATGPT_TEXT_RETRY_ATTEMPTS: '1' }, async ({ chat, page, queue }) => {
++    const prompt = 'Head of the prepared prompt.\nRequired final line.';
++    const p = visionPage(page, { onGuard: p => {
++      if (p.corruptAtFinalGuard) p.composer = 'Head of the prepared prompt.';
++    } }); queue.push(p);
++    await assert.rejects(chat.completeText(prompt, { thinkingMode: 'instant', image,
++      beforeSubmit: () => { p.corruptAtFinalGuard = true; } }), error => error.code === 'page_load_failed');
++    assert.equal(p.fills.length, 1);
++    assert.equal(p.uploads.length, 1);
++    assert.equal(p.sends, 0);
++  });
++});
++
++test('incomplete prepareOnly text is rejected before any image upload', async () => {
++  await fixture({ CHATGPT_TEXT_RETRY_ATTEMPTS: '1' }, async ({ chat, page, queue }) => {
++    const p = visionPage(page, { onFill: p => { p.composer = 'Prepared first line.'; } }); queue.push(p);
++    await assert.rejects(chat.completeText('Prepared first line.\nRequired final line.', { thinkingMode: 'instant', image }),
++      error => error.code === 'page_load_failed');
++    assert.equal(p.uploads.length, 0);
++    assert.equal(p.sends, 0);
++    assert.equal(p.fills.length, 1);
++  });
++});
++
++test('cancellation during preparation closes the owned page before any image upload', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const controller = new AbortController();
++    const p = visionPage(page, { onFill: () => controller.abort('private cancellation data') }); queue.push(p);
++    await assert.rejects(chat.completeText('Prepared prompt.', { thinkingMode: 'instant', image, signal: controller.signal }),
++      error => error.name === 'AbortError' && error.code === 'request_cancelled');
++    assert.equal(p.closed, true);
++    assert.equal(p.uploads.length, 0);
++    assert.equal(p.sends, 0);
++    assert.equal(p.keys.includes('Enter'), false);
++  });
++});
++
++test('composer-token typing happens only during preparation, before image upload', async () => {
++  await fixture({}, async ({ chat, page, queue }) => {
++    const prompt = 'First line.\nSecond line.';
++    const p = visionPage(page, { systemHint: true, onType: p => assert.equal(p.attachments, 0) }); queue.push(p);
++    const result = await chat.completeText(prompt, { thinkingMode: 'instant', image });
++    assert.equal(result.text, 'answer');
++    assert.equal(p.fills.length, 0);
++    assert.deepEqual(p.typedSegments, ['First line.', 'Second line.']);
++    assert.equal(p.uploads.length, 1);
++    assert.deepEqual(p.sentPrompts, [prompt]);
++  });
++});
++
++test('consecutive independent image turns rebuild only their own page and send each request once', async () => {
++  await fixture({}, async ({ chat, page, queue, pages }) => {
++    const images = [image, { ...image, name: image.name.replace('11111111', 'aaaaaaaa') }];
++    const first = visionPage(page);
++    const second = visionPage(page);
++    const peer = page();
++    chat._test.bindPage(chat.getSlot(1), peer);
++    queue.push(first, second);
++    assert.equal((await chat.completeText('First turn with both images.', { thinkingMode: 'instant', images })).text, 'answer');
++    assert.equal(first.sends, 1);
++    assert.equal(first.closed, false);
++    const followup = 'First user turn and assistant reply.\nCompleted tool call and result.\nContinue using both images.';
++    assert.equal((await chat.completeText(followup, { thinkingMode: 'instant', images, noResend: true })).text, 'answer');
++    assert.equal(pages.length, 2);
++    assert.equal(first.closed, true);
++    assert.equal(second.closed, false);
++    assert.equal(peer.closed, false);
++    assert.equal(chat.getSlot(1).page, peer);
++    assert.equal(first.sends, 1);
++    assert.equal(second.sends, 1);
++    assert.equal(first.uploads.length, 1);
++    assert.equal(second.uploads.length, 1);
++    assert.deepEqual(second.sentPrompts, [followup]);
++    assert.deepEqual(second.uploads[0], images.map(value => ({ name: value.name, mimeType: value.mimeType, buffer: value.buffer })));
++  });
++});
++
++for (const continuation of [{ reuseChat: true }, { conversationId: '11111111-2222-4333-8444-555555555555' }]) {
++  test(`explicit image continuation preserves its existing page: ${Object.keys(continuation)[0]}`, async () => {
++    await fixture({}, async ({ chat, page, queue, pages }) => {
++      const first = visionPage(page); const unused = visionPage(page); queue.push(first, unused);
++      await chat.completeText('First turn.', { thinkingMode: 'instant', image });
++      await chat.completeText('Explicit continuation.', { thinkingMode: 'instant', image, ...continuation });
++      assert.equal(pages.length, 1);
++      assert.equal(first.closed, false);
++      assert.equal(first.sends, 2);
++      assert.equal(first.uploads.length, 2);
++      assert.deepEqual(first.sentPrompts, ['First turn.', 'Explicit continuation.']);
++    });
++  });
++}
 diff --git a/scripts/test-chat-shutdown.js b/scripts/test-chat-shutdown.js
 new file mode 100644
 index 0000000..9102c09
@@ -789,12 +1080,446 @@ index 0000000..9102c09
 +    for (const event of result.filter((event) => event.phase === 'browser-open')) assert.equal(alive(event.pid), false, 'the fake browser process must not be orphaned');
 +  });
 +}
+diff --git a/scripts/test-chat-tools.js b/scripts/test-chat-tools.js
+new file mode 100644
+index 0000000..9f421bf
+--- /dev/null
++++ b/scripts/test-chat-tools.js
+@@ -0,0 +1,428 @@
++'use strict';
++
++// Only pure parsers and an actual local HTTP router with a stubbed browser.
++// No ChatGPT requests, local tools, shell execution, or browser launches.
++const test = require('node:test');
++const assert = require('node:assert/strict');
++const http = require('node:http');
++const Module = require('node:module');
++const express = require('express');
++const { normalizeChatMessages } = require('../src/lib/chat-vision.cjs');
++const { PROTOCOL, strictJson, prepareChatTools, parseToolReply, rejectsResponsesTools } = require('../src/lib/chat-tools.cjs');
++
++const ARGS = ' { "n": 9007199254740993123456789, "fraction": 0.1234567890123456789 } ';
++const tools = [{ type: 'function', function: { name: 'lookup', description: 'Read a value through the client.', parameters: { type: 'object', properties: { n: { type: 'integer' } } } } }];
++const requestBody = (extra = {}) => ({ messages: [{ role: 'user', content: 'Look up the requested value.' }], tools, ...extra });
++const prepare = (body) => prepareChatTools(body, normalizeChatMessages(body.messages, body.input));
++const envelope = (context, value) => JSON.stringify({ protocol: PROTOCOL, nonce: context.nonce, ...value });
++const callReply = (context, calls = [{ name: 'lookup', arguments: ARGS }]) => envelope(context, { type: 'tool_calls', tool_calls: calls });
++const objectCallReply = (context, argumentSource) => `{"protocol":${JSON.stringify(PROTOCOL)},"nonce":${JSON.stringify(context.nonce)},"type":"tool_calls","tool_calls":[{"name":"lookup","arguments":${argumentSource}}]}`;
++const finalReply = (context, content = 'The value was found.') => envelope(context, { type: 'final', content });
++const rejected = (fn) => assert.throws(fn, (error) => error.code === 'invalid_request');
++const badReply = (fn) => assert.throws(fn, (error) => error.code === 'invalid_tool_output' && error.noRetry === true
++  && ['json', 'fence', 'nonce', 'shape', 'tool', 'arguments'].includes(error.reason)
++  && Number.isSafeInteger(error.inputChars) && error.inputChars >= 0 && !error.message.includes(ARGS));
++const call = (id = 'call_old', name = 'lookup', args = ARGS) => ({ id, type: 'function', function: { name, arguments: args } });
++
++test('strict JSON rejects duplicate keys, malformed syntax, non-JSON code and excessive nesting', () => {
++  for (const value of ['{"x":1,"x":2}', '{"x":1,"\\u0078":2}', '{"x":undefined}', '{"x":NaN}', '{"x":Infinity}', '{"x":01}', '{"x":1,}', '{"x":1};process.exit()', '/*comment*/{}', '```json\n{}\n```', '{"x":"\\q"}', '{"x":"unterminated}', '['.repeat(66) + '0' + ']'.repeat(66)]) {
++    assert.throws(() => strictJson(value));
++  }
++  assert.equal(strictJson('{"nested":[true,false,null,{"text":"a\\nb"}]}').nested[3].text, 'a\nb');
++});
++
++test('protocol produces real tool calls with fresh IDs and original argument strings', () => {
++  const context = prepare(requestBody());
++  const first = parseToolReply(callReply(context), context);
++  const second = parseToolReply(callReply(context), context);
++  assert.equal(first.finishReason, 'tool_calls');
++  assert.equal(first.message.content, null);
++  assert.equal(first.message.tool_calls[0].function.arguments, ARGS);
++  assert.match(first.message.tool_calls[0].id, /^call_c2c_[a-f0-9-]{36}$/);
++  assert.notEqual(first.message.tool_calls[0].id, second.message.tool_calls[0].id);
++  assert.match(context.prompt, /Never execute tools/);
++  assert(!context.prompt.includes('eval('));
++});
++
++test('direct argument objects retain source numeric literals while legacy strings stay compatible', () => {
++  const context = prepare(requestBody());
++  const argumentSource = '{\n "big":9007199254740993, "precise":1.0000000000000001, "negativeZero":-0, "exponent":1e+0001, "text":"brace } and {", "nested":{"tool_calls":[{"arguments":{"notCaptured":1}}]}\n}';
++  const raw = objectCallReply(context, argumentSource);
++  const ranges = new Map();
++  strictJson(raw, undefined, ranges);
++  assert.equal(ranges.size, 1, 'only the root tool_calls[index].arguments object is captured');
++  assert.equal(raw.slice(ranges.get(0).start, ranges.get(0).end), argumentSource);
++  const result = parseToolReply(raw, context);
++  assert.equal(result.message.tool_calls[0].function.arguments, argumentSource);
++  assert(result.message.tool_calls[0].function.arguments.includes('9007199254740993'));
++  assert(result.message.tool_calls[0].function.arguments.includes('1.0000000000000001'));
++  assert.equal(parseToolReply(`\`\`\`json\n${raw}\n\`\`\``, context).message.tool_calls[0].function.arguments, argumentSource);
++  assert.equal(parseToolReply(callReply(context), context).message.tool_calls[0].function.arguments, ARGS);
++  for (const invalid of ['{"x":1,"x":2}', '{"x":1,"\\u0078":2}', '{"x":undefined}', '[]', 'null', '42']) {
++    badReply(() => parseToolReply(objectCallReply(context, invalid), context));
++  }
++  assert(context.prompt.includes('"arguments":{}'));
++  assert(context.prompt.includes('arguments must be a JSON object'));
++});
++
++test('auto, none, required and named choices enforce their actual output constraints', () => {
++  const auto = prepare(requestBody());
++  assert.equal(parseToolReply(finalReply(auto), auto).finishReason, 'stop');
++  const none = prepare(requestBody({ tool_choice: 'none' }));
++  assert.equal(parseToolReply(finalReply(none), none).message.content, 'The value was found.');
++  badReply(() => parseToolReply(callReply(none), none));
++  const required = prepare(requestBody({ tool_choice: 'required' }));
++  assert.equal(parseToolReply(callReply(required), required).finishReason, 'tool_calls');
++  badReply(() => parseToolReply(finalReply(required), required));
++  const named = prepare(requestBody({ tool_choice: { type: 'function', function: { name: 'lookup' } } }));
++  assert.equal(parseToolReply(callReply(named), named).finishReason, 'tool_calls');
++  badReply(() => parseToolReply(finalReply(named), named));
++  badReply(() => parseToolReply(callReply(named, [{ name: 'unknown', arguments: '{}' }]), named));
++  rejected(() => prepare(requestBody({ tool_choice: { type: 'function', function: { name: 'unknown' } } })));
++  rejected(() => prepare(requestBody({ tools: [], tool_choice: 'required' })));
++});
++
++test('parallel false accepts one call; true accepts a bounded batch without executing it', () => {
++  const serial = prepare(requestBody({ parallel_tool_calls: false }));
++  assert.equal(parseToolReply(callReply(serial), serial).message.tool_calls.length, 1);
++  badReply(() => parseToolReply(callReply(serial, Array(2).fill({ name: 'lookup', arguments: '{}' })), serial));
++  const parallel = prepare(requestBody({ parallel_tool_calls: true }));
++  assert.equal(parseToolReply(callReply(parallel, Array(8).fill({ name: 'lookup', arguments: '{}' })), parallel).message.tool_calls.length, 8);
++  badReply(() => parseToolReply(callReply(parallel, Array(9).fill({ name: 'lookup', arguments: '{}' })), parallel));
++  rejected(() => prepare(requestBody({ parallel_tool_calls: 'false' })));
++});
++
++test('complete public tool history preserves original call IDs, names, argument strings and results', () => {
++  const context = prepare(requestBody({ messages: [
++    { role: 'user', content: 'Read two values.' },
++    { role: 'assistant', content: null, tool_calls: [call('call_A'), call('call_B', 'previous_tool', '{"raw":9007199254740993}')] },
++    { role: 'tool', tool_call_id: 'call_B', content: 'second result' },
++    { role: 'tool', name: 'lookup', tool_call_id: 'call_A', content: [{ type: 'text', text: '  first result\n' }] },
++  ] }));
++  const control = JSON.parse(context.prompt.split('\n').at(-1));
++  assert.deepEqual(control.messages[1].tool_calls, [call('call_A'), call('call_B', 'previous_tool', '{"raw":9007199254740993}')]);
++  assert.equal(control.messages[2].tool_call_id, 'call_B');
++  assert.equal(control.messages[2].name, 'previous_tool');
++  assert.equal(control.messages[3].content, '  first result\n');
++  const largerCalls = Array.from({ length: 128 }, (_, index) => call(`call_${index}`));
++  const larger = prepare(requestBody({ messages: [
++    { role: 'assistant', content: null, tool_calls: largerCalls },
++    ...largerCalls.map(item => ({ role: 'tool', tool_call_id: item.id, content: 'completed' })),
++  ] }));
++  assert.equal(JSON.parse(larger.prompt.split('\n').at(-1)).messages[0].tool_calls.length, 128, 'completed Codex history can exceed the new-output batch limit');
++});
++
++test('missing, duplicate, unknown, interrupted and malformed tool histories reject before dispatch', () => {
++  const assistant = { role: 'assistant', content: null, tool_calls: [call()] };
++  for (const history of [
++    [assistant],
++    [assistant, { role: 'user', content: 'continue without the result' }],
++    [{ role: 'tool', tool_call_id: 'unknown', content: 'result' }],
++    [assistant, { role: 'tool', tool_call_id: 'call_old', content: 'one' }, { role: 'tool', tool_call_id: 'call_old', content: 'duplicate' }],
++    [assistant, { role: 'tool', tool_call_id: 'call_old', name: 'different', content: 'result' }],
++    [assistant, { role: 'tool', tool_call_id: 'call_old', content: null }],
++    [{ role: 'assistant', content: null, tool_calls: [call(), call()] }],
++    [{ role: 'assistant', content: null, tool_calls: Array.from({ length: 129 }, (_, index) => call(`call_${index}`)) }],
++    [{ role: 'assistant', content: null, tool_calls: [call('x', 'lookup', '{"x":1,"x":2}')] }],
++    [{ role: 'assistant', content: null, tool_calls: [call('x', 123, '{}')] }],
++    [{ role: 'user', content: 'x', tool_calls: [call()] }],
++    [{ role: 'assistant', content: 'x', function_call: { name: 'lookup', arguments: '{}' } }],
++  ]) rejected(() => prepare(requestBody({ messages: history })));
++});
++
++test('unsupported definitions, strict schemas and ambiguous request semantics reject', () => {
++  for (const extra of [
++    { tools: null }, { tools: [{ type: 'web_search' }] }, { tools: [...tools, ...tools] },
++    { tools: [{ type: 'function', function: { name: 'x', strict: true } }] },
++    { tools: [{ type: 'function', function: { name: 123 } }] },
++    { tools: [{ type: 'function', function: { name: 'x', parameters: { type: 'array' } } }] },
++    { tool_choice: 'sometimes' }, { n: 2 }, { response_format: { type: 'json_object' } },
++    { functions: [] }, { function_call: 'auto' }, { input: 'also an input' },
++  ]) rejected(() => prepare(requestBody(extra)));
++  assert(prepare(requestBody({ tools: [{ type: 'function', function: { name: 'x', strict: false } }] })));
++  assert.equal(prepare({ messages: [{ role: 'user', content: 'plain text' }] }), null);
++  rejected(() => rejectsResponsesTools({ tools }));
++  rejected(() => rejectsResponsesTools({ input: [{ type: 'function_call_output', call_id: 'x', output: 'y' }] }));
++});
++
++test('invalid protocol output never becomes an empty success or a partially executable call', () => {
++  const context = prepare(requestBody());
++  for (const output of [
++    '', 'Just an ordinary answer.',
++    envelope(context, { type: 'final', content: '' }), envelope(context, { type: 'final', content: 'ok', unexpected: true }),
++    JSON.stringify({ protocol: PROTOCOL, nonce: 'wrong', type: 'final', content: 'ok' }),
++    callReply(context, []), callReply(context, [{ name: 'undeclared', arguments: '{}' }]),
++    ...['[]', 'null', '42', '{"x":1,"x":2}', '{"x":undefined}', 'process.exit()'].map(args => callReply(context, [{ name: 'lookup', arguments: args }])),
++    envelope(context, { type: 'tool_calls', tool_calls: [{ name: 'lookup', arguments: '{}', id: 'model_chosen' }] }),
++  ]) badReply(() => parseToolReply(output, context));
++});
++
++test('only one complete JSON or unlabelled fence may wrap the strict protocol', () => {
++  const context = prepare(requestBody());
++  for (const label of ['json', 'JSON', '']) {
++    const final = ` \n\`\`\`${label}\r\n${finalReply(context)}\r\n\`\`\`\n `;
++    assert.equal(parseToolReply(final, context).message.content, 'The value was found.');
++    const calls = `\`\`\`${label}\n${callReply(context)}\n\`\`\``;
++    assert.equal(parseToolReply(calls, context).message.tool_calls[0].function.arguments, ARGS);
++  }
++  // Literal Markdown inside a JSON string is answer content, not another block.
++  const codeAnswer = finalReply(context, 'Example: ```js\\n1 + 1\\n```');
++  assert.equal(parseToolReply(`\`\`\`json\n${codeAnswer}\n\`\`\``, context).finishReason, 'stop');
++  for (const invalid of [
++    `Preamble\n\`\`\`json\n${finalReply(context)}\n\`\`\``,
++    `\`\`\`json\n${finalReply(context)}\n\`\`\`\nTrailing explanation`,
++    `\`\`\`json\n${finalReply(context)}\n\`\`\`\n\`\`\`json\n${finalReply(context)}\n\`\`\``,
++    `\`\`\`javascript\n${finalReply(context)}\n\`\`\``,
++    `\`\`\`json\n${finalReply(context)}`,
++    `\`\`\`json\n${envelope(context, { type: 'tool_calls', tool_calls: [{ name: 'undeclared', arguments: '{}' }] })}\n\`\`\``,
++    `\`\`\`json\n${callReply(context, [{ name: 'lookup', arguments: '{"x":1,"x":2}' }])}\n\`\`\``,
++  ]) badReply(() => parseToolReply(invalid, context));
++});
++
++test('the exact whole-answer escape wrapper preserves strict JSON, values and tool checks', () => {
++  const context = prepare(requestBody());
++  const argumentsText = '{"big":9007199254740993,"precise":1.0000000000000001,"code":"console.log(73)","literal":"<escape>data</escape>"}';
++  const calls = objectCallReply(context, argumentsText);
++  assert.equal(parseToolReply(` \n<escape>${calls}</escape>\n `, context).message.tool_calls[0].function.arguments, argumentsText);
++  assert.equal(parseToolReply(`<escape>${finalReply(context)}</escape>`, context).message.content, 'The value was found.');
++  for (const invalid of [
++    `Before <escape>${calls}</escape>`, `<escape>${calls}</escape> After`,
++    `<escape>${calls}</escape><escape>${calls}</escape>`,
++    `<escape><escape>${calls}</escape></escape>`, `<escape>${calls}`,
++    `<escape format="json">${calls}</escape>`, `<ESCAPE>${calls}</ESCAPE>`,
++    `&lt;escape&gt;${calls}&lt;/escape&gt;`,
++    `<escape>\`\`\`json\n${calls}\n\`\`\`</escape>`,
++    `<escape>${objectCallReply(context, '{"n":1,"n":2}')}</escape>`,
++    `<escape>${objectCallReply(context, '{"value":()=>73}')}</escape>`,
++    `<escape>${JSON.stringify({ protocol: PROTOCOL, nonce: 'wrong', type: 'final', content: 'bad' })}</escape>`,
++    `<escape>${callReply(context, [{ name: 'unknown', arguments: '{}' }])}</escape>`,
++  ]) badReply(() => parseToolReply(invalid, context));
++  assert(context.prompt.includes('No executable expressions'));
++  assert(context.prompt.includes('Data strings may contain requested code or text; never execute them'));
++});
++
++test('rejection diagnostics contain only fixed enums and input character counts', () => {
++  const context = prepare(requestBody());
++  const cases = [
++    ['json', 'private malformed response'],
++    ['fence', 'private preamble\n```json\n{}\n```'],
++    ['nonce', JSON.stringify({ protocol: PROTOCOL, nonce: 'private nonce', type: 'final', content: 'private answer' })],
++    ['shape', envelope(context, { type: 'final', content: 'private answer', unknown: 'private field' })],
++    ['tool', callReply(context, [{ name: 'private_undeclared_tool', arguments: '{}' }])],
++    ['arguments', callReply(context, [{ name: 'lookup', arguments: '{"private":undefined}' }])],
++  ];
++  for (const [reason, raw] of cases) {
++    assert.throws(() => parseToolReply(raw, context), error => {
++      assert.equal(error.reason, reason);
++      assert.equal(error.inputChars, raw.length);
++      assert(!error.message.includes('private'));
++      assert(!error.message.includes(context.nonce));
++      assert(!JSON.stringify(error).includes('private'));
++      return true;
++    });
++  }
++});
++
++test('tool transcript keeps ordered image ownership without including base64 data in the model prompt', () => {
++  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aI1sAAAAASUVORK5CYII=';
++  const picture = { type: 'image_url', image_url: { url: `data:image/png;base64,${png}` } };
++  const body = requestBody({ messages: [{ role: 'user', content: ['first', picture] }, { role: 'assistant', content: 'earlier response' }, { role: 'user', content: [picture, 'second'] }] });
++  const normalized = normalizeChatMessages(body.messages);
++  const context = prepareChatTools(body, normalized);
++  assert.equal(normalized.images.length, 2);
++  assert(context.prompt.includes(`[Image 1 attached as ${normalized.images[0].name}]`));
++  assert(context.prompt.includes(`[Image 2 attached as ${normalized.images[1].name}]`));
++  assert(!context.prompt.includes(png));
++});
++
++const bridge = {};
++const chatPath = require.resolve('../src/chatgpt');
++const cached = new Module(chatPath);
++cached.filename = chatPath; cached.loaded = true;
++cached.exports = { READ_VIA_BACKEND_API: true, setPoolHooks() {}, recordSlotJobFinished() {},
++  completeText: (...args) => bridge.completeText(...args), generateImage: async () => { throw new Error('Unexpected generation'); },
++  editImage: async () => { throw new Error('Unexpected edit'); }, probeCapabilities: async () => ({}) };
++require.cache[chatPath] = cached;
++
++async function withRouter(fn) {
++  const env = { MAX_CONCURRENT_JOBS: '1', MAX_QUEUE_SIZE: '5', MIN_TURN_STAGGER_SEC: '0', MIN_JOB_GAP_SEC: '0' };
++  const saved = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
++  Object.assign(process.env, env);
++  delete require.cache[require.resolve('../src/routes/images')];
++  const app = express(); app.use(express.json({ limit: '16mb' })); app.use(require('../src/routes/images'));
++  const server = http.createServer(app);
++  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
++  const request = async (body, endpoint = '/v1/chat/completions') => {
++    const response = await fetch(`http://127.0.0.1:${server.address().port}${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
++    const raw = await response.text();
++    return { response, raw, json: response.headers.get('content-type')?.includes('application/json') ? JSON.parse(raw) : null };
++  };
++  try { await fn(request); }
++  finally {
++    await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
++    for (const key of Object.keys(env)) { if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; }
++  }
++}
++function sse(raw) { return raw.split('\n\n').filter(frame => frame.startsWith('data: ') && frame !== 'data: [DONE]').map(frame => JSON.parse(frame.slice(6))); }
++function streamedCalls(chunks) {
++  const calls = new Map();
++  for (const chunk of chunks) for (const delta of chunk.choices[0].delta.tool_calls || []) {
++    const value = calls.get(delta.index) || { id: '', type: 'function', function: { name: '', arguments: '' } };
++    if (delta.id !== undefined) value.id += delta.id;
++    if (delta.type !== undefined) value.type = delta.type;
++    if (delta.function?.name !== undefined) value.function.name += delta.function.name;
++    if (delta.function?.arguments !== undefined) value.function.arguments += delta.function.arguments;
++    calls.set(delta.index, value);
++  }
++  return [...calls].sort(([left], [right]) => left - right).map(([, call]) => call);
++}
++function fromPrompt(prompt) { return JSON.parse(prompt.split('\n').at(-1)); }
++function fromControl(control) { return { nonce: control.nonce }; }
++
++for (const stream of [false, true]) {
++  test(`actual ${stream ? 'SSE' : 'JSON'} HTTP tool round trip keeps calls/results and never exposes protocol text`, async () => {
++    let calls = 0;
++    let observedId;
++    const objectArguments = ARGS.trim();
++    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aI1sAAAAASUVORK5CYII=';
++    const firstUser = { role: 'user', content: [{ type: 'text', text: 'Look up the requested value.' }, { type: 'image_url', image_url: { url: `data:image/png;base64,${png}` } }] };
++    bridge.completeText = async (prompt, options) => {
++      calls += 1;
++      assert.equal(options.noResend, true);
++      assert(options.signal instanceof AbortSignal);
++      await options.beforeSubmit();
++      const control = fromPrompt(prompt);
++      assert.equal(options.images.length, 1);
++      assert(control.messages[0].content.includes(`[Image 1 attached as ${options.images[0].name}]`));
++      assert(!prompt.includes(png));
++      options.onDelta?.('partial protocol that must not be emitted');
++      if (calls === 1) return { text: `\`\`\`${stream ? '' : 'json'}\n${objectCallReply(fromControl(control), objectArguments)}\n\`\`\``, applied: { thinking: false } };
++      assert.equal(control.messages[1].tool_calls[0].id, observedId);
++      assert.equal(control.messages[1].tool_calls[0].function.arguments, objectArguments);
++      assert.equal(control.messages[2].tool_call_id, observedId);
++      assert.equal(control.messages[2].content, 'client result');
++      return { text: `\`\`\`json\n${finalReply(fromControl(control), 'Client result received.')}\n\`\`\``, applied: { thinking: false } };
++    };
++    await withRouter(async request => {
++      const first = await request(requestBody({ stream, messages: [firstUser] }));
++      assert.equal(first.response.status, 200);
++      let toolCall;
++      if (stream) {
++        const chunks = sse(first.raw);
++        toolCall = streamedCalls(chunks)[0];
++        assert.equal(chunks.at(-1).choices[0].finish_reason, 'tool_calls');
++        assert(first.raw.endsWith('data: [DONE]\n\n'));
++      } else {
++        assert.equal(first.json.choices[0].finish_reason, 'tool_calls');
++        assert.equal(first.json.choices[0].message.content, null);
++        toolCall = first.json.choices[0].message.tool_calls[0];
++      }
++      assert.equal(toolCall.function.arguments, objectArguments);
++      observedId = toolCall.id;
++      assert(!first.raw.includes(PROTOCOL));
++      assert(!first.raw.includes('partial protocol'));
++      const second = await request(requestBody({ stream, messages: [
++        firstUser, { role: 'assistant', content: null, tool_calls: [toolCall] },
++        { role: 'tool', tool_call_id: toolCall.id, content: 'client result' },
++      ] }));
++      assert.equal(second.response.status, 200);
++      if (stream) {
++        const chunks = sse(second.raw);
++        assert.equal(chunks.flatMap(chunk => chunk.choices[0].delta.content || []).join(''), 'Client result received.');
++        assert.equal(chunks.at(-1).choices[0].finish_reason, 'stop');
++      } else assert.equal(second.json.choices[0].message.content, 'Client result received.');
++      assert(!second.raw.includes(PROTOCOL));
++    });
++    assert.equal(calls, 2);
++  });
++}
++
++test('long Unicode tool arguments stream in bounded frames and reassemble exactly', async () => {
++  // Force a surrogate pair across the naive 8192-code-unit boundary. Two calls
++  // together exceed the main compatibility adapter's 1 MiB per-frame budget.
++  const prefix = '{"payload":"';
++  const longArguments = JSON.stringify({ payload: 'x'.repeat(8191 - prefix.length) + '😀' + 'z'.repeat(680000) });
++  assert(longArguments.charCodeAt(8191) >= 0xd800 && longArguments.charCodeAt(8191) <= 0xdbff);
++  assert(Buffer.byteLength(longArguments) * 2 > 1024 * 1024);
++  bridge.completeText = async (prompt, options) => {
++    await options.beforeSubmit();
++    return { text: callReply(fromControl(fromPrompt(prompt)), Array(2).fill({ name: 'lookup', arguments: longArguments })), applied: {} };
++  };
++  await withRouter(async request => {
++    const body = requestBody({ stream: true, parallel_tool_calls: true, tools: [{ type: 'function', function: {
++      name: 'lookup', parameters: { type: 'object', properties: { payload: { type: 'string' } } },
++    } }] });
++    const result = await request(body);
++    assert.equal(result.response.status, 200);
++    const chunks = sse(result.raw);
++    const calls = streamedCalls(chunks);
++    assert.equal(calls.length, 2);
++    assert.notEqual(calls[0].id, calls[1].id);
++    for (const call of calls) {
++      assert.equal(call.function.name, 'lookup');
++      assert.equal(call.function.arguments, longArguments);
++    }
++    for (const frame of result.raw.split('\n\n').filter(Boolean)) assert(Buffer.byteLength(frame) < 1024 * 1024);
++    for (const index of [0, 1]) {
++      const deltas = chunks.flatMap(chunk => chunk.choices[0].delta.tool_calls || []).filter(delta => delta.index === index);
++      assert(deltas.length > 2);
++      assert.match(deltas[0].id, /^call_c2c_/);
++      assert.equal(deltas[0].function.name, 'lookup');
++      for (const delta of deltas.slice(1)) {
++        assert.equal(delta.id, undefined);
++        assert.equal(delta.function.name, undefined);
++        assert(delta.function.arguments.length <= 8192);
++        assert(!/[\ud800-\udbff]$/.test(delta.function.arguments), 'must not end a chunk with half an emoji');
++        assert(!/^[\udc00-\udfff]/.test(delta.function.arguments), 'must not start a chunk with half an emoji');
++      }
++    }
++    assert.equal(chunks.at(-1).choices[0].finish_reason, 'tool_calls');
++    assert(result.raw.endsWith('data: [DONE]\n\n'));
++    // Non-streaming preserves the original full argument strings as before.
++    const json = await request({ ...body, stream: false });
++    assert.equal(json.response.status, 200);
++    for (const call of json.json.choices[0].message.tool_calls) assert.equal(call.function.arguments, longArguments);
++  });
++});
++
++test('invalid requests never reach browser, including native Responses tools', async () => {
++  let called = 0;
++  bridge.completeText = async () => { called += 1; throw new Error('Must not dispatch'); };
++  await withRouter(async request => {
++    for (const [body, endpoint] of [
++      [requestBody({ messages: [{ role: 'tool', tool_call_id: 'missing', content: 'x' }] })],
++      [requestBody({ tool_choice: 'invalid' })], [requestBody({ tools: [{ type: 'computer_use' }] })],
++      [requestBody(), '/v1/responses'], [{ input: [{ type: 'function_call_output', call_id: 'x', output: 'y' }] }, '/v1/responses'],
++    ]) {
++      const result = await request(body, endpoint);
++      assert.equal(result.response.status, 400);
++      assert.equal(result.json.should_retry, false);
++    }
++  });
++  assert.equal(called, 0);
++});
++
++test('malformed final output fails JSON and buffered SSE with 502 and no accepted calls', async () => {
++  const logs = [];
++  const originalError = console.error;
++  console.error = (...parts) => logs.push(parts.join(' '));
++  bridge.completeText = async (prompt, options) => {
++    assert.equal(options.noResend, true);
++    await options.beforeSubmit();
++    options.onDelta?.('{"tool_calls":[{"name":"lookup","arguments":"');
++    return { text: 'unsafe malformed output', applied: {} };
++  };
++  try { await withRouter(async request => {
++    for (const stream of [false, true]) {
++      const result = await request(requestBody({ stream }));
++      assert.equal(result.response.status, 502);
++      assert.equal(result.json.error_kind, 'invalid_tool_output');
++      assert.equal(result.json.should_retry, false);
++      assert(!result.raw.includes('unsafe malformed output'));
++      assert(!result.raw.includes('"tool_calls"'));
++    }
++  }); } finally { console.error = originalError; }
++  assert.equal(logs.length, 2);
++  for (const line of logs) assert.match(line, /^\[tool-protocol\] reason=json input_chars=23$/);
++  assert(!logs.join('\n').includes('unsafe malformed output'));
++});
 diff --git a/scripts/test-chat-vision.js b/scripts/test-chat-vision.js
 new file mode 100644
-index 0000000..62e0d3f
+index 0000000..10f52a2
 --- /dev/null
 +++ b/scripts/test-chat-vision.js
-@@ -0,0 +1,332 @@
+@@ -0,0 +1,348 @@
 +'use strict';
 +
 +// Parser and actual HTTP routes; the ChatGPT browser boundary is stubbed so no
@@ -803,7 +1528,7 @@ index 0000000..62e0d3f
 +const http = require('http');
 +const Module = require('module');
 +const {
-+  MAX_CHAT_REQUEST_BYTES, MAX_CHAT_IMAGE_BYTES, IMAGE_ONLY_PROMPT,
++  MAX_CHAT_REQUEST_BYTES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_IMAGES, IMAGE_ONLY_PROMPT,
 +  normalizeChatMessages, normalizeResponsesInput, assertChatRequestSize,
 +} = require('../src/lib/chat-vision.cjs');
 +
@@ -823,13 +1548,14 @@ index 0000000..62e0d3f
 +    { role: 'assistant', content: 'Earlier reply' },
 +    user(['first', picture(), { type: 'text', text: 'second' }]),
 +  ]);
-+  assert.strictEqual(result.text, 'System instructions:\nFollow instructions\n\nPrevious assistant message:\nEarlier reply\n\nUser:\nfirst\nsecond');
++  assert.strictEqual(result.text, `System instructions:\nFollow instructions\n\nPrevious assistant message:\nEarlier reply\n\nUser:\nfirst\n[Image 1 attached as ${result.image.name}]\nsecond`);
 +  assert.match(result.image.name, imageNamePattern('png'));
 +  assert.deepStrictEqual({ mimeType: result.image.mimeType, buffer: result.image.buffer }, { mimeType: 'image/png', buffer: PNG });
 +  const repeatedNames = Array.from({ length: 20 }, () => normalizeChatMessages([user([picture()])]).image.name);
 +  assert.strictEqual(new Set([result.image.name, ...repeatedNames]).size, 21, 'every parse must use a new filename even for identical bytes');
 +  for (const name of repeatedNames) assert.match(name, imageNamePattern('png'));
-+  assert.strictEqual(normalizeChatMessages([user([picture()])]).text, `User:\n${IMAGE_ONLY_PROMPT}`);
++  const imageOnly = normalizeChatMessages([user([picture()])]);
++  assert.strictEqual(imageOnly.text, `User:\n[Image 1 attached as ${imageOnly.image.name}]\n${IMAGE_ONLY_PROMPT}`);
 +  const formats = [
 +    ['image/jpeg', 'jpg', Buffer.from([255, 216, 255, 224])],
 +    ['image/webp', 'webp', Buffer.from('RIFF0000WEBP')],
@@ -852,14 +1578,22 @@ index 0000000..62e0d3f
 +  assert.strictEqual(normalizeResponsesInput(null, [user([{ type: 'input_text', text: 'hello' }])]).text, 'User:\nhello');
 +});
 +
-+add('history, assistant, system, missing role, duplicate, or ambiguous images reject', () => {
++add('user image history retains ordered ownership; non-user, count and byte limits reject', () => {
++  const result = normalizeChatMessages([user(['earlier', picture()]), { role: 'assistant', content: 'previous answer' }, user([picture(), 'later', picture()])]);
++  assert.strictEqual(result.images.length, 3);
++  assert.strictEqual(new Set(result.images.map(image => image.name)).size, 3);
++  assert.strictEqual(result.text, `User:\nearlier\n[Image 1 attached as ${result.images[0].name}]\n\nPrevious assistant message:\nprevious answer\n\nUser:\n[Image 2 attached as ${result.images[1].name}]\nlater\n[Image 3 attached as ${result.images[2].name}]`);
++  assert.strictEqual(result.image, undefined, 'legacy image alias is present only for one image');
 +  for (const messages of [
-+    [user([picture()]), user('later')],
 +    [{ role: 'assistant', content: [picture()] }],
 +    [{ role: 'system', content: [picture()] }],
++    [{ role: 'tool', content: [picture()] }],
 +    [{ content: [picture()] }],
-+    [user([picture(), picture()])],
++    [user(Array.from({ length: MAX_CHAT_IMAGES + 1 }, () => picture()))],
 +  ]) rejects(() => normalizeChatMessages(messages));
++  const large = Buffer.alloc(Math.floor(MAX_CHAT_IMAGE_BYTES / 2) + 1);
++  PNG.subarray(0, 8).copy(large);
++  rejects(() => normalizeChatMessages([user([picture(dataUrl(large)), picture(dataUrl(large))])]));
 +  rejects(() => normalizeChatMessages([user([picture()])], 'overrides'));
 +  rejects(() => normalizeChatMessages(null, [user([picture()])]));
 +});
@@ -955,25 +1689,29 @@ index 0000000..62e0d3f
 +  let calls = 0;
 +  const parser = require('../src/lib/chat-vision.cjs');
 +  const originalNormalize = parser.normalizeChatMessages;
-+  const pendingNames = [];
++  const pendingInputs = [];
 +  const generatedNames = [];
 +  parser.normalizeChatMessages = (...args) => {
 +    const result = originalNormalize(...args);
-+    if (result.image) { pendingNames.push(result.image.name); generatedNames.push(result.image.name); }
++    if (result.images) { pendingInputs.push(result); generatedNames.push(...result.images.map(image => image.name)); }
 +    return result;
 +  };
 +  bridge.completeText = async (prompt, options) => {
 +    calls += 1;
-+    assert.strictEqual(prompt, 'User:\nWhat is this?');
-+    assert.deepStrictEqual(options.image.buffer, PNG);
-+    assert.strictEqual(options.image.mimeType, 'image/png');
-+    assert.strictEqual(options.image.name, pendingNames.shift(), 'route must forward the exact filename generated by its parser');
-+    assert.match(options.image.name, imageNamePattern('png'));
++    const input = pendingInputs.shift();
++    assert.strictEqual(prompt, input.text);
++    assert.deepStrictEqual(options.images, input.images, 'route must forward every image and exact filename in parser order');
++    for (const image of options.images) {
++      assert.deepStrictEqual(image.buffer, PNG);
++      assert.strictEqual(image.mimeType, 'image/png');
++      assert.match(image.name, imageNamePattern('png'));
++    }
++    assert.strictEqual(options.image, undefined, 'route sends only the images array');
 +    assert(options.signal instanceof AbortSignal);
 +    assert.strictEqual(options.signal.aborted, false);
 +    await options.beforeSubmit();
 +    options.onDelta?.('A pixel.');
-+    return { text: 'A pixel.', applied: { thinking: false, image_inputs_attached: 1 } };
++    return { text: 'A pixel.', applied: { thinking: false, image_inputs_attached: options.images.length } };
 +  };
 +  try { await withRouter(async (port) => {
 +    const json = await call(port, validBody()).promise;
@@ -986,10 +1724,13 @@ index 0000000..62e0d3f
 +    assert(sse.raw.includes('A pixel.'));
 +    assert(sse.raw.includes('"image_inputs_attached":1'));
 +    assert(sse.raw.endsWith('data: [DONE]\n\n'));
++    const replay = await call(port, { stream: true, messages: [user(['earlier', picture()]), { role: 'assistant', content: 'earlier reply' }, user([picture(), 'latest', picture()])] }).promise;
++    assert.strictEqual(replay.status, 200);
++    assert(replay.raw.includes('"image_inputs_attached":3'));
 +  }); } finally { parser.normalizeChatMessages = originalNormalize; }
-+  assert.strictEqual(calls, 2);
-+  assert.strictEqual(pendingNames.length, 0);
-+  assert.strictEqual(new Set(generatedNames).size, 2, 'JSON and SSE requests must receive independent names');
++  assert.strictEqual(calls, 3);
++  assert.strictEqual(pendingInputs.length, 0);
++  assert.strictEqual(new Set(generatedNames).size, 5, 'every JSON, SSE and replay image must receive an independent name');
 +});
 +
 +add('routes reject unsupported pictures before browser; no payload enters response or logs', async () => {
@@ -1001,8 +1742,8 @@ index 0000000..62e0d3f
 +  try {
 +    await withRouter(async (port) => {
 +      for (const [body, path] of [
-+        [{ messages: [user([picture(), picture()])] }],
-+        [{ messages: [user([picture()]), user('later')] }],
++        [{ messages: [user(Array.from({ length: MAX_CHAT_IMAGES + 1 }, () => picture()))] }],
++        [{ messages: [{ role: 'assistant', content: [picture()] }] }],
 +        [validBody(), '/v1/responses'],
 +        [{ input: [{ type: 'input_image', image_url: dataUrl() }] }, '/v1/responses'],
 +        [{ messages: [user([picture('https://example.invalid/image.png')])] }],
@@ -1231,7 +1972,7 @@ index 9e7d701..4a2096f 100644
    browserFingerprint,
  };
 diff --git a/src/chatgpt.js b/src/chatgpt.js
-index 10fab6b..4a442c7 100644
+index 10fab6b..7e46f9f 100644
 --- a/src/chatgpt.js
 +++ b/src/chatgpt.js
 @@ -15,6 +15,10 @@ const {
@@ -1240,7 +1981,7 @@ index 10fab6b..4a442c7 100644
  const { trimConversationData } = require('./lib/conversation-trim');
 +const {
 +  createChatAttachmentGuard, throwIfAborted, safeChatImageError,
-+  readChatSurface, assertOrdinaryChat, chatModeError,
++  readChatSurface, assertOrdinaryChat, chatModeError, assertNoChatAttachments,
 +} = require('./lib/chat-attachment.cjs');
  // Liveness heartbeat for /health/live — named `liveness` to avoid clashing with the
  // local `progress` indicator object inside waitAndExtractImage.
@@ -1306,9 +2047,17 @@ index 10fab6b..4a442c7 100644
    const list = Array.isArray(imageInputs) ? imageInputs : [imageInputs];
    if (list.length === 0) return 0;
  
-@@ -1479,9 +1512,11 @@ async function uploadImage(p, imageInputs) {
+@@ -1477,11 +1510,18 @@ async function uploadImage(p, imageInputs) {
+   // Prefer the photos input over the camera one (FILE_INPUT_SEL, ./composer-dom).
+   // React on this input ignores Playwright's setInputFiles alone — we must
    // dispatch input/change events ourselves to wake the composer.
-   const fileInput = p.locator(FILE_INPUT_SEL).first();
+-  const fileInput = p.locator(FILE_INPUT_SEL).first();
++  // The photos picker may be single-select while the files picker supports a
++  // batch. Never coerce a single-file control into accepting multiple files.
++  const pickerSelector = files.length > 1
++    ? FILE_INPUT_SEL.split(',').map(selector => `${selector.trim()}[multiple]`).join(', ')
++    : FILE_INPUT_SEL;
++  const fileInput = p.locator(pickerSelector).first();
    await fileInput.waitFor({ state: 'attached', timeout: 10000 });
 +  throwIfAborted(signal);
  
@@ -1318,7 +2067,7 @@ index 10fab6b..4a442c7 100644
      if (attempt > 1) {
        // Before wiping anything, double-check that the previous attempt didn't get
        // a late preview chip — if it did, accept success instead of clobbering it.
-@@ -1499,6 +1534,7 @@ async function uploadImage(p, imageInputs) {
+@@ -1499,6 +1539,7 @@ async function uploadImage(p, imageInputs) {
        // setInputFiles could otherwise arrive after we resubmit.
        await fileInput.setInputFiles([]).catch(() => {});
        for (let i = 0; i < 5; i++) {
@@ -1326,7 +2075,7 @@ index 10fab6b..4a442c7 100644
          const c = await countAttachmentChips(p);
          if (c === 0) break;
          await p.waitForTimeout(500);
-@@ -1506,7 +1542,9 @@ async function uploadImage(p, imageInputs) {
+@@ -1506,7 +1547,9 @@ async function uploadImage(p, imageInputs) {
      }
  
      console.log(`[upload] Attempt ${attempt}/${maxAttempts}: uploading ${files.length} file(s) via setInputFiles (${totalBytes} bytes total)...`);
@@ -1336,7 +2085,7 @@ index 10fab6b..4a442c7 100644
      await fileInput.evaluate((el) => {
        el.dispatchEvent(new Event('input', { bubbles: true }));
        el.dispatchEvent(new Event('change', { bubbles: true }));
-@@ -1514,6 +1552,7 @@ async function uploadImage(p, imageInputs) {
+@@ -1514,6 +1557,7 @@ async function uploadImage(p, imageInputs) {
  
      let confirmedThisAttempt = 0;
      for (let i = 0; i < waitIters; i++) {
@@ -1344,7 +2093,7 @@ index 10fab6b..4a442c7 100644
        const chipCount = await countAttachmentChips(p);
        if (chipCount > confirmedThisAttempt) confirmedThisAttempt = chipCount;
        if (chipCount >= files.length) break;
-@@ -1667,6 +1706,7 @@ function isReasoningPlaceholder(text) {
+@@ -1667,6 +1711,7 @@ function isReasoningPlaceholder(text) {
  }
  
  async function waitAndExtractText(p, beforeState = { assistantCount: 0, lastAssistantText: '', bodyTail: '' }, options = {}) {
@@ -1352,7 +2101,7 @@ index 10fab6b..4a442c7 100644
    console.log('Waiting for text response...');
    const start = Date.now();
    let bestText = '';
-@@ -1708,6 +1748,7 @@ async function waitAndExtractText(p, beforeState = { assistantCount: 0, lastAssi
+@@ -1708,6 +1753,7 @@ async function waitAndExtractText(p, beforeState = { assistantCount: 0, lastAssi
    };
  
    while (true) {
@@ -1360,40 +2109,156 @@ index 10fab6b..4a442c7 100644
      throwBackendPostFailure(capture);
      if (capture) {
        const snap = capture.snapshot();
-@@ -2563,7 +2604,9 @@ async function typeLines(text, typeSegment, pressNewline) {
+@@ -2563,7 +2609,11 @@ async function typeLines(text, typeSegment, pressNewline) {
  // sent so a failure in the settle window is not retried into a duplicate submission.
  // timing (optional): gets `inputMs` — time spent putting the prompt into the composer — even
  // when the call throws, so a caller retrying the turn can count every attempt's input.
 -async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted = null, timing = null, capture = null) {
-+async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted = null, timing = null, capture = null, attachmentGuard = null) {
++// preparation (optional): prepareOnly fills/verifies without sending; prefilled verifies
++// the entire existing prompt without editing it, preserving newly uploaded attachments.
++async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted = null, timing = null, capture = null, attachmentGuard = null, preparation = {}) {
 +  const strictChat = !!attachmentGuard || envFlag('ORDINARY_CHAT_ONLY');
 +  attachmentGuard?.assertNotAborted();
    console.log('Typing prompt...');
    await dismissModals(p);
    const textareaLocator = p.locator(COMPOSER_VISIBLE_SEL);
-@@ -2625,8 +2668,8 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
-       await p.waitForTimeout(300);
-       typedPerKey = true;
-       await typeLines(text,
+@@ -2611,63 +2661,87 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+     }
+     return ends.size > 0;
+   };
++  const assertFullPromptPresent = async () => {
++    attachmentGuard?.assertNotAborted();
++    const content = await readComposerText(textareaLocator.first()).catch(() => '');
++    if (!content || !nonEmptyLines.length || !allLinesLanded(content)) {
++      markSessionDegraded('prepared prompt no longer complete in the composer', slotOf(p));
++      const error = new Error('Prepared prompt is missing or incomplete in the composer.');
++      error.code = 'page_load_failed';
++      throw error;
++    }
++  };
+   let typedPerKey = false;
+   try {
+-    if (preserveAttachments || hasSystemHint) {
+-      // keyboard.type has no timeout of its own: a long prompt here would hold the queue for
+-      // as long as typing takes.
+-      if (typeFallbackTimeoutMs(text) === null) {
+-        throw tooLongToTypeError(text, `cannot be typed around the ${hasSystemHint ? 'composer token' : 'attachments'}`, 'prompt_too_long');
+-      }
+-      console.log(`Using keyboard type to preserve ${hasSystemHint ? 'composer token' : 'attachments'}...`);
+-      await textareaLocator.first().click();
+-      await p.keyboard.press(caretEndKey).catch(() => {});
+-      await p.waitForTimeout(300);
+-      typedPerKey = true;
+-      await typeLines(text,
 -        (line) => p.keyboard.type(line, { delay: TYPE_DELAY_MS }),
 -        () => p.keyboard.press('Shift+Enter'));
-+        (line) => { attachmentGuard?.assertNotAborted(); return p.keyboard.type(line, { delay: TYPE_DELAY_MS }); },
-+        () => { attachmentGuard?.assertNotAborted(); return p.keyboard.press('Shift+Enter'); });
++    if (preparation.prefilled) {
++      // Uploads may rebuild the editor. Never repair it here: fill would wipe
++      // the attachments and typing would append a duplicate/partial prompt.
++      await assertFullPromptPresent();
      } else {
-       await textareaLocator.first().fill(text, { timeout: fillTimeoutMs(text) });
-     }
-@@ -2650,8 +2693,8 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
-       const typeDeadline = Date.now() + typeTimeout;
-       const remaining = () => Math.max(1, typeDeadline - Date.now());
-       await typeLines(text,
+-      await textareaLocator.first().fill(text, { timeout: fillTimeoutMs(text) });
+-    }
+-    await p.waitForTimeout(500);
+-
+-    // Verify the PROMPT text landed — not just that the editor is non-empty. With a
+-    // system-hint token in the doc, textContent is truthy even if typing silently failed.
+-    // Probe with the first line only: ProseMirror textContent concatenates paragraphs
+-    // without separators, so multi-line probes would false-negative.
+-    const content = await readComposerText(textareaLocator.first());
+-    console.log('Prompt filled:', content ? content.substring(0, 50) + '...' : '(empty)');
+-
+-    if (!content || (probe && !normText(content).includes(probe))) {
+-      const typeTimeout = typeFallbackTimeoutMs(text);
+-      if (typeTimeout === null) throw tooLongToTypeError(text, 'did not land in the composer', 'server_error');
+-      console.log('Fill failed, trying pressSequentially...');
+-      await textareaLocator.first().click();
+-      await p.keyboard.press(caretEndKey).catch(() => {});
+-      await p.waitForTimeout(300);
+-      typedPerKey = true;
+-      const typeDeadline = Date.now() + typeTimeout;
+-      const remaining = () => Math.max(1, typeDeadline - Date.now());
+-      await typeLines(text,
 -        (line) => textareaLocator.first().pressSequentially(line, { delay: TYPE_DELAY_MS, timeout: remaining() }),
 -        () => textareaLocator.first().press('Shift+Enter', { timeout: remaining() }));
-+        (line) => { attachmentGuard?.assertNotAborted(); return textareaLocator.first().pressSequentially(line, { delay: TYPE_DELAY_MS, timeout: remaining() }); },
-+        () => { attachmentGuard?.assertNotAborted(); return textareaLocator.first().press('Shift+Enter', { timeout: remaining() }); });
++      if (preserveAttachments || hasSystemHint) {
++        // keyboard.type has no timeout of its own: a long prompt here would hold the queue for
++        // as long as typing takes.
++        if (typeFallbackTimeoutMs(text) === null) {
++          throw tooLongToTypeError(text, `cannot be typed around the ${hasSystemHint ? 'composer token' : 'attachments'}`, 'prompt_too_long');
++        }
++        console.log(`Using keyboard type to preserve ${hasSystemHint ? 'composer token' : 'attachments'}...`);
++        await textareaLocator.first().click();
++        await p.keyboard.press(caretEndKey).catch(() => {});
++        await p.waitForTimeout(300);
++        typedPerKey = true;
++        await typeLines(text,
++          (line) => { attachmentGuard?.assertNotAborted(); return p.keyboard.type(line, { delay: TYPE_DELAY_MS }); },
++          () => { attachmentGuard?.assertNotAborted(); return p.keyboard.press('Shift+Enter'); });
++      } else {
++        await textareaLocator.first().fill(text, { timeout: fillTimeoutMs(text) });
++      }
        await p.waitForTimeout(500);
+-    }
+-    // Only per-key typing can split a prompt; fill() puts the text in one transaction.
+-    if (typedPerKey && lineForms.length > 1
+-        && !allLinesLanded(await readComposerText(textareaLocator.first()).catch(() => ''))) {
+-      // Retyping would append a second copy after the part that did land; sending would
+-      // deliver a truncated prompt. Neither is right — fail this turn as retryable.
+-      markSessionDegraded('prompt landed only partially in the composer', slotOf(p));
+-      const err = new Error('Prompt landed only partially in the composer (a line is missing)');
+-      err.code = 'page_load_failed';
+-      throw err;
++
++      // Verify the PROMPT text landed — not just that the editor is non-empty. With a
++      // system-hint token in the doc, textContent is truthy even if typing silently failed.
++      // Probe with the first line only: ProseMirror textContent concatenates paragraphs
++      // without separators, so multi-line probes would false-negative.
++      const content = await readComposerText(textareaLocator.first());
++      console.log('Prompt filled:', content ? content.substring(0, 50) + '...' : '(empty)');
++
++      if (!content || (probe && !normText(content).includes(probe))) {
++        const typeTimeout = typeFallbackTimeoutMs(text);
++        if (typeTimeout === null) throw tooLongToTypeError(text, 'did not land in the composer', 'server_error');
++        console.log('Fill failed, trying pressSequentially...');
++        await textareaLocator.first().click();
++        await p.keyboard.press(caretEndKey).catch(() => {});
++        await p.waitForTimeout(300);
++        typedPerKey = true;
++        const typeDeadline = Date.now() + typeTimeout;
++        const remaining = () => Math.max(1, typeDeadline - Date.now());
++        await typeLines(text,
++          (line) => { attachmentGuard?.assertNotAborted(); return textareaLocator.first().pressSequentially(line, { delay: TYPE_DELAY_MS, timeout: remaining() }); },
++          () => { attachmentGuard?.assertNotAborted(); return textareaLocator.first().press('Shift+Enter', { timeout: remaining() }); });
++        await p.waitForTimeout(500);
++      }
++      // Only per-key typing can split a prompt; fill() puts the text in one transaction.
++      if (typedPerKey && lineForms.length > 1
++          && !allLinesLanded(await readComposerText(textareaLocator.first()).catch(() => ''))) {
++        // Retyping would append a second copy after the part that did land; sending would
++        // deliver a truncated prompt. Neither is right — fail this turn as retryable.
++        markSessionDegraded('prompt landed only partially in the composer', slotOf(p));
++        const err = new Error('Prompt landed only partially in the composer (a line is missing)');
++        err.code = 'page_load_failed';
++        throw err;
++      }
++      if (preparation.prepareOnly) await assertFullPromptPresent();
      }
-     // Only per-key typing can split a prompt; fill() puts the text in one transaction.
-@@ -2687,9 +2730,17 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+   } finally {
+     if (timing) timing.inputMs = Date.now() - inputStart;
+   }
+ 
++  // Preparation is a separate phase with no send button, Enter fallback, turn
++  // capture or submitted callback. Long prompts can use fill before uploading.
++  if (preparation.prepareOnly) {
++    attachmentGuard?.assertNotAborted();
++    return;
++  }
++
+   await p.waitForTimeout(1000);
+   await dismissModals(p);
+ 
+@@ -2687,9 +2761,18 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
    const sendLocator = p.locator(SEND_BUTTON_SEL);
    try {
      await sendLocator.first().waitFor({ state: 'visible', timeout: 5000 });
@@ -1402,6 +2267,7 @@ index 10fab6b..4a442c7 100644
 +    // Enter after a click whose outcome may already have reached ChatGPT.
 +    if (attachmentGuard) {
 +      await attachmentGuard.beforeSend(p);
++      if (preparation.prefilled) await assertFullPromptPresent();
 +      attachmentGuard.markSendAttempted();
 +    } else if (strictChat) await assertOrdinaryChat(p);
      console.log('Send button found. Clicking...');
@@ -1412,7 +2278,7 @@ index 10fab6b..4a442c7 100644
      // Enter fallback: refocus the composer and confirm the prompt is still there first —
      // blind Enter into an overlay was how the 2026-07-10 send-button incident burned 360s
      // per request and jammed the queue.
-@@ -2702,6 +2753,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+@@ -2702,6 +2785,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
        err.code = 'page_load_failed';
        throw err;
      }
@@ -1420,7 +2286,7 @@ index 10fab6b..4a442c7 100644
      await p.keyboard.press('Enter');
    }
  
-@@ -2711,6 +2763,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+@@ -2711,6 +2795,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
    const submitDeadline = Date.now() + 12000;
    let submitted = false;
    while (Date.now() < submitDeadline) {
@@ -1428,7 +2294,7 @@ index 10fab6b..4a442c7 100644
      throwBackendPostFailure(capture, onSubmitted);
      if (capture?.postAccepted) { submitted = true; break; }
      const turnsNow = await countUserTurns();
-@@ -2745,6 +2798,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+@@ -2745,6 +2830,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
    if (onSubmitted) { try { onSubmitted(); } catch {} }
  
    await p.waitForTimeout(2000);
@@ -1436,17 +2302,44 @@ index 10fab6b..4a442c7 100644
  }
  
  async function dismissModals(p) {
-@@ -4234,6 +4288,9 @@ async function editImage(prompt, imageInput, options = {}) {
+@@ -4234,7 +4320,36 @@ async function editImage(prompt, imageInput, options = {}) {
  }
  
  async function completeText(prompt, options = {}) {
 +  throwIfAborted(options.signal);
-+  const attachmentGuard = options.image ? createChatAttachmentGuard(options.image, options.signal) : null;
-+  const strictChat = !!attachmentGuard || envFlag('ORDINARY_CHAT_ONLY');
++  if (options.images !== undefined && !Array.isArray(options.images)) {
++    const error = new Error('Chat image inputs must be an array.');
++    error.code = 'upload_failed';
++    throw error;
++  }
++  if (options.images !== undefined && options.image) {
++    const error = new Error('Ambiguous chat image inputs.');
++    error.code = 'upload_failed';
++    throw error;
++  }
++  const images = options.images ?? (options.image ? [options.image] : []);
++  const attachmentGuard = images.length ? createChatAttachmentGuard(images, options.signal) : null;
++  let textSendAttempted = false;
++  const submissionGuard = attachmentGuard ?? (options.noResend === true ? {
++    assertNotAborted: () => throwIfAborted(options.signal),
++    async beforeSend(page) {
++      await assertOrdinaryChat(page, options.signal);
++      await assertNoChatAttachments(page, options.signal);
++    },
++    markSendAttempted() { throwIfAborted(options.signal); textSendAttempted = true; },
++    get sendAttempted() { return textSendAttempted; },
++  } : null);
++  const strictChat = !!submissionGuard || envFlag('ORDINARY_CHAT_ONLY');
    const slot = adoptJob(options);
++  // A stateless attachment turn carries its complete visible history. Reusing
++  // a completed page via root navigation can leave the React upload handler
++  // inactive even after the composer is visible. Rebuild only this owned slot;
++  // explicit conversation/reuse requests keep their existing page semantics.
++  if (attachmentGuard && !options.conversationId && !options.reuseChat) resetPage(slot);
    // Page-load failures on chatgpt.com tend to come in bursts (CF challenge,
    // empty SPA boot, transient 5xx from OpenAI). One in-process retry leaves a
-@@ -4259,18 +4316,53 @@ async function completeText(prompt, options = {}) {
+   // visible failure rate on the caller; multiple attempts with a fresh page each
+@@ -4259,18 +4374,62 @@ async function completeText(prompt, options = {}) {
      // AFTER submit must not retry — a fresh chat would re-send the same prompt (duplicate
      // generation / side effects). Before submit, retrying is safe.
      let submitted = false;
@@ -1457,7 +2350,7 @@ index 10fab6b..4a442c7 100644
        // page, and those failures must ride the same retry/hard-reset machinery.
        await maybeRecoverSession(slot);
        const p = await ensureLoggedIn(slot);
-+      if (attachmentGuard && options.signal) {
++      if (submissionGuard && options.signal) {
 +        // A click may be waiting for Playwright actionability when the client
 +        // disconnects. Closing this request's page cancels that pending action;
 +        // checking the signal only before awaiting click would be too late.
@@ -1486,12 +2379,21 @@ index 10fab6b..4a442c7 100644
 +        // belong strictly AFTER it. Never accept a stale preview from another job.
 +        await removePendingAttachments(p);
 +        await attachmentGuard.waitEmpty(p);
-+        const attached = await uploadImage(p, {
-+          buffer: options.image.buffer, mimeType: options.image.mimeType,
-+          filename: options.image.name,
-+        }, options.signal);
-+        if (attached !== 1) {
-+          const error = new Error('Chat image upload did not produce one attachment.');
++        // Fill text before attaching files: typing around attachments is both
++        // much slower and bounded to short prompts. This phase cannot send.
++        const preparationTiming = {};
++        try {
++          await typeAndSubmit(p, prompt, false, null, preparationTiming, null,
++            submissionGuard, { prepareOnly: true });
++        } finally {
++          inputSpentMs += preparationTiming.inputMs || 0;
++        }
++        await assertOrdinaryChat(p, options.signal);
++        const attached = await uploadImage(p, images.map(image => ({
++          buffer: image.buffer, mimeType: image.mimeType, filename: image.name,
++        })), options.signal);
++        if (attached !== images.length) {
++          const error = new Error('Chat image upload did not produce the expected attachments.');
 +          error.code = 'upload_failed';
 +          throw error;
 +        }
@@ -1500,18 +2402,19 @@ index 10fab6b..4a442c7 100644
  
        const beforeState = await captureTextState(p);
        // Prime BEFORE opening the capture, and the order is load-bearing twice over.
-@@ -4291,8 +4383,9 @@ async function completeText(prompt, options = {}) {
+@@ -4291,8 +4450,10 @@ async function completeText(prompt, options = {}) {
        // never retry into a duplicate send. The post-call assignment is a backstop.
        const timing = {};
        if (typeof options.beforeSubmit === 'function') await options.beforeSubmit();
 +      throwIfAborted(options.signal);
        try {
 -        await typeAndSubmit(p, prompt, false, () => { submitted = true; }, timing, capture);
-+        await typeAndSubmit(p, prompt, !!attachmentGuard, () => { submitted = true; }, timing, capture, attachmentGuard);
++        await typeAndSubmit(p, prompt, !!attachmentGuard, () => { submitted = true; }, timing, capture,
++          submissionGuard, attachmentGuard ? { prefilled: true } : {});
        } finally {
          inputSpentMs += timing.inputMs || 0;
        }
-@@ -4305,7 +4398,9 @@ async function completeText(prompt, options = {}) {
+@@ -4305,7 +4466,9 @@ async function completeText(prompt, options = {}) {
          onDelta,
          prompt,      // subtracted from the tier-limit scan: it is rendered on the page too
          inputMs: inputSpentMs, // every attempt's input, not just this one's
@@ -1521,11 +2424,11 @@ index 10fab6b..4a442c7 100644
  
        if (thinkingState.verified) markHealthyCompletion(slot);
        // conversation_id sources, best first: backend-api capture → chat URL after the
-@@ -4323,12 +4418,31 @@ async function completeText(prompt, options = {}) {
+@@ -4323,12 +4486,32 @@ async function completeText(prompt, options = {}) {
            thinking_verified: !!thinkingState.verified,
            requested_verified: !!thinkingState.requestedVerified,
            thinking_fallback: thinkingState.fallback || null,
-+          ...(attachmentGuard ? { image_inputs_attached: 1 } : {}),
++          ...(attachmentGuard ? { image_inputs_attached: images.length } : {}),
          },
        };
      } catch (err) {
@@ -1534,16 +2437,17 @@ index 10fab6b..4a442c7 100644
 +        resetPage(slot);
 +        throw chatModeError();
 +      }
-+      if (attachmentGuard && options.signal?.aborted) {
++      if (submissionGuard && options.signal?.aborted) {
 +        resetPage(slot);
 +        throwIfAborted(options.signal);
 +      }
 +      // A click can reach the server before Playwright confirms it. Never retry
 +      // a vision request after even an uncertain send attempt, including the
 +      // upstream "stall with no answer" path below.
-+      if (attachmentGuard?.sendAttempted) {
++      if (submissionGuard?.sendAttempted) {
 +        resetPage(slot);
 +        const failure = safeChatImageError(err);
++        if (!attachmentGuard) failure.message = 'Chat request failed after submission; automatic resend is disabled.';
 +        delete failure.retryAfterMaintenance;
 +        failure.noRetry = true;
 +        throw failure;
@@ -1551,22 +2455,24 @@ index 10fab6b..4a442c7 100644
 +      if (err && err.retryAfterMaintenance) throw attachmentGuard ? safeChatImageError(err) : err;
        lastError = err;
 -      if (err.stallNoAnswer && !anyDeltaEmitted && !options.conversationId
-+      if (!attachmentGuard && err.stallNoAnswer && !anyDeltaEmitted && !options.conversationId
++      if (!submissionGuard && err.stallNoAnswer && !anyDeltaEmitted && !options.conversationId
            && slot.pendingReset !== 'hard' && stallRetryState.used < TEXT_STALL_RETRIES) {
          stallRetryState.used += 1;
          if (typeof options.onAttemptFinished === 'function') options.onAttemptFinished();
-@@ -4372,6 +4486,10 @@ async function completeText(prompt, options = {}) {
+@@ -4372,6 +4555,12 @@ async function completeText(prompt, options = {}) {
          if (needsHardReset) {
            requestMaintenanceNoAwait('hard-reset', () => hardResetBrowser(), slot.epoch);
          }
-+        if (attachmentGuard) {
++        if (submissionGuard) {
 +          resetPage(slot);
-+          throw safeChatImageError(err);
++          const failure = safeChatImageError(err);
++          if (!attachmentGuard) failure.message = 'Chat request could not complete before submission.';
++          throw failure;
 +        }
          throw err;
        }
  
-@@ -4379,7 +4497,7 @@ async function completeText(prompt, options = {}) {
+@@ -4379,7 +4568,7 @@ async function completeText(prompt, options = {}) {
        if (needsHardReset) {
          // Pre-submit: hand the slot back and let the pool run the reset between jobs.
          requestMaintenanceNoAwait('hard-reset', () => hardResetBrowser(), slot.epoch);
@@ -1575,7 +2481,7 @@ index 10fab6b..4a442c7 100644
          again.code = err.code || 'page_load_failed';
          again.retryAfterMaintenance = true;
          throw again;
-@@ -4389,6 +4507,7 @@ async function completeText(prompt, options = {}) {
+@@ -4389,6 +4578,7 @@ async function completeText(prompt, options = {}) {
        // Light backoff so we don't slam ChatGPT during a wider outage.
        await new Promise(r => setTimeout(r, 1500 + 1000 * attempt));
      } finally {
@@ -1583,7 +2489,7 @@ index 10fab6b..4a442c7 100644
        // Stop feeding this turn's accumulator — a late/leaked SSE body from an aborted
        // attempt must never bleed into the next turn's capture.
        endBackendCapture(slot);
-@@ -4488,6 +4607,7 @@ module.exports = {
+@@ -4488,6 +4678,7 @@ module.exports = {
      CHAT_COMPLETION_TIMEOUT_MS,
      waitAndExtractText,
      typeAndSubmit,
@@ -1605,10 +2511,10 @@ index 7becfb9..d48e3ab 100644
    'button[aria-label^="Remove image"]',
 diff --git a/src/lib/chat-attachment.cjs b/src/lib/chat-attachment.cjs
 new file mode 100644
-index 0000000..fe409d1
+index 0000000..cd8ca42
 --- /dev/null
 +++ b/src/lib/chat-attachment.cjs
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,276 @@
 +'use strict';
 +
 +const {
@@ -1735,7 +2641,8 @@ index 0000000..fe409d1
 +
 +// Runs in the browser. Return only state flags, never DOM text, URLs or image data.
 +// Unknown composer markup is deliberately not a successful upload confirmation.
-+function attachmentStateInPage({ name, composerSelector, sendSelector, removeSelector }) {
++function attachmentStateInPage({ name, names, composerSelector, sendSelector, removeSelector }) {
++  const expectedNames = Array.isArray(names) ? names : [name];
 +  const visible = element => !!element && !element.closest('[aria-hidden="true"]')
 +    && element.getClientRects().length > 0;
 +  const editors = Array.from(document.querySelectorAll(composerSelector)).filter(visible);
@@ -1743,21 +2650,26 @@ index 0000000..fe409d1
 +  const form = editors[0].closest('form');
 +  if (!form || !visible(form)) return { known: false };
 +  const chips = Array.from(form.querySelectorAll(removeSelector)).filter(visible);
-+  const matching = chips.filter(button => {
++  const matchesName = (button, filename) => {
 +    const label = String(button.getAttribute('aria-label') || '').trim();
-+    return label === `移除“${name}”`
++    return label === `移除“${filename}”`
 +      || /^(?:Remove|Удалить)\s+/i.test(label)
-+        && label.slice(label.indexOf(' ') + 1).trim() === name;
-+  });
++        && label.slice(label.indexOf(' ') + 1).trim() === filename;
++  };
++  const matching = chips.filter(button => expectedNames.some(filename => matchesName(button, filename)));
++  const namesVerified = expectedNames.length > 0
++    && expectedNames.every(filename => chips.filter(button => matchesName(button, filename)).length === 1);
 +  const regions = Array.from(form.querySelectorAll('[data-composer-attachments]')).filter(visible);
 +  // Fall back only to a chip's own wrapper on the older composer. Do not count
 +  // avatars or unrelated images elsewhere on the page as the uploaded image.
-+  const previewRegion = regions.length === 1 ? regions[0]
-+    : matching.length === 1 ? matching[0].parentElement : null;
-+  const previews = previewRegion
-+    ? Array.from(previewRegion.querySelectorAll('img')).filter(visible) : [];
-+  const previewLoaded = previews.length === 1
-+    && previews[0].complete === true && previews[0].naturalWidth > 0;
++  const previewRegions = regions.length === 1 ? regions
++    : matching.length === expectedNames.length ? matching.map(button => button.parentElement).filter(Boolean) : [];
++  const previews = [...new Set(previewRegions.flatMap(region => Array.from(region.querySelectorAll('img')).filter(visible)))];
++  const ownedPreviews = matching.map(button => button.parentElement
++    ? Array.from(button.parentElement.querySelectorAll('img')).filter(visible) : []);
++  const previewLoaded = previews.length === expectedNames.length
++    && ownedPreviews.every(group => group.length === 1 && group[0].complete === true && group[0].naturalWidth > 0)
++    && new Set(ownedPreviews.map(group => group[0])).size === expectedNames.length;
 +  const busySelector = '[aria-busy="true"], [role="progressbar"], '
 +    + '[data-state="uploading"], [data-upload-state="uploading"], '
 +    + '[data-testid*="upload-progress"], [data-testid*="uploading"], '
@@ -1767,20 +2679,43 @@ index 0000000..fe409d1
 +    + '[data-testid*="upload-error"], [role="alert"]';
 +  const uploadError = Array.from(form.querySelectorAll(errorSelector)).some(visible)
 +    || Array.from(document.querySelectorAll('[role="alert"], [data-testid*="toast"], [class*="toast"]'))
-+      .filter(visible).some(element => /failed to upload|unable to upload|error uploading|upload failed|couldn.t upload|can.t upload|не удалось загрузить|ошибка загрузки/i
++      .filter(visible).some(element => /failed to upload|unable to upload|error uploading|upload failed|couldn.t upload|can.t upload|не удалось загрузить|ошибка загрузки|上传失败|无法上传|上传出错/i
 +        .test(element.innerText || element.textContent || ''));
 +  const sends = Array.from(form.querySelectorAll(sendSelector)).filter(visible);
 +  const sendReady = sends.length === 1 && sends[0].disabled !== true
 +    && !sends[0].hasAttribute('disabled')
 +    && sends[0].getAttribute('aria-disabled') !== 'true';
-+  return { known: true, count: chips.length, matching: matching.length,
++  return { known: true, count: chips.length, matching: matching.length, namesVerified,
 +    previewLoaded, busy, uploadError, sendReady };
 +}
 +
-+function ready(state) {
-+  return state?.known === true && state.count === 1 && state.matching === 1
++function ready(state, expectedCount = 1) {
++  return Number.isInteger(expectedCount) && expectedCount >= 1 && expectedCount <= 10
++    && state?.known === true && state.count === expectedCount && state.matching === expectedCount
++    && (expectedCount === 1 || state.namesVerified === true)
 +    && state.previewLoaded === true && state.busy === false
 +    && state.uploadError === false && state.sendReady === true;
++}
++
++/** Text/tool turns must never inherit a stale attachment from an earlier job. */
++async function assertNoChatAttachments(page, signal) {
++  throwIfAborted(signal);
++  let state;
++  let timer;
++  try {
++    state = await Promise.race([
++      page.evaluate(attachmentStateInPage, {
++        names: [], composerSelector: COMPOSER_SELECTORS.join(', '),
++        sendSelector: SEND_BUTTON_SEL, removeSelector: ATTACHMENT_REMOVE_SEL,
++      }),
++      new Promise(resolve => { timer = setTimeout(() => resolve({ known: false }), 3000); }),
++    ]);
++  } catch {
++    throwIfAborted(signal);
++    throw attachmentError();
++  } finally { clearTimeout(timer); }
++  throwIfAborted(signal);
++  if (state?.known !== true || state.count !== 0 || state.busy !== false || state.uploadError !== false) throw attachmentError();
 +}
 +
 +function createChatAttachmentGuard(image, signal, {
@@ -1789,9 +2724,11 @@ index 0000000..fe409d1
 +} = {}) {
 +  // Match only the request-scoped UUIDv4 names emitted by chat-vision.cjs.
 +  // No paths, arbitrary filenames, control characters or shared legacy names.
-+  const name = image?.name;
-+  if (typeof name !== 'string' || /[\x00-\x20\x7f]/.test(name)
-+      || !/^chat-vision-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:png|jpe?g|webp|gif)$/.test(name)) {
++  const images = Array.isArray(image) ? image : [image];
++  const names = images.map(value => value?.name);
++  if (images.length < 1 || images.length > 10 || new Set(names).size !== images.length
++      || names.some(name => typeof name !== 'string' || /[\x00-\x20\x7f]/.test(name)
++        || !/^chat-vision-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:png|jpe?g|webp|gif)$/.test(name))) {
 +    throw attachmentError();
 +  }
 +  let sendAttempted = false;
@@ -1801,7 +2738,7 @@ index 0000000..fe409d1
 +    let timer;
 +    try {
 +      const evaluation = readState ? readState(page) : page.evaluate(attachmentStateInPage, {
-+        name: image.name, composerSelector: COMPOSER_SELECTORS.join(', '),
++        name: names[0], names, composerSelector: COMPOSER_SELECTORS.join(', '),
 +        sendSelector: SEND_BUTTON_SEL, removeSelector: ATTACHMENT_REMOVE_SEL,
 +      });
 +      // This race contains a read-only DOM observation, never an action. A stuck
@@ -1839,11 +2776,11 @@ index 0000000..fe409d1
 +    emptyTimeoutMs, 1),
 +    // A chip is only a preview. A loaded thumbnail, no upload activity/error and
 +    // an enabled send button must agree across consecutive browser observations.
-+    waitReady: page => wait(page, ready, timeoutMs, 2),
++    waitReady: page => wait(page, state => ready(state, images.length), timeoutMs, 2),
 +    async beforeSend(page) {
 +      // Read-only: never toggle a surface after an image has been uploaded.
 +      await assertOrdinaryChat(page, signal);
-+      if (!ready(await read(page))) throw attachmentError();
++      if (!ready(await read(page), images.length)) throw attachmentError();
 +    },
 +    markSendAttempted() {
 +      throwIfAborted(signal);
@@ -1853,21 +2790,301 @@ index 0000000..fe409d1
 +}
 +
 +module.exports = { createChatAttachmentGuard, throwIfAborted, safeChatImageError,
-+  attachmentStateInPage, ready, chatModeError, chatSurfaceInPage, readChatSurface, assertOrdinaryChat };
++  attachmentStateInPage, ready, chatModeError, chatSurfaceInPage, readChatSurface, assertOrdinaryChat, assertNoChatAttachments };
+diff --git a/src/lib/chat-tools.cjs b/src/lib/chat-tools.cjs
+new file mode 100644
+index 0000000..aefb9ce
+--- /dev/null
++++ b/src/lib/chat-tools.cjs
+@@ -0,0 +1,273 @@
++'use strict';
++
++const { randomUUID } = require('node:crypto');
++const PROTOCOL = 'chat2claude-tools-v1';
++const MAX_TOOLS = 128;
++const MAX_CALLS = 8;
++const MAX_ARGUMENT_BYTES = 1024 * 1024;
++const MAX_PROTOCOL_BYTES = 4 * 1024 * 1024;
++const OUTPUT_REASONS = new Set(['json', 'fence', 'nonce', 'shape', 'tool', 'arguments']);
++const NAME = /^[A-Za-z0-9_-]{1,64}$/;
++const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
++const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
++
++function invalid(message) { return Object.assign(new Error(message), { code: 'invalid_request' }); }
++function badOutput(reason = 'shape') {
++  return Object.assign(new Error('The web model returned an invalid tool protocol response; no tool calls were accepted.'), {
++    code: 'invalid_tool_output', noRetry: true, reason: OUTPUT_REASONS.has(reason) ? reason : 'shape',
++  });
++}
++function keys(value, allowed) { return object(value) && Object.keys(value).every(key => allowed.includes(key)); }
++
++// JSON.parse alone accepts duplicate object keys. Scan first, with a depth cap,
++// and never convert argument numbers back to JSON: their original string is the
++// OpenAI wire value, including whitespace, large integers and precise decimals.
++function strictJson(text, maximum = MAX_PROTOCOL_BYTES, argumentRanges) {
++  if (typeof text !== 'string' || !text.trim() || Buffer.byteLength(text) > maximum) throw new Error('Invalid JSON');
++  let at = 0;
++  const space = () => { while (/[\x20\t\r\n]/.test(text[at] || '') && at < text.length) at += 1; };
++  function string() {
++    const start = at++;
++    for (;;) {
++      if (at >= text.length) throw new Error('Invalid JSON');
++      const current = text[at++];
++      if (current === '"') return JSON.parse(text.slice(start, at));
++      if (current === '\\') {
++        if (text[at] === 'u') at += 5;
++        else at += 1;
++      } else if (current.charCodeAt(0) < 32) throw new Error('Invalid JSON');
++    }
++  }
++  function value(depth, path = []) {
++    if (depth > 64) throw new Error('Invalid JSON');
++    space();
++    const current = text[at];
++    if (current === '"') { string(); return; }
++    if (current === '{') {
++      const start = at;
++      at += 1; space();
++      const seen = new Set();
++      if (text[at] === '}') at += 1;
++      else for (;;) {
++          space();
++          if (text[at] !== '"') throw new Error('Invalid JSON');
++          const key = string();
++          if (seen.has(key)) throw new Error('Invalid JSON');
++          seen.add(key); space();
++          if (text[at++] !== ':') throw new Error('Invalid JSON');
++          value(depth + 1, [...path, key]); space();
++          if (text[at] === '}') { at += 1; break; }
++          if (text[at++] !== ',') throw new Error('Invalid JSON');
++      }
++      // These are token boundaries from the fully validated JSON document,
++      // never a search for a JSON-looking substring in the model response.
++      if (argumentRanges && path.length === 3 && path[0] === 'tool_calls'
++          && Number.isInteger(path[1]) && path[2] === 'arguments') argumentRanges.set(path[1], { start, end: at });
++      return;
++    }
++    if (current === '[') {
++      at += 1; space();
++      if (text[at] === ']') { at += 1; return; }
++      let index = 0;
++      for (;;) {
++        value(depth + 1, [...path, index++]); space();
++        if (text[at] === ']') { at += 1; return; }
++        if (text[at++] !== ',') throw new Error('Invalid JSON');
++      }
++    }
++    const match = /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(text.slice(at));
++    if (!match) throw new Error('Invalid JSON');
++    at += match[0].length;
++  }
++  value(0); space();
++  if (at !== text.length) throw new Error('Invalid JSON');
++  return JSON.parse(text);
++}
++
++function argumentsJson(value, error) {
++  try { if (!object(strictJson(value, MAX_ARGUMENT_BYTES))) throw new Error('Invalid arguments'); }
++  catch { throw error(); }
++  return value;
++}
++
++function hasToolHistory(value) {
++  if (Array.isArray(value)) return value.some(hasToolHistory);
++  if (!object(value)) return false;
++  return value.role === 'tool' || value.role === 'function' || own(value, 'tool_calls') || own(value, 'tool_call_id')
++    || own(value, 'function_call') || ['function_call', 'function_call_output', 'tool_use', 'tool_result'].includes(value.type)
++    || Object.values(value).some(item => item && typeof item === 'object' && hasToolHistory(item));
++}
++
++function rejectsResponsesTools(body) {
++  if (own(body, 'tools') || own(body, 'tool_choice') || own(body, 'parallel_tool_calls')
++      || own(body, 'functions') || own(body, 'function_call') || hasToolHistory(body.messages) || hasToolHistory(body.input)) {
++    throw invalid('Tools are supported only on /v1/chat/completions; native /v1/responses tool input is not supported');
++  }
++}
++
++function definitions(input) {
++  if (input === undefined) return [];
++  if (!Array.isArray(input) || input.length > MAX_TOOLS) throw invalid('tools must be an array of at most 128 function definitions');
++  const names = new Set();
++  return input.map(tool => {
++    if (!keys(tool, ['type', 'function']) || tool.type !== 'function'
++        || !keys(tool.function, ['name', 'description', 'parameters', 'strict'])
++        || typeof tool.function.name !== 'string' || !NAME.test(tool.function.name)) {
++      throw invalid('Only named function tools are supported');
++    }
++    const fn = tool.function;
++    if (names.has(fn.name)) throw invalid('Tool names must be unique');
++    names.add(fn.name);
++    if (fn.description !== undefined && (typeof fn.description !== 'string' || fn.description.length > 32768)) throw invalid('Tool description must be bounded text');
++    if (fn.strict !== undefined && fn.strict !== false) throw invalid('strict tool schemas are not supported by the web text protocol');
++    const parameters = fn.parameters === undefined ? { type: 'object' } : fn.parameters;
++    if (!object(parameters) || (parameters.type !== undefined && parameters.type !== 'object')) throw invalid('Function parameters must describe a JSON object');
++    try { strictJson(JSON.stringify(parameters), MAX_ARGUMENT_BYTES); }
++    catch { throw invalid('Function parameter schema exceeds the supported JSON limits'); }
++    return { name: fn.name, ...(fn.description === undefined ? {} : { description: fn.description }), parameters };
++  });
++}
++
++function choice(value, tools) {
++  let mode = value === undefined ? 'auto' : value;
++  if (object(mode)) {
++    if (!keys(mode, ['type', 'function']) || mode.type !== 'function' || !keys(mode.function, ['name']) || !tools.some(tool => tool.name === mode.function.name)) {
++      throw invalid('Named tool_choice must select a declared function');
++    }
++    return { mode: 'named', name: mode.function.name };
++  }
++  if (!['auto', 'none', 'required'].includes(mode)) throw invalid('Unsupported tool_choice');
++  if (mode === 'required' && !tools.length) throw invalid('Required tool_choice needs at least one function');
++  if (!tools.length) mode = 'none';
++  return { mode };
++}
++
++function history(messages, messageTexts) {
++  const pending = new Map();
++  const used = new Set();
++  const transcript = messages.map((message, index) => {
++    if (!object(message) || !['system', 'developer', 'user', 'assistant', 'tool'].includes(message.role)
++        || own(message, 'function_call')) throw invalid('Unsupported message in tool conversation');
++    const role = message.role;
++    if (pending.size && role !== 'tool') throw invalid('Every historical tool call needs one result before the conversation continues');
++    const text = messageTexts[index] || '';
++    const result = { role, content: text };
++    if (role === 'tool') {
++      if (own(message, 'tool_calls') || !['string', 'object'].includes(typeof message.content) || message.content === null
++          || typeof message.tool_call_id !== 'string' || !pending.has(message.tool_call_id)) throw invalid('Unknown, duplicate, or unpaired tool result');
++      const name = pending.get(message.tool_call_id);
++      if (message.name !== undefined && message.name !== name) throw invalid('Tool result name does not match its call');
++      pending.delete(message.tool_call_id);
++      result.tool_call_id = message.tool_call_id;
++      result.name = name;
++    } else {
++      if (own(message, 'tool_call_id')) throw invalid('tool_call_id is supported only on tool messages');
++      if (own(message, 'tool_calls')) {
++        if (role !== 'assistant' || !Array.isArray(message.tool_calls) || !message.tool_calls.length || message.tool_calls.length > MAX_TOOLS) throw invalid('Invalid assistant tool_calls history');
++        result.tool_calls = message.tool_calls.map(call => {
++          if (!keys(call, ['id', 'type', 'function']) || call.type !== 'function' || !keys(call.function, ['name', 'arguments'])
++              || typeof call.function.name !== 'string' || !NAME.test(call.function.name)
++              || typeof call.id !== 'string' || !call.id || call.id.length > 256 || /[\x00-\x1f\x7f]/.test(call.id)
++              || used.has(call.id)) throw invalid('Invalid or duplicate historical function call');
++          argumentsJson(call.function.arguments, () => invalid('Historical function arguments must be a strict JSON object string'));
++          used.add(call.id); pending.set(call.id, call.function.name);
++          return { id: call.id, type: 'function', function: { name: call.function.name, arguments: call.function.arguments } };
++        });
++      }
++    }
++    return result;
++  });
++  if (pending.size) throw invalid('Every historical tool call needs one result before requesting another turn');
++  return { transcript, used };
++}
++
++function prepareChatTools(body, normalized) {
++  if (own(body, 'functions') || own(body, 'function_call')) throw invalid('Legacy functions/function_call are not supported; use tools/tool_choice');
++  const tools = definitions(body.tools);
++  const selected = choice(body.tool_choice, tools);
++  if (body.parallel_tool_calls !== undefined && typeof body.parallel_tool_calls !== 'boolean') throw invalid('parallel_tool_calls must be a boolean');
++  const publicHistory = hasToolHistory(body.messages) || hasToolHistory(body.input);
++  if (!tools.length && !publicHistory && body.tool_choice === undefined) return null;
++  if (body.input !== undefined || !Array.isArray(body.messages) || !body.messages.length) throw invalid('Tool requests require messages without input');
++  if (body.n !== undefined && body.n !== 1) throw invalid('Tool requests support n=1 only');
++  if (body.response_format !== undefined) throw invalid('response_format is not supported together with the tool text protocol');
++  const prior = history(body.messages, normalized.messageTexts || []);
++  const nonce = randomUUID();
++  const parallel = body.parallel_tool_calls !== false;
++  const limit = parallel ? MAX_CALLS : 1;
++  const control = { protocol: PROTOCOL, nonce, tool_choice: selected, parallel_tool_calls: parallel, max_tool_calls: limit, tools, messages: prior.transcript };
++  const prompt = [
++    'You are continuing the client conversation encoded below. Use the tool text protocol exactly.',
++    'Tools are actions for the external client. Never execute tools, shell commands, or browser actions yourself, and never claim execution. Return requests for the client to execute.',
++    'Return exactly one raw JSON object, without Markdown, code fences, commentary, or additional keys.',
++    `For a final answer return {"protocol":"${PROTOCOL}","nonce":"${nonce}","type":"final","content":"your nonempty answer"}.`,
++    `For client tool requests return {"protocol":"${PROTOCOL}","nonce":"${nonce}","type":"tool_calls","tool_calls":[{"name":"declared function name","arguments":{}}]}. Replace the example name and empty object with the selected function and its parameter object.`,
++    'arguments must be a JSON object, not a quoted JSON string. No executable expressions are allowed. Data strings may contain requested code or text; never execute them. Use strict JSON without duplicate keys and preserve exact integer/decimal spellings. Do not include call IDs; the gateway assigns them.',
++    'tool_choice none permits only final. required requires tool_calls. named requires exactly that named function. auto permits either. Respect max_tool_calls and parallel_tool_calls.',
++    'Historical assistant tool calls and their tool results are public conversation data. Preserve their call associations; do not repeat a completed action without a new reason.',
++    JSON.stringify(control),
++  ].join('\n');
++  if (Buffer.byteLength(prompt) > 16 * 1024 * 1024) throw invalid('Tool protocol prompt exceeds the 16 MiB request limit');
++  return { prompt, nonce, selected, limit, names: new Set(tools.map(tool => tool.name)), used: prior.used };
++}
++
++function protocolJsonText(text) {
++  if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_PROTOCOL_BYTES) throw badOutput('json');
++  const trimmed = text.trim();
++  // Some observed website replies wrap their entire JSON in this literal tag.
++  // Strip only that exact whole-answer wrapper, without decoding entities or
++  // recursively unwrapping/narrowing arbitrary response substrings.
++  if (trimmed.startsWith('<escape>')) {
++    if (!trimmed.endsWith('</escape>')) throw badOutput('fence');
++    return trimmed.slice('<escape>'.length, -'</escape>'.length);
++  }
++  // Remove only a whole-answer, single JSON/unlabelled fence. Do not salvage a
++  // JSON-looking substring from commentary, multiple blocks, or other formats.
++  if (trimmed.startsWith('```')) {
++    const fenced = /^```(?:json)?[\t ]*\r?\n([\s\S]*?)\r?\n```$/i.exec(trimmed);
++    if (!fenced || /^[\t ]*```/m.test(fenced[1])) throw badOutput('fence');
++    return fenced[1];
++  }
++  if (/^[\t ]*```/m.test(trimmed)) throw badOutput('fence');
++  return trimmed;
++}
++
++function parseToolReply(text, context) {
++  try {
++    const raw = protocolJsonText(text);
++    const argumentRanges = new Map();
++    let value;
++    try { value = strictJson(raw, MAX_PROTOCOL_BYTES, argumentRanges); } catch { throw badOutput('json'); }
++    if (!object(value) || value.protocol !== PROTOCOL) throw badOutput('shape');
++    if (value.nonce !== context.nonce) throw badOutput('nonce');
++    if (value.type === 'final') {
++      if (!keys(value, ['protocol', 'nonce', 'type', 'content']) || typeof value.content !== 'string' || !value.content.trim()) throw badOutput('shape');
++      if (['required', 'named'].includes(context.selected.mode)) throw badOutput('tool');
++      return { message: { role: 'assistant', content: value.content }, finishReason: 'stop' };
++    }
++    if (value.type !== 'tool_calls' || !keys(value, ['protocol', 'nonce', 'type', 'tool_calls']) || !Array.isArray(value.tool_calls)) throw badOutput('shape');
++    if (context.selected.mode === 'none' || !value.tool_calls.length || value.tool_calls.length > context.limit) throw badOutput('tool');
++    const calls = value.tool_calls.map((call, index) => {
++      if (!keys(call, ['name', 'arguments'])) throw badOutput('shape');
++      if (!context.names.has(call.name) || (context.selected.mode === 'named' && call.name !== context.selected.name)) throw badOutput('tool');
++      let argumentText = call.arguments;
++      if (object(argumentText)) {
++        const range = argumentRanges.get(index);
++        if (!range) throw badOutput('arguments');
++        argumentText = raw.slice(range.start, range.end);
++      }
++      argumentsJson(argumentText, () => badOutput('arguments'));
++      let id;
++      do { id = `call_c2c_${randomUUID()}`; } while (context.used.has(id));
++      context.used.add(id);
++      return { id, type: 'function', function: { name: call.name, arguments: argumentText } };
++    });
++    return { message: { role: 'assistant', content: null, tool_calls: calls }, finishReason: 'tool_calls' };
++  } catch (error) {
++    const failure = badOutput(error?.code === 'invalid_tool_output' ? error.reason : 'shape');
++    failure.inputChars = typeof text === 'string' ? text.length : 0;
++    throw failure;
++  }
++}
++
++module.exports = { PROTOCOL, MAX_TOOLS, MAX_CALLS, MAX_ARGUMENT_BYTES, strictJson, prepareChatTools, parseToolReply, rejectsResponsesTools };
 diff --git a/src/lib/chat-vision.cjs b/src/lib/chat-vision.cjs
 new file mode 100644
-index 0000000..cfa0d92
+index 0000000..a0f0e35
 --- /dev/null
 +++ b/src/lib/chat-vision.cjs
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,122 @@
 +'use strict';
 +
 +const { randomUUID } = require('node:crypto');
 +
-+// Keep the first vision contract intentionally narrow: one attached image on the
-+// latest user message. Never turn an unsupported image into a text-only request.
++// Keep image ownership explicit while replaying public client history. Image
++// bytes are attached separately; the prompt records each attachment's owner.
 +const MAX_CHAT_REQUEST_BYTES = 16 * 1024 * 1024;
 +const MAX_CHAT_IMAGE_BYTES = 10 * 1024 * 1024;
++const MAX_CHAT_IMAGES = 10;
 +const IMAGE_ONLY_PROMPT = 'Describe the attached image.';
 +const EXTENSIONS = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
 +
@@ -1917,8 +3134,7 @@ index 0000000..cfa0d92
 +    if (typeof part === 'string') return part;
 +    if (!part || typeof part !== 'object' || Array.isArray(part)) throw invalid('Unsupported message content part');
 +    if (part.type === 'image_url') {
-+      onImage(part.image_url);
-+      return '';
++      return onImage(part.image_url);
 +    }
 +    if (hasImage(part)) throw invalid('Unsupported image content part; use image_url on the latest user message');
 +    if ((part.type === undefined || ['text', 'input_text', 'output_text'].includes(part.type)) && typeof part.text === 'string') return part.text;
@@ -1929,22 +3145,32 @@ index 0000000..cfa0d92
 +
 +function normalizeMessages(messages, allowImages) {
 +  if (!Array.isArray(messages) || messages.length === 0) return { text: '' };
-+  let image;
-+  const text = messages.map((msg, index) => {
++  const images = [];
++  let decodedBytes = 0;
++  const messageTexts = [];
++  const text = messages.map((msg) => {
 +    const role = msg && msg.role ? String(msg.role) : 'user';
++    let messageImageCount = 0;
 +    let content = normalizeContent(msg && msg.content, (url) => {
 +      if (!allowImages) throw invalid('Images are not supported on /v1/responses; use /v1/chat/completions');
-+      if (!msg || msg.role !== 'user' || index !== messages.length - 1) throw invalid('Images are supported only on the latest user message');
-+      if (image) throw invalid('Only one image per request is supported');
-+      image = parseImageUrl(url);
-+    }).trim();
-+    if (image && index === messages.length - 1 && !content) content = IMAGE_ONLY_PROMPT;
++      if (!msg || msg.role !== 'user') throw invalid('Images are supported only on user messages');
++      if (images.length >= MAX_CHAT_IMAGES) throw invalid('At most 10 image attachments are supported per request');
++      const image = parseImageUrl(url);
++      decodedBytes += image.buffer.length;
++      if (decodedBytes > MAX_CHAT_IMAGE_BYTES) throw invalid('Combined decoded images exceed the 10 MiB image limit');
++      images.push(image);
++      messageImageCount += 1;
++      return `[Image ${images.length} attached as ${image.name}]`;
++    });
++    if (messageImageCount && !normalizeContent(msg.content, () => '').trim()) content += `\n${IMAGE_ONLY_PROMPT}`;
++    messageTexts.push(content);
++    content = content.trim();
 +    if (!content) return '';
 +    if (role === 'system') return `System instructions:\n${content}`;
 +    if (role === 'assistant') return `Previous assistant message:\n${content}`;
 +    return `User:\n${content}`;
 +  }).filter(Boolean).join('\n\n');
-+  return { text, ...(image ? { image } : {}) };
++  return { text, messageTexts, ...(images.length ? { images, ...(images.length === 1 ? { image: images[0] } : {}) } : {}) };
 +}
 +
 +function normalizeChatMessages(messages, fallbackInput) {
@@ -1952,7 +3178,7 @@ index 0000000..cfa0d92
 +  // otherwise ignore. An image may never disappear because `input` was also set.
 +  const normalized = normalizeMessages(messages, true);
 +  if (fallbackInput !== undefined && fallbackInput !== null) {
-+    if (normalized.image || hasImage(fallbackInput)) throw invalid('Images require the messages field without input');
++    if (normalized.images?.length || hasImage(fallbackInput)) throw invalid('Images require the messages field without input');
 +    if (typeof fallbackInput === 'string') return { text: fallbackInput };
 +    if (Array.isArray(fallbackInput)) return normalizeMessages(fallbackInput, false);
 +  }
@@ -1971,20 +3197,23 @@ index 0000000..cfa0d92
 +  }
 +}
 +
-+module.exports = { MAX_CHAT_REQUEST_BYTES, MAX_CHAT_IMAGE_BYTES, IMAGE_ONLY_PROMPT, normalizeChatMessages, normalizeResponsesInput, assertChatRequestSize };
++module.exports = { MAX_CHAT_REQUEST_BYTES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_IMAGES, IMAGE_ONLY_PROMPT, normalizeChatMessages, normalizeResponsesInput, assertChatRequestSize };
 diff --git a/src/routes/images.js b/src/routes/images.js
-index da98c4a..f623def 100644
+index da98c4a..62d1fa1 100644
 --- a/src/routes/images.js
 +++ b/src/routes/images.js
-@@ -12,6 +12,7 @@ const {
+@@ -11,7 +11,9 @@ const {
+ } = require('../chatgpt');
  const { parseBool, normalizeThinkingMode, parseThinkingMode, parseWebSearchRequested } = require('../params');
  const { isValidConversationId } = require('../lib/conversation-read');
- const { createStreamEmitter } = require('../lib/sse-transform');
+-const { createStreamEmitter } = require('../lib/sse-transform');
++const { createStreamEmitter, formatSseData, formatFinishChunk, DONE_EVENT } = require('../lib/sse-transform');
 +const { normalizeChatMessages, normalizeResponsesInput, assertChatRequestSize } = require('../lib/chat-vision.cjs');
++const { prepareChatTools, parseToolReply, rejectsResponsesTools } = require('../lib/chat-tools.cjs');
  const { progress } = require('../progress');
  const { createTurnGate, heartbeatMsFor } = require('../pacer');
  const { createJobPool, parseConcurrency } = require('../job-pool');
-@@ -23,13 +24,13 @@ const {
+@@ -23,13 +25,13 @@ const {
  
  // Build a structured failure body that augments — but does not break — the legacy
  // `{ error: { message, type, retry_after? } }` contract that skill scripts parse.
@@ -2000,7 +3229,7 @@ index da98c4a..f623def 100644
      model_message: modelMessage || null,
      error: errObj,
    };
-@@ -237,7 +238,10 @@ function submitJob(fn, { key } = {}) {
+@@ -237,7 +239,10 @@ function submitJob(fn, { key } = {}) {
          progress.jobRequeued(ctx.jobId);
          throw err;
        }
@@ -2012,7 +3241,7 @@ index da98c4a..f623def 100644
        throw err;
      } finally {
        if (!requeued) recordSlotJobFinished?.(ctx.slotId);
-@@ -262,7 +266,8 @@ function conversationKey(id) {
+@@ -262,7 +267,8 @@ function conversationKey(id) {
  // Pace at send time. finished() runs once per hook that actually returned, so
  // a rate-limit throw inside the hook does not stamp a gap for a send that
  // never happened. A batch calls the same hook once per image.
@@ -2022,7 +3251,7 @@ index da98c4a..f623def 100644
    let paced = 0;
    try {
      return await invoke({
-@@ -275,7 +280,9 @@ async function runTurn(ctx, invoke) {
+@@ -275,7 +281,9 @@ async function runTurn(ctx, invoke) {
          }
        },
        beforeSubmit: async () => {
@@ -2032,7 +3261,19 @@ index da98c4a..f623def 100644
          assertNotRateLimited();
          paced += 1;
        },
-@@ -360,6 +367,7 @@ function respondWithError(res, startedAt, err) {
+@@ -342,6 +350,11 @@ function checkQueueFull(res, startedAt) {
+ // queue_full is thrown synchronously by submit when the waiting list fills in
+ // the gap after checkQueueFull; answering it as 500 would retry into the wall.
+ function respondWithError(res, startedAt, err) {
++  if (err && err.code === 'invalid_tool_output') {
++    incError('server_error');
++    observeDuration('server_error', elapsedSec(startedAt));
++    return res.status(502).json(buildErrorBody({ kind: 'invalid_tool_output', message: err.message, noRetry: true }));
++  }
+   if (err && err.code === 'queue_full') {
+     return sendQueueFull(res, startedAt, pool.status().waiting);
+   }
+@@ -360,6 +373,7 @@ function respondWithError(res, startedAt, err) {
        message: err.message,
        modelMessage: err.modelMessage,
        retryAfter: retryAfterSec,
@@ -2040,7 +3281,7 @@ index da98c4a..f623def 100644
      }));
    }
  
-@@ -389,6 +397,7 @@ function respondWithError(res, startedAt, err) {
+@@ -389,6 +403,7 @@ function respondWithError(res, startedAt, err) {
      modelMessage: err.modelMessage,
      loginBlocker: err.loginBlocker,
      loginStep: err.loginStep,
@@ -2048,7 +3289,7 @@ index da98c4a..f623def 100644
    }));
  }
  
-@@ -871,42 +880,36 @@ router.post('/v1/images/edits', maybeMultipart, async (req, res) => {
+@@ -871,42 +886,36 @@ router.post('/v1/images/edits', maybeMultipart, async (req, res) => {
    }
  });
  
@@ -2102,26 +3343,26 @@ index da98c4a..f623def 100644
 +    signal: controller.signal,
 +    dispose() { req.removeListener('aborted', abort); res.removeListener('close', close); },
 +  };
-+}
-+
+ }
+ 
+-async function handleTextCompletion(req, res, prompt) {
 +function invalidChatRequest(res, err) {
 +  return res.status(400).json({
 +    ok: false, error_kind: 'invalid_request', should_retry: false, model_message: null,
 +    error: { message: err.message, type: 'invalid_request_error' },
 +  });
- }
- 
--async function handleTextCompletion(req, res, prompt) {
-+async function handleTextCompletion(req, res, prompt, image) {
++}
++
++async function handleTextCompletion(req, res, prompt, images, toolContext) {
    const webSearch = parseDeprecatedWebSearch(req, 'chat');
    const thinkingMode = parseThinkingMode(req.body);
    const startedAt = Date.now();
-@@ -961,17 +964,18 @@ async function handleTextCompletion(req, res, prompt) {
+@@ -961,17 +970,18 @@ async function handleTextCompletion(req, res, prompt) {
    }
  
    logRequestDetails(req, 'text', {
 -    prompt, promptLen: prompt.length, hasImage: false, thinkingMode, webSearch,
-+    promptLen: prompt.length, hasImage: !!image, thinkingMode, webSearch,
++    promptLen: prompt.length, hasImage: !!images?.length, thinkingMode, webSearch,
    });
  
    if (checkRateLimit(res, startedAt)) return;
@@ -2135,50 +3376,74 @@ index da98c4a..f623def 100644
    try {
 +    assertRequestActive(request.signal);
 +    if (stream) {
-+      return await streamTextCompletion(res, prompt, { thinkingMode, webSearch, conversationId, startedAt, image, signal: request.signal });
++      return await streamTextCompletion(res, prompt, { thinkingMode, webSearch, conversationId, startedAt, images, toolContext, signal: request.signal });
 +    }
      const result = await submitTextJob((ctx) => runTurn(ctx, ({ job, beforeSubmit, onAttemptFinished, stallRetryState }) => completeText(prompt, {
        thinkingMode,
        conversationId,
-@@ -979,8 +983,11 @@ async function handleTextCompletion(req, res, prompt) {
+@@ -979,8 +989,13 @@ async function handleTextCompletion(req, res, prompt) {
        beforeSubmit,
        onAttemptFinished,
        stallRetryState,
 -    })), conversationKey(conversationId));
-+      image,
++      images,
++      noResend: !!toolContext,
 +      signal: request.signal,
 +    }), request.signal), conversationKey(conversationId));
  
 +    assertRequestActive(request.signal);
++    const reply = toolContext ? parseToolReply(result.text, toolContext) : { message: { role: 'assistant', content: result.text }, finishReason: 'stop' };
      const applied = result.applied || { thinking: false, thinking_mode: 'instant' };
      progress.clearPartialInfra(); // any full success proves the session alive
      observeDuration('success', elapsedSec(startedAt));
-@@ -1001,8 +1008,11 @@ async function handleTextCompletion(req, res, prompt) {
+@@ -994,15 +1009,19 @@ async function handleTextCompletion(req, res, prompt) {
+       choices: [
+         {
+           index: 0,
+-          message: { role: 'assistant', content: result.text },
+-          finish_reason: 'stop',
++          message: reply.message,
++          finish_reason: reply.finishReason,
+         },
+       ],
        ...textEcho(applied, thinkingMode, webSearch),
      });
    } catch (err) {
+-    console.error('Text completion error:', err.message);
 +    if (request.signal.aborted) return;
-     console.error('Text completion error:', err.message);
++    if (err.code === 'invalid_tool_output') console.error(`[tool-protocol] reason=${err.reason} input_chars=${err.inputChars}`);
++    else console.error('Text completion error:', err.message);
      respondWithError(res, startedAt, err);
 +  } finally {
 +    request.dispose();
    }
  }
  
-@@ -1039,6 +1049,7 @@ function textEcho(applied, thinkingMode, webSearch) {
+@@ -1039,6 +1058,8 @@ function textEcho(applied, thinkingMode, webSearch) {
        // Extra High). `requested.thinking_mode` still shows what the caller asked for.
        thinking_fallback: applied.thinking_fallback ?? null,
        web_search: false, // deprecated — forced search removed, model auto-searches
-+      ...(applied.image_inputs_attached === 1 ? { image_inputs_attached: 1 } : {}),
++      ...(Number.isInteger(applied.image_inputs_attached) && applied.image_inputs_attached > 0 && applied.image_inputs_attached <= 10
++        ? { image_inputs_attached: applied.image_inputs_attached } : {}),
      },
      requested: {
        thinking: thinkingRequested(thinkingMode),
-@@ -1051,13 +1062,13 @@ function textEcho(applied, thinkingMode, webSearch) {
+@@ -1051,13 +1072,23 @@ function textEcho(applied, thinkingMode, webSearch) {
  // SSE streaming leg of a text completion. Headers are sent lazily on the first delta
  // (or at completion), so queue-full / rate-limit / pre-flight errors above still go
  // out as plain JSON. Once the stream started, errors become an SSE error event.
 -async function streamTextCompletion(res, prompt, { thinkingMode, webSearch, conversationId, startedAt }) {
-+async function streamTextCompletion(res, prompt, { thinkingMode, webSearch, conversationId, startedAt, image, signal }) {
++function* toolArgumentChunks(text) {
++  for (let start = 0; start < text.length;) {
++    let end = Math.min(start + 8192, text.length);
++    if (end < text.length && text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff
++        && text.charCodeAt(end) >= 0xdc00 && text.charCodeAt(end) <= 0xdfff) end -= 1;
++    yield text.slice(start, end);
++    start = end;
++  }
++}
++
++async function streamTextCompletion(res, prompt, { thinkingMode, webSearch, conversationId, startedAt, images, toolContext, signal }) {
    const meta = { id: `chatcmpl-${randomUUID()}`, created: Math.floor(Date.now() / 1000), model: 'chatgpt-web' };
    const emitter = createStreamEmitter(meta);
    let streamingStarted = false;
@@ -2189,15 +3454,18 @@ index da98c4a..f623def 100644
      streamingStarted = true;
      res.status(200);
      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-@@ -1077,15 +1088,19 @@ async function streamTextCompletion(res, prompt, { thinkingMode, webSearch, conv
+@@ -1077,27 +1108,49 @@ async function streamTextCompletion(res, prompt, { thinkingMode, webSearch, conv
        beforeSubmit,
        onAttemptFinished,
        stallRetryState,
-+      image,
++      images,
++      noResend: !!toolContext,
 +      signal,
        // Called with the latest FULL text; the emitter turns it into append-only deltas.
        onDelta: (fullText) => {
-+        if (signal.aborted) return;
++        // Tool protocol text is never exposed as answer text or executable
++        // partial calls. Validate the authoritative full result before emitting.
++        if (signal.aborted || toolContext) return;
          try {
            ensureStreamStarted();
            for (const chunk of emitter.push(fullText)) res.write(chunk);
@@ -2207,18 +3475,41 @@ index da98c4a..f623def 100644
 +    }), signal), conversationKey(conversationId));
  
 +    assertRequestActive(signal);
++    const reply = toolContext ? parseToolReply(result.text, toolContext) : null;
      ensureStreamStarted();
-     for (const chunk of emitter.finish(result.text, {
+-    for (const chunk of emitter.finish(result.text, {
++    const extra = {
        conversation_id: result.conversation_id || null,
-@@ -1097,6 +1112,7 @@ async function streamTextCompletion(res, prompt, { thinkingMode, webSearch, conv
+       ...textEcho(result.applied || { thinking: false, thinking_mode: 'instant' }, thinkingMode, webSearch),
+-    })) {
+-      res.write(chunk);
++    };
++    if (reply?.finishReason === 'tool_calls') {
++      // The entire reply has already passed protocol validation. Keep every
++      // event below clients' frame caps without changing argument string bytes.
++      const writeTool = call => res.write(formatSseData({ ...meta, object: 'chat.completion.chunk', choices: [{ index: 0,
++        delta: { tool_calls: [call] }, finish_reason: null }] }));
++      for (const [index, call] of reply.message.tool_calls.entries()) {
++        writeTool({ index, id: call.id, type: call.type, function: { name: call.function.name, arguments: '' } });
++        for (const part of toolArgumentChunks(call.function.arguments)) writeTool({ index, function: { arguments: part } });
++      }
++      res.write(formatFinishChunk(meta, 'tool_calls', extra));
++      res.write(DONE_EVENT);
++    } else {
++      for (const chunk of emitter.finish(reply ? reply.message.content : result.text, extra)) res.write(chunk);
+     }
+     res.end();
      progress.clearPartialInfra();
      observeDuration('success', elapsedSec(startedAt));
    } catch (err) {
+-    console.error('Streaming completion error:', err.message);
 +    if (signal.aborted) return;
-     console.error('Streaming completion error:', err.message);
++    if (err.code === 'invalid_tool_output') console.error(`[tool-protocol] reason=${err.reason} input_chars=${err.inputChars}`);
++    else console.error('Streaming completion error:', err.message);
      if (!streamingStarted) return respondWithError(res, startedAt, err);
      // Headers are gone — emit an OpenAI-style terminal error event instead.
-@@ -1107,22 +1123,31 @@ async function streamTextCompletion(res, prompt, { thinkingMode, webSearch, conv
+     handleRateLimitError(err);
+@@ -1107,22 +1160,34 @@ async function streamTextCompletion(res, prompt, { thinkingMode, webSearch, conv
      res.write(`data: ${JSON.stringify({
        error: { message: err.message, type: errorType },
        error_kind: errorType,
@@ -2237,11 +3528,13 @@ index da98c4a..f623def 100644
 -  const prompt = promptFromMessages(req.body.messages, req.body.input);
 -  await handleTextCompletion(req, res, prompt);
 +  let input;
++  let toolContext;
 +  try {
 +    assertChatRequestSize(req.body, req.headers['content-length']);
 +    input = normalizeChatMessages(req.body.messages, req.body.input);
++    toolContext = prepareChatTools(req.body, input);
 +  } catch (err) { return invalidChatRequest(res, err); }
-+  await handleTextCompletion(req, res, input.text, input.image);
++  await handleTextCompletion(req, res, toolContext ? toolContext.prompt : input.text, input.images, toolContext);
  });
  
  // POST /v1/responses — minimal Responses-style text endpoint without model versions.
@@ -2249,12 +3542,13 @@ index da98c4a..f623def 100644
 +  let input;
 +  try {
 +    assertChatRequestSize(req.body, req.headers['content-length']);
++    rejectsResponsesTools(req.body);
 +    input = normalizeResponsesInput(req.body.messages, req.body.input);
 +  } catch (err) { return invalidChatRequest(res, err); }
    if (parseBool(req.body.stream)) {
      return res.status(400).json({
        ok: false,
-@@ -1135,7 +1160,6 @@ router.post('/v1/responses', async (req, res) => {
+@@ -1135,7 +1200,6 @@ router.post('/v1/responses', async (req, res) => {
        },
      });
    }
@@ -2262,7 +3556,7 @@ index da98c4a..f623def 100644
    const originalJson = res.json.bind(res);
    res.json = (payload) => {
      if (payload && payload.choices && payload.choices[0]) {
-@@ -1161,7 +1185,7 @@ router.post('/v1/responses', async (req, res) => {
+@@ -1161,7 +1225,7 @@ router.post('/v1/responses', async (req, res) => {
      }
      return originalJson(payload);
    };

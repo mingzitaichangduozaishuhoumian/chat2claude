@@ -64,7 +64,7 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
   app.get('/admin/api/setup/status', (c) => c.json(status(options)));
   app.get('/admin/api/backend-routing', (c) => {
     c.header('cache-control', 'no-store');
-    return c.json(options.backendRouting?.safeView() ?? { mode: 'codex', autoPreference: 'web', webEnabled: false, configured: false });
+    return c.json(options.backendRouting?.safeView() ?? { mode: 'codex', autoPreference: 'web', contextHandoff: false, webEnabled: false, configured: false });
   });
   app.patch('/admin/api/backend-routing', async (c) => {
     if (!options.backendRouting) return c.json({ error: 'Backend routing is unavailable.' }, 503);

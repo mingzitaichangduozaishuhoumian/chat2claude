@@ -42,10 +42,16 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
       checkRequestBackendAvailability(c, deps);
       const globalResolution = resolveRequestModel(c, deps, request.model);
       const accountControls = deps.modelRegistry.accountControlRequirements(globalResolution, explicitControls);
-      const visibleRequest = mapOpenAiResponsesRequestToChatGpt({ ...request, previous_response_id: undefined }, {}, { backendModel: globalResolution.backendModel, resolvedControls: {} });
+      const contextHandoff = deps.backendRouting?.snapshot().contextHandoff === true;
+      let handoffInput: OpenAiResponsesRequest['input'] | undefined;
+      if (contextHandoff && previous) {
+        try { handoffInput = previous.expandVisible(request.input); } catch { /* Keep native continuation available when projection is unsafe. */ }
+      }
+      const visibleRequest = mapOpenAiResponsesRequestToChatGpt({ ...request, input: handoffInput ?? request.input, previous_response_id: undefined }, {}, { backendModel: globalResolution.backendModel, resolvedControls: {} });
       const account = await acquireRequestAccount(c, deps.accountPool, requestAccountOptions(c, deps, visibleRequest,
         (candidate) => supportsRoutedAccount(deps, request.model, candidate, globalResolution, explicitControls, accountControls,
-          (resolution) => !previous || previous.accepts(candidate, resolution.backendModel)),
+          (resolution) => !previous || previous.accepts(candidate, resolution.backendModel)
+            || handoffInput !== undefined && previous.canHandoff(candidate, resolution.backendModel)),
         request.model,
         declaredBackendModel(deps.modelRegistry, request.model, globalResolution.backendModel),
       ), deps.accountAcquireTimeoutMs);
@@ -64,9 +70,12 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
         const controls = deps.modelRegistry.resolveControls(resolution, account.provider === 'chatgpt-web' ? explicitControls : accountControls);
         setAccessLogMetadata(c, { backendModel: resolution.backendModel });
         const current = deps.accountPool.get(account.id);
-        if (previous && (!current || !current.enabled || current.status !== 'available' || !previous.accepts(current, resolution.backendModel))) throw new ClaudeApiError('No available account supports the requested model and controls.', 503, 'overloaded_error');
+        const nativeHistory = previous?.accepts(current ?? account, resolution.backendModel);
+        if (previous && (!current || !current.enabled || current.status !== 'available'
+          || !nativeHistory && !(contextHandoff && handoffInput !== undefined && previous.canHandoff(current, resolution.backendModel)))) throw new ClaudeApiError('No available account supports the requested model and controls.', 503, 'overloaded_error');
         // Release history only after acquisition, with current affinity and expiry checks.
-        const downstreamRequest = { ...request, input: previous ? previous.expand(request.input, current!, resolution.backendModel) : request.input, previous_response_id: undefined };
+        const downstreamRequest = { ...request, input: previous ? nativeHistory
+          ? previous.expand(request.input, current!, resolution.backendModel) : previous.expandVisible(request.input) : request.input, previous_response_id: undefined };
         const backendRequest = mapOpenAiResponsesRequestToChatGpt(downstreamRequest, {}, {
           backendModel: resolution.backendModel,
           resolvedControls: controls,
