@@ -349,13 +349,17 @@ const completion = await client.chat.completions.create({
 
 ### Independent Images API
 
-`POST /v1/images/generations` reuses an existing ChatGPT account through the Codex 0.160 Images service, defaulting to `gpt-image-2`. On 2026-10-04, all five built-ins each passed one `quality:low`, `n:1` check on one account: HTTP 200, final SSE completion and PNG decoding, taking approximately 13.4–15.5 seconds each. A requested `1024x1024` produced `1254×1254` PNGs in every case; this does not guarantee exact dimensions, access for every account or higher-quality settings. Reuse the OpenAI SDK `client` above:
+`POST /v1/images/generations` reuses an existing ChatGPT account through the Codex 0.160 Images service, defaulting to `gpt-image-2`. On 2026-10-04, the five base IDs each passed one `quality:low`, `n:1` check on one account: HTTP 200, final SSE completion and PNG decoding, taking approximately 13.4–15.5 seconds each. A requested `1024x1024` produced `1254×1254` PNGs in every case; this does not guarantee exact dimensions, access for every account or higher-quality settings.
+
+On 2026-10-20, Flare-2k JSON and Sunburst-4k final-SSE requests on one account both returned HTTP 200, delivering 2048×2048 and 3840×2160 PNGs with matching size metadata. Both used `low`, `n:1`; the delivered 4K PNG contained transparent pixels. Source images before local processing were not captured, so this does not establish native resolution or upstream transparency. See the [validation record](docs/USAGE.en.md#independent-gpt-image-generation) for scope.
+
+Image generation uses the Codex Images channel. When the global mode is Web, select Codex for this request with `x-chat2claude-backend: codex`; this leaves the global mode unchanged. Reuse the OpenAI SDK `client` above:
 
 ```ts
 const image = await client.images.generate({
   model: 'gpt-image-2', prompt: 'A simple blue circle on a white background',
   size: '1024x1024', quality: 'low', n: 1,
-});
+}, { headers: { 'x-chat2claude-backend': 'codex' } });
 // Decode image.data[0].b64_json to obtain a PNG.
 ```
 
