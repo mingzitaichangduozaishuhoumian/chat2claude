@@ -318,7 +318,7 @@ Use `POST /v1/images/generations` with a Runtime API Key. The adapter reuses the
 
 The checks used `quality:low`, `n:1`, `background:opaque` and `stream:true`, taking approximately 13.4–15.5 seconds per image. Although `size:1024x1024` was requested, every decoded PNG measured `1254×1254`; base-model image bytes were delivered unchanged. This historical record does not include the new size aliases below or verify all accounts, higher quality, multi-image batches or edits.
 
-The OpenAI SDK uses the same versioned Base URL as the text resources:
+Image generation uses the Codex Images channel. If the global mode is manual Web, add `x-chat2claude-backend: codex` to image requests; this overrides only the current call and leaves global defaults unchanged. The OpenAI SDK uses the same versioned Base URL as the text resources:
 
 ```ts
 import OpenAI from 'openai';
@@ -332,7 +332,7 @@ const image = await client.images.generate({
   model: 'gpt-image-2',
   prompt: 'A simple blue circle on a white background',
   size: '1024x1024', quality: 'low', n: 1,
-});
+}, { headers: { 'x-chat2claude-backend': 'codex' } });
 const b64 = image.data?.[0]?.b64_json;
 if (!b64) throw new Error('No image returned');
 await writeFile('image.png', Buffer.from(b64, 'base64'));
@@ -342,6 +342,7 @@ await writeFile('image.png', Buffer.from(b64, 'base64'));
 curl http://127.0.0.1:3000/v1/images/generations \
   -H 'Authorization: Bearer <runtime-api-key>' \
   -H 'content-type: application/json' \
+  -H 'x-chat2claude-backend: codex' \
   -d '{"model":"gpt-image-2","prompt":"A simple blue circle","size":"1024x1024","quality":"low","n":1}'
 ```
 
@@ -379,7 +380,16 @@ Example request for a transparent portrait 4K image:
 {"model":"gpt-image-2.5-sunburst-4k","prompt":"A blue flower on a transparent background","size":"2160x3840","background":"transparent","quality":"high","n":1}
 ```
 
-Synthetic PNG and HTTP tests cover the aliases and physical resizing. No new live upstream 2K/4K generation was run for this update. A drawing studio, grouping, pagination, bulk editing and progressive previews are outside this model/API update.
+Synthetic PNG and HTTP tests cover all four aliases and physical resizing. On 2026-10-20, the main service's independent Images API completed these two live requests on one account. Both used `quality:low`, `n:1` and returned HTTP 200 with `backend=codex`; decoded PNG dimensions matched response `size`:
+
+| Model | Response | Background | Delivered PNG | Time |
+| --- | --- | --- | --- | --- |
+| `gpt-image-2.5-flare-2k` | JSON | `opaque` | 2048×2048 | 15.018 s |
+| `gpt-image-2.5-sunburst-4k` | Final SSE, one `image_generation.completed` | `transparent` | 3840×2160 | 19.946 s |
+
+The delivered 4K PNG contained 7,996,389 fully transparent and 296,311 partially transparent pixels; the central rectangle spanning half its width and height contained 1,775,701 fully transparent pixels. The source image before local processing was not captured, so this does not establish whether resizing occurred or prove native high-resolution detail or upstream transparency; local padding can itself introduce transparent pixels. After the test, the temporary Runtime Key was revoked, account concurrency returned to zero, and the global manual Web mode was unchanged.
+
+This run did not verify `gpt-image-2.5-flare-4k`, `gpt-image-2.5-sunburst-2k`, higher qualities, image batches, other accounts or the Responses image tool. A drawing studio, grouping, pagination, bulk editing and progressive previews are outside this model/API update.
 
 `xhigh` / `max` are accepted for exactly the three base 2.5 IDs, the four size aliases above, plus `gpt-image-2.5-flare-2026-09-08` and `gpt-image-2.5-sunburst-2026-09-08`. These two snapshots do not add entries to the nine-entry Admin count. Requests for 1.5, 2 and other unknown IDs remain limited to `low` / `medium` / `high` / `auto`; unsupported combinations return 400 locally. Valid upstream quality metadata is retained unchanged. The [official Images API reference](https://developers.openai.com/api/reference/resources/images/methods/generate) lists multiple public image models and advanced Flare/Sunburst qualities. CPA's bare 2.5 compatibility ID is not proof of a same-named public API model or private-account access.
 

@@ -349,13 +349,17 @@ const completion = await client.chat.completions.create({
 
 ### 独立 Images API
 
-`POST /v1/images/generations` 使用现有 ChatGPT 账号调用 Codex 0.160 Images 服务，默认模型 `gpt-image-2`。2026-10-04，五个内置型号已在一个账号上以 `quality:low`、`n:1` 各完成一次实测，HTTP 200、最终 SSE 事件和 PNG 解码均通过，耗时约 13.4–15.5 秒。请求 `1024x1024` 时实际 PNG 均为 `1254×1254`；这不保证精确尺寸、所有账号或更高质量档位。OpenAI SDK 可沿用上面的 `client`：
+`POST /v1/images/generations` 使用现有 ChatGPT 账号调用 Codex 0.160 Images 服务，默认模型 `gpt-image-2`。2026-10-04，五个基础型号已在一个账号上以 `quality:low`、`n:1` 各完成一次实测，HTTP 200、最终 SSE 事件和 PNG 解码均通过，耗时约 13.4–15.5 秒。请求 `1024x1024` 时实际 PNG 均为 `1254×1254`；这不保证精确尺寸、所有账号或更高质量档位。
+
+2026-10-20，一个账号的 Flare-2k JSON 与 Sunburst-4k 最终 SSE 请求均返回 HTTP 200，交付 PNG 分别为 2048×2048、3840×2160，响应尺寸一致；两次均为 `low`、`n:1`，4K 交付图含透明像素。未采集处理前源图，不据此认定为原生高分辨率或上游透明背景。完整范围见[实测记录](docs/USAGE.zh-CN.md#独立-gpt-image-生成)。
+
+图片生成使用 Codex 图片通道；全局选择网页时，需用 `x-chat2claude-backend: codex` 为这次请求选择 Codex，不改变全局模式。OpenAI SDK 可沿用上面的 `client`：
 
 ```ts
 const image = await client.images.generate({
   model: 'gpt-image-2', prompt: '白色背景上的简洁蓝色圆形',
   size: '1024x1024', quality: 'low', n: 1,
-});
+}, { headers: { 'x-chat2claude-backend': 'codex' } });
 // image.data[0].b64_json 解码后是 PNG。
 ```
 

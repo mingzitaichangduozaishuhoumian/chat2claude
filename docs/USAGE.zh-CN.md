@@ -312,7 +312,7 @@ Claude Code、Anthropic SDK、Cline 和 Roo 按 Claude/Anthropic 兼容客户端
 
 实测条件为 `quality:low`、`n:1`、`background:opaque`、`stream:true`，每张耗时约 13.4–15.5 秒。请求 `size:1024x1024`，实际 PNG 均为 `1254×1254`，基础型号图片原样交付。这个历史记录不包含下述新增尺寸别名，也不证明所有账号、更高质量、多图批次或编辑操作已验证。
 
-OpenAI SDK 继续使用带 `/v1` 的 Base URL：
+图片生成使用 Codex 图片通道。全局处于手动网页模式时，为图片请求添加 `x-chat2claude-backend: codex`；这只覆盖当前调用，不修改全局默认。OpenAI SDK 继续使用带 `/v1` 的 Base URL：
 
 ```ts
 import OpenAI from 'openai';
@@ -326,7 +326,7 @@ const image = await client.images.generate({
   model: 'gpt-image-2',
   prompt: '白色背景上的简洁蓝色圆形',
   size: '1024x1024', quality: 'low', n: 1,
-});
+}, { headers: { 'x-chat2claude-backend': 'codex' } });
 const b64 = image.data?.[0]?.b64_json;
 if (!b64) throw new Error('没有返回图片');
 await writeFile('image.png', Buffer.from(b64, 'base64'));
@@ -336,6 +336,7 @@ await writeFile('image.png', Buffer.from(b64, 'base64'));
 curl http://127.0.0.1:3000/v1/images/generations \
   -H 'Authorization: Bearer <runtime-api-key>' \
   -H 'content-type: application/json' \
+  -H 'x-chat2claude-backend: codex' \
   -d '{"model":"gpt-image-2","prompt":"白色背景上的简洁蓝色圆形","size":"1024x1024","quality":"low","n":1}'
 ```
 
@@ -373,7 +374,16 @@ JSON 响应包含 `created`、`data[].b64_json`、`output_format: "png"` 以及�
 {"model":"gpt-image-2.5-sunburst-4k","prompt":"透明背景上的蓝色花朵","size":"2160x3840","background":"transparent","quality":"high","n":1}
 ```
 
-这些别名及其真实像素转换有合成 PNG / HTTP 测试；本次没有新增真实上游 2K／4K 生成实测。绘图工作台、分组、分页、批量编辑和渐进预览不属于本次模型/API 更新。
+四个别名及其像素转换有合成 PNG / HTTP 测试。2026-10-20，在一个账号上通过主服务的独立 Images API 完成以下两次真实请求，均为 `quality:low`、`n:1`、HTTP 200、`backend=codex`；交付 PNG 的实际尺寸与响应 `size` 一致：
+
+| 型号 | 响应 | 背景 | 交付 PNG | 耗时 |
+| --- | --- | --- | --- | --- |
+| `gpt-image-2.5-flare-2k` | JSON | `opaque` | 2048×2048 | 15.018 秒 |
+| `gpt-image-2.5-sunburst-4k` | 最终 SSE，1 个 `image_generation.completed` | `transparent` | 3840×2160 | 19.946 秒 |
+
+4K 交付 PNG 含 7,996,389 个全透明像素和 296,311 个半透明像素，中央宽、高各一半的区域内有 1,775,701 个全透明像素。未采集处理前源图，因此不判断这次是否发生缩放，也不据此证明上游原生高分辨率细节或透明背景；本地补边本身也可产生透明像素。测试后临时 Runtime Key 已撤销、并发占用归零，全局手动网页模式保持不变。
+
+这次未实测 `gpt-image-2.5-flare-4k`、`gpt-image-2.5-sunburst-2k`、更高质量、多图批量、其他账号及 Responses 图片工具。绘图工作台、分组、分页、批量编辑和渐进预览不属于本次模型/API 更新。
 
 `xhigh` / `max` 精确适用于三个基础 2.5 ID、上述四个尺寸别名，以及 `gpt-image-2.5-flare-2026-09-08`、`gpt-image-2.5-sunburst-2026-09-08` 两个快照 ID；快照不增加管理面板的九项计数。1.5、2 和其他未知 ID 的请求质量仍限于 `low` / `medium` / `high` / `auto`，不支持的组合在本地返回 400。上游合法返回的质量元数据原样保留。[官方 Images API reference](https://developers.openai.com/api/reference/resources/images/methods/generate) 列出了多个公共图片型号及 Flare/Sunburst 的高级质量选项；CPA 的裸 2.5 兼容项不应被当作公共 API 的同名模型或私有账号可用性证明。
 
