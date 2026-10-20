@@ -2,6 +2,7 @@ import { CODEX_ORIGINATOR, codexUserAgent, normalizeCodexClientVersion } from '.
 import { randomUUID } from 'node:crypto';
 import type { ChatGptImageGenerationRequest, ChatGptImageGenerationResponse } from './client.js';
 import { DEFAULT_IMAGE_REQUEST_TIMEOUT_MS, imageGenerationBody, parseImageGenerationResponse } from './images.js';
+import { resizeAliasedImageResponse } from './image-resize.js';
 import { RESPONSES_IMAGE_LIMITS, ResponsesImagePartials } from './image-output.js';
 import type { ChatGptModelDiscoveryDiagnostic, ChatGptModelDiscoveryResult, ChatGptReplayItem } from './client.js';
 import type { ChatGptAccountQuota, ChatGptAdditionalQuotaLimit, ChatGptBackendClient, ChatGptBackendHealthCheckResult, ChatGptBackendRequestContext, ChatGptCompletionRequest, ChatGptCompletionResponse, ChatGptDiscoveredModel, ChatGptFinishReason, ChatGptInputContentPart, ChatGptInputItem, ChatGptModelControlCapabilities, ChatGptQuotaWindow, ChatGptReasoningLevelOption, ChatGptServiceTierOption, ChatGptSessionSecret, ChatGptToolCall, ChatGptUsage } from './client.js';
@@ -60,7 +61,10 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
 
   async generateImages(request: ChatGptImageGenerationRequest, context?: ChatGptBackendRequestContext): Promise<ChatGptImageGenerationResponse> {
     const secret = requireSessionSecret(context);
-    const body = imageGenerationBody(request);
+    // Keep the validated local transform target stable across upstream awaits,
+    // including for direct adapter callers that reuse a mutable request object.
+    const imageRequest = { ...request };
+    const body = imageGenerationBody(imageRequest);
     const headers = this.headers(secret, true, 'application/json');
     headers.set('x-codex-image-turn-id', randomUUID());
     const lifetime = createRequestLifetime(this.imageTimeoutMs, context?.signal);
@@ -82,7 +86,7 @@ export class SessionChatGptBackend implements ChatGptBackendClient {
       }
       const payload = await readBoundedImageJson(response, lifetime);
       if (context?.signal?.aborted) throw abortError();
-      return parseImageGenerationResponse(payload);
+      return await lifetime.run(() => resizeAliasedImageResponse(parseImageGenerationResponse(payload), imageRequest, lifetime.signal));
     } catch (error) {
       if (context?.signal?.aborted) throw abortError();
       if (error instanceof ChatGptBackendError && error.safeDiagnostic?.failurePhase === 'response_headers') throw error;
@@ -1188,7 +1192,6 @@ async function readBoundedImageJson(response: Response, lifetime: ReturnType<typ
     });
   } finally {
     lifetime.signal.removeEventListener('abort', cancel);
-    lifetime.dispose();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try { await Promise.race([cancel(), new Promise<void>((resolve) => { timer = setTimeout(resolve, 250); })]); }
     finally { clearTimeout(timer); try { reader.releaseLock(); } catch { /* best effort */ } }

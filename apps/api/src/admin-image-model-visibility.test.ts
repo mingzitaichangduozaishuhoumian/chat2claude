@@ -106,6 +106,34 @@ describe('Visible independent image models in Admin', () => {
     expect(html).not.toContain('href=');
   });
 
+  it.each(['zh-CN', 'en'] as const)('explains size aliases and resize behavior in shared account and model renderers (%s)', (locale) => {
+    const alias: PublicImageModel = { ...image, id: 'gpt-image-2.5-flare-4k', display_name: 'GPT Image 2.5 Flare 4K',
+      alias_of: 'gpt-image-2.5-flare', default_size: '3840x2160', post_processing: 'resize' };
+    const html = renderImageModels([image, alias], locale);
+    expect(html).toContain('<code>gpt-image-2.5-flare</code>');
+    expect(html).toContain('<code>3840x2160</code>');
+    expect(html).toContain(locale === 'en' ? 'Size alias' : '尺寸别名');
+    expect(html).toContain(locale === 'en' ? 'Default size' : '默认尺寸');
+    expect(html).toContain(locale === 'en' ? 'resized or padded according to the background setting' : '缩放或按背景设置补边');
+    expect(html).toContain(locale === 'en' ? 'This does not establish native 2K/4K generation' : '不能据此认定为原生 2K/4K');
+    expect(html).toContain(locale === 'en' ? 'Explicit size takes priority' : '显式 size 优先');
+    const browser = new Function(`${adminPageViewSource()}\nreturn renderImageModels;`)();
+    expect(browser([image, alias], locale)).toBe(html);
+    expect(renderAccountCards([account([image, alias])], locale)).toContain(html);
+    expect(renderImageModels([image], locale)).not.toContain('image-model-resize-note');
+  });
+
+  it('escapes alias model and default size as plain text', () => {
+    const malicious: PublicImageModel = { ...image, alias_of: '<svg onload=ALIAS_CANARY>', default_size: '<img src=x onerror=SIZE_CANARY>', post_processing: 'resize' };
+    const html = renderImageModels([malicious], 'en');
+    expect(html).toContain('&lt;svg onload=ALIAS_CANARY&gt;');
+    expect(html).toContain('&lt;img src=x onerror=SIZE_CANARY&gt;');
+    expect(html).not.toContain('<svg');
+    expect(html).not.toContain('<img');
+    const browser = new Function(`${adminPageViewSource()}\nreturn renderImageModels;`)();
+    expect(browser([malicious], 'en')).toBe(html);
+  });
+
   it('excludes image targets from text choices and explains legacy bindings without hiding vision-capable chat models', async () => {
     const f = modelsHarness();
     f.setPayload({

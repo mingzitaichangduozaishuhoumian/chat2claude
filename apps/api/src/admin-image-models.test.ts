@@ -14,6 +14,10 @@ const descriptors = [
   { ...descriptor, id: 'gpt-image-2.5-flare', display_name: 'GPT Image 2.5 Flare' },
   { ...descriptor, id: 'gpt-image-2.5-sunburst', display_name: 'GPT Image 2.5 Sunburst' },
   { ...descriptor, id: 'gpt-image-2.5', display_name: 'GPT Image 2.5' },
+  { ...descriptor, id: 'gpt-image-2.5-flare-2k', display_name: 'GPT Image 2.5 Flare 2k', alias_of: 'gpt-image-2.5-flare', default_size: '2048x2048', post_processing: 'resize' },
+  { ...descriptor, id: 'gpt-image-2.5-flare-4k', display_name: 'GPT Image 2.5 Flare 4k', alias_of: 'gpt-image-2.5-flare', default_size: '3840x2160', post_processing: 'resize' },
+  { ...descriptor, id: 'gpt-image-2.5-sunburst-2k', display_name: 'GPT Image 2.5 Sunburst 2k', alias_of: 'gpt-image-2.5-sunburst', default_size: '2048x2048', post_processing: 'resize' },
+  { ...descriptor, id: 'gpt-image-2.5-sunburst-4k', display_name: 'GPT Image 2.5 Sunburst 4k', alias_of: 'gpt-image-2.5-sunburst', default_size: '3840x2160', post_processing: 'resize' },
 ];
 const catalog = Array.from({ length: 10 }, (_, index) => ({ id: `upstream-${index}` }));
 
@@ -42,7 +46,7 @@ function fixture(backendProvider: 'session' | 'mock' = 'session') {
 }
 
 describe('Admin image endpoint descriptors', () => {
-  it('shows five separate image models while retaining the ten actually discovered models', async () => {
+  it('shows five base image models and four resize aliases while retaining the ten actually discovered models', async () => {
     const f = fixture();
     const account = (await f.get('/admin/api/accounts')).accounts[0];
     const models = await f.get('/admin/api/models');

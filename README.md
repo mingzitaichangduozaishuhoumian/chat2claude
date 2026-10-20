@@ -363,7 +363,7 @@ const image = await client.images.generate({
 
 `/v1/models` 的 `source: "image_endpoint"` 描述项指向此独立路由；将任一内置图片型号或绑定它的 alias 发到文本接口会得到 400。Responses 仅在上游提供图片事件时支持预览/最终图转换，当前宿主的 Responses 图片工具尚未真实验证；含生成图的 Responses 响应不存历史，返回 ID 不可用于 `previous_response_id`。Chat/Claude 收到图片输出会明确报 501，不返回空成功。完整参数、存图示例和限制见[使用说明](docs/USAGE.zh-CN.md#独立-gpt-image-生成)。
 
-Admin 账号卡片分别显示文本模型与图片接口模型数量，例如 10 个文本模型、5 个图片接口模型；图片计数只统计本服务当前展示的接口模型项，不代表 OpenAI 全部图片型号。模型页在简洁和专业模式下都有独立、默认折叠的图片型号分组。当前内置 `gpt-image-1.5`、`gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.5`，与 [CPA 的内置注册项](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/registry/model_definitions.go#L245)一致；裸 ID `gpt-image-2.5` 原值透传，不重命名成 Flare/Sunburst。2.5 系列的明确型号可使用 `xhigh`/`max` 质量，完整范围见使用说明。这些图片项来自独立的 `imageModels` 字段，不混入文本 `discoveredModels` 或 alias 候选，也不表示已验证该账号的图片生成权限。
+Admin 账号卡片分别显示文本模型与图片接口模型数量，例如 10 个文本模型、9 个图片接口项；其中包含 5 个基础型号和 4 个本地尺寸别名，计数不代表 OpenAI 全部图片型号。模型页在简洁和专业模式下都有独立、默认折叠的图片型号分组。基础型号为 `gpt-image-1.5`、`gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.5`，与 [CPA 的内置注册项](https://github.com/router-for-me/CLIProxyAPI/blob/8ef43e4df3b216a42493105d31c2873b69191473/internal/registry/model_definitions.go#L245)一致，原值透传。Flare 和 Sunburst 各增加 `-2k`、`-4k` 别名，默认请求 2048×2048、3840×2160；显式 `size` 优先。别名映射到基础型号，最终 PNG 按目标尺寸保留比例缩放及补边，属于本地插值处理，不能代表模型生成了更多原生细节。支持指定尺寸和 `background:transparent`，完整边界和示例见[图片生成说明](docs/USAGE.zh-CN.md#独立-gpt-image-生成)。2.5 的这些明确型号可使用 `xhigh`/`max` 质量。这些图片项来自独立的 `imageModels` 字段，不混入文本 `discoveredModels` 或 alias 候选，也不表示已验证账号的图片生成权限。
 
 ## curl 验证
 

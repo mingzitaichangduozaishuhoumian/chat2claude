@@ -1,4 +1,4 @@
-import { CODEX_IMAGE_MODEL_IDS, type ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
+import { CODEX_IMAGE_MODEL_IDS, CODEX_IMAGE_RESOLUTION_ALIASES, type ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import type { AccountPool } from '../services/account-pool.js';
 import { imageAccountAcquireOptions } from './image-account-eligibility.js';
 
@@ -10,6 +10,9 @@ export interface PublicImageModel {
   endpoint: '/v1/images/generations';
   capabilities: { image_generation: true };
   availability: 'backend_dependent';
+  alias_of?: string;
+  default_size?: string;
+  post_processing?: 'resize';
 }
 
 export interface ImageModelsOptions {
@@ -27,6 +30,11 @@ export function availableImageModels(options: ImageModelsOptions, accountId?: st
     eligible: (account) => account.id === accountId && (acquire.eligible?.(account) ?? true),
   });
   if (reason !== undefined && reason !== 'account_busy') return [];
-  return CODEX_IMAGE_MODEL_IDS.map((id) => ({ id, type: 'model', display_name: 'GPT Image ' + id.slice('gpt-image-'.length).split('-').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' '), source: 'image_endpoint',
-    endpoint: '/v1/images/generations', capabilities: { image_generation: true }, availability: 'backend_dependent' }));
+  return CODEX_IMAGE_MODEL_IDS.map<PublicImageModel>((id) => {
+    const alias = Object.hasOwn(CODEX_IMAGE_RESOLUTION_ALIASES, id) ? CODEX_IMAGE_RESOLUTION_ALIASES[id as keyof typeof CODEX_IMAGE_RESOLUTION_ALIASES] : undefined;
+    return { id, type: 'model', display_name: 'GPT Image ' + id.slice('gpt-image-'.length).split('-').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' '), source: 'image_endpoint',
+      endpoint: '/v1/images/generations', capabilities: { image_generation: true }, availability: 'backend_dependent',
+      ...(alias ? { alias_of: alias.model, default_size: alias.size, post_processing: 'resize' as const } : {}),
+    };
+  });
 }

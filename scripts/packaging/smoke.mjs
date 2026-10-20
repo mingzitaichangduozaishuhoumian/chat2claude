@@ -75,6 +75,35 @@ function isolatedEnvironment(port, apiKey) {
   for (const key of Object.keys(env)) if (/^(?:CHATGPT_|CODEX_|DEFAULT_|MOCK_|STATE_|MODEL_REGISTRY_JSON$|DATA_DIR$|HOST$|PORT$|NODE_OPTIONS$|NODE_PATH$|OUTBOUND_|HTTP_PROXY$|HTTPS_PROXY$|ALL_PROXY$|NO_PROXY$)|TOKEN|SECRET|PASSWORD|COOKIE|API_KEY/i.test(key)) delete env[key];
   return { ...env, HOST: '127.0.0.1', PORT: String(port), API_KEYS: apiKey, LOG_LEVEL: 'error' };
 }
+function imageResolutionSmoke(pack, runtime) {
+  // Exercise the deployed worker and its pure-JS PNG dependency from paths with
+  // spaces, including the bundled Windows runtime. This never contacts upstream.
+  const script = String.raw`
+    import assert from 'node:assert/strict';
+    import path from 'node:path';
+    import { pathToFileURL } from 'node:url';
+    import { createRequire } from 'node:module';
+    const entry = pathToFileURL(path.join(process.argv[1], 'app/node_modules/@chatgpt-to-claude/chatgpt-backend/dist/index.js'));
+    const { SessionChatGptBackend, CODEX_IMAGE_MODEL_IDS } = await import(entry.href);
+    const { PNG } = createRequire(entry)('pngjs');
+    assert.equal(CODEX_IMAGE_MODEL_IDS.length, 9);
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://synthetic.invalid', fetch: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      assert.equal(body.model, 'gpt-image-2.5-flare');
+      assert.equal(body.size, '16x16');
+      return Response.json({ created: 1, data: [{ b64_json: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DQAAAEgQGALFXOsAAAAABJRU5ErkJggg==' }] });
+    } });
+    const result = await backend.generateImages({ model: 'gpt-image-2.5-flare-4k', prompt: 'synthetic packaging fixture', size: '16x16', background: 'transparent' },
+      { account: { id: 'synthetic', secret: { type: 'chatgpt-session', accessToken: 'synthetic' } } });
+    const png = PNG.sync.read(Buffer.from(result.data[0].b64_json, 'base64'));
+    assert.equal(result.size, '16x16');
+    assert.deepEqual([png.width, png.height], [16, 16]);
+    assert.deepEqual([...png.data.subarray(0, 4)], [255, 0, 0, 128]);
+  `;
+  execFileSync(runtime, ['--input-type=module', '-e', script, pack], {
+    cwd: pack, env: isolatedEnvironment(1, 'synthetic'), timeout: 30_000, windowsHide: true, stdio: 'pipe',
+  });
+}
 async function exercise(pack, runtime) {
   const port = await unusedPort();
   const origin = `http://127.0.0.1:${port}`;
@@ -89,6 +118,7 @@ async function exercise(pack, runtime) {
   child.stderr.on('data', (chunk) => { output = (output + chunk).slice(-16_384); });
   let browser;
   try {
+    imageResolutionSmoke(pack, runtime);
     await waitFor(async () => {
       if (spawnError || child.exitCode !== null) throw new Error(`Packaged service exited: ${spawnError?.message ?? output}`);
       if (!output.includes(`:${port}`)) return false;
@@ -137,7 +167,7 @@ async function exercise(pack, runtime) {
     assert.deepEqual(errors, [], 'Admin browser JavaScript failed');
     assert.deepEqual(unexpected, [], 'Smoke attempted an external/OAuth/image request');
     assert(fs.existsSync(path.join(pack, 'data')), 'Launcher did not create package-local data');
-    return { health: true, authentication: true, defaultAliases: admin.aliases.length, textProtocols: 3, textStream: true, adminBrowser: true, adminLocales: 2, imageRequests: 0 };
+    return { health: true, authentication: true, defaultAliases: admin.aliases.length, textProtocols: 3, textStream: true, adminBrowser: true, adminLocales: 2, syntheticImageWorker: true, imageRequests: 0 };
   } finally {
     try { await browser?.close(); }
     finally { await stop(child); }
