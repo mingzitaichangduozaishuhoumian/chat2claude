@@ -1,4 +1,8 @@
 import { Hono } from 'hono';
+import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
+import type { BackendRouting } from '../services/backend-routing.js';
+import { requestBackendMode } from '../services/request-backend-routing.js';
+import { mappedWebModel, declaredBackendModel } from '../services/request-model-routing.js';
 import { projectModelContext, type ModelContextView } from '../services/model-context.js';
 import type { EffectiveModelDefaults, ModelCapabilities, ModelDefaults, ModelRegistry, RuntimeModel } from '../services/model-registry.js';
 import type { ChatGptBackendClient, ChatGptModelControlCapabilities, ChatGptReasoningLevelOption, ChatGptServiceTierOption } from '@chatgpt-to-claude/chatgpt-backend';
@@ -48,16 +52,45 @@ export interface ModelsRouteOptions {
   modelRegistry: ModelRegistry;
   ready?: Promise<unknown>;
   backend?: Pick<ChatGptBackendClient, 'generateImages'>;
-  accountPool?: Pick<AccountPool, 'unavailableReason'>;
+  accountPool?: Pick<AccountPool, 'unavailableReason'> & Partial<Pick<AccountPool, 'snapshot'>>;
   backendProvider?: 'mock' | 'session';
+  backendRouting?: BackendRouting;
 }
 export function createModelsRoute(options: ModelsRouteOptions): Hono {
   return new Hono().get('/v1/models', async (c) => {
     if (options.ready) await options.ready;
-    const data: Array<PublicModel | PublicImageModel> = options.modelRegistry.list()
+    let mode;
+    try { mode = requestBackendMode(c, options.backendRouting); }
+    catch (error) {
+      if (error instanceof ClaudeApiError) return c.json({ error: { type: error.type, message: error.message } }, error.status as 400);
+      throw error;
+    }
+    const accounts = options.accountPool?.snapshot?.().accounts;
+    const provider = mode === 'web' ? 'chatgpt-web' : options.backendProvider === 'session' ? 'chatgpt-session' : 'mock';
+    const catalog = new Map(options.modelRegistry.list().map((model) => [model.id, model]));
+    const webAccount = options.backendRouting?.isWebEnabled()
+      ? accounts?.find((account) => account.provider === 'chatgpt-web' && account.enabled) : undefined;
+    if (mode !== 'codex' && webAccount) {
+      const mappings = options.backendRouting?.snapshot().gateway?.modelMappings ?? {};
+      for (const id of new Set([...catalog.keys(), ...Object.keys(mappings)])) {
+        const current = catalog.get(id);
+        const target = mappedWebModel(options.backendRouting, id, declaredBackendModel(options.modelRegistry, id, current?.backendModel ?? id));
+        if (!target) continue;
+        try {
+          const resolution = options.modelRegistry.resolveForAccount(id, { accountId: webAccount.id, createdAt: webAccount.createdAt }, target);
+          if (mode === 'web' || options.backendRouting?.safeView().autoPreference !== 'codex'
+            || !current || current.status === 'unbound' || current.status === 'stale') catalog.set(id, resolution.model);
+        } catch { /* Disabled aliases and inactive targets are never advertised. */ }
+      }
+    }
+    const data: Array<PublicModel | PublicImageModel> = [...catalog.values()]
       .filter((model) => model.enabled && model.status !== 'unbound' && model.status !== 'stale')
+      .filter((model) => !options.backendRouting || !accounts || mode === 'auto'
+        || accounts.some((account) => account.provider === provider && account.enabled
+          && (provider === 'mock' || options.modelRegistry.supportsAccountRequest(model.id, { accountId: account.id, createdAt: account.createdAt }, {},
+            provider === 'chatgpt-web' ? mappedWebModel(options.backendRouting, model.id, declaredBackendModel(options.modelRegistry, model.id, model.backendModel ?? model.id)) : undefined))))
       .map(projectPublicModel);
-    for (const image of availableImageModels(options)) {
+    for (const image of mode === 'web' ? [] : availableImageModels(options)) {
       // This advertises a separate endpoint, not a text-catalog discovery result.
       const existing = data.findIndex((model) => model.id === image.id);
       if (existing === -1) data.push(image);

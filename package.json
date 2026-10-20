@@ -10,10 +10,15 @@
   "scripts": {
     "start": "node scripts/start.mjs",
     "setup": "corepack pnpm install",
+    "web-gateway:setup": "node scripts/web-gateway.mjs setup",
+    "web-gateway:login": "node scripts/web-gateway.mjs login",
+    "web-gateway:start": "node scripts/web-gateway.mjs start",
+    "web-gateway:status": "node scripts/web-gateway.mjs status",
+    "web-gateway:connect": "node scripts/web-gateway.mjs connect",
     "check": "corepack pnpm build && corepack pnpm test && corepack pnpm typecheck",
     "dev": "corepack pnpm build && corepack pnpm --filter @chatgpt-to-claude/api dev",
     "build": "node scripts/build.mjs",
-    "test": "vitest run && node --test scripts/build-cache.test.mjs",
+    "test": "vitest run && node --test scripts/build-cache.test.mjs && node --test scripts/web-gateway.test.mjs",
     "typecheck": "corepack pnpm -r typecheck",
     "package:release": "node scripts/packaging/release.mjs",
     "package:smoke": "node scripts/packaging/smoke.mjs"

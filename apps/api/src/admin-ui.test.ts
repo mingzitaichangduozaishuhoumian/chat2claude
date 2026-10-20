@@ -21,7 +21,7 @@ describe('Admin UI redesign contracts', () => {
       const setupClient = adminPageClientScript().slice(0, adminPageClientScript().indexOf('const overviewLoadState'));
       expect(setupClient).toContain("ANTHROPIC_AUTH_TOKEN: '<your-runtime-api-key>'");
       expect(setupClient).toContain('const copiedConfig = keyAtCopy ?');
-      expect(setupClient).toContain("window.addEventListener('pagehide', () => clearOneTimeRuntimeApiKey());");
+      expect(setupClient).toContain("window.addEventListener('pagehide', () => { clearOneTimeRuntimeApiKey(); clearBackendGatewayKey(); });");
       expect(setupClient).not.toContain('clientSetupConfig(true)');
     } finally { await app.dispose(); }
   });

@@ -1,8 +1,8 @@
 import { refreshAccountModels } from './services/account-model-discovery.js';
 import { Hono } from 'hono';
-import type { ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
+import { WebGatewayChatGptBackend, type ChatGptBackendClient } from '@chatgpt-to-claude/chatgpt-backend';
 import { createLogger } from '@chatgpt-to-claude/shared';
-import { loadEnv, type AppEnv } from './config/env.js';
+import { isLoopbackHost, loadEnv, type AppEnv } from './config/env.js';
 import { accessLog } from './middleware/access-log.js';
 import { adminApiAuth, apiKeyAuth } from './middleware/auth.js';
 import { healthRoute } from './routes/health.js';
@@ -20,7 +20,9 @@ import { RuntimeApiKeys } from './services/runtime-api-keys.js';
 import { ModelRegistry } from './services/model-registry.js';
 import { ResponsesStore } from './services/responses-store.js';
 import { ReasoningReplayStore } from './services/reasoning-replay-store.js';
-import { createChatGptBackend } from './services/backend-factory.js';
+import { createChatGptBackend, withWebGatewayBackend } from './services/backend-factory.js';
+import { BackendRouting } from './services/backend-routing.js';
+import { syncWebGatewayAccount } from './services/web-gateway-account.js';
 import { createOutboundTransport } from './services/outbound-fetch.js';
 import { ChatGptAuthFlowService } from './services/chatgpt-auth-flow.js';
 import { RuntimeStateStore } from './services/runtime-state-store.js';
@@ -37,6 +39,7 @@ export interface CreateAppOptions {
   runtimeStateStore?: RuntimeStateStore | null;
   operationalState?: AdminOperationalState | null;
   backend?: ChatGptBackendClient;
+  webBackend?: ChatGptBackendClient;
   backendFactory?: (accountPool: AccountPool, durableState: DurableRuntimeState | undefined, outboundFetch: typeof fetch) => ChatGptBackendClient;
 }
 
@@ -47,11 +50,20 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   const runtimeApiKeys = new RuntimeApiKeys();
   const localAdminSession = new LocalAdminSession(env.allowAnonymousBootstrap);
   const modelRegistry = new ModelRegistry();
+  const backendRouting = new BackendRouting(env.backendRouting);
   const runtimeStateStore = options.runtimeStateStore === undefined
     ? env.runtimeStatePath ? new RuntimeStateStore({ path: env.runtimeStatePath, encryptionKey: env.stateEncryptionKey }) : undefined
     : options.runtimeStateStore ?? undefined;
-  const durableState = runtimeStateStore ? new DurableRuntimeState({ accountPool, runtimeApiKeys, modelRegistry, store: runtimeStateStore, removeMockAccountsOnHydrate: env.chatGptBackend === 'session' }) : undefined;
+  const durableState = runtimeStateStore ? new DurableRuntimeState({ accountPool, runtimeApiKeys, modelRegistry, backendRouting, store: runtimeStateStore, removeMockAccountsOnHydrate: env.chatGptBackend === 'session' }) : undefined;
   durableState?.hydrate();
+  const gatewayUrl = backendRouting.snapshot().gateway?.baseUrl;
+  if (gatewayUrl) {
+    const target = new URL(gatewayUrl);
+    if (!target.pathname.replaceAll('/', '') && isLoopbackHost(target.hostname)
+      && Number(target.port || (target.protocol === 'https:' ? 443 : 80)) === env.port) {
+      throw new Error('Web gateway must be a separate service, not this API address.');
+    }
+  }
   const operationalState = options.operationalState === undefined
     ? env.operationalStatePath ? new AdminOperationalState({ path: env.operationalStatePath }) : undefined
     : options.operationalState ?? undefined;
@@ -60,15 +72,18 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   const accountsByIdentity = new Map(accountPool.list().map((account) => [JSON.stringify([account.id, account.createdAt]), account]));
   for (const snapshot of operationalState?.snapshot().accounts ?? []) {
     const account = accountsByIdentity.get(JSON.stringify([snapshot.accountId, snapshot.createdAt]));
-    if (account?.provider !== 'chatgpt-session') continue;
+    if (account?.provider !== 'chatgpt-session' && account?.provider !== 'chatgpt-web') continue;
     modelRegistry.replaceAccountModels(
       { accountId: snapshot.accountId, createdAt: snapshot.createdAt },
       snapshot.discoveredModels,
       account.enabled,
     );
   }
+  syncWebGatewayAccount(backendRouting, accountPool, modelRegistry, undefined, false);
   const outbound = createOutboundTransport(env.outboundProxyUrl);
-  const backend = options.backend ?? options.backendFactory?.(accountPool, durableState, outbound.fetch) ?? createChatGptBackend(env, accountPool, durableState, outbound.fetch);
+  const primaryBackend = options.backend ?? options.backendFactory?.(accountPool, durableState, outbound.fetch) ?? createChatGptBackend(env, accountPool, durableState, outbound.fetch);
+  const webBackend = options.webBackend ?? new WebGatewayChatGptBackend({ getConfiguration: () => backendRouting.isWebEnabled() ? backendRouting.snapshot().gateway : undefined, fetch: outbound.fetch, timeoutMs: env.chatGptStreamIdleTimeoutMs ?? 300_000 });
+  const backend = withWebGatewayBackend(primaryBackend, webBackend, accountPool, () => backendRouting.isWebEnabled());
   const quotaService = new AccountQuotaService({
     accountPool,
     backend,
@@ -85,7 +100,7 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
       // Startup discovery is best effort. Rehydrated per-account catalogs remain
       // available, and provisioning performs its own authoritative discovery.
       logger.warn('ChatGPT startup model discovery failed.');
-    });
+    }).then(() => { syncWebGatewayAccount(backendRouting, accountPool, modelRegistry); });
   const setupProvisioner = new SetupProvisioner({
     accountPool,
     modelRegistry,
@@ -103,17 +118,17 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   app.route('/', healthRoute);
   app.use('/v1/*', accessLog(logger, env.accessLogFormat));
   app.use('/v1/*', apiKeyAuth(env.apiKeys, runtimeApiKeys));
-  app.route('/', createModelsRoute({ modelRegistry, ready: modelRegistryReady, backend, accountPool, backendProvider: env.chatGptBackend }));
+  app.route('/', createModelsRoute({ modelRegistry, ready: modelRegistryReady, backend, accountPool, backendProvider: env.chatGptBackend, backendRouting }));
   app.route('/', createCountTokensRoute());
-  app.route('/', createOpenAiImagesRoute({ logger, backend, requestLog, accountPool, operationalState, backendProvider: env.chatGptBackend, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs }));
-  app.route('/', createMessagesRoute({ logger, backend, requestLog, modelRegistry, accountPool, operationalState, reasoningReplayStore, backendProvider: env.chatGptBackend, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
-  app.route('/', createOpenAiChatRoute({ logger, backend, requestLog, modelRegistry, accountPool, operationalState, reasoningReplayStore, backendProvider: env.chatGptBackend, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
-  app.route('/', createOpenAiResponsesRoute({ logger, backend, requestLog, modelRegistry, accountPool, responsesStore, operationalState, backendProvider: env.chatGptBackend, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
+  app.route('/', createOpenAiImagesRoute({ logger, backend, requestLog, accountPool, operationalState, backendProvider: env.chatGptBackend, backendRouting, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs }));
+  app.route('/', createMessagesRoute({ logger, backend, requestLog, modelRegistry, accountPool, operationalState, reasoningReplayStore, backendProvider: env.chatGptBackend, backendRouting, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
+  app.route('/', createOpenAiChatRoute({ logger, backend, requestLog, modelRegistry, accountPool, operationalState, reasoningReplayStore, backendProvider: env.chatGptBackend, backendRouting, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
+  app.route('/', createOpenAiResponsesRoute({ logger, backend, requestLog, modelRegistry, accountPool, responsesStore, operationalState, backendProvider: env.chatGptBackend, backendRouting, ready: modelRegistryReady, accountAcquireTimeoutMs: env.accountAcquireTimeoutMs, sseKeepaliveIntervalMs: env.sseKeepaliveIntervalMs, defaults: { globalReasoningEffort: env.defaultReasoningEffort, globalSpeedPreference: env.defaultResponseSpeed } }));
   app.use('/metrics', adminApiAuth(env.apiKeys, runtimeApiKeys, { allowAnonymousBootstrap: env.allowAnonymousBootstrap, localAdminSession }));
   app.route('/', createMetricsRoute({ requestLog, operationalState }));
   app.use('/admin/api/*', accessLog(logger, env.accessLogFormat));
   app.use('/admin/api/*', adminApiAuth(env.apiKeys, runtimeApiKeys, { allowAnonymousBootstrap: env.allowAnonymousBootstrap, localAdminSession }));
-  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, requestLog, ready: modelRegistryReady, runtimeApiKeys, durableState, operationalState, quotaService, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow, setupProvisioner, localAdminSession }));
+  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, backendRouting, requestLog, ready: modelRegistryReady, runtimeApiKeys, durableState, operationalState, quotaService, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow, setupProvisioner, localAdminSession }));
   app.dispose = async () => {
     reasoningReplayStore.clear();
     try {

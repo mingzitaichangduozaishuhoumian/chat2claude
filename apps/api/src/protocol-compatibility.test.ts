@@ -40,6 +40,9 @@ function documentedManifestRows(markdown: string): Array<{ protocol: string; fea
     if (section === 'ChatGPT/Codex backend' && cells.length >= 3) {
       rows.push({ protocol: 'chatgpt_codex_backend', feature: unquote(cells[0]), status: unquote(cells[1]), notes: cells[2] });
     }
+    if (section === 'ChatGPT Web backend' && cells.length >= 3) {
+      rows.push({ protocol: 'chatgpt_web_backend', feature: unquote(cells[0]), status: unquote(cells[1]), notes: cells[2] });
+    }
   }
   return rows;
 }

@@ -245,6 +245,16 @@ model_auto_compact_token_limit = 800000
 
 本服务的原生 Responses 输入历史允许最多 4096 项、总计 8 MiB 的序列化数据；输入历史与有界的上游输出/replay 缓存使用不同预算。`previous_response_id` 的历史记录仍受缓存总量、过期时间和进程生命周期限制。字节数限制与模型 token 容量是不同约束，`count_tokens` 仍是启发式估算。
 
+### 在同一客户端工程内切换 Codex 与网页
+
+管理台的 `contextHandoff` 开关默认关闭，也可用 `CHATGPT_CONTEXT_HANDOFF=true` 预置。开启后，Responses 的 `previous_response_id` 可在不同后端或明确换模型时使用同一 API 用户已保存的可见历史；Messages/Chat 允许转交已完成的公开工具循环，保留调用 ID、原始参数及工具结果。私有 reasoning、原生消息 ID 被剥离，未完成工具和未知原生块不能转交。同 provider、同模型仍保持原账号绑定，不把私有 replay 发给其他账号。
+
+Responses 历史默认在内存保留 30 分钟，隐式 reasoning replay 默认 10 分钟，均按 API 用户隔离、有容量上限且重启失效。客户端必须继续保存完整历史，并提供需要的文件内容、修改结果及测试证据。接续功能不共享 ChatGPT Projects、不挂载目录，也不替客户端执行工具。使用同一客户端工程和执行器，才能让两个后端看到相同的已回传项目状态。
+
+本仓库[固定网页网关补丁](../integrations/gpt-web-gateway/README.md)可通过文本协议返回标准工具请求，由客户端执行；`web-gateway:connect` 主动开启工具、图片和可见上下文接续，仍使用手动网页模式。补丁拒绝 `strict:true`、远程图片和非 user 图片；累计图片上限为 10 张、10 MiB 解码数据及 16 MiB JSON 请求。网关自己的原生 Responses 拒绝图片和工具，主服务 Responses 使用 Chat Completions 适配。
+
+2026-10-20 已在一个普通 Chat 账号验证双 PNG 历史、标准工具参数及模拟客户端结果的完整 Messages SSE；源 Codex 步骤为替身，未执行实际文件命令。生成测试使用内存应用实例，详细范围见集成记录。
+
 ### 客户端兼容速查
 
 Base URL 必须匹配客户端族。会自行追加 `/v1/...` 的客户端应使用服务根地址，例如 Claude Code 和 Anthropic TypeScript SDK。OpenAI 兼容客户端通常需要以 `/v1` 结尾的版本化地址。不能把根地址给不会自行追加 `/v1` 的客户端，也不能重复追加 `/v1`。

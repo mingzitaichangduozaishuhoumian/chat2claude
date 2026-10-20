@@ -3,27 +3,46 @@ import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 import type { Account, AccountPool } from './account-pool.js';
 import { bindRequestHistory } from './request-history-binding.js';
 import type { ReasoningReplayMatch, ReasoningReplayStore, ReplayScope } from './reasoning-replay-store.js';
+import { visibleInputHistory } from './visible-history.js';
 
 /** Shared implicit-replay policy for Claude Messages and OpenAI Chat only. */
 export class RequestReasoningReplay {
   #store: ReasoningReplayStore | undefined;
   #scope: ReplayScope;
   #match: ReasoningReplayMatch | undefined;
-  constructor(store: ReasoningReplayStore | undefined, scope: ReplayScope, input: ChatGptInputItem[] | undefined) {
+  #handoff: boolean;
+  #visible: ChatGptInputItem[] | undefined;
+  constructor(store: ReasoningReplayStore | undefined, scope: ReplayScope, input: ChatGptInputItem[] | undefined, contextHandoff = false) {
     this.#store = store;
     this.#scope = scope;
-    this.#match = store?.find(scope, input);
+    this.#handoff = contextHandoff;
+    this.#match = store?.find(scope, input) ?? (contextHandoff ? store?.findHandoff(scope.owner, input) : undefined);
+    if (contextHandoff && this.#match && input) {
+      try { this.#visible = visibleInputHistory(input); } catch { /* Native continuation may still be valid. */ }
+    }
   }
 
-  eligible(account: Account, model: string): boolean { return !this.#match || this.#match.accepts(account, model); }
+  eligible(account: Account, model: string): boolean {
+    return !this.#match || this.#match.accepts(account, model)
+      || this.#handoff && this.#visible !== undefined && this.#match.canHandoff(account, model);
+  }
+
+  routingRequest(request: ChatGptCompletionRequest): ChatGptCompletionRequest {
+    return this.#visible ? { ...request, inputItems: structuredClone(this.#visible) } : request;
+  }
 
   apply(request: ChatGptCompletionRequest, account: Account, pool: AccountPool): void {
     if (!this.#match) return;
     // Recheck after the acquisition await: delete/recreate or a health mutation
     // between allocation and dispatch must never send a bundle to a new identity.
     const current = currentAccount(pool, account);
-    if (!current || !this.#match.accepts(current, request.model)) {
+    if (!current || !this.eligible(current, request.model)) {
       throw new ClaudeApiError('No available account supports the requested model and controls.', 503, 'overloaded_error');
+    }
+    if (!this.#match.accepts(current, request.model)) {
+      request.inputItems = visibleInputHistory(request.inputItems ?? []);
+      bindRequestHistory(request, current);
+      return;
     }
     const input = this.#match.apply(request.inputItems, current, request.model);
     if (input) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ChatGptStreamEvent } from '@chatgpt-to-claude/chatgpt-backend';
+import type { ChatGptCompletionRequest, ChatGptInputItem, ChatGptStreamEvent } from '@chatgpt-to-claude/chatgpt-backend';
 import { AccountPool } from './account-pool.js';
 import { ReasoningReplayStore } from './reasoning-replay-store.js';
 import { RequestReasoningReplay } from './request-reasoning-replay.js';
@@ -46,5 +46,62 @@ describe('request replay commit barrier', () => {
     expect(store.stats().records).toBe(mode === 'success' ? 1 : 0);
     expect(JSON.stringify(seen)).not.toMatch(/STREAM_COMMIT_CANARY|replayItems|replayEligible/);
     expect(disposed).toBe(true);
+  });
+});
+
+describe('opt-in public replay handoff', () => {
+  function fixture(owner = scope.owner, model = scope.model, enabled = true) {
+    const pool = new AccountPool({ seedMockAccount: false });
+    pool.add({ id: 'source', provider: 'chatgpt-session' });
+    pool.add({ id: 'web', provider: 'chatgpt-web' });
+    pool.add({ id: 'other-account', provider: 'chatgpt-session' });
+    const source = pool.get('source')!;
+    const web = pool.get('web')!;
+    const store = new ReasoningReplayStore();
+    store.put(scope, source, done as Extract<ChatGptStreamEvent, { type: 'done' }>);
+    const input: ChatGptInputItem[] = [
+      { type: 'message', role: 'user', content: 'inspect' },
+      { type: 'function_call', callId: 'call', name: 'lookup', arguments: '{}' },
+      { type: 'function_call_output', callId: 'call', output: 'visible result' },
+    ];
+    const replay = new RequestReasoningReplay(store, { ...scope, owner, model }, input, enabled);
+    const request: ChatGptCompletionRequest = { model, maxTokens: 16, messages: [], inputItems: input };
+    return { pool, source, web, replay, request };
+  }
+
+  it('keeps native replay on its original account and only public contracts on another provider', () => {
+    const native = fixture();
+    expect(native.replay.eligible(native.source, 'model')).toBe(true);
+    native.replay.apply(native.request, native.source, native.pool);
+    expect(JSON.stringify(native.request)).toContain(canary);
+    const handed = fixture();
+    expect(handed.replay.eligible(handed.web, 'web-model')).toBe(true);
+    handed.request.model = 'web-model';
+    handed.replay.apply(handed.request, handed.web, handed.pool);
+    expect(JSON.stringify(handed.request)).not.toContain(canary);
+    expect(handed.request.inputItems).toContainEqual({ type: 'function_call', callId: 'call', name: 'lookup', arguments: '{}' });
+    expect(handed.request.inputItems).toContainEqual({ type: 'function_call_output', callId: 'call', output: 'visible result' });
+  });
+
+  it('finds the same owner call group across an explicit model change without transferring ciphertext', () => {
+    const f = fixture(scope.owner, 'new-model');
+    expect(f.replay.eligible(f.source, 'new-model')).toBe(true);
+    f.replay.apply(f.request, f.source, f.pool);
+    expect(JSON.stringify(f.request)).not.toContain(canary);
+  });
+
+  it('preserves same-provider same-model account affinity even with handoff enabled', () => {
+    const f = fixture();
+    expect(f.replay.eligible(f.pool.get('other-account')!, 'model')).toBe(false);
+    expect(() => f.replay.apply(f.request, f.pool.get('other-account')!, f.pool)).toThrow('No available account');
+    const disabled = fixture(scope.owner, scope.model, false);
+    expect(disabled.replay.eligible(disabled.web, 'web-model')).toBe(false);
+  });
+
+  it('never uses another owner stored replay as native or handoff provenance', () => {
+    const f = fixture('another-owner', 'new-model');
+    f.replay.apply(f.request, f.source, f.pool);
+    expect(JSON.stringify(f.request)).not.toContain(canary);
+    expect(f.request.inputItems).not.toContainEqual(expect.objectContaining({ type: 'replay' }));
   });
 });

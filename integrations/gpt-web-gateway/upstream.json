@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/stufently/gpt-web-gateway.git",
+  "commit": "893f553be358210a5c045aa9f62b56ba1edc5c78",
+  "patch": "chat-vision.patch",
+  "port": 3101
+}

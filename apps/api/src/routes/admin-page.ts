@@ -86,6 +86,36 @@ curl __ORIGIN__/v1/images/generations \\
         </section>
         <section id="models-module" class="admin-module" data-module-name="models" role="tabpanel" aria-labelledby="models-tab" hidden>
           <header class="module-header"><div><span class="eyebrow">03 / MODELS</span><h2>模型映射</h2><p>选择已发现的后端模型，并为客户端配置稳定的 alias。</p></div></header>
+          <section class="panel" aria-labelledby="backend-routing-title">
+            <div class="panel-heading"><div><h3 id="backend-routing-title">上游选择</h3><p class="muted">先决定是否使用网页，再选择自动或手动模式。</p></div><button id="refresh-backend-routing" class="secondary" type="button">刷新上游设置</button></div>
+            <form id="backend-routing-form" class="stack" aria-describedby="backend-routing-note">
+              <label><input id="backend-web-enabled" type="checkbox" aria-describedby="backend-web-status" /> 使用 ChatGPT 网页</label>
+              <p id="backend-web-status" class="muted" role="status" aria-live="polite">网页已关闭，仅使用 Codex；配置和选择会保留，重新开启后恢复。</p>
+              <label>选择模式<select id="backend-routing-mode"><option value="auto">自动模式</option><option value="manual" selected>手动模式</option></select></label>
+              <label id="backend-routing-manual-field">手动选择上游<select id="backend-routing-manual-target"><option value="codex" selected>Codex</option><option id="backend-routing-web-option" value="web" disabled>ChatGPT 网页</option></select></label>
+              <label id="backend-routing-preference-field" hidden>自动模式优先级<select id="backend-routing-preference" disabled><option value="web" selected>网页优先</option><option value="codex">Codex 优先</option></select></label>
+              <p class="muted">网页优先会优先调用兼容的网页模型，不默认重复调用两个后端。选择 ChatGPT 网页可禁止回退到 Codex；更换调用入口不保证增加额度。</p>
+              <p id="backend-routing-note" class="muted">网页网关需另行部署并完成网页登录。开启网页后，单次请求可用 x-chat2claude-backend: auto、codex 或 web 覆盖模式；关闭网页时不能用请求头重新开启。</p>
+              <label><input id="backend-context-handoff" type="checkbox" aria-describedby="backend-context-handoff-note" /> 跨后端接续上下文</label>
+              <p id="backend-context-handoff-note" class="muted">开启后，切换后端时携带可见对话历史和工具结果；不共享后端私有会话或思考过程。默认关闭。</p>
+              <div id="backend-web-settings" class="stack" hidden>
+              <label>网页网关地址<input id="backend-gateway-url" type="url" placeholder="http://127.0.0.1:8000/v1" autocomplete="off" /></label>
+              <label>网页网关 API Key<input id="backend-gateway-key" type="password" placeholder="留空保留已保存的 Key" autocomplete="off" /></label>
+              <p id="backend-gateway-config-status" class="muted" role="status" aria-live="polite">正在读取网页网关配置。</p>
+              <label>网页模型 ID（逗号分隔）<input id="backend-gateway-models" value="auto" placeholder="auto" autocomplete="off" /></label>
+              <p class="muted">仅填写网页网关实际支持的模型 ID，按原样使用，不添加前缀。默认 auto 只声明该模型，不代表支持所有模型。</p>
+              <label>网页模型映射（可选，每行一个）<textarea id="backend-gateway-model-mappings" rows="3" placeholder="sonnet=auto&#10;opus=auto" spellcheck="false" aria-describedby="backend-gateway-model-mappings-note"></textarea></label>
+              <p id="backend-gateway-model-mappings-note" class="muted">格式：客户端模型或 alias=网页模型 ID。例如 sonnet=auto 表示明确改用网页 auto，不代表两种型号等价；留空可清除映射。</p>
+              <label><input id="backend-gateway-tools" type="checkbox" /> 网页网关支持工具调用</label>
+              <p class="muted">仅在确认网页网关支持工具调用时开启；否则自动模式会将工具请求交给兼容的 Codex 上游。</p>
+              <label><input id="backend-gateway-images" type="checkbox" /> 网页网关支持图片输入</label>
+              <p class="muted">仅在确认网页网关支持 OpenAI 格式的图片输入时开启；否则自动模式会将带图请求交给兼容的 Codex 上游。</p>
+              <p class="muted">网页可独立提供模型回答；网关支持工具调用时，Claude Code 等客户端负责执行本地工具。</p>
+              </div>
+              <div class="form-actions"><button id="save-backend-routing" type="submit">保存上游设置</button><button id="clear-backend-gateway" class="danger-button" type="button">清除网页配置</button></div>
+              <p id="backend-routing-status" class="muted" role="status" aria-live="polite">正在读取上游设置。</p>
+            </form>
+          </section>
           <section class="panel model-mapping-panel"><div class="panel-heading"><div><h3>文本模型映射</h3><p id="text-model-mapping-note" class="model-mapping-note">文本 alias 用于对话和代码；生成图片请使用 Images API。</p><p class="muted">简洁模式可选择 Backend Model、启用并保存；专业模式增加推理、服务层级和自定义 alias 管理。选项仅来自 backend discovery。</p><p class="muted" data-professional-only>Token 计数是本地 heuristic，不是上游 tokenizer 精确值；客户端可从 <code>/v1/messages/count_tokens</code> 响应头确认模式。</p></div><div class="row" data-professional-only><button id="reset-models" class="secondary" type="button" data-professional-only>重置 alias overlay</button><button id="refresh-models" class="secondary" type="button" data-professional-only>刷新 backend discovery</button></div></div><form id="create-model-form" class="row" data-professional-only><input id="model-alias-id" required pattern="[a-zA-Z0-9._-]+" placeholder="新 alias，例如 research" aria-label="新模型 alias" /><input id="model-display-name" placeholder="显示名称（可选）" aria-label="模型显示名称" /><select id="model-backend" aria-label="Backend model" aria-describedby="text-model-mapping-note"><option value="">未绑定（可选）</option></select><button type="submit">创建自定义 alias</button></form><div id="models"><div class="empty">正在加载模型映射。</div></div></section>
           <details class="panel image-models-panel" aria-labelledby="image-models-title"><summary id="image-models-title"><span>图片模型</span> <span class="model-group-count" id="image-model-count">—</span></summary><p class="muted">通过独立 Images API 生成图片，不使用文本 alias。</p><div id="image-models"><div class="empty">正在读取图片模型。</div></div></details>
           <details class="panel builtin-model-help"><summary>内置模型 Alias</summary><p class="muted">Sonnet 会在首次授权时自动选择后端。Haiku、Fable 和 Opus 如显示“未绑定”，请在文本模型映射中选择后端模型并保存后再调用；简洁模式即可完成绑定。</p><div id="model-availability"><div class="empty">正在读取 alias 状态。</div></div></details>

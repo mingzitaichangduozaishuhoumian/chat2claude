@@ -168,7 +168,7 @@ export interface ChatGptSessionSecret {
 export interface ChatGptBackendAccountContext {
   id: string;
   label?: string;
-  provider?: 'mock' | 'chatgpt-session';
+  provider?: 'mock' | 'chatgpt-session' | 'chatgpt-web';
   secret?: ChatGptSessionSecret;
 }
 

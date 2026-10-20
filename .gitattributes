@@ -1,0 +1,2 @@
+# Unified diffs need stable line endings and their blank context lines intact.
+integrations/gpt-web-gateway/*.patch text eol=lf -whitespace

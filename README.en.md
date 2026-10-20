@@ -6,9 +6,9 @@ Latest release: **0.2.1** · [Download](https://github.com/mingzitaichangduozais
 
 [![CI](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/workflows/ci.yml)
 
-This README describes `main`. Collapsible model groups, image-alias validation, and source build caching are merged into `main` but are not included in the v0.2.1 archives; see [Unreleased changes](CHANGELOG.md#unreleased). Use the source setup below for these changes. Published archives already require no compilation.
+This README describes the current source branch. Web gateway routing, collapsible model groups, image-alias validation, and source build caching are not included in the v0.2.1 archives; see [Unreleased changes](CHANGELOG.md#unreleased). Use the source setup below for these changes. Published archives already require no compilation.
 
-`chatgpt-to-claude` is a TypeScript + Hono local compatibility layer. It exposes Claude Messages, OpenAI Chat Completions, OpenAI Responses, Images, Models API, and related compatibility routes while connecting internally to either a mock backend or a real ChatGPT/Codex session backend.
+`chatgpt-to-claude` is a TypeScript + Hono local compatibility layer. It exposes Claude Messages, OpenAI Chat Completions, OpenAI Responses, Images, Models API, and related compatibility routes while connecting to mock, ChatGPT/Codex session, or separately deployed ChatGPT web gateways.
 
 This project is intended for personal local/private use with ChatGPT/Codex accounts that you own or are explicitly authorized to operate. It is **not** a subscription resale service, public proxy, multi-tenant gateway, or traffic aggregation business. Do not resell personal subscription traffic or expose it to untrusted third parties at scale.
 
@@ -165,12 +165,80 @@ The Admin console has six main areas:
 
 1. **Overview**: account readiness, dynamic models, available aliases, Runtime Key count, quota-cache state, and recent account activity summary.
 2. **Accounts & Authorization**: Codex OAuth, account health/model checks, reauthorization, enable/disable, editing and deletion. Text and image models have separate counts and collapsed groups; expanding a group shows compact model-ID labels.
-3. **Models**: text alias selection, enablement, and saving appear first. The image catalog, built-in alias help, and API guidance are collapsed by default. Professional mode adds reasoning, service tiers, and custom aliases.
+3. **Models**: enable or disable ChatGPT Web, then select Auto or Manual mode and configure the web gateway; select, enable, and save text aliases. The image catalog, built-in alias help, and API guidance are collapsed by default. Professional mode adds reasoning, service tiers, and custom aliases.
 4. **API Access**: create, name, copy, list, and revoke Runtime API Keys; view Base URL, endpoint, and dynamic curl examples.
 5. **Quotas**: read cached provider allowance information and refresh one account or all accounts, distinguishing fresh, stale, error, and unknown states.
 6. **Admin Access**: prefer the local HttpOnly admin session; Professional mode exposes an Admin API Key fallback after you independently make the service reachable.
 
 The console opens in Simple mode. Both modes can expand text and image catalogs. Professional mode adds collapsible **Account diagnostics** and **Context window details**, reasoning/service-tier controls, custom aliases, manual session import, and Admin API Key fallback. Diagnostics and lengthy guidance expand on demand; the Images endpoint appears once per group.
+
+### Web gateways and upstream selection
+
+Here, “Web” means the ordinary **Chat conversation page** after signing in to [chatgpt.com](https://chatgpt.com). A separate web-to-API gateway owns the browser, login, and web session; the main API calls its compatibility endpoint. ChatGPT Work is not integrated. The helper commands below can prepare a local gateway and open a separate Chrome window for you to sign in manually.
+
+| Goal | Mode and executor |
+| --- | --- |
+| Use the website as a model API for an existing client | Choose **Chat**; the local client owns project files, commands and tools. This is the integration implemented here. |
+| Let the website use files, plugins and tools to deliver a task | Choose **Work**, the [ChatGPT Work execution experience](https://learn.chatgpt.com/docs/get-started-with-work). This gateway does not integrate that executor. |
+
+Use **manual Web** to restrict this service's direct Codex calls; incompatible or unavailable requests return an error. Choose **Auto** only when Codex may also be selected. Routing does not establish an additional usage allowance.
+
+Use the local setup commands below, or deploy a gateway such as [aurorax-neo/chat2api](https://github.com/aurorax-neo/chat2api) or [stufently/gpt-web-gateway](https://github.com/stufently/gpt-web-gateway). After signing in to ordinary Chat, enter its URL, optional API Key, and actual supported model slugs in `/admin` → **Models** → **Upstream selection**. Simple mode supports all configuration. Generation only requires OpenAI Chat Completions, not `/v1/models`; the Admin API web health check does request that endpoint and fails if it is absent. IDs pass through unchanged; the default `auto` declares only that model.
+
+| Reference implementation or local patch | Integration notes and validation scope |
+| --- | --- |
+| [aurorax-neo/chat2api, dbf6bf3](https://github.com/aurorax-neo/chat2api/tree/dbf6bf39686348449c25de3b6131ca733f448deb) | Ordinary chat uses the web conversation endpoint. Use inline base64 images, not remote HTTPS image URLs. Tool calls use a text protocol. Image generation also has a Codex path, so not every call in this project is ordinary Chat. |
+| [stufently/gpt-web-gateway, 893f553](https://github.com/stufently/gpt-web-gateway/tree/893f553be358210a5c045aa9f62b56ba1edc5c78) | A real browser drives ordinary Chat for text/SSE. Chat ignores images and the model parameter, with no native tools or `/v1/models`. Keep image/tool support disabled, use `auto`, and do not use the web health check to judge its chat endpoint. |
+| [This repository's pinned version and local patch](integrations/gpt-web-gateway/README.md) | Adds user images across turns and a validated text tool protocol to chat JSON/SSE; the client executes returned tool calls. `/v1/models` is absent and model is still ignored. On 2026-10-20, one ordinary Chat account at Instant passed two-PNG history continuation, standard tool-call output and simulated client tool-result SSE; the source Codex step was synthetic. |
+
+Neither project should be assumed to enforce `max_tokens`, sampling parameters, or stop conditions as hard official-API constraints.
+
+The source checkout can prepare a separate local gateway. Git, npm, and an installed Google Chrome are required:
+
+```bash
+corepack pnpm web-gateway:setup
+corepack pnpm web-gateway:login
+corepack pnpm web-gateway:status
+corepack pnpm web-gateway:start
+```
+
+Login opens a separate Chrome window for you to sign in to ordinary Chat. Start keeps the gateway running in that terminal, listening only on `127.0.0.1:3101` by default. The local runner requires ordinary Chat mode before sending every chat request; Work or an unrecognized page is rejected.
+
+The local runner also forces `CHAT2CLAUDE_MAX_THINKING=true`. For every ordinary-Chat request, it selects the current account's highest recognized menu or slider thinking level, reads it back, and verifies it again before submission. A disabled or unconfirmed top level rejects the request instead of silently using Instant or a lower level; level selection cannot switch to Work. This is a local-runner policy for the separate gateway, not arbitrary `reasoning_effort` support in the generic Web adapter. The gateway still ignores `model`, so keep `auto`. On 2026-10-20, the current account passed Pro-level JSON checks for one PNG and a tool request. This does not cover Pro SSE, multiple images or a tool-result round trip.
+
+**Pro here is an ordinary-Chat UI level name.** It does not select a specific Codex model or establish equivalence to Codex `max`, `xhigh` or `ultra`. The integration confirms the highest level it can read back from the website.
+
+Start the main project in another terminal, then run:
+
+```bash
+corepack pnpm web-gateway:connect -- --api-url http://127.0.0.1:3000
+```
+
+Use the main service's actual loopback origin for `--api-url`. Connect saves the random gateway Key, selects **manual Web mode**, configures `auto` and `sonnet=auto`, and enables image input, tool calls and visible-context handoff. It updates existing Web routing settings; use Admin to select Auto or disable Web. Installation and login data default to the ignored `apps/api/data/web-gateway/` directory. A custom `--directory PATH` must be excluded from version control separately and passed to subsequent commands. Setup pins commit `893f553be358210a5c045aa9f62b56ba1edc5c78` plus the repository patch; it does not follow upstream updates. See [installation, private data, and limits](integrations/gpt-web-gateway/README.md).
+
+The patch accepts canonical Base64 PNG/JPEG/WebP/GIF images in current and historical user messages, retaining their message association: at most 10 images and 10 MiB of decoded images across the whole conversation, within a 16 MiB JSON request. Remote URLs, non-user images, unknown non-text parts and malformed encoding return 400. A validated text protocol returns standard `tool_calls` in JSON/SSE for the client to execute; `strict:true` is unsupported. The gateway's native `/v1/responses` still rejects images and tools; the main service's Responses route bridges through Chat Completions instead. Generic Auto routing cannot predict every gateway limit: HTTPS images or excess input may select Web and receive 400, without a Codex retry after dispatch.
+
+First toggle **Use ChatGPT Web**, then choose **Auto mode / Manual mode**. Turning Web off (or presetting `CHATGPT_WEB_ENABLED=false`) uses only Codex while preserving the gateway, Key, mappings, and mode selection for re-enabling. This switch takes precedence over Auto routing and request headers; a `web` header is rejected while Web is off. Removing saved settings still requires the separate **Clear web configuration** action.
+
+**Auto** prefers Web by default; choose Prefer Codex in Admin to change that order. Models, image/tool and native capabilities, and availability must match before a backend is selected. If Web cannot meet them, Auto considers compatible Codex accounts. Manual **Codex / ChatGPT Web** modes use only that upstream; select **ChatGPT Web** to prohibit fallback to Codex entirely. Requests are never retried on another backend after dispatch. Override one request with `x-chat2claude-backend: auto|codex|web`; the same header on a successful response reports the actual `codex` or `web` backend. History retains its account/provider affinity by default; the visible-context handoff described below is an explicit option.
+
+Optional **Web model mappings** accept one `client model or alias=web model ID` per line, such as `sonnet=auto` or `opus=auto`. This explicitly substitutes web `auto` for that request even if the alias normally points to a Codex model; it does not claim the models are equivalent. Targets must be listed among the configured web model IDs. Without a mapping, exact model matching still applies. Save an empty field to clear mappings.
+
+Capabilities follow the adapter declaration. Enable **tool calls** or **image inputs** only after confirming support in the gateway. The generic adapter can forward user-message HTTPS image URLs or PNG/JPEG/WebP/GIF base64 images within a 16 MiB serialized request limit; this repository's patch requires inline Base64. Tool-result images and web image generation/editing are not connected. Recognition depends on the gateway and web model. The local patch asks Web for tool requests through a text protocol; clients such as Claude Code read/write project files and run commands. The gateway never executes tools itself. Each request selects one backend; there is no default Web planning → Codex execution → Web review cycle that adds calls. The web adapter does not support native reasoning replay, reasoning-effort controls, service tiers, or structured outputs. Unsupported requests are rejected explicitly.
+
+**Continue in the same client project:** enable `contextHandoff` in Admin or preset `CHATGPT_CONTEXT_HANDOFF=true`. It defaults to false; the `web-gateway:connect` helper explicitly enables it. Responses can then continue the same API owner's stored visible history through `previous_response_id` across Codex/Web or an explicit model change. Messages/Chat can transfer completed public tool cycles with their IDs, original argument strings and results. Private reasoning and native message IDs are removed; incomplete tools and unknown native items cannot transfer. The same provider and model retain their original account affinity.
+
+Keep using the same client workspace and local tool executor, and send the complete history needed by the request. Responses history defaults to 30 minutes in memory; implicit reasoning replay defaults to 10 minutes. Both are isolated by API owner, bounded, and lost on service restart. This feature does not synchronize ChatGPT Projects or mount/read a project directory. File contents, edits and test evidence still arrive through client tools; sharing a directory alone does not supply that context.
+
+**Quota:** the goal is to prefer ordinary Chat and reduce requests this service sends directly to the Codex backend. The relationship between ordinary Chat and Codex limits depends on the actual plan, model, and account usage page. This project does not apply ChatGPT Work rules to ordinary Chat or promise additional total allowance. Response headers and Admin show the actual backend; confirm that the gateway itself uses ordinary Chat rather than forwarding back to Codex.
+
+The [official pricing documentation](https://learn.chatgpt.com/docs/pricing), checked on 2026-10-20, explicitly states that **Work and Codex share usage, credits and pricing rules**. This does not establish that ordinary Chat has a separate allowance. A useful comparison needs the same account/workspace and usage window with fine-grained counters; an unchanged integer percentage after one request is not proof that no Codex allowance was consumed.
+
+**Current live validation (2026-10-20, Pro level):** the same manually signed-in ordinary Chat account called the installed gateway directly through Chat Completions JSON with one fixed PNG showing 73. Pro was confirmed after selection and before submission. HTTP 200 reported `applied.thinking_mode=pro`, `thinking_verified=true`, `requested_verified=true`, `thinking_fallback=null`, and one confirmed image attachment. Plain recognition returned 73; one named `record_digits` request returned standard `tool_calls` with `digits` as the string `"73"`. Read-only observation of that tool request confirmed one conversation POST, one image attachment and one multimodal image part. No client tool ran, no Codex request occurred, and no generation went to the port-3000 main service. This does not cover Pro SSE, multiple images or a complete tool-result round trip.
+
+**Earlier live validation (2026-10-20, Instant level):** one ordinary Chat account passed Responses history continuation in a test instance, recognizing digits 73 in the earlier PNG and 29 in the current PNG and returning standard tool arguments with the original project code. The source Codex step made one mock call and no real Codex request; private reasoning and native message IDs did not reach Web. Pairing the real call ID with a simulated client result then passed Messages SSE with full two-image history: HTTP 200, backend web, complete `message_stop`, and correct code, digits and receipt. No file or command tool was executed. The running port-3000 service was configured only; generation checks used an in-memory test instance. This covers one account and two PNGs, without establishing the highest thinking level, other formats, long-term reliability or quotas. The 2026-10-19 single-PNG JSON/SSE results remain recorded. See the [integration record](integrations/gpt-web-gateway/README.md) for details.
+
+Keys entered in Admin stay in the server's existing `runtime-state.json`, optionally encrypted with `STATE_ENCRYPTION_KEY`; GET responses and browser storage never contain them. Leave the Key field blank to retain its saved value. **Clear web configuration** removes the configuration and Key and switches to Codex.
 
 ### Text and image models
 
@@ -340,11 +408,30 @@ DATA_DIR=./data
 
 `CHATGPT_BASE_URL` is the upstream ChatGPT/Codex URL. It is not the client Base URL for Claude Code.
 
+Optionally seed web routing through these environment variables; the default remains Codex. Admin changes can then be persisted:
+
+```bash
+CHATGPT_ROUTING_MODE=auto
+CHATGPT_AUTO_PREFERENCE=web
+# Visible history and completed tool results can cross backends when enabled; off by default, with no private reasoning or ChatGPT Projects sync
+CHATGPT_CONTEXT_HANDOFF=false
+# CHATGPT_WEB_ENABLED=false # Disable Web but preserve configuration; takes precedence over Auto and headers
+CHATGPT_WEB_BASE_URL=http://127.0.0.1:8000
+CHATGPT_WEB_MODELS=auto
+CHATGPT_WEB_SUPPORTS_TOOLS=false
+# Set false for the local gateway patch to exclude strict:true tools before dispatch; omit to retain legacy gateway passthrough
+# CHATGPT_WEB_SUPPORTS_STRICT_TOOLS=false
+CHATGPT_WEB_SUPPORTS_IMAGES=false
+# Optional explicit substitution; each target must be listed in CHATGPT_WEB_MODELS
+# CHATGPT_WEB_MODEL_MAPPINGS={"sonnet":"auto","opus":"auto"}
+# CHATGPT_WEB_API_KEY=<gateway-api-key>
+```
+
 The model catalog can depend on the requested client version. If discovery succeeds but omits new models, update the service and check `clientVersion` in the Professional-mode discovery diagnostics. The current compatibility baseline is `0.160.0`; `CODEX_CLIENT_VERSION` explicitly overrides it, including an older environment value retained after an update. Restart the service and refresh account models after changing the version.
 
 ## Persistence and secret handling
 
-The source launch commands above default to `apps/api/data/`; release archives default to `data/` inside the extracted package. Override this with `DATA_DIR`. Relative paths resolve from the API workspace for source startup and from the package root for release startup. Runtime state stores account sessions, Runtime API Keys, and alias overlays. Operational state stores sanitized admin statistics, discovery/cache data, quota cache, and diagnostics.
+The source launch commands above default to `apps/api/data/`; release archives default to `data/` inside the extracted package. Override this with `DATA_DIR`. Relative paths resolve from the API workspace for source startup and from the package root for release startup. Runtime state stores account sessions, Runtime API Keys, alias overlays, and web upstream configuration. Operational state stores sanitized admin statistics, discovery/cache data, quota cache, and diagnostics.
 
 Source startup reads process environment variables. Release launchers also load the package-root `.env`, with existing environment variables taking precedence. Keep the original data directory and `STATE_ENCRYPTION_KEY` when migrating; see [Install and upgrade](INSTALL.md).
 

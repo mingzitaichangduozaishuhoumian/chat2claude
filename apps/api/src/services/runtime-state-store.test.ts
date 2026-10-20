@@ -6,7 +6,8 @@ import { AccountPool } from './account-pool.js';
 import { DurableRuntimeState } from './durable-runtime-state.js';
 import { RuntimeApiKeys } from './runtime-api-keys.js';
 import { ModelRegistry } from './model-registry.js';
-import { RuntimeStateStore, type RuntimeStateFileSystem } from './runtime-state-store.js';
+import { createRuntimeState, RuntimeStateStore, type RuntimeStateFileSystem } from './runtime-state-store.js';
+import { BackendRouting } from './backend-routing.js';
 import * as nodeFs from 'node:fs';
 
 const directories: string[] = [];
@@ -16,6 +17,129 @@ afterEach(() => {
 });
 
 describe('RuntimeStateStore', () => {
+  it('keeps existing states compatible and optionally persists encrypted gateway credentials', () => {
+    const path = statePath();
+    const accounts = new AccountPool();
+    const keys = new RuntimeApiKeys();
+    expect(createRuntimeState(accounts.exportState(), keys.exportState(), [])).not.toHaveProperty('backendRouting');
+    const routing = new BackendRouting({ mode: 'auto', autoPreference: 'codex', contextHandoff: true, gateway: {
+      baseUrl: 'https://gateway.test', apiKey: 'PRIVATE_GATEWAY_KEY', models: ['web-model'], supportsTools: true,
+      supportsImages: true, supportsStrictTools: false, modelMappings: { sonnet: 'web-model' },
+    } });
+    const store = new RuntimeStateStore({ path, encryptionKey: Buffer.alloc(32, 4) });
+    const source = new DurableRuntimeState({ accountPool: accounts, runtimeApiKeys: keys, backendRouting: routing, store });
+    source.persist();
+    expect(readFileSync(path, 'utf8')).not.toContain('PRIVATE_GATEWAY_KEY');
+    const restoredRouting = new BackendRouting();
+    new DurableRuntimeState({ accountPool: new AccountPool(), runtimeApiKeys: new RuntimeApiKeys(), backendRouting: restoredRouting, store }).hydrate();
+    expect(restoredRouting.snapshot()).toEqual(routing.snapshot());
+    expect(restoredRouting.safeView()).toMatchObject({ autoPreference: 'codex', contextHandoff: true, gateway: { supportsImages: true, supportsStrictTools: false, modelMappings: { sonnet: 'web-model' } } });
+  });
+
+  it('persists an encrypted web opt-out while keeping the saved mode, mapping and credentials for re-enabling', () => {
+    const path = statePath();
+    const routing = new BackendRouting({ mode: 'web', autoPreference: 'web', gateway: {
+      baseUrl: 'https://gateway.test', apiKey: 'PRIVATE_GATEWAY_KEY', models: ['web-model'], supportsTools: true,
+      modelMappings: { sonnet: 'web-model' },
+    } });
+    const previous = routing.snapshot();
+    const store = new RuntimeStateStore({ path, encryptionKey: Buffer.alloc(32, 4) });
+    const source = new DurableRuntimeState({ accountPool: new AccountPool(), runtimeApiKeys: new RuntimeApiKeys(), backendRouting: routing, store });
+    source.transaction(() => routing.update({ webEnabled: false }));
+    expect(readFileSync(path, 'utf8')).not.toContain('PRIVATE_GATEWAY_KEY');
+    const restoredRouting = new BackendRouting();
+    const restored = new DurableRuntimeState({ accountPool: new AccountPool(), runtimeApiKeys: new RuntimeApiKeys(), backendRouting: restoredRouting, store });
+    expect(restored.hydrate()).toBe(true);
+    expect(restoredRouting.snapshot()).toEqual({ ...previous, webEnabled: false });
+    expect(restoredRouting.safeView()).toMatchObject({ webEnabled: false, configured: true, mode: 'web', gateway: { apiKeyConfigured: true } });
+    expect(JSON.stringify(restoredRouting.safeView())).not.toContain('PRIVATE_GATEWAY_KEY');
+    restored.transaction(() => restoredRouting.update({ webEnabled: true }));
+    const enabledRouting = new BackendRouting();
+    expect(new DurableRuntimeState({ accountPool: new AccountPool(), runtimeApiKeys: new RuntimeApiKeys(), backendRouting: enabledRouting, store }).hydrate()).toBe(true);
+    expect(enabledRouting.snapshot()).toEqual({ ...previous, webEnabled: true });
+    expect(enabledRouting.isWebEnabled()).toBe(true);
+  });
+
+  it('loads legacy routing with default web preference without rewriting persisted optional fields', () => {
+    const path = statePath();
+    const legacyRouting = { mode: 'auto', gateway: { baseUrl: 'https://gateway.test', models: ['auto'], supportsTools: false } };
+    writeFileSync(path, JSON.stringify({ version: 2, accounts: [], runtimeApiKeys: { records: [] }, modelAliases: [], backendRouting: legacyRouting }));
+    const routing = new BackendRouting();
+    const store = new RuntimeStateStore({ path });
+    new DurableRuntimeState({ accountPool: new AccountPool(), runtimeApiKeys: new RuntimeApiKeys(), backendRouting: routing, store }).hydrate();
+    expect(routing.snapshot()).toEqual(legacyRouting);
+    expect(routing.safeView()).toMatchObject({ webEnabled: true, autoPreference: 'web', contextHandoff: false, gateway: { supportsImages: false } });
+    expect(routing.isWebEnabled()).toBe(true);
+  });
+
+  it('loads legacy routing without a gateway with web disabled without rewriting the stored mode', () => {
+    const path = statePath();
+    writeFileSync(path, JSON.stringify({ version: 2, accounts: [], runtimeApiKeys: { records: [] }, modelAliases: [], backendRouting: { mode: 'web' } }));
+    const routing = new BackendRouting();
+    new DurableRuntimeState({ accountPool: new AccountPool(), runtimeApiKeys: new RuntimeApiKeys(), backendRouting: routing, store: new RuntimeStateStore({ path }) }).hydrate();
+    expect(routing.snapshot()).toEqual({ mode: 'web' });
+    expect(routing.safeView()).toMatchObject({ webEnabled: false, configured: false, mode: 'web' });
+  });
+
+  it.each([
+    { webEnabled: 'PRIVATE_VALUE' },
+    { webEnabled: null },
+    { contextHandoff: 'PRIVATE_VALUE' },
+    { contextHandoff: null },
+    { autoPreference: 'PRIVATE_VALUE' },
+    { gateway: { baseUrl: 'https://gateway.test', models: ['auto'], supportsTools: false, supportsImages: 'PRIVATE_VALUE' } },
+    { gateway: { baseUrl: 'https://gateway.test', models: ['auto'], supportsTools: true, supportsStrictTools: 'PRIVATE_VALUE' } },
+    { gateway: { baseUrl: 'https://gateway.test', models: ['auto'], supportsTools: true, supportsStrictTools: null } },
+    { gateway: { baseUrl: 'https://gateway.test', models: ['auto'], supportsTools: false, modelMappings: { alias: 'PRIVATE_VALUE' } } },
+    { gateway: { baseUrl: 'https://gateway.test', models: ['auto'], supportsTools: false, modelMappings: JSON.parse('{"__proto__":"auto"}') } },
+  ])('rejects malformed stored automatic/image/mapping configuration safely (case %#)', (patch) => {
+    const path = statePath();
+    writeFileSync(path, JSON.stringify({ version: 2, accounts: [], runtimeApiKeys: { records: [] }, modelAliases: [], backendRouting: { mode: 'auto', ...patch } }));
+    expect(() => new RuntimeStateStore({ path }).load()).toThrow('backendRouting configuration is invalid');
+    try { new RuntimeStateStore({ path }).load(); } catch (error) { expect(String(error)).not.toContain('PRIVATE_VALUE'); }
+  });
+
+  it('restores routing and credentials when a transaction fails before persistence', () => {
+    const routing = new BackendRouting({ mode: 'auto', gateway: { baseUrl: 'https://gateway.test', apiKey: 'OLD_KEY', models: ['auto'], supportsTools: false } });
+    const durable = new DurableRuntimeState({ accountPool: new AccountPool(), runtimeApiKeys: new RuntimeApiKeys(), backendRouting: routing, store: new RuntimeStateStore({ path: statePath() }) });
+    expect(() => durable.transaction(() => {
+      routing.update({ mode: 'web', gateway: { apiKey: 'NEW_KEY' } });
+      throw new Error('mutation failed');
+    })).toThrow('mutation failed');
+    expect(routing.snapshot()).toMatchObject({ mode: 'auto', gateway: { apiKey: 'OLD_KEY' } });
+  });
+
+  it('rolls routing back when the atomic write fails', () => {
+    const routing = new BackendRouting();
+    const store = new RuntimeStateStore({ path: statePath(), fs: { ...nodeFs,
+      renameSync() { throw Object.assign(new Error('write failed'), { code: 'EIO' }); },
+    } });
+    const durable = new DurableRuntimeState({ accountPool: new AccountPool(), runtimeApiKeys: new RuntimeApiKeys(), backendRouting: routing, store });
+    expect(() => durable.transaction(() => routing.update({ mode: 'web', gateway: { baseUrl: 'https://gateway.test', apiKey: 'NEW_KEY' } }))).toThrow('atomically');
+    expect(routing.snapshot()).toEqual({ mode: 'codex' });
+  });
+
+  it('rejects malformed stored routing without leaking credentials', () => {
+    const path = statePath();
+    writeFileSync(path, JSON.stringify({ version: 2, accounts: [], runtimeApiKeys: { records: [] }, modelAliases: [], backendRouting: {
+      mode: 'web', gateway: { baseUrl: 'https://PRIVATE_VALUE@gateway.test', models: ['auto'], supportsTools: false },
+    } }));
+    expect(() => new RuntimeStateStore({ path }).load()).toThrow('backendRouting configuration is invalid');
+    try { new RuntimeStateStore({ path }).load(); } catch (error) { expect(String(error)).not.toContain('PRIVATE_VALUE'); }
+  });
+
+  it('accepts persisted web gateway accounts while forbidding account-level credentials', () => {
+    const path = statePath();
+    const accounts = new AccountPool({ seedMockAccount: false });
+    accounts.add({ id: 'gateway-account', provider: 'mock' });
+    const state = createRuntimeState(accounts.exportState(), new RuntimeApiKeys().exportState(), []);
+    const document = { ...state, accounts: state.accounts.map((account) => ({ ...account, provider: 'chatgpt-web' })) };
+    writeFileSync(path, JSON.stringify(document));
+    expect(new RuntimeStateStore({ path }).load()?.accounts).toEqual([expect.objectContaining({ id: 'gateway-account', provider: 'chatgpt-web' })]);
+    writeFileSync(path, JSON.stringify({ ...document, accounts: document.accounts.map((account) => ({ ...account, secret: { type: 'chatgpt-session', accessToken: 'PRIVATE_GATEWAY_KEY' } })) }));
+    expect(() => new RuntimeStateStore({ path }).load()).toThrow('only valid for chatgpt-session accounts');
+  });
+
   it('treats a missing state file as first boot', () => {
     const path = statePath();
     expect(new RuntimeStateStore({ path }).load()).toBeUndefined();
@@ -155,6 +279,7 @@ describe('RuntimeStateStore', () => {
     const accounts = new AccountPool();
     const keys = new RuntimeApiKeys();
     const modelRegistry = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
+    const routing = new BackendRouting();
     accounts.add({ id: 'existing', provider: 'mock' });
     new DurableRuntimeState({ accountPool: accounts, runtimeApiKeys: keys, modelRegistry, store: new RuntimeStateStore({ path }) }).persist();
 
@@ -180,24 +305,28 @@ describe('RuntimeStateStore', () => {
       },
       unlinkSync: nodeFs.unlinkSync,
     };
-    const durable = new DurableRuntimeState({ accountPool: accounts, runtimeApiKeys: keys, modelRegistry, store: new RuntimeStateStore({ path, fs: failingFs }) });
+    const durable = new DurableRuntimeState({ accountPool: accounts, runtimeApiKeys: keys, modelRegistry, backendRouting: routing, store: new RuntimeStateStore({ path, fs: failingFs }) });
 
     expect(durable.transaction(() => {
       accounts.add({ id: 'persisted', provider: 'chatgpt-session', secret: { type: 'chatgpt-session', accessToken: 'persisted-access-secret' } });
       keys.add('persisted-runtime-key');
+      routing.update({ mode: 'web', gateway: { baseUrl: 'https://gateway.test', apiKey: 'PERSISTED_GATEWAY_KEY' } });
       return modelRegistry.update('sonnet', { backendModel: 'persisted-backend-model' });
     })).toMatchObject({ id: 'sonnet', backendModel: 'persisted-backend-model' });
     expect(accounts.get('persisted')?.secret?.accessToken).toBe('persisted-access-secret');
     expect(keys.has('persisted-runtime-key')).toBe(true);
     expect(modelRegistry.get('sonnet')?.backendModel).toBe('persisted-backend-model');
+    expect(routing.snapshot()).toMatchObject({ mode: 'web', gateway: { apiKey: 'PERSISTED_GATEWAY_KEY' } });
 
     const restoredAccounts = new AccountPool();
     const restoredKeys = new RuntimeApiKeys();
     const restoredModels = new ModelRegistry({ defaults: [{ id: 'sonnet', enabled: true }] });
-    expect(new DurableRuntimeState({ accountPool: restoredAccounts, runtimeApiKeys: restoredKeys, modelRegistry: restoredModels, store: new RuntimeStateStore({ path }) }).hydrate()).toBe(true);
+    const restoredRouting = new BackendRouting();
+    expect(new DurableRuntimeState({ accountPool: restoredAccounts, runtimeApiKeys: restoredKeys, modelRegistry: restoredModels, backendRouting: restoredRouting, store: new RuntimeStateStore({ path }) }).hydrate()).toBe(true);
     expect(restoredAccounts.get('persisted')?.secret?.accessToken).toBe('persisted-access-secret');
     expect(restoredKeys.has('persisted-runtime-key')).toBe(true);
     expect(restoredModels.get('sonnet')?.backendModel).toBe('persisted-backend-model');
+    expect(restoredRouting.snapshot()).toEqual(routing.snapshot());
   });
 });
 

@@ -4,6 +4,95 @@ import { loadEnv } from './env.js';
 import { DEFAULT_CODEX_CLIENT_VERSION } from '@chatgpt-to-claude/chatgpt-backend';
 
 describe('loadEnv', () => {
+  it('only overrides default backend routing when configured', () => {
+    expect(loadEnv({}).backendRouting).toBeUndefined();
+    expect(loadEnv({ CHATGPT_ROUTING_MODE: 'auto' }).backendRouting).toEqual({ mode: 'auto' });
+    expect(loadEnv({ CHATGPT_WEB_BASE_URL: 'http://127.0.0.1:8090/v1/' }).backendRouting).toEqual({
+      mode: 'codex', gateway: { baseUrl: 'http://127.0.0.1:8090', models: ['auto'], supportsTools: false },
+    });
+    expect(loadEnv({ CHATGPT_ROUTING_MODE: 'web', CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_API_KEY: 'PRIVATE_KEY', CHATGPT_WEB_MODELS: 'model-a,model-b', CHATGPT_WEB_SUPPORTS_TOOLS: 'true' }).backendRouting).toEqual({
+      mode: 'web', gateway: { baseUrl: 'https://gateway.test', apiKey: 'PRIVATE_KEY', models: ['model-a', 'model-b'], supportsTools: true },
+    });
+  });
+
+  it('accepts explicit automatic preferences without requiring a gateway', () => {
+    expect(loadEnv({ CHATGPT_AUTO_PREFERENCE: 'web' }).backendRouting).toEqual({ mode: 'codex', autoPreference: 'web' });
+    expect(loadEnv({ CHATGPT_ROUTING_MODE: 'auto', CHATGPT_AUTO_PREFERENCE: 'codex' }).backendRouting).toEqual({ mode: 'auto', autoPreference: 'codex' });
+    expect(loadEnv({ CHATGPT_ROUTING_MODE: 'auto' }).backendRouting).not.toHaveProperty('autoPreference');
+  });
+
+  it('loads visible context handoff independently of gateway configuration', () => {
+    expect(loadEnv({}).backendRouting).toBeUndefined();
+    expect(loadEnv({ CHATGPT_CONTEXT_HANDOFF: 'false' }).backendRouting).toEqual({ mode: 'codex', contextHandoff: false });
+    expect(loadEnv({ CHATGPT_CONTEXT_HANDOFF: ' TRUE ', CHATGPT_ROUTING_MODE: 'auto' }).backendRouting).toEqual({ mode: 'auto', contextHandoff: true });
+    expect(loadEnv({ CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_CONTEXT_HANDOFF: 'true' }).backendRouting)
+      .toMatchObject({ contextHandoff: true, gateway: { baseUrl: 'https://gateway.test' } });
+  });
+
+  it('loads the independent web switch without requiring a gateway', () => {
+    expect(loadEnv({ CHATGPT_WEB_ENABLED: 'false' }).backendRouting).toEqual({ mode: 'codex', webEnabled: false });
+    expect(loadEnv({ CHATGPT_WEB_ENABLED: ' TRUE ', CHATGPT_ROUTING_MODE: 'auto' }).backendRouting).toEqual({ mode: 'auto', webEnabled: true });
+    expect(loadEnv({ CHATGPT_WEB_ENABLED: 'false', CHATGPT_ROUTING_MODE: 'web', CHATGPT_WEB_BASE_URL: 'https://gateway.test',
+      CHATGPT_WEB_API_KEY: 'PRIVATE_KEY', CHATGPT_WEB_MODEL_MAPPINGS: '{"sonnet":"auto"}',
+    }).backendRouting).toEqual({ mode: 'web', webEnabled: false, gateway: {
+      baseUrl: 'https://gateway.test', apiKey: 'PRIVATE_KEY', models: ['auto'], supportsTools: false, modelMappings: { sonnet: 'auto' },
+    } });
+    expect(loadEnv({ CHATGPT_WEB_BASE_URL: 'https://gateway.test' }).backendRouting).not.toHaveProperty('webEnabled');
+  });
+
+  it('loads explicit image capability and model mappings while retaining literal model identities', () => {
+    expect(loadEnv({ CHATGPT_ROUTING_MODE: 'auto', CHATGPT_AUTO_PREFERENCE: 'web', CHATGPT_WEB_BASE_URL: 'https://gateway.test',
+      CHATGPT_WEB_MODELS: 'web-model,web-other', CHATGPT_WEB_SUPPORTS_IMAGES: 'true',
+      CHATGPT_WEB_MODEL_MAPPINGS: JSON.stringify({ sonnet: 'web-model', 'codex-model': 'web-other' }),
+    }).backendRouting).toEqual({ mode: 'auto', autoPreference: 'web', gateway: {
+      baseUrl: 'https://gateway.test', models: ['web-model', 'web-other'], supportsTools: false, supportsImages: true,
+      modelMappings: { sonnet: 'web-model', 'codex-model': 'web-other' },
+    } });
+    expect(loadEnv({ CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_IMAGES: 'false', CHATGPT_WEB_MODEL_MAPPINGS: '{}' }).backendRouting)
+      .toMatchObject({ gateway: { supportsImages: false, modelMappings: {} } });
+  });
+
+  it('keeps strict-tool capability absent by default and accepts an explicit boolean when a gateway is configured', () => {
+    expect(loadEnv({ CHATGPT_WEB_BASE_URL: 'https://gateway.test' }).backendRouting?.gateway).not.toHaveProperty('supportsStrictTools');
+    expect(loadEnv({ CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_STRICT_TOOLS: 'false' }).backendRouting?.gateway)
+      .toMatchObject({ supportsStrictTools: false });
+    expect(loadEnv({ CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_STRICT_TOOLS: ' TRUE ' }).backendRouting?.gateway)
+      .toMatchObject({ supportsStrictTools: true });
+  });
+
+  it.each([
+    { CHATGPT_ROUTING_MODE: 'PRIVATE_VALUE' },
+    { CHATGPT_CONTEXT_HANDOFF: 'PRIVATE_VALUE' },
+    { CHATGPT_CONTEXT_HANDOFF: '' },
+    { CHATGPT_CONTEXT_HANDOFF: '1' },
+    { CHATGPT_WEB_ENABLED: 'PRIVATE_VALUE' },
+    { CHATGPT_WEB_ENABLED: '' },
+    { CHATGPT_WEB_ENABLED: '1' },
+    { CHATGPT_WEB_API_KEY: 'PRIVATE_VALUE' },
+    { CHATGPT_WEB_BASE_URL: 'https://PRIVATE_VALUE@gateway.test' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_MODELS: '' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_TOOLS: 'PRIVATE_VALUE' },
+    { CHATGPT_AUTO_PREFERENCE: 'PRIVATE_VALUE' },
+    { CHATGPT_AUTO_PREFERENCE: '' },
+    { CHATGPT_WEB_SUPPORTS_IMAGES: 'true' },
+    { CHATGPT_WEB_SUPPORTS_STRICT_TOOLS: 'false' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_STRICT_TOOLS: 'PRIVATE_VALUE' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_STRICT_TOOLS: '' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_STRICT_TOOLS: '0' },
+    { CHATGPT_WEB_MODEL_MAPPINGS: '{}' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_IMAGES: 'PRIVATE_VALUE' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_SUPPORTS_IMAGES: '' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_MODEL_MAPPINGS: '{PRIVATE_VALUE' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_MODEL_MAPPINGS: 'null' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_MODEL_MAPPINGS: '[]' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_MODEL_MAPPINGS: '{"alias":"PRIVATE_VALUE"}' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_MODEL_MAPPINGS: '{"__proto__":"auto"}' },
+    { CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_MODEL_MAPPINGS: '{"constructor":"auto"}' },
+  ])('rejects invalid web routing environment safely (case %#)', (source) => {
+    expect(() => loadEnv(source)).toThrow();
+    try { loadEnv(source); } catch (error) { expect(String(error)).not.toContain('PRIVATE_VALUE'); }
+  });
+
   it('uses an independent five-minute image generation timeout', () => {
     expect(loadEnv({ CHATGPT_REQUEST_TIMEOUT_MS: '50' }).chatGptImageRequestTimeoutMs).toBe(300_000);
     expect(loadEnv({ CHATGPT_IMAGE_REQUEST_TIMEOUT_MS: '120000' }).chatGptImageRequestTimeoutMs).toBe(120_000);

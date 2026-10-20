@@ -91,6 +91,18 @@ export class ReasoningReplayStore {
     return new ReasoningReplayMatch(record, () => this.#records.get(id) === record && this.#now() < record.expiresAt);
   }
 
+  /** Owner-scoped public call matching for opt-in handoff. Native apply still enforces its original identity. */
+  findHandoff(owner: string | undefined, input?: ChatGptInputItem[]): ReasoningReplayMatch | undefined {
+    this.#cleanup();
+    if (!owner) return undefined;
+    const group = latestGroup(input);
+    if (!group) return undefined;
+    const matches = [...this.#records].filter(([, entry]) => entry.data.owner === owner && entry.callKey === group.key);
+    if (matches.length !== 1) return undefined;
+    const [id, record] = matches[0];
+    return new ReasoningReplayMatch(record, () => this.#records.get(id) === record && this.#now() < record.expiresAt);
+  }
+
   stats(): { records: number; bytes: number } {
     this.#cleanup();
     return { records: this.#records.size, bytes: [...this.#records.values()].reduce((sum, entry) => sum + entry.bytes, 0) };
@@ -129,6 +141,9 @@ export class ReasoningReplayMatch {
     const stored = this.#entry.data;
     return stored.model === model && account.provider === stored.provider
       && account.id === stored.account.id && account.incarnation === stored.account.incarnation;
+  }
+  canHandoff(account: ReplayAccount, model: string): boolean {
+    return this.#active() && (this.#entry.data.provider !== account.provider || this.#entry.data.model !== model);
   }
   apply(input: ChatGptInputItem[] | undefined, account: ReplayAccount, model: string): ChatGptInputItem[] | undefined {
     if (!this.#active() || !this.accepts(account, model)) return undefined;

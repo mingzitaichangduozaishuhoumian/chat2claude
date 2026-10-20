@@ -9,16 +9,19 @@ import type { RequestLog } from '../services/request-log.js';
 import { hasGeneratedImageOutput, previousResponseNotFound, RESPONSES_HISTORY_LIMITS, ResponsesStore } from '../services/responses-store.js';
 import { bindRequestHistory } from '../services/request-history-binding.js';
 import { ModelRegistryError, type ModelRegistry } from '../services/model-registry.js';
-import type { AccountPool, AccountProvider } from '../services/account-pool.js';
+import type { AccountPool } from '../services/account-pool.js';
 import { accountReleaseError } from './account-release-error.js';
 import { mapRequestCancellation, mapChatGptBackendError, mapErrorPayload, parseRequestJson, unexpectedApiError } from './backend-errors.js';
 import { createAccountRequestTracker, requestErrorOutcome, trackStreamStatistics, usageFromBackend } from '../services/request-statistics.js';
 import type { AdminOperationalState } from '../services/admin-operational-state.js';
 import { getAccessLogRequestId, getAccessLogStreamLifecycle, getAccessLogTerminal, setAccessLogMetadata } from '../middleware/access-log.js';
-import { acquireRequestAccount, checkSessionAccountAvailability } from './account-acquisition.js';
+import { acquireRequestAccount } from './account-acquisition.js';
 import { assertTextModelEndpoint } from './text-model-endpoint.js';
+import type { BackendRouting } from '../services/backend-routing.js';
+import { checkRequestBackendAvailability, requestAccountOptions, markSelectedBackend } from '../services/request-backend-routing.js';
+import { resolveRequestModel, resolveRoutedAccountModel, supportsRoutedAccount, declaredBackendModel } from '../services/request-model-routing.js';
 
-export interface OpenAiResponsesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; responsesStore?: ResponsesStore; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; accountAcquireTimeoutMs?: number; sseKeepaliveIntervalMs?: number; logger?: Logger; }
+export interface OpenAiResponsesRouteDeps { backend: ChatGptBackendClient; requestLog: RequestLog; modelRegistry: ModelRegistry; accountPool: AccountPool; responsesStore?: ResponsesStore; operationalState?: AdminOperationalState; backendProvider?: 'mock' | 'session'; backendRouting?: BackendRouting; defaults?: ReasoningSpeedDefaults; ready?: Promise<unknown>; accountAcquireTimeoutMs?: number; sseKeepaliveIntervalMs?: number; logger?: Logger; }
 
 export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono {
   const app = new Hono();
@@ -36,20 +39,23 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
         reasoningEffort: request.reasoning?.effort ?? request.reasoning_effort,
         serviceTier: request.service_tier ?? request.speed ?? request.response_speed,
       };
-      const accountProvider = accountProviderForBackend(deps.backendProvider);
-      if (deps.backendProvider === 'session') checkSessionAccountAvailability(c, deps.accountPool);
-      const globalResolution = deps.modelRegistry.resolve(request.model);
+      checkRequestBackendAvailability(c, deps);
+      const globalResolution = resolveRequestModel(c, deps, request.model);
       const accountControls = deps.modelRegistry.accountControlRequirements(globalResolution, explicitControls);
-      const account = await acquireRequestAccount(c, deps.accountPool, {
-        provider: accountProvider,
-        capability: 'messages',
-        eligible: (candidate) => (!previous || previous.accepts(candidate, globalResolution.backendModel)) &&
-          (deps.backendProvider !== 'session' || deps.modelRegistry.supportsAccountRequest(
-            request.model,
-            { accountId: candidate.id, createdAt: candidate.createdAt },
-            accountControls,
-          )),
-      }, deps.accountAcquireTimeoutMs);
+      const contextHandoff = deps.backendRouting?.snapshot().contextHandoff === true;
+      let handoffInput: OpenAiResponsesRequest['input'] | undefined;
+      if (contextHandoff && previous) {
+        try { handoffInput = previous.expandVisible(request.input); } catch { /* Keep native continuation available when projection is unsafe. */ }
+      }
+      const visibleRequest = mapOpenAiResponsesRequestToChatGpt({ ...request, input: handoffInput ?? request.input, previous_response_id: undefined }, {}, { backendModel: globalResolution.backendModel, resolvedControls: {} });
+      const account = await acquireRequestAccount(c, deps.accountPool, requestAccountOptions(c, deps, visibleRequest,
+        (candidate) => supportsRoutedAccount(deps, request.model, candidate, globalResolution, explicitControls, accountControls,
+          (resolution) => !previous || previous.accepts(candidate, resolution.backendModel)
+            || handoffInput !== undefined && previous.canHandoff(candidate, resolution.backendModel)),
+        request.model,
+        declaredBackendModel(deps.modelRegistry, request.model, globalResolution.backendModel),
+      ), deps.accountAcquireTimeoutMs);
+      markSelectedBackend(c, account);
 
       const tracker = createAccountRequestTracker(deps.operationalState, account);
       const streamCancellation = new AbortController();
@@ -60,15 +66,16 @@ export function createOpenAiResponsesRoute(deps: OpenAiResponsesRouteDeps): Hono
       let streamOwner: ReturnType<typeof releaseAccountWhenDone> | undefined;
       let responseBody: ReadableStream<Uint8Array> | undefined;
       try {
-        const resolution = deps.backendProvider === 'session'
-          ? deps.modelRegistry.resolveForAccount(request.model, { accountId: account.id, createdAt: account.createdAt })
-          : globalResolution;
-        const controls = deps.modelRegistry.resolveControls(resolution, accountControls);
+        const resolution = resolveRoutedAccountModel(deps, request.model, account, globalResolution);
+        const controls = deps.modelRegistry.resolveControls(resolution, account.provider === 'chatgpt-web' ? explicitControls : accountControls);
         setAccessLogMetadata(c, { backendModel: resolution.backendModel });
         const current = deps.accountPool.get(account.id);
-        if (previous && (!current || !current.enabled || current.status !== 'available' || !previous.accepts(current, resolution.backendModel))) throw new ClaudeApiError('No available account supports the requested model and controls.', 503, 'overloaded_error');
+        const nativeHistory = previous?.accepts(current ?? account, resolution.backendModel);
+        if (previous && (!current || !current.enabled || current.status !== 'available'
+          || !nativeHistory && !(contextHandoff && handoffInput !== undefined && previous.canHandoff(current, resolution.backendModel)))) throw new ClaudeApiError('No available account supports the requested model and controls.', 503, 'overloaded_error');
         // Release history only after acquisition, with current affinity and expiry checks.
-        const downstreamRequest = { ...request, input: previous ? previous.expand(request.input, current!, resolution.backendModel) : request.input, previous_response_id: undefined };
+        const downstreamRequest = { ...request, input: previous ? nativeHistory
+          ? previous.expand(request.input, current!, resolution.backendModel) : previous.expandVisible(request.input) : request.input, previous_response_id: undefined };
         const backendRequest = mapOpenAiResponsesRequestToChatGpt(downstreamRequest, {}, {
           backendModel: resolution.backendModel,
           resolvedControls: controls,
@@ -235,10 +242,6 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function toOpenAiError(error: ClaudeApiError) {
   return { error: { message: error.message, type: error.type, code: null } };
-}
-
-function accountProviderForBackend(backendProvider: OpenAiResponsesRouteDeps['backendProvider']): AccountProvider {
-  return backendProvider === 'session' ? 'chatgpt-session' : 'mock';
 }
 
 async function* openAiResponsesStreamError(error: unknown, model: string): AsyncIterable<string> {

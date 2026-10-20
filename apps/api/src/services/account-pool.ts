@@ -1,7 +1,7 @@
 import { ChatGptBackendError, type ChatGptBackendErrorCode, type ChatGptSessionSecret } from '@chatgpt-to-claude/chatgpt-backend';
 
 export type AccountStatus = 'available' | 'unhealthy' | 'disabled' | 'error' | 'cooldown';
-export type AccountProvider = 'mock' | 'chatgpt-session';
+export type AccountProvider = 'mock' | 'chatgpt-session' | 'chatgpt-web';
 
 export interface Account {
   id: string;
@@ -62,6 +62,8 @@ export interface AccountAcquireOptions {
   provider?: AccountProvider;
   capability?: string;
   eligible?: (account: Account) => boolean;
+  /** Lower values are preferred among currently available compatible accounts. */
+  priority?: (account: Account) => number;
 }
 
 export const ACCOUNT_UNAVAILABLE_REASONS = [
@@ -382,7 +384,10 @@ export class AccountPool {
 
   firstAvailable(options: AccountAcquireOptions = {}): Account | undefined {
     this.refreshExpiredCooldowns();
-    const account = this.accounts.find((item) => canAcquire(item, options));
+    const candidates = options.priority
+      ? [...this.accounts].sort((a, b) => options.priority!(cloneAccount(a)) - options.priority!(cloneAccount(b)))
+      : this.accounts;
+    const account = candidates.find((item) => canAcquire(item, options));
     return account ? cloneAccount(account) : undefined;
   }
 
@@ -418,7 +423,10 @@ export class AccountPool {
 
   private acquireImmediately(options: AccountAcquireOptions, deadline?: number): Account | undefined {
     this.refreshExpiredCooldowns();
-    const account = this.accounts.find((item) => canAcquire(item, options));
+    const candidates = options.priority
+      ? [...this.accounts].sort((a, b) => options.priority!(cloneAccount(a)) - options.priority!(cloneAccount(b)))
+      : this.accounts;
+    const account = candidates.find((item) => canAcquire(item, options));
     // Eligibility callbacks may themselves consume time; check at the allocation boundary.
     if (!account || (deadline !== undefined && performance.now() >= deadline)) return undefined;
     account.currentConcurrency += 1;
@@ -646,7 +654,7 @@ function createAccount(input: AccountCreateInput, now: () => Date, incarnation: 
     incarnation,
     configurationRevision: 1,
     healthRevision: 1,
-    label: normalizeString(input.label, provider === 'mock' ? 'Mock ChatGPT Account' : 'ChatGPT Session Account'),
+    label: normalizeString(input.label, provider === 'mock' ? 'Mock ChatGPT Account' : provider === 'chatgpt-web' ? 'ChatGPT Web Gateway' : 'ChatGPT Session Account'),
     provider,
     status: enabled ? 'available' : 'disabled',
     enabled,
@@ -656,7 +664,7 @@ function createAccount(input: AccountCreateInput, now: () => Date, incarnation: 
     lastError: null,
     lastErrorCode: null,
     cooldownUntil: null,
-    capabilities: normalizeStringArray(input.capabilities, provider === 'mock' ? ['mock', 'messages'] : ['chatgpt-session', 'messages']),
+    capabilities: normalizeStringArray(input.capabilities, provider === 'mock' ? ['mock', 'messages'] : [provider, 'messages']),
     secret: normalizeSecret(input.secret, provider),
     createdAt,
   };
@@ -749,7 +757,7 @@ function normalizeStatus(value: unknown, fallback: AccountStatus): AccountStatus
 }
 
 function normalizeProvider(value: unknown, fallback: AccountProvider): AccountProvider {
-  return value === 'chatgpt-session' || value === 'mock' ? value : fallback;
+  return value === 'chatgpt-session' || value === 'chatgpt-web' || value === 'mock' ? value : fallback;
 }
 
 function normalizeBackendErrorCode(value: unknown, fallback: ChatGptBackendErrorCode | null): ChatGptBackendErrorCode | null {
@@ -763,6 +771,7 @@ function sameUpstreamIdentity(previous: ChatGptSessionSecret | undefined, next: 
 }
 
 function normalizeSecret(value: unknown, provider: AccountProvider): ChatGptSessionSecret | undefined {
+  if (provider === 'chatgpt-web') return undefined;
   if (value === undefined || value === null) return undefined;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
