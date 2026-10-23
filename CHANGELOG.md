@@ -11,12 +11,14 @@
 - 网页后端改为明确手动开启。新配置和没有启用字段的旧配置默认仅用 Codex；保存网关地址或运行 `web-gateway:connect` 都不会开启网页、切换模式或开启上下文接续。已明确保存的开启状态继续保留，Auto 缺省优先 Codex。
 - 上游面板显示服务端确认的“当前生效”策略，未保存修改单独提示。网页关闭时隐藏模式控件；网关配置可独立展开、保存和检查，操作按钮与结果放在面板上方。
 - 新增不发送消息的连接检查，区分未配置、未检查、认证失败、未就绪、不可连接、超时及异常响应。`/v1/models` 缺失时回退 `/health`，最多 5 秒；连接成功不等于已登录或可生成。已保存配置和上次请求失败分别展示，网页 API 错误会明确提示检查启动、地址、Key、网页登录或切回 Codex。
+- 将 Vite 从 `6.4.3` 升至 `6.4.4`、Vitest 及配套包从 `4.1.11` 升至 `4.1.12`，修复依赖安全公告；保持现有主版本和依赖覆盖策略。
 
 ### English
 
 - Require an explicit Web opt-in. New configurations and legacy configurations without an enable flag use only Codex by default. Saving a gateway or running `web-gateway:connect` does not enable Web, switch modes or enable context handoff. Existing explicit enablement is retained; Auto defaults to Codex preference.
 - Show the server-confirmed effective routing separately from unsaved changes. Hide mode controls when Web is off, allow gateway configuration and checks independently, and keep actions and feedback near the top of the panel.
 - Add non-generating connection checks with actionable configuration, authentication, readiness, connectivity, timeout and response feedback. A missing `/v1/models` falls back to `/health` within a five-second deadline. Connectivity does not establish web login or generation readiness. Recent request failures remain separate, and Web-specific API errors explain how to check the gateway or switch to Codex.
+- Patch Vite from `6.4.3` to `6.4.4` and Vitest and its companion packages from `4.1.11` to `4.1.12` to address security advisories, retaining the existing major versions and dependency override policy.
 
 ## 0.3.0 — 2026-10-20
 

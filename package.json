@@ -28,8 +28,8 @@
     "playwright-core": "1.63.0",
     "tar": "7.5.22",
     "typescript": "^5.7.3",
-    "vite": "6.4.3",
-    "vitest": "^4.1.11",
+    "vite": "6.4.4",
+    "vitest": "^4.1.12",
     "yauzl": "3.4.0",
     "yazl": "3.3.1"
   },
