@@ -108,7 +108,7 @@ function fixture(options: { withCodex?: boolean; store?: RuntimeStateStore; envi
   const patch = (body: unknown) => app.request('http://api.test:3000/admin/api/backend-routing', {
     method: 'PATCH', headers, body: JSON.stringify(body),
   });
-  const configure = (mode: 'auto' | 'web' | 'codex' = 'auto') => patch({ mode, autoPreference: 'web', gateway: {
+  const configure = (mode: 'auto' | 'web' | 'codex' = 'auto') => patch({ mode, webEnabled: true, autoPreference: 'web', gateway: {
     baseUrl: 'http://gateway.test:8090/v1', apiKey: GATEWAY_KEY, models: [WEB_MODEL], supportsTools: true, supportsImages: true,
     modelMappings: { sonnet: WEB_MODEL, 'web-only-alias': WEB_MODEL },
   } });
@@ -123,13 +123,33 @@ function fixture(options: { withCodex?: boolean; store?: RuntimeStateStore; envi
 }
 
 describe('web gateway master enable switch', () => {
-  it('reports an explicit disabled flag without a gateway and enables legacy configured gateways', async () => {
+  it('reports web disabled until explicitly enabled, including for legacy configured gateways', async () => {
     const empty = fixture();
     expect(await empty.view()).toMatchObject({ webEnabled: false, configured: false });
     const legacy = fixture({ environment: { CHATGPT_WEB_BASE_URL: 'http://gateway.test:8090', CHATGPT_WEB_MODELS: WEB_MODEL } });
-    expect(await legacy.view()).toMatchObject({ webEnabled: true, configured: true });
+    expect(await legacy.view()).toMatchObject({ webEnabled: false, autoPreference: 'codex', configured: true });
     expect(empty.wire).toHaveLength(0);
     expect(legacy.wire).toHaveLength(0);
+  });
+
+  it.each(endpoints)('does not activate a newly configured gateway or saved Web mode at %s until manually enabled', async (endpoint) => {
+    const f = fixture();
+    expect((await f.patch({ mode: 'web', gateway: { baseUrl: 'http://gateway.test:8090', models: [WEB_MODEL],
+      supportsTools: true, modelMappings: { sonnet: WEB_MODEL } } })).status).toBe(200);
+    expect(await f.view()).toMatchObject({ configured: true, webEnabled: false, mode: 'web', autoPreference: 'codex' });
+    const response = await f.send(endpoint);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-chat2claude-backend')).toBe('codex');
+    expect(await response.text()).toContain('codex answer');
+    expect((await f.send(endpoint, 'web')).status).toBe(403);
+    expect(f.wire).toHaveLength(0);
+    expect(f.webOperations).toHaveLength(0);
+    expect((await f.patch({ webEnabled: true })).status).toBe(200);
+    const optedIn = await f.send(endpoint);
+    expect(optedIn.status).toBe(200);
+    expect(optedIn.headers.get('x-chat2claude-backend')).toBe('web');
+    await optedIn.text();
+    expect(f.wire).toHaveLength(1);
   });
 
   it('retains the selected mode, credentials, mappings and account identity while disabled', async () => {

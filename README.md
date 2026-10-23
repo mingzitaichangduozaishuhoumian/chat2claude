@@ -2,11 +2,11 @@
 
 **中文** | [English](README.en.md)
 
-最新发布版：**0.3.0** · [下载](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/latest) · [安装与升级](INSTALL.md) · [更新记录](CHANGELOG.md)
+最新发布版：**0.3.1** · [下载](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/latest) · [安装与升级](INSTALL.md) · [更新记录](CHANGELOG.md)
 
 [![CI](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/actions/workflows/ci.yml)
 
-v0.3.0 安装包包含普通 Chat 网页网关接入、手动／自动选择、可见上下文接续、模型分类和九项图片目录（五个基础型号、四个本地 2K／4K 尺寸别名）。网页网关需独立部署并登录，再在管理台配置网关地址。发布包无需编译；源码启动步骤见下文，改动详见[更新记录](CHANGELOG.md)。
+v0.3.1 修复了网页默认启用及连接失败提示：网页默认关闭，需手动启用；自动模式默认优先 Codex，管理台可检查网页连接并显示失败原因。安装包继续包含普通 Chat 网页接入、手动／自动选择、可见上下文接续、模型分类和九项图片目录（五个基础型号、四个本地 2K／4K 尺寸别名）。网页网关需独立部署并登录。发布包无需编译；源码启动步骤见下文，改动详见[更新记录](CHANGELOG.md)。
 
 `chatgpt-to-claude` 是一个 TypeScript + Hono 实现的本地兼容层：对外提供 Claude Messages、OpenAI Chat Completions、OpenAI Responses、Images、Models API 等接口，对内连接 mock、ChatGPT/Codex session 或独立部署的 ChatGPT 网页网关。
 
@@ -16,13 +16,13 @@ v0.3.0 安装包包含普通 Chat 网页网关接入、手动／自动选择、�
 
 | 安装包 | 适合谁 |
 | --- | --- |
-| [Windows x64 免安装 ZIP](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.3.0/chat2claude-v0.3.0-windows-x64.zip) | 已包含 Node.js；解压后双击 `start.bat`。 |
-| [通用 Node ZIP](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.3.0/chat2claude-v0.3.0-node.zip) | 已安装受支持 Node.js 的 Windows、Linux 或 macOS。 |
-| [通用 Node TAR.GZ](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.3.0/chat2claude-v0.3.0-node.tar.gz) | Linux/macOS，解压后运行 `sh start.sh`。 |
+| [Windows x64 免安装 ZIP](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.3.1/chat2claude-v0.3.1-windows-x64.zip) | 已包含 Node.js；解压后双击 `start.bat`。 |
+| [通用 Node ZIP](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.3.1/chat2claude-v0.3.1-node.zip) | 已安装受支持 Node.js 的 Windows、Linux 或 macOS。 |
+| [通用 Node TAR.GZ](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.3.1/chat2claude-v0.3.1-node.tar.gz) | Linux/macOS，解压后运行 `sh start.sh`。 |
 
 这些包已包含编译后的服务与生产依赖，无需 pnpm 或自行构建。启动后打开 `http://127.0.0.1:3000/admin`，完成账号授权。通用包推荐 Node.js 24 LTS；GitHub 的 **Source code** 下载项需要按下方源码步骤安装。
 
-[SHA-256 校验文件](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.3.0/SHA256SUMS) · [配置、数据迁移与升级](INSTALL.md) · [使用讨论](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/discussions) · [报告问题](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/issues/new/choose)
+[SHA-256 校验文件](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/download/v0.3.1/SHA256SUMS) · [配置、数据迁移与升级](INSTALL.md) · [使用讨论](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/discussions) · [报告问题](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/issues/new/choose)
 
 ## 我们的项目不一样在哪里
 
@@ -183,17 +183,17 @@ Admin 控制台包含六个主要区域：
 
 若要严格限制本服务直接调用 Codex，使用**手动网页模式**；不兼容或不可用时返回错误。只有接受请求可能被选到 Codex 时，才使用 **Auto**。这里是请求路线选择，不是额外额度的保证。
 
-可使用下方本机安装命令，或参考 [aurorax-neo/chat2api](https://github.com/aurorax-neo/chat2api) 和 [stufently/gpt-web-gateway](https://github.com/stufently/gpt-web-gateway) 自行部署。完成普通 Chat 登录后，可在 `/admin` → **模型映射** → **上游选择** 填写地址、可选 API Key 和实际支持的模型 slug，简洁模式即可配置。生成请求只需 OpenAI Chat Completions，不依赖 `/v1/models`；但管理 API 的网页健康检查会请求该接口，缺失时检查失败。模型 ID 原样使用，默认 `auto` 只声明该模型。
+可使用下方本机安装命令，或参考 [aurorax-neo/chat2api](https://github.com/aurorax-neo/chat2api) 和 [stufently/gpt-web-gateway](https://github.com/stufently/gpt-web-gateway) 自行部署。完成普通 Chat 登录后，可在 `/admin` → **模型映射** → **上游选择** 填写地址、可选 API Key 和实际支持的模型 slug，简洁模式即可配置。保存地址不会自动启用网页。生成请求只需 OpenAI Chat Completions，不依赖 `/v1/models`。模型 ID 原样使用，默认 `auto` 只声明该模型。
 
 | 参考实现与本地补丁 | 对接建议与验证范围 |
 | --- | --- |
 | [aurorax-neo/chat2api，dbf6bf3](https://github.com/aurorax-neo/chat2api/tree/dbf6bf39686348449c25de3b6131ca733f448deb) | 普通聊天走网页 conversation 接口。图片使用内联 base64，暂不使用远程 HTTPS 图片 URL；工具调用由文本协议适配。其图片生成还有 Codex 分支，不能将该项目的所有调用都视为普通 Chat。 |
-| [stufently/gpt-web-gateway，893f553](https://github.com/stufently/gpt-web-gateway/tree/893f553be358210a5c045aa9f62b56ba1edc5c78) | 真浏览器驱动普通 Chat，适合文本/SSE。聊天接口忽略图片和 model 参数，不提供原生工具及 `/v1/models`；请保持图片、工具开关关闭，使用 `auto`，不要用网页健康检查判断其聊天接口是否可用。 |
-| [本仓库固定版本与本地补丁](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/blob/v0.3.0/integrations/gpt-web-gateway/README.md) | 在同一固定上游 SHA 应用图片及工具文本协议补丁：聊天 JSON/SSE 可保留多轮 user 图片，返回标准工具调用供客户端执行；没有 `/v1/models`，model 仍被忽略。2026-10-20，同一普通 Chat 账号在 Instant 档已通过两张 PNG 的历史接续、标准工具调用和模拟客户端工具结果 SSE 验证；Codex 源为合成替身。 |
+| [stufently/gpt-web-gateway，893f553](https://github.com/stufently/gpt-web-gateway/tree/893f553be358210a5c045aa9f62b56ba1edc5c78) | 真浏览器驱动普通 Chat，适合文本/SSE。聊天接口忽略图片和 model 参数，不提供原生工具及 `/v1/models`；请保持图片、工具开关关闭，使用 `auto`。连接检查可改探测 `/health`，仅证明 HTTP 服务可达。 |
+| [本仓库固定版本与本地补丁](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/blob/v0.3.1/integrations/gpt-web-gateway/README.md) | 在同一固定上游 SHA 应用图片及工具文本协议补丁：聊天 JSON/SSE 可保留多轮 user 图片，返回标准工具调用供客户端执行；没有 `/v1/models`，model 仍被忽略。2026-10-20，同一普通 Chat 账号在 Instant 档已通过两张 PNG 的历史接续、标准工具调用和模拟客户端工具结果 SSE 验证；Codex 源为合成替身。 |
 
 两个项目对 `max_tokens`、采样参数和停止条件的执行都不能视为官方 API 的硬约束。
 
-发布包包含网页适配器和管理台，可直接配置已部署网关的地址。下列 `web-gateway:*` 辅助命令仅在[源码版](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/tree/v0.3.0)提供，不随免安装包分发；安装本机独立网关另需 Git、npm 和已安装的 Google Chrome：
+发布包包含网页适配器和管理台，可直接配置已部署网关的地址。下列 `web-gateway:*` 辅助命令仅在[源码版](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/tree/v0.3.1)提供，不随免安装包分发；安装本机独立网关另需 Git、npm 和已安装的 Google Chrome：
 
 ```bash
 corepack pnpm web-gateway:setup
@@ -214,19 +214,21 @@ corepack pnpm web-gateway:start
 corepack pnpm web-gateway:connect -- --api-url http://127.0.0.1:3000
 ```
 
-`--api-url` 改成主服务实际的本机根地址。此命令保存随机网关 Key，开启**手动网页模式**并配置 `auto`、`sonnet=auto`、图片输入、工具调用和可见上下文接续；会更新已有网页路由配置。要自动选择或停用网页，可继续在管理台修改。默认安装与登录数据位于已忽略的 `apps/api/data/web-gateway/`；自定义 `--directory PATH` 时须自行排除版本控制，所有后续命令使用相同目录。安装固定提交 `893f553be358210a5c045aa9f62b56ba1edc5c78` 及仓库补丁，不自动跟随上游更新。详见[安装、私密数据与限制](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/blob/v0.3.0/integrations/gpt-web-gateway/README.md)。
+`--api-url` 改成主服务实际的本机根地址。此命令只保存网关地址、随机 Key、`auto`、`sonnet=auto` 及图片和工具能力声明，保留现有网页开关、模式、优先级和可见上下文接续选择。首次接入后，请在管理台勾选 **使用 ChatGPT 网页**，选择模式并点击 **保存上游设置**；需要接续历史时另行开启该选项。默认安装与登录数据位于已忽略的 `apps/api/data/web-gateway/`；自定义 `--directory PATH` 时须自行排除版本控制，所有后续命令使用相同目录。安装固定提交 `893f553be358210a5c045aa9f62b56ba1edc5c78` 及仓库补丁，不自动跟随上游更新。详见[安装、私密数据与限制](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/blob/v0.3.1/integrations/gpt-web-gateway/README.md)。
 
 本补丁接受 user 消息及其历史中的规范 Base64 PNG/JPEG/WebP/GIF 图片，整段请求累计最多 10 张、解码图片累计最多 10 MiB、整个 JSON 最多 16 MiB；保留图片与所属消息的对应关系。远程 URL、非 user 图片、未知非文本块和非法编码返回 400。工具使用受校验的文本协议，JSON/SSE 返回标准 `tool_calls`，由客户端执行；`strict:true` 不受支持。独立网关原生 `/v1/responses` 仍拒绝图片和工具；主服务 Responses 通过 Chat Completions 适配，不受此原生端点限制。通用自动选择不能预判所有网关限制，HTTPS 图片或超限请求仍可能选中网页后收到 400，发送后不转 Codex。
 
-先用 **使用 ChatGPT 网页** 开关决定网页是否参与，再选择 **自动模式 / 手动模式**。关闭网页（或预置 `CHATGPT_WEB_ENABLED=false`）时仅使用 Codex，保留网关、Key、映射和模式选择，重新开启即可恢复；此开关优先于自动路由和请求头覆盖，`web` 请求头在关闭时会被拒绝。清除配置仍需点击独立的 **清除网页配置**。
+先用 **使用 ChatGPT 网页** 开关决定网页是否参与，再选择 **自动模式 / 手动模式**并保存。网页默认关闭；仅填写地址、保存网关配置，或加载缺少 `webEnabled` 的旧配置，都不会启用。已有明确保存的 `webEnabled:true` 会保留，升级不会统一重置用户选择。关闭网页（或预置 `CHATGPT_WEB_ENABLED=false`）时仅使用 Codex，保留网关、Key、映射和模式选择；即使保存的模式是 Web，也不调用网页。此开关优先于自动路由和请求头覆盖，`web` 请求头在关闭时会被拒绝。清除配置仍需点击独立的 **清除网页配置**。
 
-**自动选择** 默认网页优先，可在管理台改为 Codex 优先；先匹配模型、图片/工具等能力和可用性，网页不满足时才考虑兼容的 Codex。手动 **Codex / ChatGPT 网页** 严格限定上游；如需完全禁止 Codex 回退，请选择 **ChatGPT 网页**。请求发送后不跨后端重试。单次请求用 `x-chat2claude-backend: auto|codex|web` 覆盖，成功响应的同名 header 标明实际使用的 `codex` 或 `web`。默认保留会话的账号及 provider 绑定；可显式开启下方的可见上下文接续。
+**检查网页连接（不发送消息）** 可在网页关闭时测试当前表单，检查不会保存配置、启用网页或调用模型。总超时为 5 秒：先 GET `/v1/models`，仅在 404/405 时改查 `/health`；认证失败、无法连接、超时和接口不支持会分别提示。连接成功只证明网关 HTTP 接口可达，不证明 ChatGPT 已登录或能成功生成。管理台也会显示最近网页请求失败的安全分类，便于检查服务、地址、Key 或重新登录。
+
+**自动选择** 默认 Codex 优先；明确启用网页后，可在管理台改为网页优先。自动模式先匹配模型、图片/工具等能力和可用性，再按所选优先级选择兼容上游。手动 **Codex / ChatGPT 网页** 严格限定上游；如需完全禁止 Codex 回退，请选择 **ChatGPT 网页**。请求发送后不跨后端重试。单次请求用 `x-chat2claude-backend: auto|codex|web` 覆盖，成功响应的同名 header 标明实际使用的 `codex` 或 `web`。默认保留会话的账号及 provider 绑定；可显式开启下方的可见上下文接续。
 
 **网页模型映射** 可选，每行填写 `客户端模型或 alias=网页模型 ID`，例如 `sonnet=auto`、`opus=auto`。这会明确将对应请求改用网页 `auto`，即使该 alias 原来绑定 Codex 型号；不声明两种型号等价。目标必须是网关配置的模型 ID；未映射时仍按真实型号匹配。留空保存可清除映射。
 
 网页能力以适配声明为准：仅确认网关支持后才勾选 **工具调用** 或 **图片输入**。通用适配层可透传用户消息中的 HTTPS 图片 URL 或 PNG/JPEG/WebP/GIF base64 图片，整个序列化请求最多 16 MiB；具体网关可施加更严格限制，本仓库补丁的图片必须内联 Base64。工具结果图片、网页图片生成和编辑尚未接入。是否能识图由网关与网页模型决定。本地补丁通过工具文本协议让网页返回工具请求，Claude Code 等客户端负责读写工程文件和执行命令；网关本身不执行工具。每次请求选择一个后端，不默认执行“网页规划 → Codex 执行 → 网页复核”，以免增加调用。当前网页适配不支持原生 reasoning replay、推理强度、服务档位或结构化输出；这些请求不会静默降级。
 
-**同一工程的上下文接续**：在管理台启用 `contextHandoff`，或预置 `CHATGPT_CONTEXT_HANDOFF=true`。此开关默认关闭，辅助 `web-gateway:connect` 会主动开启。开启后，Responses 可通过 `previous_response_id` 在 Codex/网页或明确改变模型时接续同一 API 用户已保存的可见历史；Messages/Chat 的已完成工具循环可传递公开工具 ID、原始参数及结果。只共享已知可见内容，剥离私有 reasoning、原生消息 ID；未完成工具及未知原生块不能跨后端接续。同 provider、同模型继续保持原账号绑定。
+**同一工程的上下文接续**：在管理台启用 `contextHandoff`，或预置 `CHATGPT_CONTEXT_HANDOFF=true`。此开关默认关闭，`web-gateway:connect` 保留原有选择。开启后，Responses 可通过 `previous_response_id` 在 Codex/网页或明确改变模型时接续同一 API 用户已保存的可见历史；Messages/Chat 的已完成工具循环可传递公开工具 ID、原始参数及结果。只共享已知可见内容，剥离私有 reasoning、原生消息 ID；未完成工具及未知原生块不能跨后端接续。同 provider、同模型继续保持原账号绑定。
 
 请继续使用同一个客户端工程及本地工具执行器，并在请求中携带必要的完整历史。Responses 历史默认在内存保留 30 分钟，隐式 reasoning replay 默认 10 分钟，均按 API 用户隔离并受容量限制，服务重启后失效。此功能不会同步 ChatGPT Projects，也不会挂载项目目录或自动读取文件；文件内容、修改结果和测试证据仍由客户端工具回传。共享目录本身不能代替这些上下文。
 
@@ -236,7 +238,7 @@ corepack pnpm web-gateway:connect -- --api-url http://127.0.0.1:3000
 
 **本轮真实验证（2026-10-20，Pro 档）**：同一个手动登录的普通 Chat 账号直连已安装网关的 Chat Completions JSON，使用固定数字 73 的单 PNG。选档后和发送前均确认 Pro；HTTP 200，`applied.thinking_mode=pro`，`thinking_verified`、`requested_verified` 均为 `true`，`thinking_fallback=null`，已确认附件数为 1。普通识图正确返回 73；指定单次 `record_digits` 工具请求返回标准 `tool_calls`，参数 `digits` 为字符串 `"73"`。该工具请求的只读观测确认一次 conversation POST、一个图片附件及一个多模态图片部分。没有实际执行客户端工具、调用 Codex 或向 3000 主服务发送生成请求。此结果不覆盖 Pro SSE、多图或完整工具结果往返。
 
-**此前真实验证（2026-10-20，Instant 档）**：同一普通 Chat 账号通过测试实例的 Responses 历史接续，正确识别旧图 73、当前图 29，并返回保留项目代号的标准工具参数；合成 Codex 源仅调用一次替身，未调用真实 Codex，私有 reasoning 和原生消息 ID 未传入网页。将真实调用 ID 配对模拟客户端工具结果后，完整双图历史的 Messages SSE 返回 HTTP 200、backend=web、完整 `message_stop`，代号、数字与回执正确。没有实际执行文件或命令工具；运行中的 3000 主服务仅配置接入，生成验证使用内存测试实例。此结果限一个账号和两张 PNG，不证明最高思考档、其他格式、长期可靠性或额度关系。2026-10-19 的单 PNG JSON/SSE 结果继续保留；完整记录见[集成记录](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/blob/v0.3.0/integrations/gpt-web-gateway/README.md#验证记录与复现)。
+**此前真实验证（2026-10-20，Instant 档）**：同一普通 Chat 账号通过测试实例的 Responses 历史接续，正确识别旧图 73、当前图 29，并返回保留项目代号的标准工具参数；合成 Codex 源仅调用一次替身，未调用真实 Codex，私有 reasoning 和原生消息 ID 未传入网页。将真实调用 ID 配对模拟客户端工具结果后，完整双图历史的 Messages SSE 返回 HTTP 200、backend=web、完整 `message_stop`，代号、数字与回执正确。没有实际执行文件或命令工具；运行中的 3000 主服务仅配置接入，生成验证使用内存测试实例。此结果限一个账号和两张 PNG，不证明最高思考档、其他格式、长期可靠性或额度关系。2026-10-19 的单 PNG JSON/SSE 结果继续保留；完整记录见[集成记录](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/blob/v0.3.1/integrations/gpt-web-gateway/README.md#验证记录与复现)。
 
 管理台填写的网关 API Key 仅保存在服务端现有 `runtime-state.json`，可用 `STATE_ENCRYPTION_KEY` 加密；不会由 GET 返回或保存到浏览器存储。Key 留空保留已保存值；**清除网页配置** 会移除配置和 Key，并切回 Codex。
 
@@ -416,10 +418,10 @@ DATA_DIR=./data
 
 ```bash
 CHATGPT_ROUTING_MODE=auto
-CHATGPT_AUTO_PREFERENCE=web
+CHATGPT_AUTO_PREFERENCE=codex
 # 可见历史和已完成工具结果的跨后端接续默认关闭；不共享私有 reasoning 或同步 ChatGPT Projects
 CHATGPT_CONTEXT_HANDOFF=false
-# CHATGPT_WEB_ENABLED=false # 关闭网页但保留配置；优先于自动路由和请求头
+CHATGPT_WEB_ENABLED=false # 默认关闭；确认网关就绪后显式设为 true 或在管理台开启并保存
 CHATGPT_WEB_BASE_URL=http://127.0.0.1:8000
 CHATGPT_WEB_MODELS=auto
 CHATGPT_WEB_SUPPORTS_TOOLS=false

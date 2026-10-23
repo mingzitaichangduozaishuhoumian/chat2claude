@@ -728,6 +728,13 @@ function backendRoutingElements() {
     save: 'save-backend-routing', refresh: 'refresh-backend-routing', clear: 'clear-backend-gateway' };
   const elements = Object.fromEntries(Object.entries(ids).map(([name, id]) => [name, document.getElementById(id)]));
   elements.preference = document.getElementById('backend-routing-preference');
+  elements.modeFields = document.getElementById('backend-routing-mode-fields');
+  elements.configuration = document.getElementById('backend-web-configuration');
+  elements.effective = document.getElementById('backend-routing-effective');
+  elements.dirty = document.getElementById('backend-routing-dirty');
+  elements.connection = document.getElementById('backend-connection-status');
+  elements.lastFailure = document.getElementById('backend-last-request-failure');
+  elements.check = document.getElementById('check-backend-gateway');
   elements.contextHandoff = document.getElementById('backend-context-handoff');
   elements.images = document.getElementById('backend-gateway-images');
   elements.mappings = document.getElementById('backend-gateway-model-mappings');
@@ -747,8 +754,8 @@ function parseBackendModelMappings(value) {
     const parts = line.split('=');
     const source = parts[0]?.trim();
     const target = parts[1]?.trim();
-    if (parts.length !== 2 || !source || !target || /\\s/.test(source) || /\\s/.test(target)) throw new Error(translateAdminText('网页模型映射格式错误。请每行填写一个 客户端模型或 alias=网页模型 ID，两侧不可为空或包含空白。', adminLocale));
-    if (entries.has(source)) throw new Error(translateAdminText('网页模型映射包含重复的客户端模型或 alias。每个名称只能出现一次。', adminLocale));
+    if (parts.length !== 2 || !source || !target || /\\s/.test(source) || /\\s/.test(target)) throw backendRoutingValidationError('网页模型映射格式错误。请每行填写一个 客户端模型或 alias=网页模型 ID，两侧不可为空或包含空白。');
+    if (entries.has(source)) throw backendRoutingValidationError('网页模型映射包含重复的客户端模型或 alias。每个名称只能出现一次。');
     entries.set(source, target);
   }
   return Object.fromEntries(entries);
@@ -758,29 +765,119 @@ function clearBackendGatewayKey() {
   if (key) key.value = '';
 }
 let backendRoutingPending = false;
+let backendRoutingSavedView = null;
+let backendRoutingProbe = null;
+function backendRoutingMode(elements) {
+  return elements.manualTarget && elements.mode.value === 'manual' ? elements.manualTarget.value === 'web' ? 'web' : 'codex' : elements.mode.value;
+}
+function backendRoutingFields(elements, view) {
+  const saved = view !== undefined;
+  const gateway = view?.gateway;
+  return {
+    mode: saved ? view.mode : backendRoutingMode(elements),
+    ...(elements.webEnabled ? { webEnabled: saved ? view.webEnabled === true : elements.webEnabled.checked } : {}),
+    ...(elements.preference ? { preference: saved ? view.autoPreference === 'web' ? 'web' : 'codex' : elements.preference.value === 'web' ? 'web' : 'codex' } : {}),
+    ...(elements.contextHandoff ? { handoff: saved ? view.contextHandoff === true : elements.contextHandoff.checked } : {}),
+    url: saved ? gateway?.baseUrl || '' : elements.url.value,
+    models: saved ? gateway?.models?.join(', ') || 'auto' : elements.models.value,
+    tools: saved ? gateway?.supportsTools === true : elements.tools.checked,
+    ...(elements.images ? { images: saved ? gateway?.supportsImages === true : elements.images.checked } : {}),
+    ...(elements.mappings ? { mappings: saved ? Object.entries(gateway?.modelMappings || {}).map(([source, target]) => source + '=' + target).join('\\n') : elements.mappings.value } : {}),
+    newKey: saved ? false : elements.key.value.trim().length > 0,
+  };
+}
+function backendRoutingGatewayKey(elements, view) {
+  const { mode, webEnabled, preference, handoff, ...gateway } = backendRoutingFields(elements, view);
+  return JSON.stringify(gateway);
+}
+function backendRoutingIsDirty(elements) {
+  return backendRoutingSavedView !== null && JSON.stringify(backendRoutingFields(elements)) !== JSON.stringify(backendRoutingFields(elements, backendRoutingSavedView));
+}
+function backendConnectionInfo(value, configured) {
+  const states = ['unconfigured', 'unchecked', 'reachable', 'auth_failed', 'not_ready', 'unreachable', 'timeout', 'unsupported', 'invalid_response'];
+  return { state: value === undefined ? configured ? 'unchecked' : 'unconfigured' : states.includes(value?.state) ? value.state : 'invalid_response',
+    ...(typeof value?.checkedAt === 'string' ? { checkedAt: value.checkedAt } : {}),
+    ...(Number.isInteger(value?.httpStatus) ? { httpStatus: value.httpStatus } : {}) };
+}
+function backendConnectionPresentation(connection) {
+  if (connection.state === 'not_ready' && connection.httpStatus === 429) return { state: 'warning', message: '网页请求已限流（429）。请稍后重试，或关闭网页使用 Codex。' };
+  const messages = {
+    unconfigured: ['warning', '尚未配置网页网关。展开“配置网页网关”填写地址，或保持网页关闭使用 Codex。'],
+    unchecked: ['warning', '配置尚未验证。请检查网页连接，并在网关浏览器完成 ChatGPT 登录。'],
+    reachable: ['success', '连接正常，尚未测试发送，请确认网页登录。'],
+    auth_failed: ['error', '网关认证失败。请检查网关 API Key，并确认网关浏览器已完成 ChatGPT 登录，然后重试检查。'],
+    not_ready: ['warning', '网关尚未就绪。请在网关浏览器完成 ChatGPT 登录，等待初始化后重试检查。'],
+    unreachable: ['error', '无法连接网页网关。请启动网关服务，并检查地址、端口和网络连接后重试。'],
+    timeout: ['error', '网页网关连接超时。请确认服务正在运行，检查地址和网络后重试。'],
+    unsupported: ['warning', '网关未提供可识别的连接检查接口。请检查网关地址和接口配置；尚未验证发送能力。'],
+    invalid_response: ['error', '网关返回了无法识别的响应。请检查网关地址是否指向兼容服务，并完成网页登录后重试。'],
+  };
+  const [state, message] = messages[connection.state] || messages.invalid_response;
+  return { state, message };
+}
+function renderBackendRoutingState(elements) {
+  const gatewayKey = backendRoutingGatewayKey(elements);
+  const showWebFeedback = !elements.webEnabled || elements.webEnabled.checked || elements.configuration?.open === true || backendRoutingProbe?.key === gatewayKey;
+  if (elements.effective) {
+    const saved = backendRoutingSavedView;
+    const message = !saved ? '当前生效：尚未读取。' : !saved.webEnabled || saved.mode === 'codex' ? '当前生效：仅使用 Codex。'
+      : saved.mode === 'web' ? '当前生效：仅使用 ChatGPT 网页。'
+      : saved.autoPreference === 'web' ? '当前生效：自动选择，网页优先。' : '当前生效：自动选择，Codex 优先。';
+    elements.effective.textContent = translateAdminText(message, adminLocale);
+  }
+  if (elements.dirty) {
+    elements.dirty.hidden = !backendRoutingIsDirty(elements);
+    elements.dirty.textContent = translateAdminText('有未保存的更改，保存后生效。', adminLocale);
+  }
+  if (elements.connection) {
+    elements.connection.hidden = !showWebFeedback;
+    const key = gatewayKey;
+    const savedKey = backendRoutingSavedView ? backendRoutingGatewayKey(elements, backendRoutingSavedView) : null;
+    const connection = backendRoutingProbe?.key === key ? backendRoutingProbe.connection : key === savedKey ? backendRoutingSavedView.connection
+      : backendConnectionInfo(undefined, Boolean(elements.url.value.trim()));
+    const presentation = backendConnectionPresentation(connection);
+    const prefix = backendRoutingProbe?.key === key && key !== savedKey ? translateAdminText('草稿连接检查：', adminLocale) + ' ' : '';
+    let message = prefix + translateAdminText(presentation.message, adminLocale);
+    if (connection.checkedAt && Number.isFinite(new Date(connection.checkedAt).getTime())) message += ' ' + translateAdminText('最近检查：', adminLocale) + ' ' + new Date(connection.checkedAt).toLocaleString(adminLocale);
+    elements.connection.dataset.state = presentation.state;
+    elements.connection.dataset.connectionState = connection.state;
+    elements.connection.textContent = message;
+  }
+  if (elements.lastFailure) {
+    const failure = backendRoutingSavedView?.lastRequestFailure;
+    elements.lastFailure.hidden = !failure || !showWebFeedback;
+    if (failure) {
+      const presentation = backendConnectionPresentation(failure);
+      elements.lastFailure.dataset.state = presentation.state;
+      elements.lastFailure.textContent = translateAdminText('上次网页请求失败：', adminLocale) + ' ' + translateAdminText(presentation.message, adminLocale);
+    }
+  }
+}
 function updateBackendRoutingControls(elements) {
   const webEnabled = !elements.webEnabled || elements.webEnabled.checked;
   const manual = elements.mode.value !== 'auto';
-  if (elements.manualField) elements.manualField.hidden = !manual;
-  if (elements.preferenceField) elements.preferenceField.hidden = manual;
-  if (elements.webSettings) elements.webSettings.hidden = !webEnabled;
+  const configurationOpen = elements.configuration ? elements.configuration.open === true : webEnabled;
+  if (elements.modeFields) elements.modeFields.hidden = !webEnabled;
+  if (elements.manualField) elements.manualField.hidden = !webEnabled || !manual;
+  if (elements.preferenceField) elements.preferenceField.hidden = !webEnabled || manual;
+  if (elements.webSettings) elements.webSettings.hidden = !configurationOpen;
   if (elements.webOption) elements.webOption.disabled = !webEnabled;
-  if (elements.webStatus) elements.webStatus.textContent = translateAdminText(webEnabled
-    ? '网页已开启；自动模式按优先级选择，手动模式使用指定上游。'
-    : '网页已关闭，仅使用 Codex；配置和选择会保留，重新开启后恢复。', adminLocale);
-  [elements.mode, elements.webEnabled, elements.contextHandoff, elements.save, elements.refresh, elements.clear].filter(Boolean)
+  if (elements.webStatus) elements.webStatus.textContent = translateAdminText('网页默认关闭；勾选只修改草稿，保存后才生效。', adminLocale);
+  [elements.webEnabled, elements.contextHandoff, elements.save, elements.refresh, elements.clear, elements.check].filter(Boolean)
     .forEach((element) => { element.disabled = backendRoutingPending; });
-  if (elements.manualTarget) elements.manualTarget.disabled = backendRoutingPending || !manual;
+  elements.mode.disabled = backendRoutingPending || !webEnabled;
+  if (elements.manualTarget) elements.manualTarget.disabled = backendRoutingPending || !manual || !webEnabled;
   if (elements.preference) elements.preference.disabled = backendRoutingPending || manual || !webEnabled;
   [elements.url, elements.key, elements.models, elements.mappings, elements.tools, elements.images].filter(Boolean)
-    .forEach((element) => { element.disabled = backendRoutingPending || !webEnabled; });
+    .forEach((element) => { element.disabled = backendRoutingPending || !configurationOpen; });
+  renderBackendRoutingState(elements);
 }
 function applyBackendRouting(body, elements, preserveGatewayDraft = false) {
   if (!body || !['auto', 'codex', 'web'].includes(body.mode) || typeof body.configured !== 'boolean') throw new Error('Invalid upstream settings response.');
   elements.mode.value = elements.manualTarget ? body.mode === 'auto' ? 'auto' : 'manual' : body.mode;
   if (elements.manualTarget && body.mode !== 'auto') elements.manualTarget.value = body.mode;
-  if (elements.webEnabled) elements.webEnabled.checked = typeof body.webEnabled === 'boolean' ? body.webEnabled : Boolean(body.gateway);
-  if (elements.preference) elements.preference.value = body.autoPreference === 'codex' ? 'codex' : 'web';
+  if (elements.webEnabled) elements.webEnabled.checked = body.webEnabled === true;
+  if (elements.preference) elements.preference.value = body.autoPreference === 'web' ? 'web' : 'codex';
   if (elements.contextHandoff) elements.contextHandoff.checked = body.contextHandoff === true;
   if (!preserveGatewayDraft) {
     elements.url.value = body.gateway?.baseUrl || '';
@@ -793,26 +890,68 @@ function applyBackendRouting(body, elements, preserveGatewayDraft = false) {
     ? body.gateway.apiKeyConfigured ? '网页网关已配置；API Key 已设置。' : '网页网关已配置；未设置 API Key。'
     : '尚未配置网页网关。';
   elements.configStatus.textContent = translateAdminText(message, adminLocale);
+  backendRoutingSavedView = { mode: body.mode, webEnabled: body.webEnabled === true, autoPreference: body.autoPreference === 'web' ? 'web' : 'codex',
+    contextHandoff: body.contextHandoff === true, configured: body.configured,
+    connection: backendConnectionInfo(body.connection, Boolean(body.gateway)),
+    ...(body.lastRequestFailure ? { lastRequestFailure: backendConnectionInfo(body.lastRequestFailure, true) } : {}),
+    ...(body.gateway ? { gateway: { baseUrl: body.gateway.baseUrl, models: body.gateway.models, supportsTools: body.gateway.supportsTools,
+      supportsImages: body.gateway.supportsImages, modelMappings: body.gateway.modelMappings, apiKeyConfigured: body.gateway.apiKeyConfigured } } : {}) };
+  backendRoutingProbe = null;
   updateBackendRoutingControls(elements);
+}
+function backendRoutingValidationError(message) {
+  const error = new Error(translateAdminText(message, adminLocale));
+  error.safeRoutingFeedback = true;
+  return error;
+}
+function backendRoutingFailureMessage(error, fallback) {
+  if (error?.safeRoutingFeedback) return error.message;
+  if (error?.status === 401 || error?.status === 403) return translateAdminText('管理认证已失效。请重新打开本机 /admin，或前往“管理访问”更新 Admin API Key 后重试。', adminLocale);
+  if (error?.status === 400) return translateAdminText('上游设置无效。请检查网关地址、模型 ID 和模型映射；输入已保留。', adminLocale);
+  return translateAdminText(fallback, adminLocale);
 }
 async function runBackendRoutingAction(pendingMessage, successMessage, failureMessage, action) {
   const elements = backendRoutingElements();
   if (!elements || backendRoutingPending) return;
   backendRoutingPending = true;
   updateBackendRoutingControls(elements);
+  elements.status.hidden = false;
   elements.status.dataset.state = 'pending';
   elements.status.textContent = translateAdminText(pendingMessage, adminLocale);
+  const activeButton = pendingMessage === '正在保存上游设置。' ? elements.save : pendingMessage === '正在检查网页连接。' ? elements.check : null;
+  const buttonLabel = activeButton?.textContent;
+  if (activeButton) activeButton.textContent = translateAdminText(pendingMessage, adminLocale);
   try {
-    await action(elements);
-    elements.status.dataset.state = 'success';
-    elements.status.textContent = translateAdminText(successMessage, adminLocale);
+    const outcome = await action(elements);
+    elements.status.dataset.state = outcome?.state || 'success';
+    elements.status.textContent = translateAdminText(outcome?.message || successMessage, adminLocale);
+    elements.status.hidden = outcome?.hideStatus === true;
   } catch (error) {
     elements.status.dataset.state = 'error';
-    elements.status.textContent = translateAdminText(failureMessage, adminLocale) + ' ' + (error instanceof Error ? error.message : String(error));
+    elements.status.textContent = backendRoutingFailureMessage(error, failureMessage);
   } finally {
     backendRoutingPending = false;
+    if (activeButton) activeButton.textContent = buttonLabel;
     updateBackendRoutingControls(elements);
   }
+}
+function backendRoutingPatch(fields, probe = false) {
+  const mode = backendRoutingMode(fields);
+  const webEnabled = !fields.webEnabled || fields.webEnabled.checked;
+  const baseUrl = fields.url.value.trim();
+  const apiKey = fields.key.value.trim();
+  const configure = probe || webEnabled || fields.configuration?.open === true;
+  if (configure && !baseUrl && (!probe || apiKey || backendRoutingSavedView?.gateway)) throw backendRoutingValidationError('请先填写网页网关地址。');
+  const patch = { mode, ...(fields.webEnabled ? { webEnabled } : {}), ...(fields.preference ? { autoPreference: fields.preference.value === 'web' ? 'web' : 'codex' } : {}),
+    ...(fields.contextHandoff ? { contextHandoff: fields.contextHandoff.checked } : {}) };
+  if (configure && baseUrl) {
+    const models = fields.models.value.split(',').map((model) => model.trim()).filter(Boolean);
+    patch.gateway = { baseUrl, models: models.length ? models : ['auto'], supportsTools: fields.tools.checked,
+      ...(fields.images ? { supportsImages: fields.images.checked } : {}),
+      ...(fields.mappings ? { modelMappings: parseBackendModelMappings(fields.mappings.value) } : {}),
+      ...(apiKey ? { apiKey } : {}) };
+  }
+  return patch;
 }
 async function loadBackendRouting() {
   await runBackendRoutingAction('正在读取上游设置。', '上游设置已刷新。', '上游设置读取失败。输入已保留。', async (elements) => {
@@ -822,35 +961,45 @@ async function loadBackendRouting() {
 function bindBackendRouting() {
   const elements = backendRoutingElements();
   if (!elements) return;
-  elements.webEnabled?.addEventListener('change', () => updateBackendRoutingControls(elements));
+  const draftChanged = (event) => {
+    if (!event?.target || [elements.url, elements.key, elements.models, elements.mappings, elements.tools, elements.images].includes(event.target)) backendRoutingProbe = null;
+    updateBackendRoutingControls(elements);
+  };
+  elements.form.addEventListener('input', draftChanged);
+  elements.form.addEventListener('change', draftChanged);
+  elements.configuration?.addEventListener('toggle', () => updateBackendRoutingControls(elements));
+  elements.webEnabled?.addEventListener('change', () => {
+    if (elements.configuration && (!elements.webEnabled.checked || !elements.url.value.trim())) elements.configuration.open = elements.webEnabled.checked;
+    draftChanged({ target: elements.webEnabled });
+  });
   elements.mode.addEventListener('change', () => updateBackendRoutingControls(elements));
   updateBackendRoutingControls(elements);
   elements.form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    await runBackendRoutingAction('正在保存上游设置。', '上游设置已保存。', '上游设置保存失败。输入已保留。', async (fields) => {
-      const mode = fields.manualTarget && fields.mode.value === 'manual' ? fields.manualTarget.value === 'web' ? 'web' : 'codex' : fields.mode.value;
-      const webEnabled = !fields.webEnabled || fields.webEnabled.checked;
-      const baseUrl = fields.url.value.trim();
-      const apiKey = fields.key.value.trim();
-      if (webEnabled && !baseUrl && (mode === 'web' || apiKey)) throw new Error(translateAdminText('请先填写网页网关地址。', adminLocale));
-      const models = fields.models.value.split(',').map((model) => model.trim()).filter(Boolean);
-      const patch = { mode, ...(fields.webEnabled ? { webEnabled } : {}), ...(fields.preference ? { autoPreference: fields.preference.value === 'codex' ? 'codex' : 'web' } : {}),
-        ...(fields.contextHandoff ? { contextHandoff: fields.contextHandoff.checked } : {}) };
-      if (webEnabled && baseUrl) patch.gateway = { baseUrl, models: models.length ? models : ['auto'], supportsTools: fields.tools.checked,
-        ...(fields.images ? { supportsImages: fields.images.checked } : {}),
-        ...(fields.mappings ? { modelMappings: parseBackendModelMappings(fields.mappings.value) } : {}),
-        ...(apiKey ? { apiKey } : {}) };
+    await runBackendRoutingAction('正在保存上游设置。', '上游设置已保存；保存不会验证网页连接。', '上游设置保存失败。请确认本机服务仍在运行后重试；输入已保留。', async (fields) => {
+      const patch = backendRoutingPatch(fields);
       const body = await patchJson('/admin/api/backend-routing', patch);
-      applyBackendRouting(body, fields, !webEnabled);
-      if (webEnabled) fields.key.value = '';
+      if (patch.gateway) fields.key.value = '';
+      applyBackendRouting(body, fields, !patch.gateway);
       await Promise.all([loadModels(), loadAccounts()]);
     });
   });
   elements.refresh.addEventListener('click', () => loadBackendRouting());
+  elements.check?.addEventListener('click', async () => {
+    await runBackendRoutingAction('正在检查网页连接。', '网页连接检查完成；未发送模型请求。', '检查连接失败。请确认本机管理服务正在运行后重试；配置未被修改。', async (fields) => {
+      const patch = backendRoutingPatch(fields, true);
+      const body = await postJson('/admin/api/backend-routing/check', patch);
+      const connection = backendConnectionInfo(body?.connection ?? { state: 'invalid_response' }, Boolean(fields.url.value.trim()));
+      backendRoutingProbe = { key: backendRoutingGatewayKey(fields), connection };
+      return { ...backendConnectionPresentation(connection), hideStatus: true };
+    });
+  });
   elements.clear.addEventListener('click', async () => {
     await runBackendRoutingAction('正在清除网页配置。', '网页配置已清除，已切换到 Codex。', '网页配置清除失败。输入已保留。', async (fields) => {
-      applyBackendRouting(await patchJson('/admin/api/backend-routing', { mode: 'codex', gateway: null }), fields);
+      const body = await patchJson('/admin/api/backend-routing', { mode: 'codex', webEnabled: false, gateway: null });
       fields.key.value = '';
+      if (fields.configuration) fields.configuration.open = false;
+      applyBackendRouting(body, fields);
       await Promise.all([loadModels(), loadAccounts()]);
     });
   });

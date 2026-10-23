@@ -131,7 +131,8 @@ See the [usage guide](USAGE.en.md#independent-gpt-image-generation) for SDK and 
 
 | Manifest feature | Status | Notes |
 | --- | --- | --- |
-| `upstream_selection` | `supported` | Enable Web before choosing Auto or manual Codex/Web. Auto prefers Web by default and matches model, capabilities and availability; manual selection limits the provider. Disabling Web uses only Codex while retaining settings. No cross-backend retry occurs after dispatch; native history retains account affinity unless an opt-in visible handoff applies. |
+| `upstream_selection` | `supported` | Web is off unless explicitly enabled, including legacy configurations with no enable flag. Saving a gateway or using the connect helper never enables Web or changes routing preferences. Auto defaults to Codex preference; manual selection limits the provider. Disabling Web uses only Codex while retaining settings. No cross-backend retry occurs after dispatch; native history retains account affinity unless an opt-in visible handoff applies. |
+| `connection_feedback` | `partial` | Admin separates saved routing from unsaved drafts and offers an explicit non-generating connection check: GET /v1/models falls back to GET /health on 404/405, with a five-second deadline and bounded JSON. Checks never save or enable Web and cached results expire after 60 seconds. Connection success does not establish web login or message readiness; recent request failures and actionable Web-specific API errors remain separate. |
 | `exact_models_and_explicit_mappings` | `supported` | Configured model IDs match exactly; auto is not a wildcard. Explicit client-model or alias mappings may substitute a configured web model without claiming equivalence to the original model. |
 | `text_and_streaming_bridge` | `backend_dependent` | A separately deployed and authenticated gateway exposes OpenAI Chat Completions; its text JSON and SSE responses are adapted to Claude Messages, Chat Completions and Responses. Gateway and model behavior determine availability. |
 | `user_image_inputs` | `backend_dependent` | Image input is disabled by default. When declared supported, user messages may contain HTTPS image URLs or PNG/JPEG/WebP/GIF base64 data URLs, forwarded as OpenAI image_url parts within the shared 16 MiB serialized request limit. Vision support depends on the gateway and model. |
@@ -147,7 +148,7 @@ See the [usage guide](USAGE.en.md#independent-gpt-image-generation) for SDK and 
 
 ### Pinned local gateway integration
 
-The source checkout includes [setup and login helpers](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/blob/v0.3.0/integrations/gpt-web-gateway/README.md) for a separate local `stufently/gpt-web-gateway`. They pin upstream commit `893f553be358210a5c045aa9f62b56ba1edc5c78` and apply the repository's chat-image patch. This narrower gateway contract is separate from the generic Web adapter capabilities in the manifest above. It uses ordinary Chat at chatgpt.com with manual login in a separate Chrome window; it does not use ChatGPT Work or the main app's Codex OAuth session.
+The source checkout includes [setup and login helpers](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/blob/v0.3.1/integrations/gpt-web-gateway/README.md) for a separate local `stufently/gpt-web-gateway`. They pin upstream commit `893f553be358210a5c045aa9f62b56ba1edc5c78` and apply the repository's chat-image patch. This narrower gateway contract is separate from the generic Web adapter capabilities in the manifest above. It uses ordinary Chat at chatgpt.com with manual login in a separate Chrome window; it does not use ChatGPT Work or the main app's Codex OAuth session.
 
 | Patched gateway behavior | Contract |
 | --- | --- |

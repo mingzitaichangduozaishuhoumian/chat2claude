@@ -2,7 +2,7 @@
 
 此集成安装独立的 [stufently/gpt-web-gateway](https://github.com/stufently/gpt-web-gateway)，通过本人手动登录的 **chatgpt.com 普通 Chat 对话页**处理请求。它不是 ChatGPT Work，也不使用本项目的 Codex OAuth 会话。主服务负责兼容 API 与上游选择，独立网关负责浏览器和网页会话。
 
-本项目采用**普通 Chat 提供模型、本地客户端执行工程工具**的方式。若要让网页自己使用文件、插件和工具完成任务，应使用 [ChatGPT Work](https://learn.chatgpt.com/docs/get-started-with-work)，该执行器未接入本通道。[官方定价说明](https://learn.chatgpt.com/docs/pricing)明确 Work 与 Codex 共享用量；不能靠切到 Work 获得额外 Codex 额度，也不能反推出普通 Chat 一定独立计量。希望严格限制直接 Codex 调用时保留手动网页模式；Auto 在发送前可能选择 Codex。
+本项目采用**普通 Chat 提供模型、本地客户端执行工程工具**的方式。若要让网页自己使用文件、插件和工具完成任务，应使用 [ChatGPT Work](https://learn.chatgpt.com/docs/get-started-with-work)，该执行器未接入本通道。[官方定价说明](https://learn.chatgpt.com/docs/pricing)明确 Work 与 Codex 共享用量；不能靠切到 Work 获得额外 Codex 额度，也不能反推出普通 Chat 一定独立计量。网页默认关闭；明确启用后，希望严格限制直接 Codex 调用时选择手动网页模式。Auto 默认优先 Codex，可在管理台另选网页优先。
 
 最高档实测中的 Pro 是 **Chat UI 档位名**，不等同某个 Codex 模型或 `max/xhigh/ultra`。额度收益仍需同账号、同工作区和计量窗口的细粒度对照，不能凭一次整数百分比未变判断。
 
@@ -36,7 +36,9 @@ corepack pnpm web-gateway:start
 corepack pnpm web-gateway:connect -- --api-url http://127.0.0.1:3000
 ```
 
-`--api-url` 使用主服务实际的本机根地址，不加 `/v1`。该命令通过本机管理会话保存网关地址和随机 Key，开启网页并选择**手动网页模式**，模型为 `auto`，映射为 `sonnet=auto`，开启图片输入、工具调用和 `contextHandoff` 可见上下文接续。它会更新已有网页路由配置。若要自动选择或关闭网页，到 `/admin` → **模型映射** → **上游选择**修改。能力声明不等于真实验证；下方分别记录 2026-10-20 双图及工具联调，以及 2026-10-19 单图历史结果，均有明确验证范围。
+`--api-url` 使用主服务实际的本机根地址，不加 `/v1`。该命令只通过本机管理会话保存网关地址、随机 Key、模型 `auto`、映射 `sonnet=auto` 及图片和工具能力声明，保留现有网页开关、模式、优先级和 `contextHandoff` 选择。首次接入后，到 `/admin` → **模型映射** → **上游选择** 勾选 **使用 ChatGPT 网页**、选择模式并保存；可见上下文接续按需单独开启。仅配置地址或保存 Web 模式、以及加载缺少 `webEnabled` 的旧配置，都不会启用网页；升级会保留已明确保存的 `webEnabled:true`。能力声明不等于真实验证；下方分别记录 2026-10-20 双图及工具联调，以及 2026-10-19 单图历史结果，均有明确验证范围。
+
+可先点击 **检查网页连接（不发送消息）**：即使网页关闭也能检查当前表单，不保存配置或改变选择。总超时 5 秒，先 GET `/v1/models`，仅在返回 404/405 时改查 `/health`。界面区分认证失败、无法连接、超时和接口不支持；检查成功只说明网关 HTTP 可达，不证明浏览器登录有效或可以生成。网关启动后仍需本人登录普通 Chat；管理台会显示最近网页请求失败的安全分类，供排查服务、地址、Key 和登录状态。
 
 所有命令支持 `--directory PATH`，例如 `corepack pnpm web-gateway:setup -- --directory D:/private/chat-web`；后续命令须传入相同目录。默认私密目录为 `apps/api/data/web-gateway/`，已由仓库 `.gitignore` 忽略。其中 `settings.json` 保存随机 API Key，`source/auth/session.json` 保存登录会话；不要提交或分享。自定义目录需自行排除版本控制。
 
@@ -64,13 +66,13 @@ corepack pnpm web-gateway:connect -- --api-url http://127.0.0.1:3000
 
 未指定 `conversationId` 且未开启 `reuseChat` 的独立图片请求，会新建当前槽位的页面并完整初始化，修复旧页面导航后附件状态不稳定的问题；其他槽位和显式复用会话保持各自的生命周期。
 
-`model` 参数仍由上游忽略，使用 `auto`；也没有 `/v1/models`，本项目依赖该端点的网页健康检查不能证明它的聊天接口可用。工具协议受网页输出及上述校验范围限制；它不是官方原生工具执行环境，也不会为网页挂载本地工程。
+`model` 参数仍由上游忽略，使用 `auto`；也没有 `/v1/models`，连接检查会在 404/405 时改查 `/health`。该端点只报告 HTTP 服务状态，不能证明网页登录和聊天接口可用。工具协议受网页输出及上述校验范围限制；它不是官方原生工具执行环境，也不会为网页挂载本地工程。
 
 自动模式按通用 `supportsImages` 和 `supportsTools` 声明匹配，不能预判本补丁的全部大小、格式及文本协议约束。HTTPS 图片或图片总量超限可能先选中网页，再由网关返回 400；请求发送给网关后不会转发 Codex 重试。`connect` 还会配置 `supportsStrictTools:false`，让主服务在发送前排除要求 `strict:true` 的网页请求；手动网页模式明确拒绝，自动模式可另选兼容 Codex。
 
 ## 同一客户端工程的可见上下文接续
 
-主服务的 `contextHandoff` 默认关闭，可在管理台开启，或预置 `CHATGPT_CONTEXT_HANDOFF=true`；`web-gateway:connect` 会主动开启。开启后，Responses 可通过 `previous_response_id` 跨 Codex/网页或在明确换模型时接续同一 API 用户已保存的可见历史；Messages/Chat 可转交已完成工具循环的公开调用 ID、原始参数和结果。私有 reasoning、原生消息 ID 不跨后端传递，未知原生块及未完成工具不能转交；同 provider、同模型仍绑定原账号。
+主服务的 `contextHandoff` 默认关闭，可在管理台开启，或预置 `CHATGPT_CONTEXT_HANDOFF=true`；`web-gateway:connect` 保留原有选择。开启后，Responses 可通过 `previous_response_id` 跨 Codex/网页或在明确换模型时接续同一 API 用户已保存的可见历史；Messages/Chat 可转交已完成工具循环的公开调用 ID、原始参数和结果。私有 reasoning、原生消息 ID 不跨后端传递，未知原生块及未完成工具不能转交；同 provider、同模型仍绑定原账号。
 
 同一个客户端继续持有本地工程、工具执行权限和完整可见对话。文件内容、修改状态和测试证据需要客户端回传，主服务不会同步 ChatGPT Projects、挂载目录或自动读取工程。Responses 历史默认仅在内存保留 30 分钟，隐式 reasoning replay 默认 10 分钟，均按 API 用户隔离、有容量限制且重启失效；客户端必须保留并在需要时重发完整历史。不能仅因两个后端指向同一目录就假设它们知道最新状态。
 
@@ -146,11 +148,13 @@ node --test gpt-web-gateway-baseline/scripts/test-stall-gate.js
 
 This integration installs a separate gateway for ordinary signed-in **Chat at chatgpt.com**, independent of ChatGPT Work and this project's Codex OAuth session. It pins upstream commit `893f553be358210a5c045aa9f62b56ba1edc5c78` and applies the local vision patch. Run the setup/login/status/start commands above, keep the gateway terminal open, start the main app, then run `web-gateway:connect -- --api-url http://127.0.0.1:3000` using the main app's actual loopback origin. Login opens a separate Chrome window for you to sign in manually. Chrome, Git, Node.js and npm must already be installed.
 
-Here ordinary Chat supplies the model and the local client executes project tools. Choose [ChatGPT Work](https://learn.chatgpt.com/docs/get-started-with-work) to have the website carry out tasks with files, plugins and tools; that executor is not integrated. [Official pricing](https://learn.chatgpt.com/docs/pricing) states that Work and Codex share usage, so switching to Work does not supply an extra Codex allowance. This does not prove that ordinary Chat has separate accounting. Keep manual Web to restrict direct Codex calls; Auto may select Codex before dispatch.
+Here ordinary Chat supplies the model and the local client executes project tools. Choose [ChatGPT Work](https://learn.chatgpt.com/docs/get-started-with-work) to have the website carry out tasks with files, plugins and tools; that executor is not integrated. [Official pricing](https://learn.chatgpt.com/docs/pricing) states that Work and Codex share usage, so switching to Work does not supply an extra Codex allowance. This does not prove that ordinary Chat has separate accounting. Web defaults to off. After explicitly enabling it, select manual Web to restrict direct Codex calls; Auto prefers Codex unless an explicit Web preference is saved.
 
 Pro in the live check is a **Chat UI level**, not a specific Codex model or an equivalent `max/xhigh/ultra` setting. Quota savings still need fine-grained comparisons within the same account, workspace and usage window; one unchanged integer percentage is not evidence of independent accounting.
 
-Connect enables manual Web mode, configures `auto` with `sonnet=auto`, and enables image input, tools and visible-context handoff. It overwrites saved Web routing settings; use Admin to choose Auto or disable Web. The default private directory is `apps/api/data/web-gateway/`, ignored by Git; it contains the API Key and browser session. All commands accept the same `--directory PATH` override. Preserve an existing installation if its version or patch changes, and install into a new directory. Status checks installation files, not live authentication.
+Connect saves only the gateway URL, random Key, `auto`, `sonnet=auto`, and image/tool capability declarations. It preserves the Web switch, mode, preference and visible-context handoff choice. For first-time setup, check **Use ChatGPT Web**, choose a mode, and save in Admin; enable context handoff separately if needed. A URL, saved Web mode, or legacy settings without `webEnabled` do not enable Web. Explicitly saved `webEnabled:true` choices are retained on upgrade. The default private directory is `apps/api/data/web-gateway/`, ignored by Git; it contains the API Key and browser session. All commands accept the same `--directory PATH` override. Preserve an existing installation if its version or patch changes, and install into a new directory. Status checks installation files, not live authentication.
+
+**Check web connection (no message)** tests the current form while Web is off without saving settings or changing choices. Its combined deadline is five seconds: GET `/v1/models`, then `/health` only after HTTP 404/405. Feedback distinguishes authentication failure, unreachable services, timeouts and unsupported endpoints. Success proves HTTP reachability only, not browser login or generation readiness. Admin also shows a safe category for the last failed Web request; confirm service, URL, Key and ordinary Chat login as needed.
 
 The patched Chat Completions route accepts canonical Base64 PNG/JPEG/WebP/GIF images across current and historical user messages, preserving image ownership and text order. The whole conversation is limited to 10 images and 10 MiB of decoded image data within a 16 MiB JSON request. Remote URLs, including HTTPS, non-user images and unknown content parts are rejected. The gateway's native Responses route rejects images and tools; the main service's Responses route uses Chat Completions instead. Attachment confirmation works with JSON/SSE, cancellation is propagated, and failures after sending are marked unsafe to retry. `/v1/models` remains absent and `model` is ignored. Chinese Chat/Work `aria-pressed` and exact attachment labels are supported; every image uses a unique ASCII UUID filename. Strict new-chat setup waits up to 60 seconds for the composer and rejects uncertain pages.
 
@@ -164,7 +168,7 @@ For image requests, the gateway fills the complete text before uploading and con
 
 An independent image request without conversationId or reuseChat gets a newly created, fully initialized page for its own slot. This fixes unstable attachment state after navigating an old page; other slots and explicitly reused conversations retain their own lifecycle.
 
-Main-service `contextHandoff` defaults to false; enable it in Admin or through `CHATGPT_CONTEXT_HANDOFF=true`. Connect explicitly enables it. Responses can transfer the same API owner's stored visible history across providers or an explicit model change; Messages/Chat can hand over completed public tool cycles. Private reasoning and native message IDs stay local to their provider, and incomplete tools or unknown native items cannot transfer. The same provider and model retain original account affinity. Keep the same client workspace and executor: no ChatGPT Projects synchronization, directory mount or automatic file read is provided. Responses history defaults to 30 minutes in memory and implicit replay to 10 minutes; both are owner-isolated, bounded and lost on restart. Clients must retain and resend necessary complete history.
+Main-service `contextHandoff` defaults to false; enable it in Admin or through `CHATGPT_CONTEXT_HANDOFF=true`. Connect preserves the existing choice. Responses can transfer the same API owner's stored visible history across providers or an explicit model change; Messages/Chat can hand over completed public tool cycles. Private reasoning and native message IDs stay local to their provider, and incomplete tools or unknown native items cannot transfer. The same provider and model retain original account affinity. Keep the same client workspace and executor: no ChatGPT Projects synchronization, directory mount or automatic file read is provided. Responses history defaults to 30 minutes in memory and implicit replay to 10 minutes; both are owner-isolated, bounded and lost on restart. Clients must retain and resend necessary complete history.
 
 The local runner forces `ORDINARY_CHAT_ONLY=true` for strict ordinary-Chat checks on every chat request, including text and images. It checks during preparation, after thinking-mode selection, and immediately before submission, including the Enter-key fallback. Work or an unrecognized page is rejected before sending. Upstream text paths retain their default best-effort mode selection when run without this option outside the local runner. `applied.image_inputs_attached` and `should_retry` are native gateway extensions; the main compatibility API does not currently forward them. Auto routing cannot predict every gateway limit; HTTPS images or excess input can receive 400 after selecting Web, with no Codex retry after dispatch. Connect also sets supportsStrictTools:false, excluding strict:true requests before Web dispatch: manual Web rejects them and Auto may select compatible Codex.
 

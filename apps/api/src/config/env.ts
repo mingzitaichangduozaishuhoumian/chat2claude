@@ -167,6 +167,7 @@ function routingEnvironment(source: NodeJS.ProcessEnv): { backendRouting?: Backe
   const apiKey = source.CHATGPT_WEB_API_KEY?.trim();
   return { backendRouting: normalizeBackendRoutingConfig({
     mode: source.CHATGPT_ROUTING_MODE?.trim() ?? 'codex',
+    // Gateway configuration and a saved Web mode never replace explicit opt-in.
     ...(enabledValue === undefined ? {} : { webEnabled: enabledValue === 'true' }),
     ...(contextHandoff === undefined ? {} : { contextHandoff: contextHandoff === 'true' }),
     ...(source.CHATGPT_AUTO_PREFERENCE === undefined ? {} : { autoPreference: source.CHATGPT_AUTO_PREFERENCE.trim() }),

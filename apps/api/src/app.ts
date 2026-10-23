@@ -128,7 +128,7 @@ export function createApp(env: AppEnv = loadEnv(), options: CreateAppOptions = {
   app.route('/', createMetricsRoute({ requestLog, operationalState }));
   app.use('/admin/api/*', accessLog(logger, env.accessLogFormat));
   app.use('/admin/api/*', adminApiAuth(env.apiKeys, runtimeApiKeys, { allowAnonymousBootstrap: env.allowAnonymousBootstrap, localAdminSession }));
-  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, backendRouting, requestLog, ready: modelRegistryReady, runtimeApiKeys, durableState, operationalState, quotaService, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow, setupProvisioner, localAdminSession }));
+  app.route('/', createAdminRoute({ accountPool, modelRegistry, backend, backendRouting, requestLog, ready: modelRegistryReady, runtimeApiKeys, durableState, operationalState, quotaService, envApiKeys: env.apiKeys, defaultReasoningEffort: env.defaultReasoningEffort, defaultResponseSpeed: env.defaultResponseSpeed, backendProvider: env.chatGptBackend, authFlow, setupProvisioner, localAdminSession, gatewayFetch: outbound.fetch }));
   app.dispose = async () => {
     reasoningReplayStore.clear();
     try {

@@ -232,7 +232,6 @@ export async function connectGateway({ settings, apiUrl, fetchImpl = fetch }) {
       method: 'PATCH', redirect: 'error', signal: AbortSignal.timeout(15_000),
       headers: { 'content-type': 'application/json', origin, cookie: cookies.join('; ') },
       body: JSON.stringify({
-        webEnabled: true, mode: 'web', autoPreference: 'web', contextHandoff: true,
         gateway: { baseUrl: `http://127.0.0.1:${settings.port}`, apiKey: settings.apiKey, models: ['auto'], supportsTools: true, supportsStrictTools: false, supportsImages: true, modelMappings: { sonnet: 'auto' } },
       }),
     });
@@ -304,7 +303,7 @@ export async function main(args = process.argv.slice(2)) {
   const settings = validateSettings(readJson(paths.settings, 'private gateway settings'));
   if (command === 'connect') {
     await connectGateway({ settings, apiUrl });
-    console.log('Local ChatGPT web gateway connected. Web usage is enabled and selected in manual mode.');
+    console.log('Local ChatGPT web gateway configuration saved. Existing backend choices are unchanged; enable Web manually in Admin when ready.');
     return 0;
   }
   if (command === 'start') {

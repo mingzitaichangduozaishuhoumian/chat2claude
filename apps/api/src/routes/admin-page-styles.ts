@@ -80,6 +80,17 @@ pre { margin: 0; max-width: 100%; overflow: auto; white-space: pre-wrap; overflo
 .panel-heading { display: flex; justify-content: space-between; align-items: start; gap: 16px; margin-bottom: 14px; }
 .row, .card-actions, .form-actions, .stat-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .stack { display: grid; gap: 12px; }
+.routing-feedback { margin: 0; border-left: 3px solid var(--line-strong); padding: 10px 12px; color: var(--ink-soft); background: var(--surface-muted); }
+.routing-feedback[data-state="pending"] { border-color: var(--accent); background: var(--accent-soft); }
+.routing-feedback[data-state="success"] { border-color: var(--positive); color: var(--positive); background: var(--positive-soft); }
+.routing-feedback[data-state="warning"] { border-color: var(--warning); color: var(--warning); background: var(--warning-soft); }
+.routing-feedback[data-state="error"] { border-color: var(--negative); color: var(--negative); background: var(--negative-soft); }
+.routing-actions { padding-top: 4px; }
+.routing-form { margin-top: 12px; }
+.routing-configuration { border-top: 1px solid var(--line); padding-top: 12px; }
+.routing-configuration summary { cursor: pointer; font-weight: 700; min-height: 36px; }
+.routing-configuration[open] summary { margin-bottom: 8px; }
+.routing-configuration > p { margin: 6px 0 12px; }
 .session-strip { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: start; margin: 14px 0; border-left: 4px solid var(--positive); padding: 12px 14px; background: var(--positive-soft); }
 .session-strip.warn { border-left-color: var(--warning); background: var(--warning-soft); }
 .session-strip strong, .session-strip span { display: block; }

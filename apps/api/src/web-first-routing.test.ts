@@ -106,7 +106,7 @@ function fixture() {
     return response;
   };
   const configure = (gateway: Record<string, unknown> = {}, options: Record<string, unknown> = {}) => patch({
-    mode: 'auto', ...options, gateway: { baseUrl: 'http://gateway.test:8090', apiKey: GATEWAY_KEY,
+    mode: 'auto', webEnabled: true, autoPreference: 'web', ...options, gateway: { baseUrl: 'http://gateway.test:8090', apiKey: GATEWAY_KEY,
       models: [WEB_MODEL], supportsTools: false, ...gateway },
   });
   const send = (endpoint: Endpoint, extra: Record<string, unknown> = {}, backend?: string) => app.request(endpoint, {
@@ -232,7 +232,7 @@ describe('web-first routing without duplicate model calls', () => {
     expect(f.codex.calls).toHaveLength(0);
   });
 
-  it.each(endpoints)('uses the same exact model on the web by default at %s', async (endpoint) => {
+  it.each(endpoints)('uses the same exact model on the web when explicitly enabled and preferred at %s', async (endpoint) => {
     const f = fixture();
     expect((await f.configure({ models: [CODEX_MODEL] })).status).toBe(200);
     const response = await f.send(endpoint, { model: CODEX_MODEL });
