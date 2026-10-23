@@ -69,14 +69,56 @@ describe('Admin upstream selection', () => {
     expect(ui.field('backend-routing-preference').value).toBe('codex');
     expect(ui.field('backend-routing-dirty').hidden).toBe(true);
     expect(ui.field('backend-connection-status').dataset.connectionState).toBe('unchecked');
+    expect(ui.field('backend-connection-status').hidden).toBe(true);
     expect(ui.postJson).not.toHaveBeenCalled();
     ui.field('backend-web-enabled').checked = true;
     await ui.change('backend-web-enabled');
     expect(ui.field('backend-routing-mode-fields').hidden).toBe(false);
+    expect(ui.field('backend-connection-status').hidden).toBe(false);
     expect(ui.field('backend-routing-effective').textContent).toBe('Active policy: Codex only.');
     expect(ui.field('backend-routing-dirty').hidden).toBe(false);
     expect(ui.field('backend-routing-dirty').textContent).toContain('Unsaved changes');
     expect(ui.patchJson).not.toHaveBeenCalled();
+  });
+
+  it('shows optional Web feedback only while configuring, using, or explicitly checking the current gateway', async () => {
+    const ui = routingUi('en');
+    ui.getJson.mockResolvedValueOnce({ ...configured, webEnabled: false, connection: { state: 'unreachable' },
+      lastRequestFailure: { state: 'auth_failed', httpStatus: 401 } });
+    await ui.loadBackendRouting();
+    expect(ui.field('backend-connection-status').hidden).toBe(true);
+    expect(ui.field('backend-last-request-failure').hidden).toBe(true);
+    expect(ui.field('backend-routing-status').hidden).toBe(false);
+    expect(ui.field('backend-routing-effective').textContent).toBe('Active policy: Codex only.');
+    await ui.configure();
+    expect(ui.field('backend-connection-status').hidden).toBe(false);
+    expect(ui.field('backend-last-request-failure').hidden).toBe(false);
+    ui.field('backend-web-configuration').open = false;
+    await ui.field('backend-web-configuration').listeners.get('toggle')!({ preventDefault: vi.fn() });
+    expect(ui.field('backend-connection-status').hidden).toBe(true);
+    expect(ui.field('backend-last-request-failure').hidden).toBe(true);
+    ui.postJson.mockResolvedValueOnce({ connection: { state: 'unreachable' } });
+    await ui.click('check-backend-gateway');
+    expect(ui.field('backend-connection-status').hidden).toBe(false);
+    expect(ui.field('backend-connection-status').dataset.state).toBe('error');
+    expect(ui.field('backend-last-request-failure').hidden).toBe(false);
+    expect(ui.field('backend-routing-status').hidden).toBe(true);
+    ui.field('backend-web-enabled').checked = true;
+    await ui.change('backend-web-enabled');
+    expect(ui.field('backend-connection-status').hidden).toBe(false);
+    ui.field('backend-web-enabled').checked = false;
+    await ui.change('backend-web-enabled');
+    expect(ui.field('backend-web-configuration').open).toBe(false);
+    expect(ui.field('backend-connection-status').hidden).toBe(false);
+    expect(ui.field('backend-last-request-failure').hidden).toBe(false);
+    ui.field('backend-gateway-url').value = 'http://different-gateway.test';
+    await ui.input('backend-routing-form');
+    expect(ui.field('backend-connection-status').hidden).toBe(true);
+    expect(ui.field('backend-last-request-failure').hidden).toBe(true);
+    ui.field('backend-web-enabled').checked = true;
+    await ui.change('backend-web-enabled');
+    expect(ui.field('backend-connection-status').hidden).toBe(false);
+    expect(ui.field('backend-last-request-failure').hidden).toBe(false);
   });
 
   it('keeps the saved policy visible during save and never treats an unverified saved gateway as ready', async () => {
@@ -95,6 +137,7 @@ describe('Admin upstream selection', () => {
     complete({ ...configured, mode: 'web', connection: { state: 'unchecked' } });
     await pending;
     expect(ui.field('backend-routing-effective').textContent).toBe('Active policy: ChatGPT Web only.');
+    expect(ui.field('backend-connection-status').hidden).toBe(false);
     expect(ui.field('backend-routing-dirty').hidden).toBe(true);
     expect(ui.field('backend-routing-status').textContent).toContain('Saving does not verify');
     expect(ui.field('backend-connection-status').dataset.state).toBe('warning');

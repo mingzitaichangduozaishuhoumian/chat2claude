@@ -816,6 +816,8 @@ function backendConnectionPresentation(connection) {
   return { state, message };
 }
 function renderBackendRoutingState(elements) {
+  const gatewayKey = backendRoutingGatewayKey(elements);
+  const showWebFeedback = !elements.webEnabled || elements.webEnabled.checked || elements.configuration?.open === true || backendRoutingProbe?.key === gatewayKey;
   if (elements.effective) {
     const saved = backendRoutingSavedView;
     const message = !saved ? '当前生效：尚未读取。' : !saved.webEnabled || saved.mode === 'codex' ? '当前生效：仅使用 Codex。'
@@ -828,7 +830,8 @@ function renderBackendRoutingState(elements) {
     elements.dirty.textContent = translateAdminText('有未保存的更改，保存后生效。', adminLocale);
   }
   if (elements.connection) {
-    const key = backendRoutingGatewayKey(elements);
+    elements.connection.hidden = !showWebFeedback;
+    const key = gatewayKey;
     const savedKey = backendRoutingSavedView ? backendRoutingGatewayKey(elements, backendRoutingSavedView) : null;
     const connection = backendRoutingProbe?.key === key ? backendRoutingProbe.connection : key === savedKey ? backendRoutingSavedView.connection
       : backendConnectionInfo(undefined, Boolean(elements.url.value.trim()));
@@ -842,7 +845,7 @@ function renderBackendRoutingState(elements) {
   }
   if (elements.lastFailure) {
     const failure = backendRoutingSavedView?.lastRequestFailure;
-    elements.lastFailure.hidden = !failure;
+    elements.lastFailure.hidden = !failure || !showWebFeedback;
     if (failure) {
       const presentation = backendConnectionPresentation(failure);
       elements.lastFailure.dataset.state = presentation.state;
@@ -958,13 +961,16 @@ async function loadBackendRouting() {
 function bindBackendRouting() {
   const elements = backendRoutingElements();
   if (!elements) return;
-  const draftChanged = () => { backendRoutingProbe = null; updateBackendRoutingControls(elements); };
+  const draftChanged = (event) => {
+    if (!event?.target || [elements.url, elements.key, elements.models, elements.mappings, elements.tools, elements.images].includes(event.target)) backendRoutingProbe = null;
+    updateBackendRoutingControls(elements);
+  };
   elements.form.addEventListener('input', draftChanged);
   elements.form.addEventListener('change', draftChanged);
   elements.configuration?.addEventListener('toggle', () => updateBackendRoutingControls(elements));
   elements.webEnabled?.addEventListener('change', () => {
     if (elements.configuration && (!elements.webEnabled.checked || !elements.url.value.trim())) elements.configuration.open = elements.webEnabled.checked;
-    draftChanged();
+    draftChanged({ target: elements.webEnabled });
   });
   elements.mode.addEventListener('change', () => updateBackendRoutingControls(elements));
   updateBackendRoutingControls(elements);
