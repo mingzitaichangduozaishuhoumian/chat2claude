@@ -7,6 +7,7 @@ import type {
 import type { ChatGptStreamEvent } from './events.js';
 import { ChatGptBackendError, type ChatGptBackendErrorCode } from './errors.js';
 import { canonicalToolArguments } from './json-arguments.js';
+import { checkWebGatewayConnection } from './web-gateway-health.js';
 
 export interface WebGatewayConfiguration {
   baseUrl: string;
@@ -35,6 +36,12 @@ const MAX_FRAME_BYTES = 1024 * 1024;
 const MAX_TOOLS = 128;
 const MAX_IMAGE_URL_CHARS = 8192;
 const FINISH_REASONS = new Set(['stop', 'length', 'tool_calls', 'content_filter', 'refusal']);
+const webGatewayBackendErrors = new WeakSet<Error>();
+
+/** Runtime-only provenance; no extra fields enter serialized client errors. */
+export function isWebGatewayBackendError(value: unknown): boolean {
+  return value instanceof ChatGptBackendError && webGatewayBackendErrors.has(value);
+}
 
 export function configuredWebGatewayModels(configuration: WebGatewayConfiguration | undefined): ChatGptDiscoveredModel[] {
   return (configuration?.models ?? []).map((id) => ({
@@ -73,25 +80,14 @@ export class WebGatewayChatGptBackend implements ChatGptBackendClient {
   }
 
   async healthCheck(context?: ChatGptBackendRequestContext): Promise<ChatGptBackendHealthCheckResult> {
-    let lifetime: Lifetime | undefined;
-    let response: Response | undefined;
     try {
-      const configuration = this.configuration();
-      lifetime = requestLifetime(this.timeoutMs, context?.signal);
-      response = await this.fetchResponse(endpoint(configuration, '/models'), {
-        method: 'GET', headers: gatewayHeaders(configuration, false),
-      }, lifetime);
-      if (!response.ok) throw httpError(response.status);
-      const payload = parseJson(await readBody(response, lifetime));
-      if (!isObject(payload) || !Array.isArray(payload.data)) throw invalidResponse();
-      return { ok: true };
-    } catch (error) {
-      const safe = safeError(error, lifetime, context?.signal);
-      if (safe.name === 'AbortError') throw safe;
-      return { ok: false, message: safe.message };
-    } finally {
-      cancelBody(response);
-      lifetime?.dispose();
+      const connection = await checkWebGatewayConnection({
+        configuration: this.getConfiguration(), fetch: this.fetchImpl, timeoutMs: this.timeoutMs, signal: context?.signal,
+      });
+      return connection.state === 'reachable' ? { ok: true } : { ok: false, message: 'Web gateway connection could not be confirmed.' };
+    } catch {
+      if (context?.signal?.aborted) throw abortError();
+      return { ok: false, message: 'Web gateway connection could not be confirmed.' };
     }
   }
 
@@ -544,9 +540,10 @@ function cancelBody(response?: Response): void {
 
 function safeError(error: unknown, lifetime?: Lifetime, caller?: AbortSignal): Error {
   if (caller?.aborted) return abortError();
-  if (lifetime?.signal.aborted) return lifetime.signal.reason as Error;
-  if (error instanceof ChatGptBackendError) return error;
-  return new ChatGptBackendError('Web gateway request failed.', 'network_error');
+  const safe = lifetime?.signal.aborted ? lifetime.signal.reason as Error
+    : error instanceof ChatGptBackendError ? error : new ChatGptBackendError('Web gateway request failed.', 'network_error');
+  if (safe instanceof ChatGptBackendError) webGatewayBackendErrors.add(safe);
+  return safe;
 }
 
 function httpError(status: number): ChatGptBackendError {

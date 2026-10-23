@@ -219,7 +219,7 @@ test('connect only accepts loopback origins without credentials, paths, query, o
   for (const url of ['https://external.invalid', 'http://user:password@localhost', 'http://localhost/admin', 'http://localhost/?key=secret', 'http://localhost/#secret', 'file:///etc/passwd']) assert.throws(() => localApiOrigin(url), /loopback origin/);
 });
 
-test('connect uses an in-memory local admin cookie and applies the explicit web configuration', async () => {
+test('connect uses an in-memory local admin cookie and stores gateway configuration without changing backend choices', async () => {
   const settings = createSettings();
   const calls = [];
   await connectGateway({ settings, apiUrl: 'http://127.0.0.1:3000/', fetchImpl: async (url, options) => {
@@ -231,7 +231,24 @@ test('connect uses an in-memory local admin cookie and applies the explicit web 
   assert.equal(calls[1].options.headers.cookie, 'admin_session=private-cookie');
   assert.equal(calls[1].options.headers.origin, 'http://127.0.0.1:3000');
   assert.equal(calls[1].options.method, 'PATCH');
-  assert.deepEqual(JSON.parse(calls[1].options.body), { webEnabled: true, mode: 'web', autoPreference: 'web', contextHandoff: true, gateway: { baseUrl: 'http://127.0.0.1:3101', apiKey: settings.apiKey, models: ['auto'], supportsTools: true, supportsStrictTools: false, supportsImages: true, modelMappings: { sonnet: 'auto' } } });
+  assert.deepEqual(JSON.parse(calls[1].options.body), { gateway: { baseUrl: 'http://127.0.0.1:3101', apiKey: settings.apiKey, models: ['auto'], supportsTools: true, supportsStrictTools: false, supportsImages: true, modelMappings: { sonnet: 'auto' } } });
+});
+
+for (const choices of [
+  { mode: 'codex' },
+  { mode: 'web', webEnabled: false, autoPreference: 'codex', contextHandoff: false },
+  { mode: 'auto', webEnabled: true, autoPreference: 'web', contextHandoff: true },
+  { mode: 'web', webEnabled: true, autoPreference: 'codex', contextHandoff: false },
+]) test(`connect preserves existing backend choices: ${JSON.stringify(choices)}`, async () => {
+  let state = structuredClone(choices);
+  await connectGateway({ settings: createSettings(), apiUrl: 'http://localhost:3000', fetchImpl: async (_url, options) => {
+    if (options.method !== 'PATCH') return { ok: true, headers: { getSetCookie: () => ['session=private-cookie'] } };
+    state = { ...state, ...JSON.parse(options.body) };
+    return { ok: true };
+  } });
+  const { gateway, ...after } = state;
+  assert.deepEqual(after, choices);
+  assert.equal(gateway.baseUrl, 'http://127.0.0.1:3101');
 });
 
 test('connect never follows redirects or exposes private server failures', async () => {

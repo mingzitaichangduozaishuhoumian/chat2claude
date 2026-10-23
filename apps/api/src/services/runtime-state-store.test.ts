@@ -60,7 +60,7 @@ describe('RuntimeStateStore', () => {
     expect(enabledRouting.isWebEnabled()).toBe(true);
   });
 
-  it('loads legacy routing with default web preference without rewriting persisted optional fields', () => {
+  it('loads legacy routing with web disabled and a Codex preference without rewriting persisted optional fields', () => {
     const path = statePath();
     const legacyRouting = { mode: 'auto', gateway: { baseUrl: 'https://gateway.test', models: ['auto'], supportsTools: false } };
     writeFileSync(path, JSON.stringify({ version: 2, accounts: [], runtimeApiKeys: { records: [] }, modelAliases: [], backendRouting: legacyRouting }));
@@ -68,8 +68,8 @@ describe('RuntimeStateStore', () => {
     const store = new RuntimeStateStore({ path });
     new DurableRuntimeState({ accountPool: new AccountPool(), runtimeApiKeys: new RuntimeApiKeys(), backendRouting: routing, store }).hydrate();
     expect(routing.snapshot()).toEqual(legacyRouting);
-    expect(routing.safeView()).toMatchObject({ webEnabled: true, autoPreference: 'web', contextHandoff: false, gateway: { supportsImages: false } });
-    expect(routing.isWebEnabled()).toBe(true);
+    expect(routing.safeView()).toMatchObject({ webEnabled: false, autoPreference: 'codex', contextHandoff: false, gateway: { supportsImages: false } });
+    expect(routing.isWebEnabled()).toBe(false);
   });
 
   it('loads legacy routing without a gateway with web disabled without rewriting the stored mode', () => {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  configuredWebGatewayModels, supportsWebGatewayRequest, WebGatewayChatGptBackend,
+  configuredWebGatewayModels, supportsWebGatewayRequest, WebGatewayChatGptBackend, isWebGatewayBackendError, ChatGptBackendError,
   type ChatGptBackendRequestContext, type ChatGptCompletionRequest, type ChatGptStreamEvent, type WebGatewayConfiguration,
 } from './index.js';
 
@@ -523,6 +523,25 @@ describe('WebGatewayChatGptBackend', () => {
     expect(invalid.fetchMock).not.toHaveBeenCalled();
   });
 
+  it('tags only runtime web errors without adding serialized fields or replacing a typed error', async () => {
+    const unrelated = new ChatGptBackendError('Unrelated backend failure.', 'network_error');
+    expect(isWebGatewayBackendError(unrelated)).toBe(false);
+    expect(isWebGatewayBackendError({ code: 'network_error' })).toBe(false);
+    const typed = new ChatGptBackendError('Web gateway request failed: HTTP 503.', 'upstream_error', { status: 503 });
+    const before = JSON.stringify(typed);
+    const { backend } = makeBackend(async () => { throw typed; });
+    const error = await backend.complete(request).catch((value: unknown) => value);
+    expect(error).toBe(typed);
+    expect(isWebGatewayBackendError(error)).toBe(true);
+    expect(JSON.stringify(error)).toBe(before);
+    const network = makeBackend(async () => { throw new Error('SECRET_CANARY'); }).backend;
+    const safe = await network.complete(request).catch((value: unknown) => value);
+    expect(isWebGatewayBackendError(safe)).toBe(true);
+    expect(safe).toMatchObject({ code: 'network_error', message: 'Web gateway request failed.' });
+    expect(JSON.stringify(safe)).not.toContain('CANARY');
+    expect(isWebGatewayBackendError(unrelated)).toBe(false);
+  });
+
   it('probes models for health but retains the configured model directory', async () => {
     const { backend, fetchMock } = makeBackend(Response.json({ data: [] }));
     expect(await backend.healthCheck(context)).toEqual({ ok: true });
@@ -530,14 +549,24 @@ describe('WebGatewayChatGptBackend', () => {
     expect(new Headers(fetchMock.mock.calls[0][1]!.headers).get('authorization')).toBe('Bearer gateway-only');
     expect((await backend.listModels()).map((model) => model.id)).toEqual(['web-auto']);
     const failed = makeBackend(new Response('BODY_CANARY', { status: 401 })).backend;
-    expect(await failed.healthCheck()).toEqual({ ok: false, message: 'Web gateway request failed: HTTP 401.' });
+    expect(await failed.healthCheck()).toEqual({ ok: false, message: 'Web gateway connection could not be confirmed.' });
+  });
+
+  it('accepts process health when the separately operated gateway has no models endpoint', async () => {
+    const fetchMock = vi.fn(async (input: unknown) => String(input).endsWith('/v1/models')
+      ? new Response(null, { status: 404 }) : Response.json({ status: 'ok' }));
+    const backend = new WebGatewayChatGptBackend({ getConfiguration: () => configuration, fetch: fetchMock });
+    expect(await backend.healthCheck()).toEqual({ ok: true });
+    expect(fetchMock.mock.calls.map(([input]) => input)).toEqual(['http://127.0.0.1:3000/v1/models', 'http://127.0.0.1:3000/health']);
   });
 
   it('honors an already cancelled signal without invoking fetch or exposing its reason', async () => {
     const controller = new AbortController();
     controller.abort(new Error('ABORT_CANARY'));
     const { backend, fetchMock } = makeBackend(jsonCompletion());
-    await expect(backend.complete(request, { ...context, signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError', message: 'Web gateway request was cancelled.' });
+    const error = await backend.complete(request, { ...context, signal: controller.signal }).catch((value: unknown) => value);
+    expect(error).toMatchObject({ name: 'AbortError', message: 'Web gateway request was cancelled.' });
+    expect(isWebGatewayBackendError(error)).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

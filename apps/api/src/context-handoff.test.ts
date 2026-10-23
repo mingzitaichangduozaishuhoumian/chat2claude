@@ -53,7 +53,7 @@ function fixture() {
   apps.push(app);
   const headers = (owner = OWNER) => ({ 'content-type': 'application/json', 'x-api-key': owner });
   const configure = (contextHandoff = true) => app.request('/admin/api/backend-routing', { method: 'PATCH', headers: headers(), body: JSON.stringify({
-    contextHandoff, mode: 'auto', gateway: { baseUrl: 'http://gateway.test', models: ['web-model'], supportsTools: true, modelMappings: { sonnet: 'web-model' } },
+    contextHandoff, mode: 'auto', webEnabled: true, gateway: { baseUrl: 'http://gateway.test', models: ['web-model'], supportsTools: true, modelMappings: { sonnet: 'web-model' } },
   }) });
   const send = (backend: 'codex' | 'web', extra: Record<string, unknown> = {}, owner = OWNER, endpoint = '/v1/responses') => app.request(endpoint, {
     method: 'POST', headers: { ...headers(owner), 'x-chat2claude-backend': backend }, body: JSON.stringify({

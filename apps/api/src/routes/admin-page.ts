@@ -88,16 +88,23 @@ curl __ORIGIN__/v1/images/generations \\
           <header class="module-header"><div><span class="eyebrow">03 / MODELS</span><h2>模型映射</h2><p>选择已发现的后端模型，并为客户端配置稳定的 alias。</p></div></header>
           <section class="panel" aria-labelledby="backend-routing-title">
             <div class="panel-heading"><div><h3 id="backend-routing-title">上游选择</h3><p class="muted">先决定是否使用网页，再选择自动或手动模式。</p></div><button id="refresh-backend-routing" class="secondary" type="button">刷新上游设置</button></div>
-            <form id="backend-routing-form" class="stack" aria-describedby="backend-routing-note">
+            <p id="backend-routing-effective" class="routing-feedback" role="status" aria-live="polite">当前生效：尚未读取。</p>
+            <form id="backend-routing-form" class="stack routing-form" aria-describedby="backend-routing-note">
               <label><input id="backend-web-enabled" type="checkbox" aria-describedby="backend-web-status" /> 使用 ChatGPT 网页</label>
-              <p id="backend-web-status" class="muted" role="status" aria-live="polite">网页已关闭，仅使用 Codex；配置和选择会保留，重新开启后恢复。</p>
-              <label>选择模式<select id="backend-routing-mode"><option value="auto">自动模式</option><option value="manual" selected>手动模式</option></select></label>
-              <label id="backend-routing-manual-field">手动选择上游<select id="backend-routing-manual-target"><option value="codex" selected>Codex</option><option id="backend-routing-web-option" value="web" disabled>ChatGPT 网页</option></select></label>
-              <label id="backend-routing-preference-field" hidden>自动模式优先级<select id="backend-routing-preference" disabled><option value="web" selected>网页优先</option><option value="codex">Codex 优先</option></select></label>
-              <p class="muted">网页优先会优先调用兼容的网页模型，不默认重复调用两个后端。选择 ChatGPT 网页可禁止回退到 Codex；更换调用入口不保证增加额度。</p>
+              <p id="backend-web-status" class="muted">网页默认关闭；勾选只修改草稿，保存后才生效。</p>
+              <p id="backend-routing-dirty" class="routing-feedback" data-state="warning" role="status" aria-live="polite" hidden>有未保存的更改，保存后生效。</p>
+              <div id="backend-routing-mode-fields" class="stack" hidden>
+              <label>选择模式<select id="backend-routing-mode" disabled><option value="auto">自动模式</option><option value="manual" selected>手动模式</option></select></label>
+              <label id="backend-routing-manual-field" hidden>手动选择上游<select id="backend-routing-manual-target" disabled><option value="codex" selected>Codex</option><option id="backend-routing-web-option" value="web" disabled>ChatGPT 网页</option></select></label>
+              <label id="backend-routing-preference-field" hidden>自动模式优先级<select id="backend-routing-preference" disabled><option value="codex" selected>Codex 优先</option><option value="web">网页优先</option></select></label>
+              <p class="muted">手动模式只使用所选上游；自动模式默认 Codex 优先，可按需改为网页优先。更换调用入口不保证增加额度。</p>
               <p id="backend-routing-note" class="muted">网页网关需另行部署并完成网页登录。开启网页后，单次请求可用 x-chat2claude-backend: auto、codex 或 web 覆盖模式；关闭网页时不能用请求头重新开启。</p>
-              <label><input id="backend-context-handoff" type="checkbox" aria-describedby="backend-context-handoff-note" /> 跨后端接续上下文</label>
-              <p id="backend-context-handoff-note" class="muted">开启后，切换后端时携带可见对话历史和工具结果；不共享后端私有会话或思考过程。默认关闭。</p>
+              </div>
+              <div class="form-actions routing-actions"><button id="save-backend-routing" type="submit">保存上游设置</button><button id="check-backend-gateway" class="secondary" type="button">检查网页连接（不发送消息）</button><button id="clear-backend-gateway" class="secondary" type="button">清除网页配置</button></div>
+              <p id="backend-routing-status" class="routing-feedback" role="status" aria-live="polite">正在读取上游设置。</p>
+              <p id="backend-connection-status" class="routing-feedback" role="status" aria-live="polite">尚未检查网页连接。</p>
+              <p id="backend-last-request-failure" class="routing-feedback" data-state="error" role="status" aria-live="polite" hidden></p>
+              <details id="backend-web-configuration" class="routing-configuration"><summary>配置网页网关</summary><p class="muted">网页关闭时也可准备配置和检查连接；检查不会保存设置、开启网页或调用模型。</p>
               <div id="backend-web-settings" class="stack" hidden>
               <label>网页网关地址<input id="backend-gateway-url" type="url" placeholder="http://127.0.0.1:8000/v1" autocomplete="off" /></label>
               <label>网页网关 API Key<input id="backend-gateway-key" type="password" placeholder="留空保留已保存的 Key" autocomplete="off" /></label>
@@ -112,8 +119,9 @@ curl __ORIGIN__/v1/images/generations \\
               <p class="muted">仅在确认网页网关支持 OpenAI 格式的图片输入时开启；否则自动模式会将带图请求交给兼容的 Codex 上游。</p>
               <p class="muted">网页可独立提供模型回答；网关支持工具调用时，Claude Code 等客户端负责执行本地工具。</p>
               </div>
-              <div class="form-actions"><button id="save-backend-routing" type="submit">保存上游设置</button><button id="clear-backend-gateway" class="danger-button" type="button">清除网页配置</button></div>
-              <p id="backend-routing-status" class="muted" role="status" aria-live="polite">正在读取上游设置。</p>
+              </details>
+              <label><input id="backend-context-handoff" type="checkbox" aria-describedby="backend-context-handoff-note" /> 跨后端接续上下文</label>
+              <p id="backend-context-handoff-note" class="muted">开启后，切换后端时携带可见对话历史和工具结果；不共享后端私有会话或思考过程。默认关闭。</p>
             </form>
           </section>
           <section class="panel model-mapping-panel"><div class="panel-heading"><div><h3>文本模型映射</h3><p id="text-model-mapping-note" class="model-mapping-note">文本 alias 用于对话和代码；生成图片请使用 Images API。</p><p class="muted">简洁模式可选择 Backend Model、启用并保存；专业模式增加推理、服务层级和自定义 alias 管理。选项仅来自 backend discovery。</p><p class="muted" data-professional-only>Token 计数是本地 heuristic，不是上游 tokenizer 精确值；客户端可从 <code>/v1/messages/count_tokens</code> 响应头确认模式。</p></div><div class="row" data-professional-only><button id="reset-models" class="secondary" type="button" data-professional-only>重置 alias overlay</button><button id="refresh-models" class="secondary" type="button" data-professional-only>刷新 backend discovery</button></div></div><form id="create-model-form" class="row" data-professional-only><input id="model-alias-id" required pattern="[a-zA-Z0-9._-]+" placeholder="新 alias，例如 research" aria-label="新模型 alias" /><input id="model-display-name" placeholder="显示名称（可选）" aria-label="模型显示名称" /><select id="model-backend" aria-label="Backend model" aria-describedby="text-model-mapping-note"><option value="">未绑定（可选）</option></select><button type="submit">创建自定义 alias</button></form><div id="models"><div class="empty">正在加载模型映射。</div></div></section>

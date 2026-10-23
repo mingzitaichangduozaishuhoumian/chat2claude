@@ -21,7 +21,18 @@ import { AccountQuotaNotFoundError, AccountQuotaResetError, AccountQuotaService,
 import type { RequestLog } from '../services/request-log.js';
 import { renderAdminPage } from './admin-page.js';
 import { BackendRouting, BackendRoutingError } from '../services/backend-routing.js';
-import { syncWebGatewayAccount } from '../services/web-gateway-account.js';
+import { syncWebGatewayAccount, WEB_GATEWAY_ACCOUNT_ID } from '../services/web-gateway-account.js';
+import { WebGatewayConnection, lastWebRequestFailure } from '../services/web-gateway-connection.js';
+
+function assertSeparateGateway(baseUrl: string, requestUrl: string): void {
+  const target = new URL(baseUrl);
+  const origin = new URL(requestUrl);
+  const localName = (name: string) => ['localhost', '127.0.0.1', '[::1]'].includes(name);
+  if (!target.pathname.replaceAll('/', '') && (target.origin === origin.origin
+    || localName(target.hostname) && localName(origin.hostname) && target.port === origin.port)) {
+    throw new BackendRoutingError('Web gateway must be a separate service, not this API address.');
+  }
+}
 
 export interface AdminRouteOptions {
   accountPool: AccountPool;
@@ -41,10 +52,18 @@ export interface AdminRouteOptions {
   localAdminSession?: LocalAdminSession;
   quotaService?: AccountQuotaService;
   requestLog?: RequestLog;
+  gatewayFetch?: typeof fetch;
 }
 
 export function createAdminRoute(options: AdminRouteOptions): Hono {
   const app = new Hono();
+  const gatewayConnection = new WebGatewayConnection({ fetch: options.gatewayFetch });
+  const routingView = () => ({
+    ...(options.backendRouting?.safeView() ?? { mode: 'codex', autoPreference: 'codex', contextHandoff: false, webEnabled: false, configured: false }),
+    connection: gatewayConnection.view(options.backendRouting?.snapshot().gateway),
+    ...(lastWebRequestFailure(options.accountPool.get(WEB_GATEWAY_ACCOUNT_ID))
+      ? { lastRequestFailure: lastWebRequestFailure(options.accountPool.get(WEB_GATEWAY_ACCOUNT_ID)) } : {}),
+  });
   const authFlow = options.authFlow ?? new ChatGptAuthFlowService();
   const quotaService = options.quotaService ?? new AccountQuotaService({
     accountPool: options.accountPool,
@@ -64,7 +83,25 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
   app.get('/admin/api/setup/status', (c) => c.json(status(options)));
   app.get('/admin/api/backend-routing', (c) => {
     c.header('cache-control', 'no-store');
-    return c.json(options.backendRouting?.safeView() ?? { mode: 'codex', autoPreference: 'web', contextHandoff: false, webEnabled: false, configured: false });
+    return c.json(routingView());
+  });
+  app.post('/admin/api/backend-routing/check', async (c) => {
+    if (!options.backendRouting) return c.json({ error: 'Backend routing is unavailable.' }, 503);
+    try {
+      const draft = new BackendRouting(options.backendRouting.snapshot());
+      draft.update(await readJson(c.req));
+      const gateway = draft.snapshot().gateway;
+      if (gateway) assertSeparateGateway(gateway.baseUrl, c.req.url);
+      const connection = await gatewayConnection.check(gateway, c.req.raw.signal);
+      c.header('cache-control', 'no-store');
+      return c.json({ connection });
+    } catch (error) {
+      if (c.req.raw.signal.aborted) return new Response('{"error":"Connection check cancelled."}', {
+        status: 499, headers: { 'content-type': 'application/json; charset=UTF-8', 'cache-control': 'no-store' },
+      });
+      return c.json({ error: error instanceof BackendRoutingError || error instanceof AdminRequestError ? error.message : 'Unable to check the web gateway connection.' },
+        error instanceof BackendRoutingError || error instanceof AdminRequestError ? 400 : 500);
+    }
   });
   app.patch('/admin/api/backend-routing', async (c) => {
     if (!options.backendRouting) return c.json({ error: 'Backend routing is unavailable.' }, 503);
@@ -75,15 +112,7 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
       const next = new BackendRouting(previous);
       next.update(input);
       const gateway = next.snapshot().gateway;
-      if (gateway) {
-        const target = new URL(gateway.baseUrl);
-        const origin = new URL(c.req.url);
-        const localName = (name: string) => ['localhost', '127.0.0.1', '[::1]'].includes(name);
-        if (!target.pathname.replaceAll('/', '') && (target.origin === origin.origin
-          || localName(target.hostname) && localName(origin.hostname) && target.port === origin.port)) {
-          throw new BackendRoutingError('Web gateway must be a separate service, not this API address.');
-        }
-      }
+      if (gateway) assertSeparateGateway(gateway.baseUrl, c.req.url);
       const poolSnapshot = options.accountPool.snapshot();
       const modelSnapshot = options.modelRegistry.snapshot();
       const update = () => {
@@ -102,7 +131,7 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
         throw error;
       }
       c.header('cache-control', 'no-store');
-      return c.json(options.backendRouting.safeView());
+      return c.json(routingView());
     } catch (error) {
       return c.json({ error: error instanceof BackendRoutingError || error instanceof AdminRequestError ? error.message : 'Unable to save backend routing.' }, error instanceof BackendRoutingError || error instanceof AdminRequestError ? 400 : 500);
     }
@@ -257,7 +286,7 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
         const account = options.accountPool.update(id, patch);
         if (account && (existing.provider === 'chatgpt-session' || existing.provider === 'chatgpt-web')) {
           options.modelRegistry.setAccountActive({ accountId: existing.id, createdAt: existing.createdAt },
-            account.enabled && (existing.provider !== 'chatgpt-web' || options.backendRouting?.isWebEnabled() !== false));
+            account.enabled && (existing.provider !== 'chatgpt-web' || options.backendRouting?.isWebEnabled() === true));
         }
         return account;
       };
@@ -294,7 +323,7 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
     const id = c.req.param('id');
     const internalAccount = options.accountPool.get(id);
     if (!internalAccount) return c.json({ error: 'Account not found' }, 404);
-    if (internalAccount.provider === 'chatgpt-web' && options.backendRouting?.isWebEnabled() === false) {
+    if (internalAccount.provider === 'chatgpt-web' && options.backendRouting?.isWebEnabled() !== true) {
       return c.json({ error: 'ChatGPT web access is disabled.' }, 403);
     }
     if (internalAccount.provider === 'chatgpt-session') {
@@ -376,14 +405,14 @@ export function createAdminRoute(options: AdminRouteOptions): Hono {
       return c.json(adminModelsView(options));
     }
     const accounts = options.accountPool.snapshot().accounts.filter((account) =>
-      (account.provider === 'chatgpt-session' || account.provider === 'chatgpt-web' && options.backendRouting?.isWebEnabled() !== false) && account.enabled && account.status === 'available');
+      (account.provider === 'chatgpt-session' || account.provider === 'chatgpt-web' && options.backendRouting?.isWebEnabled() === true) && account.enabled && account.status === 'available');
     if (accounts.length === 0) return c.json({ error: 'No available chatgpt-session account. Import and health-check a ChatGPT session account before refreshing models.' }, 409);
     const refreshedAccounts = [];
     for (const account of accounts) refreshedAccounts.push(await refreshAccountModels(options, account,
       account.provider === 'chatgpt-web' ? (result) => {
         const current = options.accountPool.get(account.id);
         options.modelRegistry.replaceAccountModels({ accountId: account.id, createdAt: account.createdAt }, result.models,
-          current?.enabled === true && options.backendRouting?.isWebEnabled() !== false);
+          current?.enabled === true && options.backendRouting?.isWebEnabled() === true);
       } : undefined));
     return c.json({ ...adminModelsView(options), refreshedAccounts });
   });
@@ -545,7 +574,7 @@ function status(options: AdminRouteOptions) {
   const envApiKeysConfigured = options.envApiKeys.length > 0;
   const runtimeApiKeysConfigured = options.runtimeApiKeys.size > 0;
   const sessionAccounts = options.accountPool.list().filter((account) => account.provider === 'chatgpt-session' && account.hasSecret);
-  const routingMode = options.backendRouting?.snapshot().webEnabled === false ? 'codex' : options.backendRouting?.snapshot().mode ?? 'codex';
+  const routingMode = options.backendRouting?.isWebEnabled() === true ? options.backendRouting.snapshot().mode : 'codex';
   const webConnected = routingMode !== 'codex' && options.backendRouting?.safeView().configured === true
     && options.accountPool.list().some((account) => account.provider === 'chatgpt-web' && account.enabled && account.status === 'available');
   const connected = webConnected || routingMode !== 'web' && sessionAccounts.length > 0;

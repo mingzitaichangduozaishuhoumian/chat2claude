@@ -14,7 +14,7 @@ export interface BackendRoutingGateway {
 }
 
 export interface BackendRoutingConfig {
-  /** Omitted legacy configurations allow the web backend when a gateway exists. */
+  /** Web access requires explicit opt-in, including for legacy saved gateways. */
   webEnabled?: boolean;
   mode: BackendRoutingMode;
   autoPreference?: BackendAutoPreference;
@@ -49,7 +49,7 @@ export class BackendRouting {
 
   snapshot(): BackendRoutingConfig { return structuredClone(this.config); }
 
-  isWebEnabled(): boolean { return this.config.webEnabled ?? Boolean(this.config.gateway); }
+  isWebEnabled(): boolean { return this.config.webEnabled === true; }
 
   restore(config: unknown): void { this.config = normalizeBackendRoutingConfig(config); }
 
@@ -92,7 +92,7 @@ export class BackendRouting {
     return {
       webEnabled: this.isWebEnabled(),
       mode,
-      autoPreference: autoPreference ?? 'web',
+      autoPreference: autoPreference ?? 'codex',
       contextHandoff: this.config.contextHandoff ?? false,
       configured: Boolean(gateway),
       ...(gateway ? { gateway: {

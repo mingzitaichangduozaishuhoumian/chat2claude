@@ -82,7 +82,7 @@ function fixture(withCodex = true, runtimeStateStore: RuntimeStateStore | null =
     method: 'PATCH', headers: { 'content-type': 'application/json', 'x-api-key': KEY }, body: JSON.stringify(body),
   });
   const configure = (mode: 'auto' | 'codex' | 'web' = 'auto', supportsTools = false) => patch({
-    mode, autoPreference: 'codex', gateway: { baseUrl: 'http://gateway.test:8090/v1', apiKey: 'PRIVATE_GATEWAY_KEY', models: [MODEL], supportsTools },
+    mode, webEnabled: true, autoPreference: 'codex', gateway: { baseUrl: 'http://gateway.test:8090/v1', apiKey: 'PRIVATE_GATEWAY_KEY', models: [MODEL], supportsTools },
   });
   const request = (endpoint: Endpoint, mode?: string, extra: Record<string, unknown> = {}) => app.request(endpoint, {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': KEY, ...(mode === undefined ? {} : { 'x-chat2claude-backend': mode }) },
@@ -243,7 +243,7 @@ describe('web gateway routing through the application', () => {
     const f = fixture();
     const configured = await f.configure('web');
     expect(configured.status).toBe(200);
-    expect(await configured.json()).toEqual({ mode: 'web', autoPreference: 'codex', contextHandoff: false, webEnabled: true, configured: true, gateway: {
+    expect(await configured.json()).toEqual({ mode: 'web', autoPreference: 'codex', contextHandoff: false, webEnabled: true, configured: true, connection: { state: 'unchecked' }, gateway: {
       baseUrl: 'http://gateway.test:8090', models: [MODEL], supportsTools: false, supportsImages: false, apiKeyConfigured: true,
     } });
     const retained = await f.patch({ gateway: { apiKey: '' } });

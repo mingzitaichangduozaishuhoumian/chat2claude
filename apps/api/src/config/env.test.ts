@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadEnv } from './env.js';
 import { DEFAULT_CODEX_CLIENT_VERSION } from '@chatgpt-to-claude/chatgpt-backend';
+import { BackendRouting } from '../services/backend-routing.js';
 
 describe('loadEnv', () => {
   it('only overrides default backend routing when configured', () => {
@@ -13,6 +14,15 @@ describe('loadEnv', () => {
     expect(loadEnv({ CHATGPT_ROUTING_MODE: 'web', CHATGPT_WEB_BASE_URL: 'https://gateway.test', CHATGPT_WEB_API_KEY: 'PRIVATE_KEY', CHATGPT_WEB_MODELS: 'model-a,model-b', CHATGPT_WEB_SUPPORTS_TOOLS: 'true' }).backendRouting).toEqual({
       mode: 'web', gateway: { baseUrl: 'https://gateway.test', apiKey: 'PRIVATE_KEY', models: ['model-a', 'model-b'], supportsTools: true },
     });
+  });
+
+  it.each(['codex', 'auto', 'web'])('keeps environment gateway configuration opt-in for stored mode %s', (mode) => {
+    const source = { CHATGPT_ROUTING_MODE: mode, CHATGPT_WEB_BASE_URL: 'https://gateway.test' };
+    const routing = new BackendRouting(loadEnv(source).backendRouting);
+    expect(routing.safeView()).toMatchObject({ configured: true, webEnabled: false, mode, autoPreference: 'codex' });
+    expect(routing.snapshot()).not.toHaveProperty('webEnabled');
+    expect(new BackendRouting(loadEnv({ ...source, CHATGPT_WEB_ENABLED: 'true', CHATGPT_AUTO_PREFERENCE: 'web' }).backendRouting)
+      .safeView()).toMatchObject({ configured: true, webEnabled: true, mode, autoPreference: 'web' });
   });
 
   it('accepts explicit automatic preferences without requiring a gateway', () => {

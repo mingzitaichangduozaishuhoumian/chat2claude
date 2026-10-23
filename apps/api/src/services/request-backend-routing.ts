@@ -12,11 +12,11 @@ export function requestBackendMode(c: Context, routing?: BackendRouting): Backen
   if (override !== undefined && override !== 'auto' && override !== 'codex' && override !== 'web') {
     throw new ClaudeApiError('x-chat2claude-backend must be auto, codex, or web.', 400, 'invalid_request_error');
   }
-  if (override === 'web' && routing?.snapshot().webEnabled === false) {
+  if (override === 'web' && !routing?.isWebEnabled()) {
     throw new ClaudeApiError('ChatGPT web access is disabled by the administrator.', 403, 'permission_error');
   }
   const mode = override ?? routing?.snapshot().mode ?? 'codex';
-  return mode === 'web' && routing?.snapshot().webEnabled === false ? 'codex' : mode;
+  return mode === 'web' && !routing?.isWebEnabled() ? 'codex' : mode;
 }
 
 export function checkRequestBackendAvailability(c: Context, deps: RequestRoutingDeps): void {
@@ -43,7 +43,7 @@ export function requestAccountOptions(c: Context, deps: RequestRoutingDeps, requ
   const mapped = mappings && Object.hasOwn(mappings, clientModel) ? mappings[clientModel]
     : mappings && Object.hasOwn(mappings, declaredModel) ? mappings[declaredModel] : request.model;
   const webCompatible = supportsWebGatewayRequest({ ...request, model: mapped }, gateway);
-  const preferred = configuration?.autoPreference === 'codex' ? primary : 'chatgpt-web';
+  const preferred = configuration?.autoPreference === 'web' ? 'chatgpt-web' : primary;
   if (mode === 'web' && !webCompatible) {
     throw new ClaudeApiError('The configured web gateway does not support the requested model or capabilities.', 400, 'invalid_request_error');
   }

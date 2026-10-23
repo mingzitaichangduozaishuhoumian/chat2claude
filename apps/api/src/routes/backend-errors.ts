@@ -1,4 +1,4 @@
-import { ChatGptBackendError } from '@chatgpt-to-claude/chatgpt-backend';
+import { ChatGptBackendError, isWebGatewayBackendError } from '@chatgpt-to-claude/chatgpt-backend';
 import { ClaudeApiError } from '@chatgpt-to-claude/claude-protocol';
 
 export const INTERNAL_SERVER_ERROR_MESSAGE = 'Internal server error';
@@ -20,6 +20,18 @@ export async function parseRequestJson(read: () => Promise<unknown>): Promise<un
  */
 export function mapChatGptBackendError(error: unknown): ClaudeApiError | undefined {
   if (!(error instanceof ChatGptBackendError)) return undefined;
+  if (isWebGatewayBackendError(error)) {
+    switch (error.code) {
+      case 'invalid_request': return new ClaudeApiError('The ChatGPT web gateway rejected this request. Check its model mappings and supported tools or images, or switch to Codex in Admin.', 400, 'invalid_request_error');
+      case 'unauthorized': return new ClaudeApiError('ChatGPT web gateway authentication failed. Check the gateway API key and ChatGPT web login, or switch to Codex in Admin.', 401, 'authentication_error');
+      case 'rate_limited': return new ClaudeApiError('The ChatGPT web gateway is rate limited. Wait before retrying or switch to Codex in Admin.', 429, 'rate_limit_error');
+      case 'timeout': return new ClaudeApiError('The ChatGPT web gateway timed out. Check the gateway and web login, or switch to Codex in Admin.', 504, 'api_error');
+      case 'network_error': return new ClaudeApiError('Cannot connect to the ChatGPT web gateway. Start the gateway and check its address, or switch to Codex in Admin.', 502, 'api_error');
+      case 'invalid_response': return new ClaudeApiError('The ChatGPT web gateway returned an invalid or incomplete response. Check its compatibility and web login, or switch to Codex in Admin.', 502, 'api_error');
+      case 'upstream_error': return new ClaudeApiError('The ChatGPT web gateway is unavailable. Check the gateway and web login, or switch to Codex in Admin.',
+        error.safeDiagnostic?.failurePhase === 'response_headers' && Number.isInteger(error.status) && error.status! >= 400 && error.status! <= 599 ? error.status! : 502, 'api_error');
+    }
+  }
   switch (error.code) {
     case 'invalid_request':
       return new ClaudeApiError('The upstream provider rejected the request.', 400, 'invalid_request_error');
