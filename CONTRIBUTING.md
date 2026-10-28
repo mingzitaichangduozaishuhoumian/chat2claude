@@ -16,7 +16,11 @@ corepack pnpm dev
 
 `check` builds the workspace, runs Vitest, then typechecks. Building first matters for tests that launch a separate TypeScript process and resolve workspace packages through `dist`. `dev` builds once and starts the API watcher. See the [README](README.en.md) or [中文说明](README.md) for account and client setup.
 
+Vitest defaults to at most two workers so PNG processing and tsx subprocess tests do not compete with an unbounded number of test processes on high-core desktops. Assertions and timeout limits are unchanged; a focused run can override concurrency with `--maxWorkers`.
+
 开发环境使用上述 Node 版本与 Corepack 管理的 pnpm。`check` 顺序为构建、测试、类型检查；全新 checkout 不要跳过首次构建。修改依赖时才更新 lockfile，并说明原因。
+
+Vitest 默认最多两个 worker，避免高核数电脑上图片处理和 tsx 子进程与大量测试进程争用资源；断言与超时上限不变，定向运行可用 `--maxWorkers` 覆盖并发数。
 
 ## Make a focused change
 

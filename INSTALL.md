@@ -6,14 +6,14 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `chat2claude-v0.3.1-windows-x64.zip` | Windows 64 位免安装包，包含 Node.js；解压后运行 `start.bat`。 |
-| `chat2claude-v0.3.1-node.zip` | 通用包，包含服务和生产依赖；需要预先安装受支持的 Node.js。 |
-| `chat2claude-v0.3.1-node.tar.gz` | 与通用 ZIP 内容相同，适合 Linux/macOS 解压使用。 |
+| `chat2claude-v0.3.2-windows-x64.zip` | Windows 64 位免安装包，包含 Node.js；解压后运行 `start.bat`。 |
+| `chat2claude-v0.3.2-node.zip` | 通用包，包含服务和生产依赖；需要预先安装受支持的 Node.js。 |
+| `chat2claude-v0.3.2-node.tar.gz` | 与通用 ZIP 内容相同，适合 Linux/macOS 解压使用。 |
 | `SHA256SUMS` | 上述下载文件的 SHA-256 校验值。 |
 
-v0.3.1 发布包包含网页适配器、管理台与九项图片目录。网页默认关闭，自动模式默认优先 Codex。浏览器网关需独立部署并登录，再在管理台配置地址、检查连接，确认后勾选 **使用 ChatGPT 网页**并保存。保存地址和辅助命令都不会自动开启网页。`web-gateway:*` 辅助命令仅在[源码版](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/tree/v0.3.1)提供，不包含在发布包中；使用这些命令安装网关另需 Git、npm 和 Google Chrome，步骤见[网关安装说明](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/blob/v0.3.1/integrations/gpt-web-gateway/README.md)。主服务发布包仍无需 pnpm、npm 或自行安装依赖。
+v0.3.2 发布包包含网页适配器、管理台与九项图片目录。网页默认关闭，自动模式默认优先 Codex。浏览器网关需独立部署并登录，再在管理台配置地址、检查连接，确认后勾选 **使用 ChatGPT 网页**并保存。保存地址和辅助命令都不会自动开启网页。`web-gateway:*` 辅助命令仅在[源码版](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/tree/v0.3.2)提供，不包含在发布包中；使用这些命令安装网关另需 Git、npm 和 Google Chrome，步骤见[网关安装说明](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/blob/v0.3.2/integrations/gpt-web-gateway/README.md)。主服务发布包仍无需 pnpm、npm 或自行安装依赖。
 
-通用包推荐 Node.js 24 LTS，也支持 Node.js 22.15.0 以上的 22.x。无需安装 pnpm、下载依赖或编译源码。GitHub 自动附带的 **Source code** 是源码，仍需按 README 安装依赖并构建。
+Windows v0.3.2 包内运行时为 Node.js 24.22.1 安全版。通用包推荐使用已安装安全更新的 Node.js 24 LTS，也兼容 Node.js 22.15.0 以上的 22.x；通用包不替换系统 Node.js。无需安装 pnpm、下载依赖或编译源码。GitHub 自动附带的 **Source code** 是源码，仍需按 README 安装依赖并构建。
 
 ## 首次启动
 
@@ -58,10 +58,10 @@ CHATGPT_BACKEND=session
 Windows PowerShell：
 
 ```powershell
-Get-FileHash .\chat2claude-v0.3.1-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\chat2claude-v0.3.2-windows-x64.zip -Algorithm SHA256
 ```
 
-将结果与同一 Release 的 `SHA256SUMS` 对照。Linux 可运行 `sha256sum -c SHA256SUMS --ignore-missing`；macOS 可运行 `shasum -a 256 chat2claude-v0.3.1-node.tar.gz` 并逐项对照。
+将结果与同一 Release 的 `SHA256SUMS` 对照。Linux 可运行 `sha256sum -c SHA256SUMS --ignore-missing`；macOS 可运行 `shasum -a 256 chat2claude-v0.3.2-node.tar.gz` 并逐项对照。
 
 如果端口已被占用，停止旧实例或更改 `PORT`。通用包提示 Node 版本不支持时，请安装 Node.js 24 LTS。遇到其他问题，请使用 [Discussions](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/discussions) 或阅读[支持说明](SUPPORT.md)。
 
@@ -69,11 +69,11 @@ Get-FileHash .\chat2claude-v0.3.1-windows-x64.zip -Algorithm SHA256
 
 Download an archive and `SHA256SUMS` from the same [release](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/releases/latest).
 
-- **Windows x64 ZIP:** includes Node.js. Extract the complete directory and run `start.bat`; it does not modify your system Node installation.
-- **Node ZIP / TAR.GZ:** includes the compiled service and production dependencies. Install Node.js 24 LTS, or a supported Node.js 22.x version starting at 22.15.0, then run `start.bat` or `sh start.sh`. No pnpm or dependency installation is required.
+- **Windows x64 ZIP:** includes the Node.js 24.22.1 security release. Extract the complete directory and run `start.bat`; it does not modify your system Node installation.
+- **Node ZIP / TAR.GZ:** includes the compiled service and production dependencies. Use a security-patched Node.js 24 LTS, or a supported Node.js 22.x version starting at 22.15.0, then run `start.bat` or `sh start.sh`. The universal archives do not replace your system Node.js. No pnpm or dependency installation is required.
 - **Source code:** GitHub's automatically generated source archive requires the build steps in the README.
 
-Version 0.3.1 archives include the Web adapter, Admin and nine image entries. Web defaults to off and Auto prefers Codex. Deploy and sign in to the browser gateway separately, configure its URL and check connectivity in Admin, then explicitly check **Use ChatGPT Web** and save. Saving a URL or running a helper does not enable Web. The `web-gateway:*` helpers are available only in the [source checkout](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/tree/v0.3.1), not in release archives; preparing the gateway with them also requires Git, npm and Google Chrome. See the [gateway installation guide](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/blob/v0.3.1/integrations/gpt-web-gateway/README.md). The main service archives still require no pnpm, npm or dependency installation.
+Version 0.3.2 archives include the Web adapter, Admin and nine image entries. Web defaults to off and Auto prefers Codex. Deploy and sign in to the browser gateway separately, configure its URL and check connectivity in Admin, then explicitly check **Use ChatGPT Web** and save. Saving a URL or running a helper does not enable Web. The `web-gateway:*` helpers are available only in the [source checkout](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/tree/v0.3.2), not in release archives; preparing the gateway with them also requires Git, npm and Google Chrome. See the [gateway installation guide](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/blob/v0.3.2/integrations/gpt-web-gateway/README.md). The main service archives still require no pnpm, npm or dependency installation.
 
 Open `http://127.0.0.1:3000/admin`, authorize your own ChatGPT account and create a Runtime API Key. The launcher defaults to the session backend and loopback networking. Keep the service running; Ctrl+C stops it.
 

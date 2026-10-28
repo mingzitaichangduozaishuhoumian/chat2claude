@@ -194,7 +194,7 @@ try {
       assert(within(pack, path.join(pack, license)) && fs.statSync(path.join(pack, license)).isFile());
     }
     if (inside.runtime.bundled) {
-      assert.equal(inside.runtime.version, '24.21.0');
+      assert.equal(inside.runtime.version, '24.22.1');
       assert.equal(await sha256(path.join(pack, 'runtime/node.exe')), inside.runtime.executableSha256);
       assert(fs.existsSync(path.join(pack, inside.runtime.licenseFile)));
     }

@@ -4,6 +4,24 @@
 
 暂无未发布变更。 / No unreleased changes.
 
+## 0.3.2 — 2026-10-28
+
+### 中文
+
+- 吸收 [gpt-web-gateway 的可见 Stop 按钮修复](https://github.com/stufently/gpt-web-gateway/commit/df59104833ced7f4a618c889601568b8f6457f8e)：隐藏工作区残留按钮不再把已完成回答误判为仍在生成；保留固定上游 SHA、图片/工具协议及发送后不自动重试的边界。旧网关安装不会被自动覆盖，补丁变化后需使用新的安装目录。
+- 参考 [CLIProxyAPI 的 Codex 限额终态处理](https://github.com/router-for-me/CLIProxyAPI/commit/86a1aabf0178be8b188cfa2c9d2fedc5fcc48a02)，将明确的 usage_limit_reached 错误识别为 429 限流并沿用账号冷却，避免误报 502。已开始的流不切换后端重试。
+- 将 [Undici](https://github.com/nodejs/undici/releases/tag/v7.30.1) 更新至 7.30.1；Windows 便携包及发布验证改用 [Node.js 24.22.1 安全版](https://nodejs.org/en/blog/release/v24.22.1)，同步固定官方 ZIP 校验和。其他依赖保留原锁版本。
+- 更新中英文使用和升级说明，纠正兼容表中旧的 connect 自动启用及健康检查描述。网页默认关闭、手动开启、已保存路由与凭据保留规则不变。
+- 将 Vitest 并发上限设为两个 worker，避免高核数电脑的图片处理与 tsx 子进程争用导致既有测试超时；不放宽断言或超时上限。
+
+### English
+
+- Backport the upstream gateway's visible-Stop-button fix: hidden workspace controls no longer make completed replies appear to be generating. Retain the pinned upstream commit, image/tool protocol and no automatic resend after submission. Existing gateway installations are preserved; use a new installation directory after a patch change.
+- Recognize explicit Codex usage_limit_reached terminal errors as rate limiting (429), using the existing account cooldown instead of reporting 502. Do not switch providers or retry an already-started stream.
+- Patch Undici to 7.30.1 and bundle Node.js 24.22.1 in Windows archives, with the official ZIP checksum pinned and the release verification runtime synchronized. Preserve unrelated locked dependencies.
+- Refresh bilingual upgrade guidance and correct stale connect/health descriptions. Web remains off by default and requires explicit opt-in; saved routing and credential preservation remain unchanged.
+- Limit Vitest to two workers to avoid PNG/tsx subprocess contention and existing test timeouts on high-core desktops, without weakening assertions or timeout limits.
+
 ## 0.3.1 — 2026-10-23
 
 ### 中文

@@ -12,6 +12,8 @@ export default defineConfig({
   },
   test: {
     include: ['apps/**/*.test.ts', 'packages/**/*.test.ts'],
+    // PNG workers and tsx subprocesses otherwise contend on high-core desktops.
+    maxWorkers: 2,
     coverage: {
       reporter: ['text', 'lcov']
     }

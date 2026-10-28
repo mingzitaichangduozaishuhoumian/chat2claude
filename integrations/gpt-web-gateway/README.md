@@ -12,6 +12,8 @@
 
 固定上游提交为 [`893f553be358210a5c045aa9f62b56ba1edc5c78`](https://github.com/stufently/gpt-web-gateway/tree/893f553be358210a5c045aa9f62b56ba1edc5c78)，来源记录在 [upstream.json](upstream.json)。`setup` 检出该提交并应用 [chat-vision.patch](chat-vision.patch)，不跟随上游分支自动更新。上游 MIT 许可保留在 [LICENSE.upstream](LICENSE.upstream)。
 
+2026-10-28，本地补丁吸收上游 [`df59104833ced7f4a618c889601568b8f6457f8e`](https://github.com/stufently/gpt-web-gateway/commit/df59104833ced7f4a618c889601568b8f6457f8e) 的等待修复：四种 Stop 按钮选择器都只匹配可见控件，避免隐藏工作区残留的按钮让已完成回答或单次页面刷新恢复被误判为超时。可见 Stop 仍阻止提前结束或刷新；恢复只读取已有回答，不重新发送提示词。基础 SHA 保持不变，补丁变化后请按下文说明保留旧安装、用新的 `--directory` 准备网关。
+
 ## 安装、登录与接入
 
 需要本项目支持的 Node.js、npm、Git，以及已安装的 Google Chrome。从本项目根目录执行：
@@ -77,6 +79,8 @@ corepack pnpm web-gateway:connect -- --api-url http://127.0.0.1:3000
 同一个客户端继续持有本地工程、工具执行权限和完整可见对话。文件内容、修改状态和测试证据需要客户端回传，主服务不会同步 ChatGPT Projects、挂载目录或自动读取工程。Responses 历史默认仅在内存保留 30 分钟，隐式 reasoning replay 默认 10 分钟，均按 API 用户隔离、有容量限制且重启失效；客户端必须保留并在需要时重发完整历史。不能仅因两个后端指向同一目录就假设它们知道最新状态。
 
 ## 验证记录与复现
+
+2026-10-28，在新的临时目录检出上述基础 SHA 并应用当前补丁，`npm run test:vision` 通过 11 组图片解析/HTTP 测试、18 项工具协议测试和 117 项 Node 测试。其中新增 17 项直接运行真实 `waitAndExtractText` 的离线回归，覆盖四种隐藏/可见 Stop 控件、完成/恢复、最多一次刷新和不重新发送；仅还原旧 Stop 选择器后，同套测试按预期出现 9 项失败。原有文本提取 4/4、stall 诊断 30/30 及补丁内 JS/CJS 语法检查通过。本轮未启动真实浏览器、登录或生成请求，也未修改已安装的私密网关；这些检查不代表新一轮真实网页识图验证。
 
 2026-10-20，本轮最高档策略更新后的完整 `corepack pnpm check` 以退出码 0 通过：全工作区构建、113 个文件的 2707 项 Vitest、build-cache 8/8、网关 runner 19/19，以及所有包的类型检查均通过。
 
@@ -148,6 +152,8 @@ node --test gpt-web-gateway-baseline/scripts/test-stall-gate.js
 
 This integration installs a separate gateway for ordinary signed-in **Chat at chatgpt.com**, independent of ChatGPT Work and this project's Codex OAuth session. It pins upstream commit `893f553be358210a5c045aa9f62b56ba1edc5c78` and applies the local vision patch. Run the setup/login/status/start commands above, keep the gateway terminal open, start the main app, then run `web-gateway:connect -- --api-url http://127.0.0.1:3000` using the main app's actual loopback origin. Login opens a separate Chrome window for you to sign in manually. Chrome, Git, Node.js and npm must already be installed.
 
+On 2026-10-28, the patch backports upstream [`df59104833ced7f4a618c889601568b8f6457f8e`](https://github.com/stufently/gpt-web-gateway/commit/df59104833ced7f4a618c889601568b8f6457f8e): all four Stop selectors match only visible controls. Hidden retained workspaces can no longer block a completed answer or the existing one-time reload rescue. Visible Stop controls still block early completion and reload; rescue reads an existing answer without submitting another prompt. The base SHA is unchanged. Preserve the old installation and use a new `--directory` when the patch changes.
+
 Here ordinary Chat supplies the model and the local client executes project tools. Choose [ChatGPT Work](https://learn.chatgpt.com/docs/get-started-with-work) to have the website carry out tasks with files, plugins and tools; that executor is not integrated. [Official pricing](https://learn.chatgpt.com/docs/pricing) states that Work and Codex share usage, so switching to Work does not supply an extra Codex allowance. This does not prove that ordinary Chat has separate accounting. Web defaults to off. After explicitly enabling it, select manual Web to restrict direct Codex calls; Auto prefers Codex unless an explicit Web preference is saved.
 
 Pro in the live check is a **Chat UI level**, not a specific Codex model or an equivalent `max/xhigh/ultra` setting. Quota savings still need fine-grained comparisons within the same account, workspace and usage window; one unchanged integer percentage is not evidence of independent accounting.
@@ -173,6 +179,8 @@ Main-service `contextHandoff` defaults to false; enable it in Admin or through `
 The local runner forces `ORDINARY_CHAT_ONLY=true` for strict ordinary-Chat checks on every chat request, including text and images. It checks during preparation, after thinking-mode selection, and immediately before submission, including the Enter-key fallback. Work or an unrecognized page is rejected before sending. Upstream text paths retain their default best-effort mode selection when run without this option outside the local runner. `applied.image_inputs_attached` and `should_retry` are native gateway extensions; the main compatibility API does not currently forward them. Auto routing cannot predict every gateway limit; HTTPS images or excess input can receive 400 after selecting Web, with no Codex retry after dispatch. Connect also sets supportsStrictTools:false, excluding strict:true requests before Web dispatch: manual Web rejects them and Auto may select compatible Codex.
 
 The local runner also forces `CHAT2CLAUDE_MAX_THINKING=true`. Every ordinary-Chat request selects the current account's highest recognized menu or slider thinking level, requires read-back confirmation, and verifies it again before submission. A disabled, failed or unconfirmed top level rejects the request; it cannot silently use Instant or a lower level, or switch to Work. This is a local-runner policy for the separate gateway, not arbitrary `reasoning_effort` support in the generic Web adapter. The gateway still ignores `model`, so configure `auto`. Only known positive `aria-current` tokens count as active; false, empty and unknown values do not confirm a surface. On 2026-10-20, the same account passed Pro-level JSON checks for one PNG and a tool request. Pro SSE, multiple images and a complete tool-result round trip remain untested; the earlier Instant history checks are recorded separately.
+
+On 2026-10-28, a new temporary checkout of the pinned base applied the current patch and passed `npm run test:vision`: 11 vision parser/HTTP groups, 18 tool-protocol tests and 117 Node tests. The 17 new offline regressions call the real `waitAndExtractText`, covering all four hidden/visible Stop controls, completion/rescue, at most one reload and no resubmission. Reverting only the Stop selector produced the expected 9 failures. Existing text extraction passed 4/4, stall diagnostics passed 30/30, and all patched JS/CJS files passed syntax checks. No real browser, login or generation ran and no private installed gateway was changed; these checks do not constitute another live vision validation.
 
 On 2026-10-20, the complete `corepack pnpm check` after this highest-level policy update passed with exit code 0: the workspace build, 2707 Vitest tests in 113 files, build-cache 8/8, gateway runner 19/19, and typechecks for all packages passed.
 

@@ -1,12 +1,12 @@
 diff --git a/package.json b/package.json
-index e32d637..0d3bf91 100644
+index e32d637..7d83d09 100644
 --- a/package.json
 +++ b/package.json
 @@ -8,6 +8,7 @@
      "dev": "node --watch src/server.js",
      "login": "node src/login.js",
      "auto-login": "node src/auto-login.js",
-+    "test:vision": "node scripts/test-chat-vision.js && node scripts/test-chat-tools.js && node --test scripts/test-chat-attachment.js scripts/test-chat-shutdown.js scripts/test-chat-max-thinking.js",
++    "test:vision": "node scripts/test-chat-vision.js && node scripts/test-chat-tools.js && node --test scripts/test-chat-attachment.js scripts/test-chat-shutdown.js scripts/test-chat-max-thinking.js scripts/test-chat-visible-stop.js",
      "test": "node scripts/test-auth.js && node scripts/test-composer-dom.js && node scripts/test-classify.js && node scripts/test-params.js && node scripts/test-tiers.js && node scripts/test-progress.js && node scripts/test-pacer.js && node scripts/test-job-pool.js && node scripts/test-fill-timeout.js && node scripts/test-multiline-typing.js && node scripts/test-cooldown.js && node scripts/test-refusal-detect.js && node scripts/test-conversation-read.js && node scripts/test-conversation-trim.js && node scripts/test-sse-transform.js && node scripts/test-session-health.js && node scripts/test-login-diagnostics.js && node scripts/test-session-check.js && node scripts/test-browser-fingerprint.js && node scripts/test-cloudflare.js && node scripts/test-cf-navigate.js && node scripts/test-turnstile.js && node scripts/test-text-extraction.js && node scripts/test-totp-step.js && node scripts/test-parallel-slots.js && node scripts/test-parallel-routes.js && node scripts/test-express5-compat.js && node scripts/test-stall-diagnostics.js && node scripts/test-stall-routes.js && node scripts/test-stall-review.js && node scripts/test-stall-gate.js"
    },
    "dependencies": {
@@ -2050,6 +2050,109 @@ index 0000000..9f421bf
 +  for (const line of logs) assert.match(line, /^\[tool-protocol\] reason=json input_chars=23$/);
 +  assert(!logs.join('\n').includes('unsafe malformed output'));
 +});
+diff --git a/scripts/test-chat-visible-stop.js b/scripts/test-chat-visible-stop.js
+new file mode 100644
+index 0000000..0bf16fb
+--- /dev/null
++++ b/scripts/test-chat-visible-stop.js
+@@ -0,0 +1,97 @@
++'use strict';
++
++// Exercise the real text waiter with a page/clock substitute. No browser, login,
++// outbound request or model generation is involved. Source: upstream df591048.
++const test = require('node:test');
++const assert = require('node:assert/strict');
++process.env.STALL_SNAPSHOTS = '0';
++process.env.DEBUG_SNAPSHOTS = '0';
++process.env.CHAT_STREAM_RESCUE_SEC = '1';
++process.env.CHAT_STALL_WINDOW_SEC = '3';
++process.env.CHAT_COMPLETION_TIMEOUT_SEC = '10';
++const { _test: { waitAndExtractText } } = require('../src/chatgpt');
++
++const stopControls = [
++  'button[data-testid="stop-button"]',
++  'button[aria-label="Stop generating"]',
++  'button[aria-label="Stop"]',
++  'button[aria-label="Остановить"]',
++];
++const answer = 'finished answer';
++const conversation = 'https://chatgpt.com/c/01234567-89ab-4cde-8f01-23456789abcd';
++
++async function withPage({ hiddenStop, visibleStop, complete = true, recover = true }, fn) {
++  const originalNow = Date.now;
++  const originalDocument = global.document;
++  let tick = 0;
++  let text = complete ? answer : '';
++  Date.now = () => 100000 + tick * 1000;
++  global.document = {
++    body: { get innerText() { return text; } },
++    querySelectorAll: selector => selector.includes('data-message-author-role') && text
++      ? [{ innerText: text, querySelector: () => ({ innerText: text }) }] : [],
++  };
++  const page = {
++    reloads: 0,
++    sends: 0,
++    queries: [],
++    evaluate: async fn => fn(),
++    // Model DOM presence independently from visibility. Hidden ancestors retain
++    // their controls, but Playwright's :visible pseudo-class excludes them.
++    $: async selector => {
++      page.queries.push(selector);
++      return selector.split(',').some(candidate => {
++        const value = candidate.trim();
++        return hiddenStop && value === hiddenStop
++          || visibleStop && (value === visibleStop || value === visibleStop + ':visible');
++      }) ? {} : null;
++    },
++    url: () => conversation,
++    waitForTimeout: async () => { tick++; },
++    reload: async () => { page.reloads++; if (recover) text = answer; },
++    keyboard: { press: async () => { page.sends++; throw new Error('waiter must not submit a prompt'); } },
++  };
++  try { return await fn(page); }
++  finally { Date.now = originalNow; global.document = originalDocument; }
++}
++
++for (const hiddenStop of stopControls) {
++  test(`hidden ${hiddenStop} does not block a completed answer`, async () => {
++    await withPage({ hiddenStop }, async page => {
++      const result = await waitAndExtractText(page, undefined, { thinkingMode: 'instant' });
++      assert.equal(result.text, answer);
++      assert.equal(result.conversationId, conversation.split('/').pop());
++      assert.equal(page.reloads, 0);
++      assert.equal(page.sends, 0);
++      assert.ok(page.queries.length > 0, 'the real waiter must inspect the controls');
++    });
++  });
++  test(`hidden ${hiddenStop} allows one reload of the existing answer`, async () => {
++    await withPage({ hiddenStop, complete: false }, async page => {
++      const result = await waitAndExtractText(page, undefined, { thinkingMode: 'instant' });
++      assert.equal(result.text, answer);
++      assert.equal(page.reloads, 1);
++      assert.equal(page.sends, 0);
++    });
++  });
++}
++
++for (const visibleStop of stopControls) {
++  for (const complete of [true, false]) {
++    test(`visible ${visibleStop} blocks ${complete ? 'early completion' : 'reload rescue'} after a hidden Stop`, async () => {
++      await withPage({ hiddenStop: stopControls[0], visibleStop, complete }, async page => {
++        await assert.rejects(waitAndExtractText(page, undefined, { thinkingMode: 'instant' }), error => error.code === 'timeout');
++        assert.equal(page.reloads, 0);
++        assert.equal(page.sends, 0);
++      });
++    });
++  }
++}
++
++test('a hidden Stop cannot turn an unsuccessful reload into repeated reloads or prompt resubmission', async () => {
++  await withPage({ hiddenStop: stopControls[2], complete: false, recover: false }, async page => {
++    await assert.rejects(waitAndExtractText(page, undefined, { thinkingMode: 'instant' }), error => error.code === 'timeout');
++    assert.equal(page.reloads, 1);
++    assert.equal(page.sends, 0);
++  });
++});
 diff --git a/scripts/test-chat-vision.js b/scripts/test-chat-vision.js
 new file mode 100644
 index 0000000..10f52a2
@@ -2508,7 +2611,7 @@ index 9e7d701..4a2096f 100644
    browserFingerprint,
  };
 diff --git a/src/chatgpt.js b/src/chatgpt.js
-index 10fab6b..9a5471c 100644
+index 10fab6b..8ee446f 100644
 --- a/src/chatgpt.js
 +++ b/src/chatgpt.js
 @@ -15,6 +15,15 @@ const {
@@ -2651,7 +2754,18 @@ index 10fab6b..9a5471c 100644
    console.log('Waiting for text response...');
    const start = Date.now();
    let bestText = '';
-@@ -1708,6 +1758,7 @@ async function waitAndExtractText(p, beforeState = { assistantCount: 0, lastAssi
+@@ -1684,7 +1734,9 @@ async function waitAndExtractText(p, beforeState = { assistantCount: 0, lastAssi
+   }
+   let deadline = start + baseBudgetMs;
+   let extended = false;
+-  const STOP_BTN_SELECTOR = 'button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Stop"], button[aria-label="Остановить"]';
++  // The app can retain an inactive workspace with its own Stop button in the
++  // DOM. Only a visible control can block completion or the read-only rescue.
++  const STOP_BTN_SELECTOR = 'button[data-testid="stop-button"]:visible, button[aria-label="Stop generating"]:visible, button[aria-label="Stop"]:visible, button[aria-label="Остановить"]:visible';
+ 
+   // Stuck-generation guard state: any observable change in the assistant text or body tail
+   // counts as progress. See CHAT_STALL_WINDOW_MS. Thinking modes get a doubled window —
+@@ -1708,6 +1760,7 @@ async function waitAndExtractText(p, beforeState = { assistantCount: 0, lastAssi
    };
  
    while (true) {
@@ -2659,7 +2773,7 @@ index 10fab6b..9a5471c 100644
      throwBackendPostFailure(capture);
      if (capture) {
        const snap = capture.snapshot();
-@@ -2563,7 +2614,11 @@ async function typeLines(text, typeSegment, pressNewline) {
+@@ -2563,7 +2616,11 @@ async function typeLines(text, typeSegment, pressNewline) {
  // sent so a failure in the settle window is not retried into a duplicate submission.
  // timing (optional): gets `inputMs` — time spent putting the prompt into the composer — even
  // when the call throws, so a caller retrying the turn can count every attempt's input.
@@ -2672,7 +2786,7 @@ index 10fab6b..9a5471c 100644
    console.log('Typing prompt...');
    await dismissModals(p);
    const textareaLocator = p.locator(COMPOSER_VISIBLE_SEL);
-@@ -2611,63 +2666,87 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+@@ -2611,63 +2668,87 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
      }
      return ends.size > 0;
    };
@@ -2808,7 +2922,7 @@ index 10fab6b..9a5471c 100644
    await p.waitForTimeout(1000);
    await dismissModals(p);
  
-@@ -2687,9 +2766,18 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+@@ -2687,9 +2768,18 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
    const sendLocator = p.locator(SEND_BUTTON_SEL);
    try {
      await sendLocator.first().waitFor({ state: 'visible', timeout: 5000 });
@@ -2828,7 +2942,7 @@ index 10fab6b..9a5471c 100644
      // Enter fallback: refocus the composer and confirm the prompt is still there first —
      // blind Enter into an overlay was how the 2026-07-10 send-button incident burned 360s
      // per request and jammed the queue.
-@@ -2702,6 +2790,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+@@ -2702,6 +2792,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
        err.code = 'page_load_failed';
        throw err;
      }
@@ -2836,7 +2950,7 @@ index 10fab6b..9a5471c 100644
      await p.keyboard.press('Enter');
    }
  
-@@ -2711,6 +2800,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+@@ -2711,6 +2802,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
    const submitDeadline = Date.now() + 12000;
    let submitted = false;
    while (Date.now() < submitDeadline) {
@@ -2844,7 +2958,7 @@ index 10fab6b..9a5471c 100644
      throwBackendPostFailure(capture, onSubmitted);
      if (capture?.postAccepted) { submitted = true; break; }
      const turnsNow = await countUserTurns();
-@@ -2745,6 +2835,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
+@@ -2745,6 +2837,7 @@ async function typeAndSubmit(p, text, preserveAttachments = false, onSubmitted =
    if (onSubmitted) { try { onSubmitted(); } catch {} }
  
    await p.waitForTimeout(2000);
@@ -2852,7 +2966,7 @@ index 10fab6b..9a5471c 100644
  }
  
  async function dismissModals(p) {
-@@ -2805,13 +2896,7 @@ const {
+@@ -2805,13 +2898,7 @@ const {
  // swallows "extra high" / "очень высокий" (kept for backward compat). Menu items may carry
  // a model-version suffix ("Instant 5.5") — allow an optional trailing version number.
  // NB: \w is ASCII-only in JS regex — Cyrillic suffixes use an explicit [а-яёА-ЯЁ] class.
@@ -2867,7 +2981,7 @@ index 10fab6b..9a5471c 100644
  // Work-tab pill (and possibly future Chat variants) prefixes the level with the model name:
  // "5.6 Sol Очень высокий" / "GPT-5.6 Sol Very high". Strip it before level matching.
  const PILL_MODEL_PREFIX = /^(?:gpt-)?\d[\d.]*(?:\s+[a-z]+)?\s+/i;
-@@ -2820,10 +2905,10 @@ const PILL_MODEL_PREFIX = /^(?:gpt-)?\d[\d.]*(?:\s+[a-z]+)?\s+/i;
+@@ -2820,10 +2907,10 @@ const PILL_MODEL_PREFIX = /^(?:gpt-)?\d[\d.]*(?:\s+[a-z]+)?\s+/i;
  // also match "High" when aiming at "Extra High". The veryhigh entry therefore lists only the
  // full labels, and `high` is never a prefix of them.
  const LEVEL_CLICK_PREFIXES = {
@@ -2882,7 +2996,7 @@ index 10fab6b..9a5471c 100644
    pro:      ['pro расширенн', 'pro extended', 'pro'],
  };
  // Matches the composer pill at ANY level — used to locate the dropdown trigger. Allows an
-@@ -2920,8 +3005,8 @@ async function readSliderState(p) {
+@@ -2920,8 +3007,8 @@ async function readSliderState(p) {
  // is ASCII-only in JS: after a Cyrillic letter there is no word boundary, so `расширенн\w*\b`
  // matches nothing at all and the RU UI would silently lose the named path (Codex review).
  const ROW_END = '(?=$|[\\s:›>])';
@@ -2893,7 +3007,7 @@ index 10fab6b..9a5471c 100644
  
  // What the popover is currently showing. The 2026-08 control has two faces and BOTH have to be
  // recognised: collapsed it is a positional slider plus an "Advanced" disclosure; expanded, that
-@@ -2940,7 +3025,7 @@ async function readPopoverShape(p) {
+@@ -2940,7 +3027,7 @@ async function readPopoverShape(p) {
      // Anchored at BOTH ends (bar an optional model-version suffix, "Instant 5.5"). A loose
      // /^pro/ matches the sidebar's permanently visible "Projects" button, and a loose /^high/
      // would swallow "Extra High" — either one makes a closed popover look open.
@@ -2902,7 +3016,7 @@ index 10fab6b..9a5471c 100644
      const nodes = Array.from(document.querySelectorAll(
        '[role="menuitem"], [role="menuitemradio"], [role="option"], [cmdk-item], button, [role="button"]',
      )).filter(vis)
-@@ -3004,14 +3089,14 @@ async function dumpIntelligencePopover(p) {
+@@ -3004,14 +3091,14 @@ async function dumpIntelligencePopover(p) {
    }, SLIDER_SEL).catch((e) => ({ error: String((e && e.message) || e) }));
  }
  
@@ -2919,7 +3033,7 @@ index 10fab6b..9a5471c 100644
    const triggers = [
      p.locator(TIER_TRIGGER_VISIBLE_SEL).last(),
      p.locator('button:visible').filter({ hasText: pillText }).last(),
-@@ -3038,9 +3123,20 @@ async function openIntelligenceMenu(p) {
+@@ -3038,9 +3125,20 @@ async function openIntelligenceMenu(p) {
          if (await intelligencePopoverOpen(p)) {
            return { ok: true, label: 'intelligence pill' };
          }
@@ -2940,7 +3054,7 @@ index 10fab6b..9a5471c 100644
    // Everything below is diagnostics for a control that has been redesigned repeatedly. Reopen
    // once with the primary trigger first: the ladder above ends with an Escape-then-activate
    // cycle, so by now the popover is as likely closed as open and dumping would show nothing.
-@@ -3069,10 +3165,10 @@ async function clickLevelNative(p, targetLevel) {
+@@ -3069,10 +3167,10 @@ async function clickLevelNative(p, targetLevel) {
    // `high` stays anchored so it cannot swallow "Extra High"; the two top tiers are anchored
    // for the same reason in reverse — a loose /^pro/ would also match a "Projects" item.
    const nameRx = {
@@ -2955,7 +3069,7 @@ index 10fab6b..9a5471c 100644
      pro:      /^pro( расширенн[а-яёА-ЯЁ]*| extended)?$/i,
    }[targetLevel];
    if (!nameRx) return { ok: false };
-@@ -3201,12 +3297,12 @@ async function openEffortSubmenu(p) {
+@@ -3201,12 +3299,12 @@ async function openEffortSubmenu(p) {
    // Only expand when Effort is not already exposed — clicking a disclosure that is open
    // collapses it again.
    if (shape.advanced && !shape.effort) {
@@ -2970,7 +3084,7 @@ index 10fab6b..9a5471c 100644
      shape = await waitForShape(p, (s) => s.levelItems >= 2);
    }
    return shape.levelItems >= 2;
-@@ -3354,8 +3450,8 @@ async function applyLevelViaSlider(p, targetLevel) {
+@@ -3354,8 +3452,8 @@ async function applyLevelViaSlider(p, targetLevel) {
  // the slider. Says WHY it failed so the caller can tell "this tier is not available to us" from
  // "the adapter is broken", which decide completely different things (downgrade the tier vs.
  // count toward session degradation).
@@ -2981,7 +3095,7 @@ index 10fab6b..9a5471c 100644
    if (!opened.ok) {
      console.log('[ui-adapter] Intelligence popover did not open — skipping level set');
      return { menuOpened: false, clicked: false, unsupported: false, disabled: false, itemText: '', quotaHint: false };
-@@ -3369,7 +3465,7 @@ async function applyLevel(p, targetLevel) {
+@@ -3369,7 +3467,7 @@ async function applyLevel(p, targetLevel) {
      // Reaching for Advanced/Effort may have navigated the popover away from the collapsed face
      // that carries the slider, so reopen before trying it.
      await closeOpenMenus(p);
@@ -2990,7 +3104,7 @@ index 10fab6b..9a5471c 100644
        console.log('[ui-adapter] Intelligence popover did not reopen for the slider path');
        return { menuOpened: false, clicked: false, unsupported: false, disabled: false, itemText: '', quotaHint: false };
      }
-@@ -3581,6 +3677,136 @@ async function setThinkingMode(p, modeOrEnabled, deps = {}) {
+@@ -3581,6 +3679,136 @@ async function setThinkingMode(p, modeOrEnabled, deps = {}) {
    };
  }
  
@@ -3127,7 +3241,7 @@ index 10fab6b..9a5471c 100644
  // Web search UI automation REMOVED 2026-07-10: GPT-5.6 auto-searches the web whenever a
  // question needs fresh data (verified live), so forcing the search token via the "+" panel
  // became redundant. The `web_search` API field is accepted-and-ignored at the routes layer.
-@@ -4234,7 +4460,47 @@ async function editImage(prompt, imageInput, options = {}) {
+@@ -4234,7 +4462,47 @@ async function editImage(prompt, imageInput, options = {}) {
  }
  
  async function completeText(prompt, options = {}) {
@@ -3175,7 +3289,7 @@ index 10fab6b..9a5471c 100644
    // Page-load failures on chatgpt.com tend to come in bursts (CF challenge,
    // empty SPA boot, transient 5xx from OpenAI). One in-process retry leaves a
    // visible failure rate on the caller; multiple attempts with a fresh page each
-@@ -4259,18 +4525,66 @@ async function completeText(prompt, options = {}) {
+@@ -4259,18 +4527,66 @@ async function completeText(prompt, options = {}) {
      // AFTER submit must not retry — a fresh chat would re-send the same prompt (duplicate
      // generation / side effects). Before submit, retrying is safe.
      let submitted = false;
@@ -3244,7 +3358,7 @@ index 10fab6b..9a5471c 100644
  
        const beforeState = await captureTextState(p);
        // Prime BEFORE opening the capture, and the order is load-bearing twice over.
-@@ -4291,8 +4605,10 @@ async function completeText(prompt, options = {}) {
+@@ -4291,8 +4607,10 @@ async function completeText(prompt, options = {}) {
        // never retry into a duplicate send. The post-call assignment is a backstop.
        const timing = {};
        if (typeof options.beforeSubmit === 'function') await options.beforeSubmit();
@@ -3256,7 +3370,7 @@ index 10fab6b..9a5471c 100644
        } finally {
          inputSpentMs += timing.inputMs || 0;
        }
-@@ -4305,7 +4621,9 @@ async function completeText(prompt, options = {}) {
+@@ -4305,7 +4623,9 @@ async function completeText(prompt, options = {}) {
          onDelta,
          prompt,      // subtracted from the tier-limit scan: it is rendered on the page too
          inputMs: inputSpentMs, // every attempt's input, not just this one's
@@ -3266,7 +3380,7 @@ index 10fab6b..9a5471c 100644
  
        if (thinkingState.verified) markHealthyCompletion(slot);
        // conversation_id sources, best first: backend-api capture → chat URL after the
-@@ -4323,12 +4641,36 @@ async function completeText(prompt, options = {}) {
+@@ -4323,12 +4643,36 @@ async function completeText(prompt, options = {}) {
            thinking_verified: !!thinkingState.verified,
            requested_verified: !!thinkingState.requestedVerified,
            thinking_fallback: thinkingState.fallback || null,
@@ -3305,7 +3419,7 @@ index 10fab6b..9a5471c 100644
            && slot.pendingReset !== 'hard' && stallRetryState.used < TEXT_STALL_RETRIES) {
          stallRetryState.used += 1;
          if (typeof options.onAttemptFinished === 'function') options.onAttemptFinished();
-@@ -4372,6 +4714,12 @@ async function completeText(prompt, options = {}) {
+@@ -4372,6 +4716,12 @@ async function completeText(prompt, options = {}) {
          if (needsHardReset) {
            requestMaintenanceNoAwait('hard-reset', () => hardResetBrowser(), slot.epoch);
          }
@@ -3318,7 +3432,7 @@ index 10fab6b..9a5471c 100644
          throw err;
        }
  
-@@ -4379,7 +4727,7 @@ async function completeText(prompt, options = {}) {
+@@ -4379,7 +4729,7 @@ async function completeText(prompt, options = {}) {
        if (needsHardReset) {
          // Pre-submit: hand the slot back and let the pool run the reset between jobs.
          requestMaintenanceNoAwait('hard-reset', () => hardResetBrowser(), slot.epoch);
@@ -3327,7 +3441,7 @@ index 10fab6b..9a5471c 100644
          again.code = err.code || 'page_load_failed';
          again.retryAfterMaintenance = true;
          throw again;
-@@ -4389,6 +4737,7 @@ async function completeText(prompt, options = {}) {
+@@ -4389,6 +4739,7 @@ async function completeText(prompt, options = {}) {
        // Light backoff so we don't slam ChatGPT during a wider outage.
        await new Promise(r => setTimeout(r, 1500 + 1000 * attempt));
      } finally {
@@ -3335,7 +3449,7 @@ index 10fab6b..9a5471c 100644
        // Stop feeding this turn's accumulator — a late/leaked SSE body from an aborted
        // attempt must never bleed into the next turn's capture.
        endBackendCapture(slot);
-@@ -4488,6 +4837,7 @@ module.exports = {
+@@ -4488,6 +4839,7 @@ module.exports = {
      CHAT_COMPLETION_TIMEOUT_MS,
      waitAndExtractText,
      typeAndSubmit,

@@ -1,6 +1,6 @@
 {
   "name": "@chatgpt-to-claude/api",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "engines": {
     "node": "^22.15.0 || >=24.0.0"
@@ -20,7 +20,7 @@
     "@chatgpt-to-claude/shared": "workspace:*",
     "@hono/node-server": "^1.13.8",
     "hono": "^4.13.12",
-    "undici": "^7.29.1"
+    "undici": "^7.30.1"
   },
   "devDependencies": {
     "tsx": "^4.23.15"
