@@ -285,6 +285,42 @@ describe('SessionChatGptBackend', () => {
     expect(events).toEqual([]);
   });
 
+  it.each([
+    { type: 'error', error: { type: 'usage_limit_reached', message: 'QUOTA_MESSAGE_CANARY', resets_in_seconds: 300, detail: 'QUOTA_DETAIL_CANARY' } },
+    { type: 'response.failed', response: { status: 'failed', error: { type: 'usage_limit_reached', message: 'QUOTA_MESSAGE_CANARY', resets_at: 1_700_000_000 } } },
+    { type: 'error', code: 'usage_limit_reached', message: 'QUOTA_MESSAGE_CANARY', param: 'QUOTA_PARAM_CANARY' },
+    { type: 'response.failed', response: { status: 'failed', error: { code: 'usage_limit_reached', message: 'QUOTA_MESSAGE_CANARY' } } },
+  ])('classifies a Codex usage limit terminal as rate limited: $type', async (frame) => {
+    for (const streaming of [false, true]) {
+      const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([frame]) });
+      const events = [];
+      let error: unknown;
+      try {
+        if (streaming) for await (const event of backend.stream(request, context)) events.push(event);
+        else await backend.complete(request, context);
+      } catch (caught) { error = caught; }
+      expect(error).toBeInstanceOf(ChatGptBackendError);
+      expect(error).toMatchObject({ code: 'rate_limited', status: 429, safeDiagnostic: { httpStatus: 200, failurePhase: 'response_event' } });
+      const diagnostic = (error as ChatGptBackendError).safeDiagnostic!;
+      expect([diagnostic.responseErrorCode, diagnostic.responseErrorType]).toContain('usage_limit_reached');
+      expect(Object.isFrozen(diagnostic)).toBe(true);
+      expect(String(error) + JSON.stringify(error)).not.toMatch(/CANARY|resets_at|resets_in_seconds/);
+      expect((error as Error).cause).toBeUndefined();
+      expect(events).toEqual([]);
+    }
+  });
+
+  it.each([
+    { type: 'response.incomplete', response: { status: 'incomplete', error: { type: 'usage_limit_reached' }, incomplete_details: { reason: 'max_output_tokens' } } },
+    { type: 'response.failed', response: { status: 'failed', error: { code: 'server_error', message: 'usage_limit_reached QUOTA_MESSAGE_CANARY' } } },
+    { type: 'error', error: { type: 'usage_limit_reached_QUOTA_CANARY', message: 'usage_limit_reached' } },
+  ])('does not infer a quota limit from incomplete output or provider prose: $type', async (frame) => {
+    const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([frame]) });
+    const error = await backend.complete(request, context).catch((error: unknown) => error);
+    expect(error).toMatchObject({ code: frame.type === 'response.incomplete' ? 'invalid_response' : 'upstream_error', status: 502 });
+    expect(String(error) + JSON.stringify(error)).not.toContain('CANARY');
+  });
+
   it.each(['rate_limit_exceeded', 'ERROR_CODE_CANARY'])('sanitizes top-level standard error code %s', async (code) => {
     const backend = new SessionChatGptBackend({ baseUrl: 'https://chatgpt.test', timeoutMs: 1000, fetch: async () => sseResponse([
       { type: 'error', code, message: 'ERROR_MESSAGE_CANARY', param: 'ERROR_PARAM_CANARY', raw: 'ERROR_RAW_CANARY' },

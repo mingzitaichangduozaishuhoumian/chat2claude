@@ -6,10 +6,10 @@ import { execFileSync } from 'node:child_process';
 import { checkDistribution, cleanupTemp, git, json, materializeDeployment, pnpm, root, sha256, slash, tempDirectory, writeJson } from './common.mjs';
 import { extractTar, extractZip, tarDirectory, zipDirectory } from './archives.mjs';
 
-const NODE_VERSION = '24.21.0';
+const NODE_VERSION = '24.22.1';
 const NODE_ARCHIVE = `node-v${NODE_VERSION}-win-x64.zip`;
 const NODE_BASE = `https://nodejs.org/download/release/v${NODE_VERSION}/`;
-const NODE_SHA256 = '158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541';
+const NODE_SHA256 = 'd2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5';
 const args = process.argv.slice(2).filter((arg) => arg !== '--');
 let output = path.join(root, 'dist-release');
 let allowDirty = false;

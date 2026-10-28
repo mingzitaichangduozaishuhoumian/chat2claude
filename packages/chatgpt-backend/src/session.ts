@@ -1412,7 +1412,8 @@ function responseEventError(event: string | undefined, value: JsonObject | undef
     httpStatus, failurePhase: incomplete ? 'response_incomplete' : 'response_event',
   });
   // Incomplete is a distinct unsuccessful terminal state, never a completed response.
-  if (!incomplete && (safeDiagnostic?.responseErrorCode === 'rate_limit_exceeded' || safeDiagnostic?.responseErrorCode === 'insufficient_quota' || safeDiagnostic?.responseErrorType === 'rate_limit_error')) {
+  if (!incomplete && (safeDiagnostic?.responseErrorCode === 'rate_limit_exceeded' || safeDiagnostic?.responseErrorCode === 'insufficient_quota'
+    || safeDiagnostic?.responseErrorCode === 'usage_limit_reached' || safeDiagnostic?.responseErrorType === 'rate_limit_error' || safeDiagnostic?.responseErrorType === 'usage_limit_reached')) {
     return new ChatGptBackendError('ChatGPT session backend rate limit exceeded.', 'rate_limited', { status: 429, safeDiagnostic });
   }
   return new ChatGptBackendError(incomplete ? 'ChatGPT session backend response was incomplete.' : 'ChatGPT session backend response failed.', incomplete ? 'invalid_response' : 'upstream_error', { status: 502, safeDiagnostic });
