@@ -19,7 +19,7 @@
     "@chatgpt-to-claude/protocol-mapper": "workspace:*",
     "@chatgpt-to-claude/shared": "workspace:*",
     "@hono/node-server": "^1.13.8",
-    "hono": "^4.13.12",
+    "hono": "^4.13.16",
     "undici": "^7.30.1"
   },
   "devDependencies": {
