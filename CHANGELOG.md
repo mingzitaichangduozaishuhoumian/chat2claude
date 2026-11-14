@@ -4,6 +4,18 @@
 
 暂无未发布变更。 / No unreleased changes.
 
+## 0.3.3 — 2026-11-14
+
+### 中文
+
+- 合并 [#13](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/pull/13) 和 [#14](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/pull/14) 的依赖更新，锁定 [Hono Node Server 2.1.8](https://github.com/honojs/node-server/releases/tag/v2.1.8) 和 [Hono 4.13.18](https://github.com/honojs/hono/releases/tag/v4.13.18)，并将开发依赖更新至 [Vite 6.4.5](https://github.com/vitejs/vite/releases/tag/v6.4.5)，解决安全审计发现的问题。
+- Windows 便携包和发布验证改用 [Node.js 24.22.3 安全版](https://github.com/nodejs/node/releases/tag/v24.22.3)。网页网关集成、账号数据及配置格式保持不变。
+
+### English
+
+- Incorporate the dependency updates from [#13](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/pull/13) and [#14](https://github.com/mingzitaichangduozaishuhoumian/chat2claude/pull/14), lock [Hono Node Server 2.1.8](https://github.com/honojs/node-server/releases/tag/v2.1.8) and [Hono 4.13.18](https://github.com/honojs/hono/releases/tag/v4.13.18), and update the development dependency to [Vite 6.4.5](https://github.com/vitejs/vite/releases/tag/v6.4.5) to resolve the audit findings.
+- Use the [Node.js 24.22.3 security release](https://github.com/nodejs/node/releases/tag/v24.22.3) in the Windows portable package and release verification. The web gateway integration, account data, and configuration format are unchanged.
+
 ## 0.3.2 — 2026-10-28
 
 ### 中文

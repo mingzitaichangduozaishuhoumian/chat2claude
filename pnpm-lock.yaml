@@ -21,11 +21,11 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
       vite:
-        specifier: 6.4.4
-        version: 6.4.4(@types/node@22.20.1)(tsx@4.23.15)
+        specifier: 6.4.5
+        version: 6.4.5(@types/node@22.20.1)(tsx@4.23.15)
       vitest:
         specifier: ^4.1.12
-        version: 4.1.12(@types/node@22.20.1)(vite@6.4.4(@types/node@22.20.1)(tsx@4.23.15))
+        version: 4.1.12(@types/node@22.20.1)(vite@6.4.5(@types/node@22.20.1)(tsx@4.23.15))
       yauzl:
         specifier: 3.4.0
         version: 3.4.0
@@ -48,11 +48,11 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
       '@hono/node-server':
-        specifier: ^1.13.8
-        version: 1.19.17(hono@4.13.12)
+        specifier: ^2.1.8
+        version: 2.1.8(hono@4.13.18)
       hono:
-        specifier: ^4.13.12
-        version: 4.13.12
+        specifier: ^4.13.16
+        version: 4.13.18
       undici:
         specifier: ^7.30.1
         version: 7.30.1
@@ -401,11 +401,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@hono/node-server@1.19.17':
-    resolution: {integrity: sha512-dSneS5qhiauZWGDCeK4o695Xd9nUNjviSZCMQrj10eetr8Uln1ucn6bbphOM6UynAMMtNIzZNSpL9vnASJwrPQ==}
-    engines: {node: '>=18.14.1'}
+  '@hono/node-server@2.1.8':
+    resolution: {integrity: sha512-jdf7FHh6A1lzjpHHQUgxsg2GeER2vMetnAOfeActzcoli6jamlK+NAwL6Dsr5Fl3BS3tYUQzCdtZjU8Qxv7bEA==}
+    engines: {node: '>=20'}
     peerDependencies:
-      hono: ^4
+      hono: ^4 || ^5.0.0-0
 
   '@isaacs/fs-minipass@4.0.1':
     resolution: {integrity: sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w==}
@@ -645,8 +645,8 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
-  hono@4.13.12:
-    resolution: {integrity: sha512-6E2QDAc9Ick9Sq77ZrGS/dk2WUYni91aufTw6LJKpV7w8kW5/GxVUc650FOADOmlwg3K+f7Pun6XlV+pYmW6gw==}
+  hono@4.13.18:
+    resolution: {integrity: sha512-H9q/E1XizaWstJxUW881dmLxEj+t/TrGGnyxINkm4+sK0qUwsMtFdo2BWI9Vs3cIS19MU6b6iCijoUoEf4f3DA==}
     engines: {node: '>=16.9.0'}
 
   magic-string@0.30.21:
@@ -749,8 +749,8 @@ packages:
     resolution: {integrity: sha512-03KrMbjIFDWQR5RNPrSw3bd1r12JpyFQl9/yxjUbJtqkjmllqC5lFjZh6ujeuJCKr8EOQvRW872Oy/az+nLYxg==}
     engines: {node: '>=20.18.1'}
 
-  vite@6.4.4:
-    resolution: {integrity: sha512-xGjU/SyjeNyb0E4KxXBvYz/1C+3JXuujvf2hXNOtnlcE+58o5ajd9N2/n2VhkiJvpCP2qQasnUpx5PXNeI+p1Q==}
+  vite@6.4.5:
+    resolution: {integrity: sha512-4enwjFfi4IwtEh0w+jPzpLVOFQiPHmmzPxcHXQOyEur47o6u0jE573DmGpjA+7irXoMLYRZD5ZaFUEneS3abPg==}
     engines: {node: ^18.0.0 || ^20.0.0 || >=22.0.0}
     hasBin: true
     peerDependencies:
@@ -1004,9 +1004,9 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@hono/node-server@1.19.17(hono@4.13.12)':
+  '@hono/node-server@2.1.8(hono@4.13.18)':
     dependencies:
-      hono: 4.13.12
+      hono: 4.13.18
 
   '@isaacs/fs-minipass@4.0.1':
     dependencies:
@@ -1120,13 +1120,13 @@ snapshots:
       chai: 6.3.0
       tinyrainbow: 3.2.0
 
-  '@vitest/mocker@4.1.12(vite@6.4.4(@types/node@22.20.1)(tsx@4.23.15))':
+  '@vitest/mocker@4.1.12(vite@6.4.5(@types/node@22.20.1)(tsx@4.23.15))':
     dependencies:
       '@vitest/spy': 4.1.12
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 6.4.4(@types/node@22.20.1)(tsx@4.23.15)
+      vite: 6.4.5(@types/node@22.20.1)(tsx@4.23.15)
 
   '@vitest/pretty-format@4.1.12':
     dependencies:
@@ -1235,7 +1235,7 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
-  hono@4.13.12: {}
+  hono@4.13.18: {}
 
   magic-string@0.30.21:
     dependencies:
@@ -1340,7 +1340,7 @@ snapshots:
 
   undici@7.30.1: {}
 
-  vite@6.4.4(@types/node@22.20.1)(tsx@4.23.15):
+  vite@6.4.5(@types/node@22.20.1)(tsx@4.23.15):
     dependencies:
       esbuild: 0.25.12
       fdir: 6.5.0(picomatch@4.0.7)
@@ -1353,10 +1353,10 @@ snapshots:
       fsevents: 2.3.3
       tsx: 4.23.15
 
-  vitest@4.1.12(@types/node@22.20.1)(vite@6.4.4(@types/node@22.20.1)(tsx@4.23.15)):
+  vitest@4.1.12(@types/node@22.20.1)(vite@6.4.5(@types/node@22.20.1)(tsx@4.23.15)):
     dependencies:
       '@vitest/expect': 4.1.12
-      '@vitest/mocker': 4.1.12(vite@6.4.4(@types/node@22.20.1)(tsx@4.23.15))
+      '@vitest/mocker': 4.1.12(vite@6.4.5(@types/node@22.20.1)(tsx@4.23.15))
       '@vitest/pretty-format': 4.1.12
       '@vitest/runner': 4.1.12
       '@vitest/snapshot': 4.1.12
@@ -1373,7 +1373,7 @@ snapshots:
       tinyexec: 1.3.1
       tinyglobby: 0.2.17
       tinyrainbow: 3.2.0
-      vite: 6.4.4(@types/node@22.20.1)(tsx@4.23.15)
+      vite: 6.4.5(@types/node@22.20.1)(tsx@4.23.15)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/node': 22.20.1
